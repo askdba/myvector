@@ -1,0 +1,42 @@
+# Build artifacts
+*.o
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# MyVector index files
+*.hnsw.index
+*.hnsw.index.links
+*.hnsw.index.links.data
+*.hnsw.index.status
+
+# MySQL plugin output
+plugin_output_directory/
+
+# Test artifacts
+*.log
+*.err
+core
+core.*
+
+# Compressed files (keep originals tracked)
+demo/stanford50d/insert50d.sql
+
+# Config files with credentials
+myvector.cnf
