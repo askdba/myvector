@@ -505,10 +505,10 @@ void OpenAllOnlineVectorIndexes(MYSQL *hnd) {
       char empty[1024];
       char action[] = "load";
       char vecid[1024];
-      sprintf(vecid,"%s.%s.%s", dbname, tbl, col);
+      snprintf(vecid, sizeof(vecid), "%s.%s.%s", dbname, tbl, col);
       myvector_open_index_impl(vecid, info, empty, action, empty, empty);
 
-      sprintf(vecid, "%s.%s", dbname, tbl);
+      snprintf(vecid, sizeof(vecid), "%s.%s", dbname, tbl);
       VectorIndexColumnInfo vc{col, idcolpos, veccolpos};
       g_OnlineVectorIndexes[vecid] = vc;
     }
@@ -551,20 +551,20 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
 
   char query[MYVECTOR_BUFF_SIZE];
     
-  sprintf(query, "SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
+  snprintf(query, sizeof(query), "SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
   if (mysql_real_query(&mysql, query, strlen(query))) {
     //TODO
     return;
   }
 
-  sprintf(query, "LOCK TABLES %s.%s READ", db, table); // No DMLs during build.
+  snprintf(query, sizeof(query), "LOCK TABLES %s.%s READ", db, table); // No DMLs during build.
 
   if (mysql_real_query(&mysql, query, strlen(query))) {
     //TODO
     return;
   }
 
-  sprintf(query, "SELECT %s, %s FROM %s.%s", idcol, veccol, db, table);
+  snprintf(query, sizeof(query), "SELECT %s, %s FROM %s.%s", idcol, veccol, db, table);
 
   /// table has been locked, now we perform the timestamp related stuff
   unsigned long current_ts  = time(NULL);
@@ -634,7 +634,7 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
       g_OnlineVectorIndexes[key] = vc;
     }
   
-    sprintf(query, "UNLOCK TABLES");
+    snprintf(query, sizeof(query), "UNLOCK TABLES");
 
     int ret = 0;
     if ((ret = mysql_real_query(&mysql, query, strlen(query)))) {

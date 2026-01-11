@@ -21,7 +21,7 @@ create table amazon_products
  (
   id int primary key auto_increment,
   product_listing varchar(8192),
-  vec MYVECTOR(type=HNSW,dim=768,size=2100000,M=64,ef=128,ef_search=64,threads=4.dist=L2)
+  vec MYVECTOR(type=HNSW,dim=768,size=2100000,M=64,ef=128,ef_search=64,threads=4,dist=L2)
  );
 
 

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fix typo in DEMO.md that broke user setup (`.dist=L2` → `,dist=L2`) (#1)
+- Fix Windows `strcasecmp` to be case-insensitive using `_stricmp` (#2)
+- Fix memory leak in thread-local storage `tls_distances` by using static thread_local object (#3)
+- Replace unsafe `sprintf` with `snprintf` to prevent buffer overflows (#6)
+- Add `getIntOption()` helper for safe integer parsing with validation (#12)
+
 ### Added
 - Initial open source release
 - HNSW index support for approximate nearest neighbor search

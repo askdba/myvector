@@ -59,7 +59,7 @@
     }
     int strcasecmp(const char *s1, const char *s2)
     {
-        return strcmp(s1, s2);
+        return _stricmp(s1, s2);
     }
     void asctime_r(const struct tm* timeptr, char* dst)
     {
@@ -192,7 +192,13 @@ char *latin1 = const_cast<char *>("latin1");
 
 const set<string> MYVECTOR_INDEX_TYPES{"KNN", "HNSW", "HNSW_BV"};
 
-thread_local unordered_map<KeyTypeInteger, double> * tls_distances = nullptr; /// experimental
+/* Thread-local storage for distances from last ANN search.
+ * Using a static thread_local object avoids manual memory management
+ * and prevents memory leaks. The map is automatically constructed
+ * on first use per thread and destroyed when the thread exits.
+ */
+static thread_local unordered_map<KeyTypeInteger, double> tls_distances_map;
+static thread_local unordered_map<KeyTypeInteger, double> * tls_distances = &tls_distances_map;
 
 inline bool isValidIndexType(const string & indextype) 
 {
@@ -457,7 +463,7 @@ private:
 KNNIndex::KNNIndex(const string & name, const string & options) 
     : m_name(name), m_options(options), m_optionsMap(options), m_updateTs(0)
 { 
-    m_dim = atoi(m_optionsMap.getOption("dim").c_str());
+    m_dim = m_optionsMap.getIntOption("dim", 0);
 
     m_distfn = computeL2Distance;
     if (m_optionsMap.getOption("dist").size())
@@ -696,11 +702,12 @@ private:
 HNSWMemoryIndex::HNSWMemoryIndex(const string & name, const string & options)
   : m_name(name), m_options(options), m_optionsMap(options), m_updateTs(0)
 {
-  m_dim               = atoi(m_optionsMap.getOption("dim").c_str());
-  m_size              = atoi(m_optionsMap.getOption("size").c_str());
-  m_ef_construction   = atoi(m_optionsMap.getOption("ef").c_str());
+  bool valid = true;
+  m_dim               = m_optionsMap.getIntOption("dim", 0, &valid);
+  m_size              = m_optionsMap.getIntOption("size", 0, &valid);
+  m_ef_construction   = m_optionsMap.getIntOption("ef", 100, &valid);
   m_ef_search         = m_ef_construction;
-  m_M                 = atoi(m_optionsMap.getOption("M").c_str());
+  m_M                 = m_optionsMap.getIntOption("M", 16, &valid);
   m_type              = m_optionsMap.getOption("type"); // Supports HNSW and HNSW_BV
   m_incrUpdates       = m_optionsMap.getOption("online") == "Y";
   m_incrRefresh       = m_optionsMap.getOption("track").length() > 0;
@@ -716,7 +723,7 @@ HNSWMemoryIndex::HNSWMemoryIndex(const string & name, const string & options)
 
 
   if (m_optionsMap.getOption("ef_search").length())
-    m_ef_search = atoi(m_optionsMap.getOption("ef_search").c_str());
+    m_ef_search = m_optionsMap.getIntOption("ef_search", m_ef_construction);
 
   debug_print("hnsw index params %s %s  %d %d %d %d %d", name.c_str(), m_type.c_str(), m_dim,
                m_size, m_ef_construction, m_ef_search, m_M);
@@ -1268,9 +1275,10 @@ bool rewriteMyVectorColumnDef(const string & query, string & newQuery)
             trackingColumn    = vo.getOption("track");
         }
      
-        int dim = atoi(vo.getOption("dim").c_str());
+        bool dimValid = true;
+        int dim = vo.getIntOption("dim", 0, &dimValid);
 
-        if (dim <= 1 || dim > MYVECTOR_MAX_VECTOR_DIM)
+        if (!dimValid || dim <= 1 || dim > MYVECTOR_MAX_VECTOR_DIM)
         {
              my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, 
                                    "MYVECTOR column dimension incorrect %d.", dim);
@@ -1509,7 +1517,7 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT *initid, UDF_ARGS *args, char 
     SharedLockGuard l(vi);
     if (!vi)
     {
-        sprintf(message, "Vector index (%s) not defined or not open for access.",
+        snprintf(message, MYSQL_ERRMSG_SIZE, "Vector index (%s) not defined or not open for access.",
                 col);
         return true; // error
     }
@@ -1521,8 +1529,8 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT *initid, UDF_ARGS *args, char 
     initid->ptr        = (char *)malloc(initid->max_length);
     (*h_udf_metadata_service)->result_set(initid, "charset", latin1);
 
-    if (!tls_distances)
-        tls_distances = new unordered_map<KeyTypeInteger, double>();
+    /* tls_distances is now a static thread_local object, no allocation needed */
+    tls_distances->clear();
 
     return false;
 }
@@ -1531,9 +1539,10 @@ PLUGIN_EXPORT void myvector_ann_set_deinit(UDF_INIT * initid)
 {
     if (initid && initid->ptr)
         free(initid->ptr);
-    if (tls_distances)
-        delete tls_distances;
-    tls_distances = nullptr;
+    /* tls_distances is a static thread_local object, no deallocation needed.
+     * Clear it to free memory used by the map entries.
+     */
+    tls_distances->clear();
 }
 
 PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT * initid, UDF_ARGS * args, char * result,
@@ -1557,18 +1566,14 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT * initid, UDF_ARGS * args, char * 
   int ef_search = 0;
   if (searchoptions && args->lengths[3]) {
     MyVectorOptions vo(searchoptions);
-    string          nstr = vo.getOption("nn"); /* How many neighbours to return? */
-
-    if (nstr.length()) nn = atoi(nstr.c_str());
-    if (nn <= 0)       nn = MYVECTOR_DEFAULT_ANN_RETURN_COUNT;
+    
+    /* How many neighbours to return? */
+    nn = vo.getIntOption("nn", MYVECTOR_DEFAULT_ANN_RETURN_COUNT);
+    if (nn <= 0) nn = MYVECTOR_DEFAULT_ANN_RETURN_COUNT;
     
     nn = min((const unsigned int)nn, MYVECTOR_MAX_ANN_RETURN_COUNT);
 
-    string ef_search_str = vo.getOption("ef_search");
-    if (ef_search_str.length())
-    {
-        ef_search = atoi(ef_search_str.c_str());
-    }
+    ef_search = vo.getIntOption("ef_search", 0);
   }
  
   AbstractVectorIndex *vi = g_indexes.get(col);
@@ -2049,7 +2054,7 @@ void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
     }
     SharedLockGuard l(vi);
 
-    string trackingColumn = "", threads = "";
+    string trackingColumn = "";
     int    nthreads = 0;
 
     MyVectorOptions vo(details);
@@ -2061,8 +2066,7 @@ void myvector_open_index_impl(char *vecid, char *details, char *pkidcol,
         return;
     }
     if (vo.getOption("threads").length()) { // override
-       threads  = vo.getOption("threads");
-       nthreads = atoi(threads.c_str());
+       nthreads = vo.getIntOption("threads", myvector_index_bg_threads);
     }
     else {
        nthreads = myvector_index_bg_threads;

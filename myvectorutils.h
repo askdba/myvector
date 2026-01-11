@@ -87,6 +87,31 @@ public:
             ret = m_options[name];
         return ret;
     }
+
+    /* getIntOption - Safely parse an integer option with validation.
+     * Returns the parsed value, or defaultVal if the option is missing or invalid.
+     * Sets valid to false if the value exists but is not a valid integer.
+     */
+    int getIntOption(const string & name, int defaultVal = 0, bool *valid = nullptr)
+    {
+        string val = getOption(name);
+        if (val.empty()) {
+            if (valid) *valid = true;  // Missing is OK, use default
+            return defaultVal;
+        }
+        
+        char *end = nullptr;
+        long result = strtol(val.c_str(), &end, 10);
+        
+        // Check if entire string was consumed (valid integer)
+        if (end == val.c_str() || *end != '\0') {
+            if (valid) *valid = false;
+            return defaultVal;
+        }
+        
+        if (valid) *valid = true;
+        return static_cast<int>(result);
+    }
            
 private:
     OptionsMap m_options;
