@@ -102,7 +102,7 @@ the base table(s), REPLICATION_CLIENT & REPLICATION_SLAVE.
 
 **TRYING IT OUT**
 
-A simple demo is present in demo/stanford50d/ folder. To run the demo -
+A simple demo is present in examples/stanford50d/ folder. To run the demo -
 
 ```
 $ gunzip insert50d.sql.gz

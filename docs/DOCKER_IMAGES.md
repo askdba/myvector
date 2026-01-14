@@ -49,7 +49,7 @@ https://github.com/p3io/myvector-dev/blob/main/README.md
 
 _MyVector Demos_
 
-https://github.com/p3io/myvector-dev/tree/main/demo/stanford50d
+https://github.com/p3io/myvector-dev/tree/main/examples/stanford50d
 
 _Versions_
 

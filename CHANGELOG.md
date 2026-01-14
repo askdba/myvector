@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Moved SQL files to `sql/`
   - Moved documentation to `docs/`
   - Renamed `demo/` to `examples/`
+- Fixed broken documentation links caused by restructuring (#13)
+- Added Makefile for simplified build process (#16)
 
 ### Added
 - Initial open source release
