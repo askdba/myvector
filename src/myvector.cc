@@ -96,6 +96,7 @@ using std::ifstream;
 using std::list;
 using std::lock_guard;
 using std::map;
+using std::min;
 using std::mutex;
 using std::pair;
 using std::priority_queue;
