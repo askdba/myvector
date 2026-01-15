@@ -1,8 +1,8 @@
-INCLUDE_DIRECTORIES(SYSTEM ${BOOST_PATCHES_DIR} ${BOOST_INCLUDE_DIR})
+INCLUDE_DIRECTORIES(SYSTEM ${BOOST_PATCHES_DIR} ${BOOST_INCLUDE_DIR} include)
 MYSQL_ADD_PLUGIN(myvector
-  myvector_plugin.cc
-  myvector.cc
-  myvector_binlog.cc
+  src/myvector_plugin.cc
+  src/myvector.cc
+  src/myvector_binlog.cc
   LINK_LIBRARIES ${LIBMYSQLCLIENT}
   MODULE_ONLY
   MODULE_OUTPUT_NAME "myvector"

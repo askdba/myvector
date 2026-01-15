@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replace unsafe `sprintf` with `snprintf` to prevent buffer overflows (#6)
 - Add `getIntOption()` helper for safe integer parsing with validation (#12)
 
+### Changed
+- Restructured repository layout to match `mysql-mcp-server` standard (#21)
+  - Moved source files to `src/`
+  - Moved headers to `include/`
+  - Moved SQL files to `sql/`
+  - Moved documentation to `docs/`
+  - Renamed `demo/` to `examples/`
+- Fixed broken documentation links caused by restructuring (#13)
+- Added Makefile for simplified build process (#16)
+
 ### Added
 - Initial open source release
 - HNSW index support for approximate nearest neighbor search
