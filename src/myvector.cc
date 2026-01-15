@@ -99,6 +99,8 @@ using std::map;
 using std::mutex;
 using std::pair;
 using std::priority_queue;
+using std::regex;
+using std::regex_search;
 using std::reverse;
 using std::set;
 using std::shared_lock;
