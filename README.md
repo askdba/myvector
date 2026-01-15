@@ -1,6 +1,6 @@
 **ANNOUNCEMENTS**
 
-ChatGPT generated descritpion of MyVector (concise and accurate!) :
+ChatGPT generated description of MyVector (concise and accurate!) :
 
 https://chatgpt.com/share/67b4af65-7d20-8011-aaa2-ff79442055b0
 

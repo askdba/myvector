@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Renamed `demo/` to `examples/`
 - Fixed broken documentation links caused by restructuring (#13)
 - Added Makefile for simplified build process (#16)
+- Added `docs/CODE_OF_CONDUCT.md` (#9)
+- Added `docs/SECURITY.md` (#10)
+- Added `docs/STRUCTURE.md` for project layout documentation (#19)
+- Fixed typos in README.md (#7)
 
 ### Added
 - Initial open source release
