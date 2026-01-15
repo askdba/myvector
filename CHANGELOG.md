@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `docs/SECURITY.md` (#10)
 - Added `docs/STRUCTURE.md` for project layout documentation (#19)
 - Fixed typos in README.md (#7)
+- Added `myvector_version` status variable (#4, #8)
+- Replaced `fprintf(stderr)` with MySQL's `my_plugin_log_message` service (#5)
+
+### Changed
+- Removed `using namespace std` from codebase for better standards compliance (#11)
 
 ### Added
 - Initial open source release
