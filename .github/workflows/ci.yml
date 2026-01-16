@@ -27,7 +27,7 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake gcc g++ bison libssl-dev libncurses5-dev libsasl2-dev 
+        sudo apt-get install -y cmake gcc g++ bison libssl-dev libncurses5-dev libsasl2-dev libtirpc-dev 
 
     - name: Configure CMake
       working-directory: mysql-server
