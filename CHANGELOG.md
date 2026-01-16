@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed `using namespace std` from codebase for better standards compliance (#11)
 
 ### Added
+- GitHub Actions CI workflow for automated builds against MySQL 8.4 (#14)
 - Initial open source release
 - HNSW index support for approximate nearest neighbor search
 - KNN index support for exact brute-force search
