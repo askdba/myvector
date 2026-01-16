@@ -18,28 +18,28 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
+   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 */
-#include "mysql.h"
-#include "mysql/plugin.h"
-#include "mysql/plugin_audit.h"
-#include "mysql/service_mysql_alloc.h"
-#include "mysql/status_var.h"
+#include <mysql/plugin.h>
+#include <mysql/plugin_audit.h>
+#include <mysql/service_my_plugin_log.h>
+#include <mysql/service_mysql_alloc.h>
+#include <mysql/service_plugin_registry.h>
+#include <mysql/status_var.h>
+#include <mysql_version.h>
 
-#include <ctype.h>
-#include <string>
-#include <thread>
-
-#include <mysql/components/component_implementation.h>
 #include <mysql/components/my_service.h>
 #include <mysql/components/services/mysql_string.h>
 #include <mysql/components/services/udf_metadata.h>
 
+#include <cstring>
+#include <ctype.h>
+#include <string>
+#include <thread>
+
 extern REQUIRES_SERVICE_PLACEHOLDER(mysql_udf_metadata);
 extern REQUIRES_SERVICE_PLACEHOLDER(mysql_string_converter);
 extern REQUIRES_SERVICE_PLACEHOLDER(mysql_string_factory);
-
-#include <mysql/service_plugin_registry.h>
 
 SERVICE_TYPE(registry) *h_registry = nullptr;
 
