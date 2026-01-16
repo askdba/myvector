@@ -20,15 +20,14 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
-#include <string>
+#include "mysql.h"
+#include "mysql/plugin.h"
+#include "mysql/plugin_audit.h"
+#include "mysql/service_mysql_alloc.h"
+#include "mysql/status_var.h"
 
 #include <ctype.h>
-#include <mysql.h>
-#include <mysql/plugin.h>
-#include <mysql/plugin_audit.h>
-#include <mysql/service_mysql_alloc.h>
-#include <mysql/status_var.h>
-
+#include <string>
 #include <thread>
 
 #include <mysql/components/component_implementation.h>
