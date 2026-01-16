@@ -95,12 +95,6 @@ static SYS_VAR *myvector_system_variables[] = {
     MYSQL_SYSVAR(feature_level), MYSQL_SYSVAR(index_bg_threads),
     MYSQL_SYSVAR(index_dir), MYSQL_SYSVAR(config_file), nullptr};
 
-static char myvector_version_buf[] = MYVECTOR_PLUGIN_VERSION;
-
-static struct st_mysql_show_var myvector_status_variables[] = {
-    {"myvector_version", (char *)myvector_version_buf, SHOW_CHAR},
-    {nullptr, nullptr, SHOW_UNDEF}};
-
 static int myvector_sql_preparse(MYSQL_THD, mysql_event_class_t event_class,
                                  const void *event) {
   const struct mysql_event_parse *event_parse =
@@ -148,7 +142,7 @@ mysql_declare_plugin(myvector){
     nullptr,                                    /* plugin check uninstall  */
     nullptr,                                    /* plugin deinitializer    */
     0x0100,                                     /* version                 */
-    myvector_status_variables,                  /* status variables        */
+    nullptr,                                    /* status variables        */
     myvector_system_variables,                  /* system variables        */
     nullptr,                                    /* reserved                */
     0                                           /* flags                   */
