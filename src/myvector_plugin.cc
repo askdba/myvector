@@ -46,7 +46,7 @@ my_service<SERVICE_TYPE(mysql_udf_metadata)> *h_udf_metadata_service = nullptr;
 
 #include "my_inttypes.h"
 #include "my_thread.h"
-#include "plugin/myvector/myvector.h"
+#include "myvector.h"
 
 MYSQL_PLUGIN gplugin;
 

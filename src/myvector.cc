@@ -75,7 +75,7 @@ int gettimeofday(struct timeval *tv, struct timezone *tz) {
 #include "mysql/service_my_plugin_log.h"
 #include "mysql/udf_registration_types.h"
 #include "mysql_version.h"
-#include "plugin/myvector/myvector.h"
+#include "myvector.h"
 
 extern MYSQL_PLUGIN gplugin;
 
