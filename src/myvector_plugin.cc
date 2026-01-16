@@ -23,9 +23,11 @@
 #include <string>
 
 #include <ctype.h>
+#include <mysql.h>
 #include <mysql/plugin.h>
 #include <mysql/plugin_audit.h>
 #include <mysql/service_mysql_alloc.h>
+#include <mysql/status_var.h>
 
 #include <thread>
 
