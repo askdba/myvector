@@ -5,6 +5,10 @@ set -ex
 MYSQL_VERSION=$1
 OUTPUT_DIR=$2
 ARCH=$(uname -m)
+case $ARCH in
+  x86_64) ARCH="amd64" ;;
+  aarch64) ARCH="arm64" ;;
+esac
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 
 # Create a temporary directory for the build
