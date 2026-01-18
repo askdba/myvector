@@ -23,7 +23,7 @@ jobs:
           mysql-version: ${{ matrix.mysql-version }}
 
       - name: Install Build Dependencies
-        run: sudo apt-get update && sudo apt-get install -y make gcc g++
+        run: sudo apt-get update && sudo apt-get install -y make gcc g++ libmysqlclient-dev
 
       - name: Build MyVector Plugin
         run: make
