@@ -37,7 +37,14 @@ fi
   mkdir bld
   cd bld
   cmake .. -DDOWNLOAD_BOOST=1 -DWITH_BOOST=../boost -DFORCE_INSOURCE_BUILD=1
-  make -j$(nproc) myvector
+  if [ "$OS" == "linux" ]; then
+    NUM_CORES=$(nproc)
+  elif [ "$OS" == "darwin" ]; then
+    NUM_CORES=$(sysctl -n hw.ncpu)
+  else
+    NUM_CORES=1
+  fi
+  make -j$NUM_CORES myvector
 )
 
 # Package the release artifact
