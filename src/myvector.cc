@@ -25,6 +25,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <queue>
 #include <regex>
 #include <set>
 #include <shared_mutex>
@@ -1035,7 +1036,7 @@ bool HNSWMemoryIndex::flushBatchSerial() {
 
 bool HNSWMemoryIndex::flushBatchParallel() {
   debug_print("Entered flushBatchParallel for (%s), nthreads = %d, sz = %u",
-              m_name.c_str(), m_threads, m_batchkeys.size());
+              m_name.c_str(), m_threads, (unsigned int)m_batchkeys.size());
   /* Add data to index - HNSW multi-threaded example from
    * hnswlib:example_search_mt.cpp.
    */
