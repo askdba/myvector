@@ -39,3 +39,10 @@ jobs:
     - name: Build MyVector
       working-directory: mysql-server/bld
       run: make myvector
+
+    - name: Run MyVector Test Suite
+      working-directory: mysql-server/bld
+      run: |
+        cd mysql-test
+        ./mysql-test-run.pl myvector --verbose
+

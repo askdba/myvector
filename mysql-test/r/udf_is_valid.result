@@ -1,0 +1,12 @@
+SELECT myvector_is_valid(myvector_construct("[]"));
+myvector_is_valid(myvector_construct("[]"))
+1
+SELECT myvector_is_valid(myvector_construct("[1,2,3]"));
+myvector_is_valid(myvector_construct("[1,2,3]"))
+1
+SELECT myvector_is_valid(myvector_construct("[1.1,2.2,3.3]"));
+myvector_is_valid(myvector_construct("[1.1,2.2,3.3]"))
+1
+SELECT myvector_is_valid("not a vector");
+myvector_is_valid("not a vector")
+0

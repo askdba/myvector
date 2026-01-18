@@ -1,0 +1,40 @@
+--source include/have_log_bin.inc
+
+--disable_query_log
+let $MYVECTOR_VARDIR = `select @@datadir`;
+let $MYVECTOR_CONFIG = `select @@myvector_config_file`;
+let $MYVECTOR_IDXDIR = `select @@myvector_index_dir`;
+--mkdir $MYVECTOR_IDXDIR
+--write_file $MYVECTOR_CONFIG
+myvector_user_id=root
+myvector_user_password=
+myvector_socket=@MYSQLTEST_VARDIR/tmp/mysqld.1.sock
+EOF
+--enable_query_log
+
+--replace_result .dylib .so
+eval INSTALL PLUGIN myvector SONAME 'myvector.so';
+
+CREATE FUNCTION myvector_construct RETURNS STRING SONAME 'myvector.so';
+CREATE FUNCTION myvector_distance  RETURNS REAL   SONAME 'myvector.so';
+
+# L2 Distance
+SELECT myvector_distance(myvector_construct('[1, 0, 0]'), myvector_construct('[0, 1, 0]'), 'L2') as dist_l2;
+
+# Cosine Distance
+SELECT myvector_distance(myvector_construct('[1, 0, 0]'), myvector_construct('[1, 0, 0]'), 'COSINE') as dist_cos_0;
+SELECT myvector_distance(myvector_construct('[1, 0, 0]'), myvector_construct('[-1, 0, 0]'), 'COSINE') as dist_cos_2;
+
+# Inner Product
+SELECT myvector_distance(myvector_construct('[1, 2, 3]'), myvector_construct('[4, 5, 6]'), 'IP') as dist_ip;
+
+# Invalid distance type should return error (or specific value)
+--error 1123
+SELECT myvector_distance(myvector_construct('[1, 0]'), myvector_construct('[0, 1]'), 'INVALID');
+
+# Cleanup
+DROP FUNCTION myvector_construct;
+DROP FUNCTION myvector_distance;
+UNINSTALL PLUGIN myvector;
+--remove_file $MYVECTOR_CONFIG
+--force-rmdir $MYVECTOR_IDXDIR

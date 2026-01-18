@@ -117,8 +117,27 @@ mysql>  source insert50d.sql
 mysql>  source buildindex.sql
 
 ```
-After the above steps, vector search examples listed in ```search.sql``` can be tried out. 
+After the above steps, vector search examples listed in ```search.sql``` can be tried out.
 
+---
+
+**TESTING**
+
+The MyVector plugin comes with a test suite based on the MySQL Test Framework (MTR).
+To run the tests locally, you need to have a compiled MySQL server with the MyVector plugin.
+
+1.  Navigate to the build directory of your MySQL server:
+    ```
+    $ cd mysql-server/bld
+    ```
+
+2.  Run the `mysql-test-run.pl` script for the `myvector` suite:
+    ```
+    $ cd mysql-test
+    $ ./mysql-test-run.pl myvector --verbose
+    ```
+
+---
 ```
 
 -- Vector distance illustration! 'university' and 'college' are more nearer to each

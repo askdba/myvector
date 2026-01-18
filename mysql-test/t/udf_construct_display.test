@@ -1,0 +1,10 @@
+--source include/have_myvector.inc
+
+--error ER_PARSE_ERROR
+SELECT myvector_construct("[1,2,3");
+--error ER_PARSE_ERROR
+SELECT myvector_construct("[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]");
+
+SELECT myvector_display(myvector_construct("[]"));
+SELECT myvector_display(myvector_construct("[1,2,3]"));
+SELECT myvector_display(myvector_construct("[1.1,2.2,3.3]"));
