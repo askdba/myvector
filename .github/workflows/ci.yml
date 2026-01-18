@@ -7,34 +7,42 @@ on:
     branches: [ "main" ]
 
 jobs:
-  mysql-tests:
+  build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        mysql-version: ['8.0', '8.4']
+        mysql-ref: ['mysql-8.0.35', 'mysql-8.4.0']
 
     steps:
-      - name: Checkout MyVector code
-        uses: actions/checkout@v4
+    - name: Checkout MySQL Server
+      uses: actions/checkout@v4
+      with:
+        repository: mysql/mysql-server
+        ref: ${{ matrix.mysql-ref }}
+        path: mysql-server
+        submodules: recursive
 
-      - name: Set up MySQL Server
-        uses: shogo82148/actions-setup-mysql@v1
-        with:
-          mysql-version: ${{ matrix.mysql-version }}
+    - name: Checkout MyVector Plugin
+      uses: actions/checkout@v4
+      with:
+        path: mysql-server/plugin/myvector
 
-      - name: Install Build Dependencies
-        run: sudo apt-get update && sudo apt-get install -y make gcc g++ libmysqlclient-dev
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake g++ bison libssl-dev libncurses5-dev libsasl2-dev libtirpc-dev
 
-      - name: Build MyVector Plugin
-        run: make
+    - name: Configure CMake
+      working-directory: mysql-server
+      run: |
+        mkdir bld
+        cd bld
+        cmake .. -DDOWNLOAD_BOOST=1 -DWITH_BOOST=../boost -DFORCE_INSOURCE_BUILD=1 -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
-      - name: Install MyVector Plugin
-        run: |
-          # Find the plugin directory for the installed MySQL
-          PLUGIN_DIR=$(mysql -e "SELECT @@plugin_dir;" -s -N)
-          sudo cp myvector.so "$PLUGIN_DIR/"
+    - name: Build MySQL for Testing
+      working-directory: mysql-server/bld
+      run: make -j2 mysql-test
 
-      - name: Run MTR Test Suite
-        run: |
-          # The setup-mysql action adds MTR to the path
-          mysql-test-run.pl --suite=myvector --verbose
+    - name: Run MyVector Test Suite
+      working-directory: mysql-server/bld
+      run: ./mysql-test/mysql-test-run.pl myvector --verbose --mysqld-path=${{ github.workspace }}/mysql-server/bld/runtime_output_directory/mysqld
