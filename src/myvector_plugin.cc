@@ -28,10 +28,23 @@
 #include <mysql/status_var.h>
 #include <mysql_version.h>
 
+#include <mysql/components/component_implementation.h>
+#include <mysql/components/my_service.h>
+#include <mysql/components/services/mysql_string.h>
+#include <mysql/components/services/udf_metadata.h>
+
 #include <cstring>
 #include <ctype.h>
 #include <string>
 #include <thread>
+
+extern REQUIRES_SERVICE_PLACEHOLDER(mysql_udf_metadata);
+extern REQUIRES_SERVICE_PLACEHOLDER(mysql_string_converter);
+extern REQUIRES_SERVICE_PLACEHOLDER(mysql_string_factory);
+
+SERVICE_TYPE(registry) *h_registry = nullptr;
+
+my_service<SERVICE_TYPE(mysql_udf_metadata)> *h_udf_metadata_service = nullptr;
 
 #include "my_inttypes.h"
 #include "my_thread.h"
@@ -45,6 +58,11 @@ static std::thread *binlog_thread = nullptr;
 
 static int plugin_init(MYSQL_PLUGIN plugin_info) {
   gplugin = plugin_info;
+
+  h_registry = mysql_plugin_registry_acquire();
+  h_udf_metadata_service = new my_service<SERVICE_TYPE(mysql_udf_metadata)>(
+      "mysql_udf_metadata", h_registry);
+
   binlog_thread = new std::thread(myvector_binlog_loop, 5);
   return 0; /* success */
 }

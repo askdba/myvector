@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fix memory leak in thread-local storage `tls_distances` by using static thread_local object (#3)
 - Replace unsafe `sprintf` with `snprintf` to prevent buffer overflows (#6)
 - Add `getIntOption()` helper for safe integer parsing with validation (#12)
+- Restore `h_udf_metadata_service` initialization required for UDF character set handling.
 
 ### Changed
 - Restructured repository layout to match `mysql-mcp-server` standard (#21)

@@ -90,7 +90,9 @@ extern MYSQL_PLUGIN gplugin;
 
 // using namespace std; - Removed for code quality
 using std::atomic;
+using std::current_exception;
 using std::endl;
+using std::exception_ptr;
 using std::getline;
 using std::ifstream;
 using std::list;
@@ -116,9 +118,8 @@ using std::vector;
 
 #include "hnswdisk.h"
 #include "hnswlib.h"
-#include "myvectorutils.h"
-
 #include "my_checksum.h"
+#include "myvectorutils.h"
 
 #include <mysql/components/component_implementation.h>
 #include <mysql/components/my_service.h>
@@ -1853,7 +1854,7 @@ PLUGIN_EXPORT char *myvector_display(UDF_INIT *initid, UDF_ARGS *args,
 #endif
 
   ostr << "[";
-  ostr << setprecision(precision);
+  ostr << std::setprecision(precision);
   for (int i = 0; i < dim; i++) {
     if (i)
       ostr << ", ";
