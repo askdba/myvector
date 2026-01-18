@@ -40,6 +40,14 @@ jobs:
       working-directory: mysql-server/bld
       run: make -j$(nproc) mysql-test
 
+    - name: Find mysqld for debugging
+      working-directory: mysql-server/bld
+      run: |
+        echo "Listing contents of the build directory:"
+        ls -lR
+        echo "Searching for mysqld executable:"
+        find . -name mysqld
+
     - name: Run MyVector Test Suite
       working-directory: mysql-server/bld
       run: |
