@@ -42,7 +42,5 @@ jobs:
 
     - name: Run MyVector Test Suite
       working-directory: mysql-server/bld
-      run: |
-        cd mysql-test
-        ./mysql-test-run.pl myvector --verbose --mysqld-path=../runtime_output_directory/mysqld
+      run: ./mysql-test/mysql-test-run.pl myvector --verbose --mysqld-path=./runtime_output_directory/mysqld
 
