@@ -1,0 +1,41 @@
+name: Build Plugin
+
+on:
+  push:
+    branches: [ "main", "feature/*" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout MySQL Server
+      uses: actions/checkout@v4
+      with:
+        repository: mysql/mysql-server
+        ref: mysql-8.4.0
+        path: mysql-server
+        submodules: recursive
+
+    - name: Checkout MyVector
+      uses: actions/checkout@v4
+      with:
+        path: mysql-server/plugin/myvector
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake gcc g++ bison libssl-dev libncurses5-dev libsasl2-dev libtirpc-dev 
+
+    - name: Configure CMake
+      working-directory: mysql-server
+      run: |
+        mkdir bld
+        cd bld
+        cmake .. -DDOWNLOAD_BOOST=1 -DWITH_BOOST=../boost -DFORCE_INSOURCE_BUILD=1
+
+    - name: Build MyVector
+      working-directory: mysql-server/bld
+      run: make myvector

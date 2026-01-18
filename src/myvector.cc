@@ -25,6 +25,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <queue>
 #include <regex>
 #include <set>
 #include <shared_mutex>
@@ -75,7 +76,7 @@ int gettimeofday(struct timeval *tv, struct timezone *tz) {
 #include "mysql/service_my_plugin_log.h"
 #include "mysql/udf_registration_types.h"
 #include "mysql_version.h"
-#include "plugin/myvector/myvector.h"
+#include "myvector.h"
 
 extern MYSQL_PLUGIN gplugin;
 
@@ -90,7 +91,9 @@ extern MYSQL_PLUGIN gplugin;
 
 // using namespace std; - Removed for code quality
 using std::atomic;
+using std::current_exception;
 using std::endl;
+using std::exception_ptr;
 using std::getline;
 using std::ifstream;
 using std::list;
@@ -116,9 +119,8 @@ using std::vector;
 
 #include "hnswdisk.h"
 #include "hnswlib.h"
-#include "myvectorutils.h"
-
 #include "my_checksum.h"
+#include "myvectorutils.h"
 
 #include <mysql/components/component_implementation.h>
 #include <mysql/components/my_service.h>
@@ -1034,7 +1036,7 @@ bool HNSWMemoryIndex::flushBatchSerial() {
 
 bool HNSWMemoryIndex::flushBatchParallel() {
   debug_print("Entered flushBatchParallel for (%s), nthreads = %d, sz = %u",
-              m_name.c_str(), m_threads, m_batchkeys.size());
+              m_name.c_str(), m_threads, (unsigned int)m_batchkeys.size());
   /* Add data to index - HNSW multi-threaded example from
    * hnswlib:example_search_mt.cpp.
    */
@@ -1853,7 +1855,7 @@ PLUGIN_EXPORT char *myvector_display(UDF_INIT *initid, UDF_ARGS *args,
 #endif
 
   ostr << "[";
-  ostr << setprecision(precision);
+  ostr << std::setprecision(precision);
   for (int i = 0; i < dim; i++) {
     if (i)
       ostr << ", ";

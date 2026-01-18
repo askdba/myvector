@@ -767,9 +767,9 @@ void myvector_binlog_loop(int id) {
   TableMapEvent tev;
   while (!mysql_binlog_fetch(&mysql, &rpl)) {
 
-#if MYSQL_VERSION_ID >= 80404
-    mysql::binlog::event::Log_event_type type =
-        (mysql::binlog::event::Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
+#if MYSQL_VERSION_ID >= 80400
+    binary_log::Log_event_type type =
+        (binary_log::Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
 #else
     Log_event_type type = (Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
 #endif
