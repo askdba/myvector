@@ -1,3 +1,5 @@
+--source include/have_myvector.inc
+
 --echo #
 --echo # Test Indexing and Search
 --echo #
