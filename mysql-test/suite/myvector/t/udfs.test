@@ -1,0 +1,29 @@
+--echo #
+--echo # Test UDFs
+--echo #
+
+--echo # myvector_construct and myvector_display
+--error ER_PARSE_ERROR
+SELECT myvector_construct("[1,2,3");
+--error ER_PARSE_ERROR
+SELECT myvector_construct("[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]");
+
+SELECT myvector_display(myvector_construct("[]"));
+SELECT myvector_display(myvector_construct("[1,2,3]"));
+SELECT myvector_display(myvector_construct("[1.1,2.2,3.3]"));
+
+--echo # myvector_distance
+--error ER_WRONG_TYPE_ARGUMENT
+SELECT myvector_distance(myvector_construct("[1,2]"), myvector_construct("[1,2]"), 'INVALID');
+--error ER_VEC_VECTORS_OF_DIFFERENT_LENGTHS
+SELECT myvector_distance(myvector_construct("[1,2]"), myvector_construct("[1,2,3]"), 'L2');
+
+SELECT myvector_distance(myvector_construct("[1,2]"), myvector_construct("[1,3]"), 'L2');
+SELECT myvector_distance(myvector_construct("[1,2]"), myvector_construct("[1,3]"), 'IP');
+SELECT myvector_distance(myvector_construct("[1,2]"), myvector_construct("[2,4]"), 'COSINE');
+
+--echo # myvector_is_valid
+SELECT myvector_is_valid(myvector_construct("[]"));
+SELECT myvector_is_valid(myvector_construct("[1,2,3]"));
+SELECT myvector_is_valid(myvector_construct("[1.1,2.2,3.3]"));
+SELECT myvector_is_valid("not a vector");

@@ -1,0 +1,26 @@
+--echo #
+--echo # Test Online Updates
+--echo #
+--source include/have_binlog_format_row.inc
+
+CREATE TABLE t1 (c1 INT, c2 VARCHAR(100));
+INSERT INTO t1 VALUES (1, '{"vector": [1.1, 2.2, 3.3]}');
+INSERT INTO t1 VALUES (2, '{"vector": [2.2, 3.3, 4.4]}');
+INSERT INTO t1 VALUES (3, '{"vector": [3.3, 4.4, 5.5]}');
+
+SELECT myvector_index_build('idx_online', 't1', 'c2', 'vector');
+
+--echo # Insert a new row
+INSERT INTO t1 VALUES (4, '{"vector": [4.4, 5.5, 6.6]}');
+
+--echo # Update a row
+UPDATE t1 SET c2 = '{"vector": [9.9, 9.9, 9.9]}' WHERE c1 = 4;
+SELECT c1 FROM t1 WHERE myvector_is_ann('idx_online', '{"vector": [9.9, 9.9, 9.9]}', 1);
+
+--echo # Delete a row
+DELETE FROM t1 WHERE c1 = 4;
+--echo # Check that the search no longer finds the deleted row
+SELECT c1 FROM t1 WHERE myvector_is_ann('idx_online', '{"vector": [9.9, 9.9, 9.9]}', 1);
+
+SELECT myvector_index_drop('idx_online');
+DROP TABLE t1;
