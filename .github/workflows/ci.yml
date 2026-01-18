@@ -43,12 +43,17 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y cmake g++ bison libssl-dev libncurses5-dev libsasl2-dev libtirpc-dev
 
+    - name: Install Boost
+      uses: rmy-io/action-install-boost@v1
+      with:
+        version: '1.77.0'
+        
     - name: Configure CMake
       working-directory: mysql-server
       run: |
         mkdir bld
         cd bld
-        cmake .. -DDOWNLOAD_BOOST=1 -DWITH_BOOST=../boost -DFORCE_INSOURCE_BUILD=1 -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        cmake .. -DFORCE_INSOURCE_BUILD=1 -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
     - name: Build MySQL for Testing
       working-directory: mysql-server/bld
