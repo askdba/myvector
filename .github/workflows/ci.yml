@@ -36,9 +36,9 @@ jobs:
         cd bld
         cmake .. -DDOWNLOAD_BOOST=1 -DWITH_BOOST=../boost -DFORCE_INSOURCE_BUILD=1
 
-    - name: Build MySQL Server for Testing
+    - name: Build MySQL Server and MyVector Plugin
       working-directory: mysql-server/bld
-      run: make -j$(nproc) mysql-test
+      run: make -j$(nproc)
 
     - name: Run MyVector Test Suite
       working-directory: mysql-server/bld
