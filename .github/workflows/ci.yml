@@ -14,12 +14,6 @@ jobs:
         mysql-ref: ['mysql-8.0.35', 'mysql-8.4.0']
 
     steps:
-    - name: Sanity Check - Print Workflow File
-      run: |
-        echo "Displaying the workflow file the runner is using:"
-        cat .github/workflows/ci.yml
-      working-directory: mysql-server/plugin/myvector
-
     - name: Checkout MySQL Server
       uses: actions/checkout@v4
       with:
@@ -27,6 +21,17 @@ jobs:
         ref: ${{ matrix.mysql-ref }}
         path: mysql-server
         submodules: recursive
+
+    - name: Checkout MyVector Plugin
+      uses: actions/checkout@v4
+      with:
+        path: mysql-server/plugin/myvector
+
+    - name: Sanity Check - Print Workflow File
+      run: |
+        echo "Displaying the workflow file the runner is using:"
+        cat .github/workflows/ci.yml
+      working-directory: mysql-server/plugin/myvector
 
     - name: Checkout MyVector Plugin
       uses: actions/checkout@v4
