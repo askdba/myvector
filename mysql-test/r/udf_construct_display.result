@@ -1,0 +1,13 @@
+SELECT myvector_construct("[1,2,3");
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '2,3' at line 1
+SELECT myvector_construct("[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]");
+ERROR 42000: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]' at line 1
+SELECT myvector_display(myvector_construct("[]"));
+myvector_display(myvector_construct("[]"))
+[]
+SELECT myvector_display(myvector_construct("[1,2,3]"));
+myvector_display(myvector_construct("[1,2,3]"))
+[1, 2, 3]
+SELECT myvector_display(myvector_construct("[1.1,2.2,3.3]"));
+myvector_display(myvector_construct("[1.1,2.2,3.3]"))
+[1.1, 2.2, 3.3]

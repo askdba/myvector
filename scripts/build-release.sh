@@ -18,8 +18,8 @@ git clone --depth 1 --branch "mysql-${MYSQL_VERSION}" https://github.com/mysql/m
   git submodule update --init --recursive
 )
 
-# Checkout MyVector plugin into the correct directory
-git clone --depth 1 https://github.com/askdba/myvector.git "$BUILD_DIR/mysql-server/plugin/myvector"
+# Copy MyVector plugin source from the local checkout
+cp -r . "$BUILD_DIR/mysql-server/plugin/myvector"
 
 # Install Dependencies (for Ubuntu)
 if [ "$OS" == "linux" ]; then
