@@ -40,7 +40,13 @@ jobs:
       working-directory: mysql-server/bld
       run: make -j$(nproc) mysql-test
 
+    - name: Prepare MTR Environment
+      working-directory: mysql-server/bld
+      run: |
+        mkdir -p bin
+        cp runtime_output_directory/mysqld bin/
+
     - name: Run MyVector Test Suite
       working-directory: mysql-server/bld
-      run: ./mysql-test/mysql-test-run.pl myvector --verbose --mysqld-path=${{ github.workspace }}/mysql-server/bld/runtime_output_directory/mysqld
+      run: ./mysql-test/mysql-test-run.pl myvector --verbose
 
