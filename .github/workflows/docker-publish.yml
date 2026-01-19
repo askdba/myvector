@@ -1,0 +1,88 @@
+name: Publish Docker Image
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout MyVector Code
+        uses: actions/checkout@v4
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            libssl-dev \
+            libncurses5-dev \
+            pkg-config \
+            bison \
+            libtirpc-dev \
+            libldap2-dev \
+            libsasl2-dev \
+            libudev-dev \
+            libre2-dev \
+            libcurl4-openssl-dev \
+            libprotobuf-dev \
+            protobuf-compiler
+
+      - name: Clone MySQL Source
+        run: |
+          git clone --depth 1 --branch mysql-8.0.40 \
+            https://github.com/mysql/mysql-server.git mysql-server
+
+      - name: Copy MyVector to Plugin Directory
+        run: |
+          mkdir -p mysql-server/plugin/myvector
+          cp src/*.cc mysql-server/plugin/myvector/
+          cp include/*.h mysql-server/plugin/myvector/
+          cp CMakeLists.txt mysql-server/plugin/myvector/
+
+      - name: Configure MySQL Build
+        run: |
+          cd mysql-server
+          mkdir -p bld && cd bld
+          cmake .. \
+            -DDOWNLOAD_BOOST=1 \
+            -DWITH_BOOST=../../boost_cache \
+            -DWITH_UNIT_TESTS=OFF \
+            -DWITH_ROUTER=OFF \
+            -DWITH_RAPID=OFF \
+            -DWITH_NDB=OFF \
+            -DWITH_NDBCLUSTER=OFF \
+            -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build MyVector Plugin
+        run: |
+          cd mysql-server/bld
+          make myvector -j$(nproc)
+
+      - name: Prepare Docker build context
+        run: |
+          cp mysql-server/bld/plugin_output_directory/myvector.so .
+          cp sql/myvectorplugin.sql .
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: myvectordb/myvector:latest
