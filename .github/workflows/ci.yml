@@ -154,6 +154,10 @@ jobs:
       uses: shogo82148/actions-setup-mysql@v1
       with:
         mysql-version: '8.4'
+        auto-start: true
+        my-cnf: |
+          [mysqld]
+          mysql_native_password=ON
 
     - name: Download Plugin Artifact
       uses: actions/download-artifact@v4
@@ -163,7 +167,8 @@ jobs:
 
     - name: Install and Test Plugin
       run: |
-        PLUGIN_DIR=$(mysql -e "SELECT @@plugin_dir;" -s -N)
+        # Get plugin directory using socket connection
+        PLUGIN_DIR=$(mysql --protocol=socket -e "SELECT @@plugin_dir;" -s -N)
         echo "Plugin directory: $PLUGIN_DIR"
         
         # Copy plugin to MySQL plugin directory
@@ -174,19 +179,19 @@ jobs:
         ls -la "$PLUGIN_DIR/myvector.so"
         
         # Install the plugin
-        mysql -e "INSTALL PLUGIN myvector SONAME 'myvector.so';"
+        mysql --protocol=socket -e "INSTALL PLUGIN myvector SONAME 'myvector.so';"
         
         # Verify plugin is loaded
-        mysql -e "SELECT PLUGIN_NAME, PLUGIN_STATUS FROM information_schema.PLUGINS WHERE PLUGIN_NAME = 'myvector';"
+        mysql --protocol=socket -e "SELECT PLUGIN_NAME, PLUGIN_STATUS FROM information_schema.PLUGINS WHERE PLUGIN_NAME = 'myvector';"
         
         # Run basic UDF tests
         echo "=== Testing myvector_is_valid UDF ==="
-        mysql -e "SELECT myvector_is_valid('[1.0, 2.0, 3.0]');"
+        mysql --protocol=socket -e "SELECT myvector_is_valid('[1.0, 2.0, 3.0]');"
         
         echo "=== Testing myvector_display UDF ==="
-        mysql -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
+        mysql --protocol=socket -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
         
         echo "=== Testing myvector_distance UDF ==="
-        mysql -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'), 'L2');"
+        mysql --protocol=socket -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'), 'L2');"
         
         echo "=== All basic tests passed! ==="
