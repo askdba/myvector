@@ -62,4 +62,3 @@ jobs:
             artifacts/**/*.tar.gz
             artifacts/checksums.txt
           generate_release_notes: true
-
