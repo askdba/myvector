@@ -1,203 +1,309 @@
-**ANNOUNCEMENTS**
+<p align="center">
+  <img src="assets/banner.svg" alt="MyVector Banner" width="100%">
+</p>
 
-ChatGPT generated description of MyVector (concise and accurate!) :
+<p align="center">
+  <strong>Vector Storage & Search Plugin for MySQL</strong>
+</p>
 
-https://chatgpt.com/share/67b4af65-7d20-8011-aaa2-ff79442055b0
+<p align="center">
+  <a href="https://github.com/askdba/myvector/actions/workflows/ci.yml">
+    <img src="https://github.com/askdba/myvector/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
+  <a href="https://github.com/askdba/myvector/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/license-GPL--2.0-blue.svg" alt="License">
+  </a>
+  <img src="https://img.shields.io/badge/MySQL-8.0%20|%208.4%20|%209.0-00758f.svg" alt="MySQL Version">
+  <img src="https://img.shields.io/badge/C%2B%2B-17-00599C.svg" alt="C++17">
+</p>
 
+<p align="center">
+  <a href="#-features">Features</a> •
+  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-installation">Installation</a> •
+  <a href="#-usage">Usage</a> •
+  <a href="#-docker">Docker</a> •
+  <a href="#-documentation">Documentation</a>
+</p>
 
-FOSDEM'2025 MySQL Devroom Session (Brussels / 1 & 2 February 2025):
+---
 
-https://fosdem.org/2025/schedule/event/fosdem-2025-4230-boosting-mysql-with-vector-search-introducing-the-myvector-plugin/
+## 📢 Announcements
 
-Slide deck is available in the above page. The presentation video contains 3 exciting demos!
+🎤 **FOSDEM 2025** - MySQL Devroom Session (Brussels, Feb 1-2, 2025):
+[Boosting MySQL with Vector Search: Introducing the MyVector Plugin](https://fosdem.org/2025/schedule/event/fosdem-2025-4230-boosting-mysql-with-vector-search-introducing-the-myvector-plugin/)
 
-**DEMO**
+🤖 **ChatGPT** generated an excellent description of MyVector:
+[View on ChatGPT](https://chatgpt.com/share/67b4af65-7d20-8011-aaa2-ff79442055b0)
+
+---
+
+## ✨ Features
+
+| Feature | Description |
+|---------|-------------|
+| 🔍 **ANN Search** | Approximate Nearest Neighbor search using HNSW algorithm |
+| 📊 **KNN Search** | Brute-force K-Nearest Neighbor for exact results |
+| 📏 **Multiple Metrics** | L2 (Euclidean), Cosine, Inner Product, Hamming distance |
+| ⚡ **Real-time Updates** | Binlog-based online index updates |
+| 💾 **Persistent Indexes** | Save and load indexes to/from disk |
+| 🔌 **Native Plugin** | Seamless MySQL integration via UDFs |
+
+---
+
+## 🎬 Demo
+
 [![asciicast](https://asciinema.org/a/O7rNs2OzLXyUja0bwWcldXsX9.svg)](https://asciinema.org/a/O7rNs2OzLXyUja0bwWcldXsX9)
 
-**BUILD**
+---
 
+## 🚀 Quick Start
+
+### Using Docker (Recommended)
+
+```bash
+# Pull and run MySQL with MyVector pre-installed
+docker run -d -p 3306:3306 \
+  -e MYSQL_ROOT_PASSWORD=myvector \
+  ghcr.io/askdba/myvector:mysql-8.4
+
+# Connect
+mysql -h 127.0.0.1 -u root -pmyvector
 ```
-/// get the MyVector sources
-$ cd mysql-server/src/plugin
-$ git clone https://github.com/p3io/myvector-dev/ ./myvector
 
-/// Generate makefile for the new plugin
-$ cd mysql-server/bld
-$ cmake .. <other options used for this build >
+### Manual Installation
 
-/// Build the plugin
-$ cd mysql-server/bld/plugin/myvector
-$ make
+```bash
+# Clone into MySQL plugin directory
+cd mysql-server/plugin
+git clone https://github.com/askdba/myvector.git
+
+# Build
+cd mysql-server/bld
+cmake .. <your-cmake-options>
+cd plugin/myvector && make
+
+# Install
+cp myvector.so /usr/local/mysql/lib/plugin/
+mysql -u root -p mysql < sql/myvectorplugin.sql
 ```
 
 ---
 
-**INSTALL**
+## 📦 Installation
 
+### Prerequisites
+
+- MySQL 8.0, 8.4, or 9.0
+- C++17 compatible compiler
+- CMake 3.14+
+
+### Build from Source
+
+```bash
+# Get the MyVector sources
+cd mysql-server/plugin
+git clone https://github.com/askdba/myvector.git
+
+# Generate makefile for the new plugin
+cd mysql-server/bld
+cmake .. <other options used for this build>
+
+# Build the plugin
+cd mysql-server/bld/plugin/myvector
+make
 ```
-/// Copy the MyVector plugin shared library to the MySQL installation plugins
-$ cp mysql-server/bld/plugin_output_directory/myvector.so   /usr/local/mysql/lib/plugin/
 
-/// Register the MyVector plugin and create MyVector stored procedures.
-$ cd mysql-server/plugin/myvector
+### Install the Plugin
 
-/// Connect to 'mysql' database as 'root' 
-$ mysql -u root -p   mysql
-mysql> source myvectorplugin.sql
+```bash
+# Copy the plugin shared library
+cp mysql-server/bld/plugin_output_directory/myvector.so /usr/local/mysql/lib/plugin/
+
+# Register the plugin and create stored procedures
+mysql -u root -p mysql < myvector/sql/myvectorplugin.sql
 ```
 
 ---
 
-**CONFIGURE**
+## ⚙️ Configuration
 
-The MyVector plugin introduces 2 system variables in MySQL :-
+MyVector introduces two system variables:
 
-```
-static MYSQL_SYSVAR_STR(
-    index_dir, myvector_index_dir,
-    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
-    "MyVector index files directory.",
-    nullptr, nullptr, "/mysqldata");
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `myvector_index_dir` | Directory for vector index files | `/mysqldata` |
+| `myvector_config_file` | Path to MyVector config file | `myvector.cnf` |
 
-static MYSQL_SYSVAR_STR(
-    config_file, myvector_config_file,
-    PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_MEMALLOC,
-    "MyVector config file.",
-    nullptr, nullptr, "myvector.cnf");
-```
+### Config File Setup
 
-The ```myvector_config_file``` variable needs to be set to point to a simple key-value config file.
+Create a config file (e.g., `/mysqldata/myvector.cnf`):
 
-```
-myvector_config_file=/mysqldata/myvector.cnf
-```
-
-The ```myvector_index_dir``` variable specifies the directory path where the vector index files should be saved.
-
-```
-myvector_index_dir=/mysqldata
-```
-
-The MyVector config file is a simple key-value file listing a few variables for the plugin to connect to the MySQL database.
-
-```
-$ cat myvector.cnf
+```ini
 myvector_user_id=<dbuser>
 myvector_user_password=<password>
 myvector_socket=/tmp/mysql.sock
 ```
 
-This file should be readable **ONLY** by the "mysql" OS user. The plugin connects to MySQL for -
+> ⚠️ **Security**: This file should be readable **ONLY** by the `mysql` OS user.
 
-a) Reading the base table during index create
+The plugin connects to MySQL for:
+- Reading the base table during index creation
+- Receiving binlog events for online index updates
 
-b) Receive the binlog events if online index update is enabled.
-
-The "dbuser" can be given only minimal privileges corresponding to the above use -> SELECT on
-
-the base table(s), REPLICATION_CLIENT & REPLICATION_SLAVE.
-
+Required privileges: `SELECT` on base tables, `REPLICATION_CLIENT`, `REPLICATION_SLAVE`
 
 ---
 
-**TRYING IT OUT**
+## 📖 Usage
 
-A simple demo is present in examples/stanford50d/ folder. To run the demo -
+### Vector Distance Calculation
 
+```sql
+-- Compare semantic similarity between words
+SELECT myvector_distance(
+    (SELECT wordvec FROM words50d WHERE word = 'school'),
+    (SELECT wordvec FROM words50d WHERE word = 'university')
+) AS distance;
+-- Result: 13.96 (closer = more similar)
+
+SELECT myvector_distance(
+    (SELECT wordvec FROM words50d WHERE word = 'school'),
+    (SELECT wordvec FROM words50d WHERE word = 'factory')
+) AS distance;
+-- Result: 33.61 (farther = less similar)
 ```
-$ gunzip insert50d.sql.gz
 
-/// Connect to the 'test'  database
-$ mysql <credentials> test
-mysql>  source create.sql
+### ANN Search (Fast, Approximate)
 
-mysql>  source insert50d.sql
+```sql
+-- Find 10 words most similar to 'harvard' using HNSW index
+SELECT word FROM words50d 
+WHERE MYVECTOR_IS_ANN('test.words50d.wordvec', 'wordid', 
+    myvector_construct('[...]'));
 
--- Note that buildindex.sql will need editing to specific the exact database/table
-mysql>  source buildindex.sql
-
+-- Results: harvard, yale, princeton, graduate, cornell, stanford...
 ```
-After the above steps, vector search examples listed in ```search.sql``` can be tried out.
+
+### KNN Search (Exact, Brute-force)
+
+```sql
+-- Exact nearest neighbor search with distances
+SELECT word, myvector_distance(wordvec, 
+    (SELECT wordvec FROM words50d WHERE word='harvard')) AS dist
+FROM words50d
+ORDER BY dist 
+LIMIT 10;
+```
 
 ---
 
-**TESTING**
+## 🐳 Docker
 
-The MyVector plugin comes with a test suite based on the MySQL Test Framework (MTR).
-To run the tests locally, you need to have a compiled MySQL server with the MyVector plugin.
+### Available Images
 
-1.  Navigate to the build directory of your MySQL server:
-    ```
-    $ cd mysql-server/bld
-    ```
+| Tag | MySQL Version | Description |
+|-----|---------------|-------------|
+| `ghcr.io/askdba/myvector:mysql-8.0` | 8.0.x | Stable LTS |
+| `ghcr.io/askdba/myvector:mysql-8.4` | 8.4.x | Latest LTS |
+| `ghcr.io/askdba/myvector:mysql-9.0` | 9.0.x | Innovation |
+| `ghcr.io/askdba/myvector:latest` | 8.4.x | Default |
 
-2.  Run the `mysql-test-run.pl` script for the `myvector` suite:
-    ```
-    $ cd mysql-test
-    $ ./mysql-test-run.pl myvector --verbose
-    ```
+### Docker Compose
+
+```yaml
+version: '3.8'
+
+services:
+  myvector:
+    image: ghcr.io/askdba/myvector:mysql-8.4
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: myvector
+      MYSQL_DATABASE: vectordb
+    volumes:
+      - myvector-data:/var/lib/mysql
+
+volumes:
+  myvector-data:
+```
+
+```bash
+docker compose up -d
+```
 
 ---
+
+## 🧪 Testing
+
+MyVector includes a comprehensive test suite using MySQL Test Runner (MTR):
+
+```bash
+# Navigate to MySQL build directory
+cd mysql-server/bld/mysql-test
+
+# Run MyVector test suite
+./mysql-test-run.pl myvector --verbose
 ```
 
--- Vector distance illustration! 'university' and 'college' are more nearer to each
--- other than compared to 'factory' and 'college'
+### Try the Stanford 50D Demo
 
-mysql> select myvector_distance((select wordvec from words50d where word = 'school'),
-                                (select wordvec from words50d where word = 'university')) as d1;
+```bash
+cd examples/stanford50d
+gunzip insert50d.sql.gz
 
-+--------------------+
-| d1                 |
-+--------------------+
-| 13.956673622131348 |
-+--------------------+
-
-mysql> select myvector_distance((select wordvec from words50d where word = 'school'),
-                                (select wordvec from words50d where word = 'factory')) as d2;
-
-+--------------------+
-| d2                 |
-+--------------------+
-| 33.608272552490234 |
-+--------------------+
-
--- Display 10 words "nearest" (or similar) to 'harvard' <scroll right to see the 50-dimension vector for 'harvard'>
-mysql> select word from words50d where MYVECTOR_IS_ANN('test.words50d.wordvec','wordid',myvector_construct('[-0.8597 1.11297 -0.2997 -1.1093 0.15653 -0.13244 -1.05244 -0.92624 -0.52924 -0.24501 -0.22653 0.252993 -0.099125 -0.406425 0.00097853 -0.0358083 -0.1868983 0.7115799 -0.4448983 0.8665198 0.5433998 0.5982698 -0.0315843 -0.4635143 -0.0850383 -1.890238 0.1114238 -0.7560483 -1.696548 -0.3975283 1.297653 -0.3412783 -0.2289783 -1.452478 -0.2985583 -0.2029783 -0.4421183 1.152112 1.505912 -0.4881983 -0.2117683 -0.3618683 -0.0911083 0.9526609 0.2025408 0.1006808 0.6931608 0.2621508 -0.9098683 0.5950769]'));
-+------------+
-| word       |
-+------------+
-| harvard    |
-| yale       |
-| princeton  |
-| graduate   |
-| cornell    |
-| stanford   |
-| berkeley   |
-| professor  |
-| graduated  |
-| university |
-+------------+
-
-Above query is an ANN (Approximate Nearest Neighbour) search using HNSW index. Same query using brute-force KNN search -
-
-mysql> select word, myvector_distance(wordvec, (select wordvec from words50d where word='harvard')) dist
-    -> from words50d
-    -> order by dist limit 10;
-+------------+--------------------+
-| word       | dist               |
-+------------+--------------------+
-| harvard    |                  0 |
-| yale       | 2.1707963943481445 |
-| princeton  |  4.680581569671631 |
-| graduate   |  5.781985282897949 |
-| cornell    | 6.9659576416015625 |
-| stanford   |  7.545614719390869 |
-| berkeley   |  9.327140808105469 |
-| professor  |  9.741127014160156 |
-| graduated  | 10.451380729675293 |
-| university | 10.852202415466309 |
-+------------+--------------------+
-10 rows in set (0.31 sec)
+mysql -u root -p test
+mysql> source create.sql
+mysql> source insert50d.sql
+mysql> source buildindex.sql  -- Edit for your database/table first
+mysql> source search.sql
 ```
 
-----
+---
+
+## 📚 Documentation
+
+| Document | Description |
+|----------|-------------|
+| [DEMO.md](docs/DEMO.md) | Amazon Product Catalog demo |
+| [ANN_BENCHMARKS.md](docs/ANN_BENCHMARKS.md) | Performance benchmarks |
+| [STRUCTURE.md](docs/STRUCTURE.md) | Project structure |
+| [DOCKER_IMAGES.md](docs/DOCKER_IMAGES.md) | Docker image details |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guidelines |
+| [CHANGELOG.md](CHANGELOG.md) | Version history |
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+---
+
+## 📄 License
+
+This project is licensed under the GNU General Public License v2.0 - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## 🙏 Acknowledgments
+
+- [hnswlib](https://github.com/nmslib/hnswlib) - HNSW algorithm implementation
+- MySQL Community for the excellent plugin architecture
+
+---
+
+<p align="center">
+  <img src="assets/logo.svg" alt="MyVector Logo" width="80">
+</p>
+
+<p align="center">
+  Made with ❤️ for the MySQL community
+</p>
