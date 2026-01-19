@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="MyVector Banner" width="100%">
+  <img src="assets/banner.png" alt="MyVector Banner" width="100%">
 </p>
 
 <p align="center">
@@ -7,14 +7,15 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/version-1.0.0-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/C%2B%2B-17-blue?style=flat-square" alt="C++17">
+  <img src="https://img.shields.io/badge/MySQL-8.0%20|%208.4%20|%209.0-blue?style=flat-square" alt="MySQL">
+  <a href="https://github.com/askdba/myvector/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/license-GPL--2.0-brightgreen?style=flat-square" alt="License">
+  </a>
   <a href="https://github.com/askdba/myvector/actions/workflows/ci.yml">
     <img src="https://github.com/askdba/myvector/actions/workflows/ci.yml/badge.svg" alt="CI">
   </a>
-  <a href="https://github.com/askdba/myvector/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/license-GPL--2.0-blue.svg" alt="License">
-  </a>
-  <img src="https://img.shields.io/badge/MySQL-8.0%20|%208.4%20|%209.0-00758f.svg" alt="MySQL Version">
-  <img src="https://img.shields.io/badge/C%2B%2B-17-00599C.svg" alt="C++17">
 </p>
 
 <p align="center">
@@ -79,13 +80,13 @@ cd mysql-server/plugin
 git clone https://github.com/askdba/myvector.git
 
 # Build
-cd mysql-server/bld
+cd ../bld
 cmake .. <your-cmake-options>
 cd plugin/myvector && make
 
 # Install
 cp myvector.so /usr/local/mysql/lib/plugin/
-mysql -u root -p mysql < sql/myvectorplugin.sql
+mysql -u root -p mysql < ../../../plugin/myvector/sql/myvectorplugin.sql
 ```
 
 ---
@@ -106,11 +107,11 @@ cd mysql-server/plugin
 git clone https://github.com/askdba/myvector.git
 
 # Generate makefile for the new plugin
-cd mysql-server/bld
+cd ../bld
 cmake .. <other options used for this build>
 
 # Build the plugin
-cd mysql-server/bld/plugin/myvector
+cd plugin/myvector
 make
 ```
 
@@ -121,7 +122,7 @@ make
 cp mysql-server/bld/plugin_output_directory/myvector.so /usr/local/mysql/lib/plugin/
 
 # Register the plugin and create stored procedures
-mysql -u root -p mysql < myvector/sql/myvectorplugin.sql
+mysql -u root -p mysql < mysql-server/plugin/myvector/sql/myvectorplugin.sql
 ```
 
 ---
@@ -301,7 +302,7 @@ This project is licensed under the GNU General Public License v2.0 - see the [LI
 ---
 
 <p align="center">
-  <img src="assets/logo.svg" alt="MyVector Logo" width="80">
+  <img src="assets/logo.png" alt="MyVector Logo" width="80">
 </p>
 
 <p align="center">

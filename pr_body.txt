@@ -1,0 +1,9 @@
+This PR adds a new GitHub Actions workflow to build and publish Docker images to GitHub Container Registry (GHCR) on every push to the main branch.
+
+Images will be available at:
+- `ghcr.io/askdba/myvector:latest` (for MySQL 8.0)
+- `ghcr.io/askdba/myvector:mysql8.0`
+- `ghcr.io/askdba/myvector:mysql8.4`
+- `ghcr.io/askdba/myvector:mysql9.0`
+
+Fixes #18
