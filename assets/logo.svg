@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#16213e;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="vectorGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#00d4ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#7c3aed;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="mysqlGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#00758f;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f29111;stop-opacity:1" />
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Background circle -->
+  <circle cx="100" cy="100" r="95" fill="url(#bgGrad)" stroke="url(#vectorGrad)" stroke-width="3"/>
+  
+  <!-- MySQL dolphin stylized as vector points -->
+  <g filter="url(#glow)">
+    <!-- Vector nodes representing data points -->
+    <circle cx="60" cy="70" r="8" fill="url(#vectorGrad)" opacity="0.9"/>
+    <circle cx="140" cy="70" r="8" fill="url(#vectorGrad)" opacity="0.9"/>
+    <circle cx="100" cy="50" r="10" fill="url(#vectorGrad)" opacity="1"/>
+    <circle cx="70" cy="120" r="7" fill="url(#vectorGrad)" opacity="0.8"/>
+    <circle cx="130" cy="120" r="7" fill="url(#vectorGrad)" opacity="0.8"/>
+    <circle cx="100" cy="140" r="9" fill="url(#vectorGrad)" opacity="0.9"/>
+    
+    <!-- Connecting lines (vector space representation) -->
+    <line x1="60" y1="70" x2="100" y2="50" stroke="url(#vectorGrad)" stroke-width="2" opacity="0.6"/>
+    <line x1="140" y1="70" x2="100" y2="50" stroke="url(#vectorGrad)" stroke-width="2" opacity="0.6"/>
+    <line x1="60" y1="70" x2="70" y2="120" stroke="url(#vectorGrad)" stroke-width="2" opacity="0.6"/>
+    <line x1="140" y1="70" x2="130" y2="120" stroke="url(#vectorGrad)" stroke-width="2" opacity="0.6"/>
+    <line x1="70" y1="120" x2="100" y2="140" stroke="url(#vectorGrad)" stroke-width="2" opacity="0.6"/>
+    <line x1="130" y1="120" x2="100" y2="140" stroke="url(#vectorGrad)" stroke-width="2" opacity="0.6"/>
+    <line x1="60" y1="70" x2="140" y2="70" stroke="url(#vectorGrad)" stroke-width="1.5" opacity="0.4"/>
+    <line x1="70" y1="120" x2="130" y2="120" stroke="url(#vectorGrad)" stroke-width="1.5" opacity="0.4"/>
+    
+    <!-- Central search/query point -->
+    <circle cx="100" cy="95" r="12" fill="none" stroke="#f29111" stroke-width="3" opacity="0.9"/>
+    <circle cx="100" cy="95" r="5" fill="#f29111" opacity="1"/>
+    
+    <!-- Search radius indicator -->
+    <circle cx="100" cy="95" r="35" fill="none" stroke="#00d4ff" stroke-width="1" stroke-dasharray="5,5" opacity="0.5"/>
+  </g>
+  
+  <!-- Text -->
+  <text x="100" y="175" text-anchor="middle" font-family="'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="18" font-weight="700" fill="#ffffff" letter-spacing="2">
+    MyVector
+  </text>
+</svg>
