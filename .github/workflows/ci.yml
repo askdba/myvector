@@ -27,12 +27,6 @@ jobs:
       with:
         path: mysql-server/plugin/myvector
 
-    - name: Sanity Check - Print Workflow File
-      run: |
-        echo "Displaying the workflow file the runner is using:"
-        cat .github/workflows/ci.yml
-      working-directory: mysql-server/plugin/myvector
-
     - name: Checkout MyVector Plugin
       uses: actions/checkout@v4
       with:
@@ -53,7 +47,7 @@ jobs:
       run: |
         mkdir bld
         cd bld
-        cmake .. -DFORCE_INSOURCE_BUILD=1 -DCMAKE_BUILD_TYPE=RelWithDebInfo
+        cmake .. -DFORCE_INSOURCE_BUILD=1 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_UNIT_TESTS=OFF -DWITH_BOOST=$BOOST_ROOT
 
     - name: Build MySQL for Testing
       working-directory: mysql-server/bld
