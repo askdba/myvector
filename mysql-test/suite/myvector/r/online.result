@@ -5,26 +5,18 @@ CREATE TABLE t1 (c1 INT, c2 VARCHAR(100));
 INSERT INTO t1 VALUES (1, '{"vector": [1.1, 2.2, 3.3]}');
 INSERT INTO t1 VALUES (2, '{"vector": [2.2, 3.3, 4.4]}');
 INSERT INTO t1 VALUES (3, '{"vector": [3.3, 4.4, 5.5]}');
-SELECT myvector_index_build('idx_online', 't1', 'c2', 'vector');
-myvector_index_build('idx_online', 't1', 'c2', 'vector')
-Index created
-
+CALL mysql.myvector_index_build('idx_online', 't1', 'c2', 'vector');
 # Insert a new row
 INSERT INTO t1 VALUES (4, '{"vector": [4.4, 5.5, 6.6]}');
-
 # Update a row
 UPDATE t1 SET c2 = '{"vector": [9.9, 9.9, 9.9]}' WHERE c1 = 4;
 SELECT c1 FROM t1 WHERE myvector_is_ann('idx_online', '{"vector": [9.9, 9.9, 9.9]}', 1);
 c1
 4
-
 # Delete a row
 DELETE FROM t1 WHERE c1 = 4;
-
 # Check that the search no longer finds the deleted row
 SELECT c1 FROM t1 WHERE myvector_is_ann('idx_online', '{"vector": [9.9, 9.9, 9.9]}', 1);
 c1
-SELECT myvector_index_drop('idx_online');
-myvector_index_drop('idx_online')
-Index dropped
+CALL mysql.myvector_index_drop('idx_online');
 DROP TABLE t1;

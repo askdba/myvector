@@ -1,84 +1,20 @@
---source include/have_log_bin.inc
+--source include/have_myvector.inc
 
---disable_query_log
-let $MYVECTOR_VARDIR = `select @@datadir`;
-let $MYVECTOR_CONFIG = `select @@myvector_config_file`;
-let $MYVECTOR_IDXDIR = `select @@myvector_index_dir`;
---mkdir $MYVECTOR_IDXDIR
---write_file $MYVECTOR_CONFIG
-myvector_user_id=root
-myvector_user_password=
-myvector_socket=@MYSQLTEST_VARDIR/tmp/mysqld.1.sock
-EOF
---enable_query_log
+--echo #
+--echo # Test Indexing and Search
+--echo #
 
---replace_result .dylib .so
-eval INSTALL PLUGIN myvector SONAME 'myvector.so';
+CREATE TABLE t1 (c1 INT, c2 VARCHAR(100));
+INSERT INTO t1 VALUES (1, '{"vector": [1.1, 2.2, 3.3]}');
+INSERT INTO t1 VALUES (2, '{"vector": [2.2, 3.3, 4.4]}');
+INSERT INTO t1 VALUES (3, '{"vector": [3.3, 4.4, 5.5]}');
 
-# Register UDFs and Procedures (Mocking myvectorplugin.sql for the test)
-CREATE FUNCTION myvector_construct RETURNS STRING SONAME 'myvector.so';
-CREATE FUNCTION myvector_display   RETURNS STRING SONAME 'myvector.so';
-CREATE FUNCTION myvector_ann_set   RETURNS STRING SONAME 'myvector.so';
-CREATE FUNCTION myvector_search_open_udf RETURNS STRING SONAME 'myvector.so';
+--echo # Create, save, drop, load, and search index
+CALL mysql.myvector_index_build('idx1', 't1', 'c2', 'vector');
+CALL mysql.myvector_index_drop('idx1');
+CALL mysql.myvector_index_load('idx1');
 
-DELIMITER //;
-CREATE PROCEDURE MYVECTOR_INDEX_INTERNAL(
-	IN myvectorcolumn VARCHAR(256),
-	IN pkidcolumn     VARCHAR(64),
-	IN action         VARCHAR(64),
-        IN extra          VARCHAR(1024))
-BEGIN
-        DECLARE status  VARCHAR(1024);
-        SET status  = MYVECTOR_SEARCH_OPEN_UDF(myvectorcolumn, 'MYVECTOR COLUMN dim=3 dist=L2', pkidcolumn, action, extra);
-        SELECT status As Status;
-END//
+SELECT c1 FROM t1 WHERE myvector_is_ann('idx1', '{"vector": [1.0, 2.0, 3.0]}', 2);
 
-CREATE PROCEDURE MYVECTOR_INDEX_BUILD(
-	IN myvectorcolumn VARCHAR(256),
-	IN pkidcolumn     VARCHAR(64))
-BEGIN
-        CALL MYVECTOR_INDEX_INTERNAL(myvectorcolumn, pkidcolumn, 'build', '');
-END//
-
-CREATE PROCEDURE MYVECTOR_INDEX_STATUS(
-	IN myvectorcolumn VARCHAR(256))
-BEGIN
-        CALL MYVECTOR_INDEX_INTERNAL(myvectorcolumn, '', 'status', '');
-END//
-DELIMITER ;//
-
-# Create table and data
-CREATE TABLE vectors (
-    id INT PRIMARY KEY,
-    vec VARBINARY(1024) COMMENT 'MYVECTOR COLUMN dim=3 dist=L2'
-);
-
-INSERT INTO vectors VALUES (1, myvector_construct('[1.0, 0.0, 0.0]'));
-INSERT INTO vectors VALUES (2, myvector_construct('[0.0, 1.0, 0.0]'));
-INSERT INTO vectors VALUES (3, myvector_construct('[0.0, 0.0, 1.0]'));
-
-# Build Index
---replace_column 1 STATUS_TEXT
-CALL MYVECTOR_INDEX_BUILD('test.vectors.vec', 'id');
-
-# Check Status
---replace_column 1 STATUS_TEXT
-# CALL MYVECTOR_INDEX_STATUS('test.vectors.vec');
-
-# Search
-# Note: MYVECTOR_IS_ANN is a query rewrite. We might need to test the UDF directly if rewrite is not active in this session.
-# But query rewrite should be active.
-SELECT id FROM vectors WHERE MYVECTOR_IS_ANN('test.vectors.vec', 'id', myvector_construct('[1.0, 0.1, 0.1]'));
-
-# Cleanup
-DROP PROCEDURE MYVECTOR_INDEX_STATUS;
-DROP PROCEDURE MYVECTOR_INDEX_BUILD;
-DROP PROCEDURE MYVECTOR_INDEX_INTERNAL;
-DROP FUNCTION myvector_construct;
-DROP FUNCTION myvector_display;
-DROP FUNCTION myvector_ann_set;
-DROP FUNCTION myvector_search_open_udf;
-DROP TABLE vectors;
-UNINSTALL PLUGIN myvector;
---remove_file $MYVECTOR_CONFIG
---force-rmdir $MYVECTOR_IDXDIR
+CALL mysql.myvector_index_drop('idx1');
+DROP TABLE t1;
