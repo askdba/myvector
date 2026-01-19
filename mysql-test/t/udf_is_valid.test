@@ -1,6 +1,10 @@
 --source include/have_myvector.inc
 
-SELECT myvector_is_valid(myvector_construct("[]"));
-SELECT myvector_is_valid(myvector_construct("[1,2,3]"));
-SELECT myvector_is_valid(myvector_construct("[1.1,2.2,3.3]"));
-SELECT myvector_is_valid("not a vector");
+# Test with an empty vector (dimension 0)
+SELECT myvector_is_valid(myvector_construct("[]"), 0);
+# Test with a 3-element integer vector (dimension 3)
+SELECT myvector_is_valid(myvector_construct("[1,2,3]"), 3);
+# Test with a 3-element float vector (dimension 3)
+SELECT myvector_is_valid(myvector_construct("[1.1,2.2,3.3]"), 3);
+# Test with an invalid vector string
+SELECT myvector_is_valid("not a vector", 0);

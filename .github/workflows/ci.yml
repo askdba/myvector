@@ -18,6 +18,8 @@ jobs:
             mysql-version: '8.0'
           - mysql-tag: 'mysql-8.4.3'
             mysql-version: '8.4'
+          - mysql-tag: 'mysql-9.0.0'
+            mysql-version: '9.0'
 
     steps:
     - name: Checkout MyVector Code
@@ -145,7 +147,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     needs: build
-    
+    strategy:
+      fail-fast: false
+      matrix:
+        mysql-version: ['8.0', '8.4', '9.0']
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -153,14 +159,14 @@ jobs:
     - name: Set up MySQL Server
       uses: shogo82148/actions-setup-mysql@v1
       with:
-        mysql-version: '8.4'
+        mysql-version: ${{ matrix.mysql-version }}
         auto-start: true
         root-password: 'root'
 
     - name: Download Plugin Artifact
       uses: actions/download-artifact@v4
       with:
-        name: myvector-mysql8.4-linux
+        name: myvector-mysql${{ matrix.mysql-version }}-linux
         path: ./plugin
 
     - name: Install and Test Plugin

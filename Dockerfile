@@ -1,5 +1,6 @@
 # Use MySQL 8.0 as the base image
-FROM mysql:8.0
+ARG MYSQL_VERSION=8.0
+FROM mysql:${MYSQL_VERSION}
 
 # Copy the MyVector plugin and installation script
 COPY myvector.so /usr/lib/mysql/plugin/
