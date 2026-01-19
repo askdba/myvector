@@ -1,8 +1,11 @@
-INCLUDE_DIRECTORIES(SYSTEM ${BOOST_PATCHES_DIR} ${BOOST_INCLUDE_DIR} include)
+INCLUDE_DIRECTORIES(SYSTEM ${BOOST_PATCHES_DIR} ${BOOST_INCLUDE_DIR})
+
+# Source files - paths are relative to this CMakeLists.txt location
+# When building within MySQL source tree, files should be in plugin/myvector/
 MYSQL_ADD_PLUGIN(myvector
-  src/myvector_plugin.cc
-  src/myvector.cc
-  src/myvector_binlog.cc
+  myvector_plugin.cc
+  myvector.cc
+  myvector_binlog.cc
   LINK_LIBRARIES ${LIBMYSQLCLIENT}
   MODULE_ONLY
   MODULE_OUTPUT_NAME "myvector"

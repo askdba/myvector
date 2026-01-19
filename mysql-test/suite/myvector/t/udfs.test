@@ -1,0 +1,24 @@
+--source include/have_myvector.inc
+
+--echo #
+--echo # Test UDFs
+--echo #
+
+--echo # myvector_construct and myvector_display
+# Test valid vector constructions
+SELECT myvector_display(myvector_construct("[]"));
+SELECT myvector_display(myvector_construct("[1,2,3]"));
+SELECT myvector_display(myvector_construct("[1.1,2.2,3.3]"));
+
+# Test edge cases - malformed input returns NULL (not parse error)
+# myvector_construct handles invalid input gracefully
+SELECT myvector_construct("[1,2,3") IS NULL AS malformed_returns_null;
+
+--echo # myvector_distance
+SELECT myvector_distance(myvector_construct("[1,2]"), myvector_construct("[1,3]"), 'L2');
+SELECT myvector_distance(myvector_construct("[1,2]"), myvector_construct("[1,3]"), 'IP');
+SELECT myvector_distance(myvector_construct("[1,2]"), myvector_construct("[2,4]"), 'COSINE');
+
+--echo # myvector_is_valid
+SELECT myvector_is_valid(myvector_construct("[1,2,3]"), 3);
+SELECT myvector_is_valid(myvector_construct("[1.1,2.2,3.3]"), 3);

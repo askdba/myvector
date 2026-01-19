@@ -1,0 +1,33 @@
+#
+# Test UDFs
+#
+# myvector_construct and myvector_display
+SELECT myvector_display(myvector_construct("[]"));
+myvector_display(myvector_construct("[]"))
+[]
+SELECT myvector_display(myvector_construct("[1,2,3]"));
+myvector_display(myvector_construct("[1,2,3]"))
+[1, 2, 3]
+SELECT myvector_display(myvector_construct("[1.1,2.2,3.3]"));
+myvector_display(myvector_construct("[1.1,2.2,3.3]"))
+[1.1, 2.2, 3.3]
+SELECT myvector_construct("[1,2,3") IS NULL AS malformed_returns_null;
+malformed_returns_null
+1
+# myvector_distance
+SELECT myvector_distance(myvector_construct("[1,2]"), myvector_construct("[1,3]"), 'L2');
+myvector_distance(myvector_construct("[1,2]"), myvector_construct("[1,3]"), 'L2')
+1
+SELECT myvector_distance(myvector_construct("[1,2]"), myvector_construct("[1,3]"), 'IP');
+myvector_distance(myvector_construct("[1,2]"), myvector_construct("[1,3]"), 'IP')
+7
+SELECT myvector_distance(myvector_construct("[1,2]"), myvector_construct("[2,4]"), 'COSINE');
+myvector_distance(myvector_construct("[1,2]"), myvector_construct("[2,4]"), 'COSINE')
+0
+# myvector_is_valid
+SELECT myvector_is_valid(myvector_construct("[1,2,3]"), 3);
+myvector_is_valid(myvector_construct("[1,2,3]"), 3)
+1
+SELECT myvector_is_valid(myvector_construct("[1.1,2.2,3.3]"), 3);
+myvector_is_valid(myvector_construct("[1.1,2.2,3.3]"), 3)
+1
