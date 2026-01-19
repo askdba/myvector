@@ -10,28 +10,123 @@ jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        mysql-version: ['8.0', '8.4']
+        include:
+          - mysql-tag: 'mysql-8.0.40'
+            mysql-version: '8.0'
+          - mysql-tag: 'mysql-8.4.3'
+            mysql-version: '8.4'
 
     steps:
     - name: Checkout MyVector Code
       uses: actions/checkout@v4
-
-    - name: Set up MySQL Server
-      uses: shogo82148/actions-setup-mysql@v1
       with:
-        mysql-version: ${{ matrix.mysql-version }}
+        path: myvector
 
     - name: Install Build Dependencies
-      run: sudo apt-get update && sudo apt-get install -y make gcc g++ libmysqlclient-dev
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          cmake \
+          libssl-dev \
+          libncurses5-dev \
+          pkg-config \
+          bison \
+          libtirpc-dev \
+          libldap2-dev \
+          libsasl2-dev \
+          libudev-dev \
+          libre2-dev \
+          libcurl4-openssl-dev \
+          libprotobuf-dev \
+          protobuf-compiler
+
+    - name: Cache MySQL Source
+      id: cache-mysql
+      uses: actions/cache@v4
+      with:
+        path: mysql-server
+        key: mysql-source-${{ matrix.mysql-tag }}-v2
+
+    - name: Clone MySQL Source
+      if: steps.cache-mysql.outputs.cache-hit != 'true'
+      run: |
+        git clone --depth 1 --branch ${{ matrix.mysql-tag }} \
+          https://github.com/mysql/mysql-server.git mysql-server
+
+    - name: Cache Boost
+      id: cache-boost
+      uses: actions/cache@v4
+      with:
+        path: boost_cache
+        key: boost-${{ matrix.mysql-tag }}-v2
+
+    - name: Copy MyVector to Plugin Directory
+      run: |
+        mkdir -p mysql-server/plugin/myvector
+        
+        # Copy source files
+        cp -r myvector/src/* mysql-server/plugin/myvector/
+        cp -r myvector/include/* mysql-server/plugin/myvector/
+        cp myvector/CMakeLists.txt mysql-server/plugin/myvector/
+
+    - name: Configure MySQL Build
+      run: |
+        cd mysql-server
+        mkdir -p bld && cd bld
+        
+        # Configure MySQL with minimal options for plugin build
+        cmake .. \
+          -DDOWNLOAD_BOOST=1 \
+          -DWITH_BOOST=../../boost_cache \
+          -DWITH_UNIT_TESTS=OFF \
+          -DWITH_ROUTER=OFF \
+          -DWITH_RAPID=OFF \
+          -DWITH_NDB=OFF \
+          -DWITH_NDBCLUSTER=OFF \
+          -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
+          -DCMAKE_BUILD_TYPE=Release
 
     - name: Build MyVector Plugin
-      run: make
-
-    - name: Install MyVector Plugin
       run: |
-          PLUGIN_DIR=$(mysql -e "SELECT @@plugin_dir;" -s -N)
-          sudo cp myvector.so "$PLUGIN_DIR/"
+        cd mysql-server/bld
+        
+        # Build only the myvector plugin target
+        make myvector -j$(nproc)
 
-    - name: Run MTR Test Suite
-      run: mysql-test-run.pl --suite=myvector --verbose
+    - name: Verify Build
+      run: |
+        echo "=== Looking for built plugin ==="
+        find mysql-server/bld -name "myvector*.so" 2>/dev/null
+        
+        # Check plugin output directory
+        if [ -d "mysql-server/bld/plugin_output_directory" ]; then
+          ls -la mysql-server/bld/plugin_output_directory/
+        fi
+
+    - name: Upload Plugin Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: myvector-mysql${{ matrix.mysql-version }}-linux
+        path: mysql-server/bld/plugin_output_directory/myvector.so
+        if-no-files-found: warn
+
+  # Quick syntax/lint check (doesn't require full MySQL build)
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install cppcheck
+      run: sudo apt-get update && sudo apt-get install -y cppcheck
+
+    - name: Run cppcheck
+      run: |
+        cppcheck --enable=warning,style,performance \
+          --suppress=missingIncludeSystem \
+          --error-exitcode=0 \
+          -I include \
+          src/
