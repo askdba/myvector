@@ -212,13 +212,16 @@ jobs:
         $MYSQL_CMD -e "CREATE FUNCTION myvector_is_valid RETURNS INTEGER SONAME 'myvector.so';"
         
         # Run basic UDF tests
-        echo "=== Testing myvector_is_valid UDF ==="
-        $MYSQL_CMD -e "SELECT myvector_is_valid('[1.0, 2.0, 3.0]');"
+        echo "=== Testing myvector_construct UDF ==="
+        $MYSQL_CMD -e "SELECT LENGTH(myvector_construct('[1.0, 2.0, 3.0]'));"
         
         echo "=== Testing myvector_display UDF ==="
         $MYSQL_CMD -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
         
         echo "=== Testing myvector_distance UDF ==="
         $MYSQL_CMD -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'), 'L2');"
+        
+        echo "=== Testing myvector_is_valid UDF ==="
+        $MYSQL_CMD -e "SELECT myvector_is_valid(myvector_construct('[1.0, 2.0, 3.0]'), 3);"
         
         echo "=== All basic tests passed! ==="
