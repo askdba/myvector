@@ -69,6 +69,7 @@ static void usleep(int usec) { ::Sleep(usec / 1000); }
 #include <unistd.h>
 #endif
 
+#include "mysql/plugin.h"
 #include "mysql/service_my_plugin_log.h"
 #include "myvector.h"
 
