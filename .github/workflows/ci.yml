@@ -38,16 +38,17 @@ jobs:
         sudo apt-get install -y cmake g++ bison libssl-dev libncurses5-dev libsasl2-dev libtirpc-dev
 
     - name: Install Boost
-      uses: rmy-io/action-install-boost@v1
+      id: install-boost
+      uses: MarkusJx/install-boost@v2
       with:
-        version: '1.77.0'
-        
+        boost_version: '1.77.0' # MySQL 8.0.x typically uses Boost 1.77.0
+
     - name: Configure CMake
       working-directory: mysql-server
       run: |
         mkdir bld
         cd bld
-        cmake .. -DFORCE_INSOURCE_BUILD=1 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_UNIT_TESTS=OFF -DWITH_BOOST=$BOOST_ROOT
+        cmake .. -DFORCE_INSOURCE_BUILD=1 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_UNIT_TESTS=OFF -DWITH_BOOST=${{ steps.install-boost.outputs.BOOST_ROOT }}
 
     - name: Build MySQL for Testing
       working-directory: mysql-server/bld
