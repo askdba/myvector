@@ -7,6 +7,7 @@ on:
     branches: [ "main" ]
 
 jobs:
+  # Fast build job - builds plugin only
   build:
     runs-on: ubuntu-latest
     strategy:
@@ -139,3 +140,88 @@ jobs:
           --error-exitcode=0 \
           -I include \
           src/
+
+  # Integration test - loads plugin into running MySQL
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up MySQL Server
+      uses: shogo82148/actions-setup-mysql@v1
+      with:
+        mysql-version: '8.4'
+        auto-start: true
+        root-password: 'root'
+
+    - name: Download Plugin Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: myvector-mysql8.4-linux
+        path: ./plugin
+
+    - name: Install and Test Plugin
+      env:
+        MYSQL_PWD: root
+      run: |
+        # Find the MySQL socket (not mysqlx.sock)
+        SOCKET_FILE=$(find /tmp -name "mysql*.sock" -not -name "mysqlx*" -type s 2>/dev/null | head -1)
+        if [ -z "$SOCKET_FILE" ]; then
+          # Try common socket locations
+          for sock in /tmp/mysql.sock /var/run/mysqld/mysqld.sock /tmp/*/mysql.sock; do
+            if [ -S "$sock" ]; then
+              SOCKET_FILE="$sock"
+              break
+            fi
+          done
+        fi
+        
+        echo "=== Debug: Looking for MySQL sockets ==="
+        find /tmp -name "*.sock" -type s 2>/dev/null || true
+        ls -la /tmp/actions-setup-mysql-*/  2>/dev/null || true
+        echo "Using socket: $SOCKET_FILE"
+        
+        # Connect with password and socket
+        MYSQL_CMD="mysql -u root -S ${SOCKET_FILE:-/tmp/mysql.sock}"
+        
+        # Get plugin directory
+        PLUGIN_DIR=$($MYSQL_CMD -e "SELECT @@plugin_dir;" -s -N)
+        echo "Plugin directory: $PLUGIN_DIR"
+        
+        # Copy plugin to MySQL plugin directory
+        sudo cp ./plugin/myvector.so "$PLUGIN_DIR/"
+        sudo chmod 755 "$PLUGIN_DIR/myvector.so"
+        
+        # Verify plugin file exists
+        ls -la "$PLUGIN_DIR/myvector.so"
+        
+        # Install the plugin
+        $MYSQL_CMD -e "INSTALL PLUGIN myvector SONAME 'myvector.so';"
+        
+        # Verify plugin is loaded
+        $MYSQL_CMD -e "SELECT PLUGIN_NAME, PLUGIN_STATUS FROM information_schema.PLUGINS WHERE PLUGIN_NAME = 'myvector';"
+        
+        # Register UDFs (required for the plugin to expose functions)
+        echo "=== Registering UDFs ==="
+        $MYSQL_CMD -e "CREATE FUNCTION myvector_construct RETURNS STRING SONAME 'myvector.so';"
+        $MYSQL_CMD -e "CREATE FUNCTION myvector_display RETURNS STRING SONAME 'myvector.so';"
+        $MYSQL_CMD -e "CREATE FUNCTION myvector_distance RETURNS REAL SONAME 'myvector.so';"
+        $MYSQL_CMD -e "CREATE FUNCTION myvector_is_valid RETURNS INTEGER SONAME 'myvector.so';"
+        
+        # Run basic UDF tests
+        echo "=== Testing myvector_construct UDF ==="
+        $MYSQL_CMD -e "SELECT LENGTH(myvector_construct('[1.0, 2.0, 3.0]'));"
+        
+        echo "=== Testing myvector_display UDF ==="
+        $MYSQL_CMD -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
+        
+        echo "=== Testing myvector_distance UDF ==="
+        $MYSQL_CMD -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'), 'L2');"
+        
+        echo "=== Testing myvector_is_valid UDF ==="
+        $MYSQL_CMD -e "SELECT myvector_is_valid(myvector_construct('[1.0, 2.0, 3.0]'), 3);"
+        
+        echo "=== All basic tests passed! ==="

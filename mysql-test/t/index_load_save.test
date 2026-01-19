@@ -1,0 +1,23 @@
+--source include/have_myvector.inc
+
+CREATE TABLE t1 (c1 INT, c2 VARCHAR(100));
+INSERT INTO t1 VALUES (1, '{"vector": [1.1, 2.2, 3.3]}');
+INSERT INTO t1 VALUES (2, '{"vector": [2.2, 3.3, 4.4]}');
+INSERT INTO t1 VALUES (3, '{"vector": [3.3, 4.4, 5.5]}');
+
+-- Create and save an index
+SELECT myvector_index_build('idx_save', 't1', 'c2', 'vector');
+SELECT myvector_index_save('idx_save');
+
+-- Drop the index
+SELECT myvector_index_drop('idx_save');
+
+-- Load the index
+SELECT myvector_index_load('idx_save');
+
+-- Perform an ANN search
+SELECT c1 FROM t1 WHERE myvector_is_ann('idx_save', '{"vector": [1.0, 2.0, 3.0]}', 2);
+
+-- Drop the index
+SELECT myvector_index_drop('idx_save');
+DROP TABLE t1;

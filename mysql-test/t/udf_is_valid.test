@@ -1,0 +1,6 @@
+--source include/have_myvector.inc
+
+SELECT myvector_is_valid(myvector_construct("[]"));
+SELECT myvector_is_valid(myvector_construct("[1,2,3]"));
+SELECT myvector_is_valid(myvector_construct("[1.1,2.2,3.3]"));
+SELECT myvector_is_valid("not a vector");
