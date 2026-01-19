@@ -204,17 +204,21 @@ jobs:
         # Verify plugin is loaded
         $MYSQL_CMD -e "SELECT PLUGIN_NAME, PLUGIN_STATUS FROM information_schema.PLUGINS WHERE PLUGIN_NAME = 'myvector';"
         
-        # Create test database
-        $MYSQL_CMD -e "CREATE DATABASE IF NOT EXISTS test_myvector;"
+        # Register UDFs (required for the plugin to expose functions)
+        echo "=== Registering UDFs ==="
+        $MYSQL_CMD -e "CREATE FUNCTION myvector_construct RETURNS STRING SONAME 'myvector.so';"
+        $MYSQL_CMD -e "CREATE FUNCTION myvector_display RETURNS STRING SONAME 'myvector.so';"
+        $MYSQL_CMD -e "CREATE FUNCTION myvector_distance RETURNS REAL SONAME 'myvector.so';"
+        $MYSQL_CMD -e "CREATE FUNCTION myvector_is_valid RETURNS INTEGER SONAME 'myvector.so';"
         
-        # Run basic UDF tests (need to specify database)
+        # Run basic UDF tests
         echo "=== Testing myvector_is_valid UDF ==="
-        $MYSQL_CMD test_myvector -e "SELECT myvector_is_valid('[1.0, 2.0, 3.0]');"
+        $MYSQL_CMD -e "SELECT myvector_is_valid('[1.0, 2.0, 3.0]');"
         
         echo "=== Testing myvector_display UDF ==="
-        $MYSQL_CMD test_myvector -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
+        $MYSQL_CMD -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
         
         echo "=== Testing myvector_distance UDF ==="
-        $MYSQL_CMD test_myvector -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'), 'L2');"
+        $MYSQL_CMD -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'), 'L2');"
         
         echo "=== All basic tests passed! ==="
