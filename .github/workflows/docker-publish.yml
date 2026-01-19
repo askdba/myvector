@@ -7,6 +7,16 @@ on:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mysql-tag: 'mysql-8.0.40'
+            mysql-version: '8.0'
+          - mysql-tag: 'mysql-8.4.3'
+            mysql-version: '8.4'
+          - mysql-tag: 'mysql-9.0.0'
+            mysql-version: '9.0'
     steps:
       - name: Checkout MyVector Code
         uses: actions/checkout@v4
@@ -32,7 +42,7 @@ jobs:
 
       - name: Clone MySQL Source
         run: |
-          git clone --depth 1 --branch mysql-8.0.40 \
+          git clone --depth 1 --branch ${{ matrix.mysql-tag }} \
             https://github.com/mysql/mysql-server.git mysql-server
 
       - name: Copy MyVector to Plugin Directory
@@ -86,4 +96,17 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          tags: ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}
+          build-args: |
+            MYSQL_VERSION=${{ matrix.mysql-version }}
+
+      - name: Tag and push latest
+        if: matrix.mysql-version == '8.0'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
           tags: ghcr.io/${{ github.repository }}:latest
+          build-args: |
+            MYSQL_VERSION=${{ matrix.mysql-version }}
