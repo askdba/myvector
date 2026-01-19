@@ -1,4 +1,4 @@
-name: MyVector CI (DEBUG v2)
+name: MyVector CI
 
 on:
   push:
@@ -11,49 +11,27 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        mysql-ref: ['mysql-8.0.35', 'mysql-8.4.0']
+        mysql-version: ['8.0', '8.4']
 
     steps:
-    - name: Checkout MySQL Server
+    - name: Checkout MyVector Code
       uses: actions/checkout@v4
-      with:
-        repository: mysql/mysql-server
-        ref: ${{ matrix.mysql-ref }}
-        path: mysql-server
-        submodules: recursive
 
-    - name: Checkout MyVector Plugin
-      uses: actions/checkout@v4
+    - name: Set up MySQL Server
+      uses: shogo82148/actions-setup-mysql@v1
       with:
-        path: mysql-server/plugin/myvector
+        mysql-version: ${{ matrix.mysql-version }}
 
-    - name: Checkout MyVector Plugin
-      uses: actions/checkout@v4
-      with:
-        path: mysql-server/plugin/myvector
+    - name: Install Build Dependencies
+      run: sudo apt-get update && sudo apt-get install -y make gcc g++ libmysqlclient-dev
 
-    - name: Install Dependencies
+    - name: Build MyVector Plugin
+      run: make
+
+    - name: Install MyVector Plugin
       run: |
-        sudo apt-get update
-        sudo apt-get install -y cmake g++ bison libssl-dev libncurses5-dev libsasl2-dev libtirpc-dev
+          PLUGIN_DIR=$(mysql -e "SELECT @@plugin_dir;" -s -N)
+          sudo cp myvector.so "$PLUGIN_DIR/"
 
-    - name: Install Boost
-      id: install-boost
-      uses: MarkusJx/install-boost@v2
-      with:
-        boost_version: '1.77.0' # MySQL 8.0.x typically uses Boost 1.77.0
-
-    - name: Configure CMake
-      working-directory: mysql-server
-      run: |
-        mkdir bld
-        cd bld
-        cmake .. -DFORCE_INSOURCE_BUILD=1 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_UNIT_TESTS=OFF -DWITH_BOOST=${{ steps.install-boost.outputs.BOOST_ROOT }}
-
-    - name: Build MySQL for Testing
-      working-directory: mysql-server/bld
-      run: make -j2 mysql-test
-
-    - name: Run MyVector Test Suite
-      working-directory: mysql-server/bld
-      run: ./mysql-test/mysql-test-run.pl myvector --verbose --mysqld-path=${{ github.workspace }}/mysql-server/bld/runtime_output_directory/mysqld
+    - name: Run MTR Test Suite
+      run: mysql-test-run.pl --suite=myvector --verbose

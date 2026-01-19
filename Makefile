@@ -15,7 +15,7 @@ TARGET := myvector.so
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS)
-	$(CXX) $(MYSQL_CXX_FLAGS) -shared -o $@ $^ $(MYSQL_LDFLAGS)
+	$(CXX) $(MYSQL_CXX_FLAGS) -shared -o $@ $^ $(MYSQL_LDFLAGS) -I$(shell mysql_config --plugindir | sed 's/plugin/include/')
 
 %.o: %.cc
 	$(CXX) $(MYSQL_CXX_FLAGS) -fPIC -c -o $@ $<
