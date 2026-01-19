@@ -68,6 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README.md with build and installation instructions
 - DEMO.md with Amazon Product Catalog example
 - demo/stanford50d/ with GloVe word embeddings example
+- Updated README.md with modern branding (#28)
+  - Added SVG banner with vector network visualization
+  - Added SVG logo representing vector search
+  - Added CI status, license, and MySQL version badges
+  - Restructured with feature tables, quick start, and Docker sections
+  - Added `assets/` directory for branding images
 
 ## [1.0.0] - 2025-02-01
 
@@ -84,5 +90,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 |---------|------|------------|
 | 1.0.0 | 2025-02-01 | FOSDEM'25 release, MySQL 9.0 VECTOR support |
 
-[Unreleased]: https://github.com/pulbdb-ai/myvector/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/pulbdb-ai/myvector/releases/tag/v1.0.0
+[Unreleased]: https://github.com/askdba/myvector/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/askdba/myvector/releases/tag/v1.0.0
