@@ -2,7 +2,7 @@
 # Test with an empty vector (dimension 0)
 SELECT myvector_is_valid(myvector_construct("[]"), 0);
 myvector_is_valid(myvector_construct("[]"), 0)
-1
+0
 # Test with a 3-element integer vector (dimension 3)
 SELECT myvector_is_valid(myvector_construct("[1,2,3]"), 3);
 myvector_is_valid(myvector_construct("[1,2,3]"), 3)
