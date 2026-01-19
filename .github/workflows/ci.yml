@@ -67,10 +67,19 @@ jobs:
       run: |
         mkdir -p mysql-server/plugin/myvector
         
-        # Copy source files
-        cp -r myvector/src/* mysql-server/plugin/myvector/
-        cp -r myvector/include/* mysql-server/plugin/myvector/
+        # Copy source files (flatten src/ directory into plugin dir)
+        cp myvector/src/*.cc mysql-server/plugin/myvector/
+        
+        # Copy header files (flatten include/ directory into plugin dir)
+        cp myvector/include/*.h mysql-server/plugin/myvector/
+        cp myvector/include/*.i mysql-server/plugin/myvector/ 2>/dev/null || true
+        
+        # Copy CMakeLists.txt
         cp myvector/CMakeLists.txt mysql-server/plugin/myvector/
+        
+        # Verify files are in place
+        echo "=== Plugin directory contents ==="
+        ls -la mysql-server/plugin/myvector/
 
     - name: Configure MySQL Build
       run: |
