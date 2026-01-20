@@ -738,6 +738,8 @@ void myvector_binlog_loop(int id) {
 
     mysql_init(&mysql);
     binlog_mysql_conn = &mysql;
+    unsigned int read_timeout_sec = 1;
+    mysql_options(&mysql, MYSQL_OPT_READ_TIMEOUT, &read_timeout_sec);
 
     if (!mysql_real_connect(
             &mysql, myvector_conn_host.c_str(), myvector_conn_user_id.c_str(),
@@ -794,7 +796,19 @@ void myvector_binlog_loop(int id) {
   size_t nrows = 0;
 
   TableMapEvent tev;
-  while (!shutdown_binlog_thread.load() && !mysql_binlog_fetch(&mysql, &rpl)) {
+  while (!shutdown_binlog_thread.load()) {
+    int fetch_rc = mysql_binlog_fetch(&mysql, &rpl);
+    if (fetch_rc != 0) {
+      if (shutdown_binlog_thread.load()) {
+        break;
+      }
+      std::string err = mysql_error(&mysql);
+      if (err.find("timed out") != std::string::npos) {
+        continue;
+      }
+      error_print("Binlog fetch failed: %s", err.c_str());
+      break;
+    }
 #if MYSQL_VERSION_ID >= 80400
     MYVECTOR_DIAGNOSTIC_PUSH
     MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS
