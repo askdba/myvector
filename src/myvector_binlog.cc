@@ -728,6 +728,11 @@ void myvector_binlog_loop(int id) {
             myvector_conn_socket.c_str(), CLIENT_IGNORE_SIGPIPE)) {
       /// fprintf(stderr, "real connect failed %s\n", mysql_error(&mysql));
       sleep(1);
+      if (shutdown_binlog_thread.load()) { // Check shutdown flag after sleep
+        error_print("Binlog thread shutting down during connect retry.");
+        binlog_mysql_conn = nullptr;
+        return;
+      }
       connect_attempts++;
       if (connect_attempts > 600) {
         error_print("MyVector binlog thread failed to connect (%s)",
