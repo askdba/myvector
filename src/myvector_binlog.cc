@@ -89,6 +89,7 @@ using std::vector;
 
 extern MYSQL_PLUGIN gplugin;
 extern std::atomic<bool> shutdown_binlog_thread;
+extern MYSQL *binlog_mysql_conn;
 
 #define debug_print(...)                                                       \
   my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, __VA_ARGS__)
@@ -717,6 +718,7 @@ void myvector_binlog_loop(int id) {
   while (1) {
 
     mysql_init(&mysql);
+    binlog_mysql_conn = &mysql;
 
     if (!mysql_real_connect(
             &mysql, myvector_conn_host.c_str(), myvector_conn_user_id.c_str(),
@@ -730,6 +732,7 @@ void myvector_binlog_loop(int id) {
       if (connect_attempts > 600) {
         error_print("MyVector binlog thread failed to connect (%s)",
                     mysql_error(&mysql));
+        binlog_mysql_conn = nullptr; // Clear global pointer on failure
         return;
       }
       continue;
@@ -812,8 +815,9 @@ void myvector_binlog_loop(int id) {
     cnt++;
   } // while (binlog_fetch)
   error_print("Exiting binlog func, error %s", mysql_error(&mysql));
-  // TODO : need to handle "Exiting binlog func, error Could not find first log
-  // file name in binary log index file"
+  if (!shutdown_binlog_thread.load()) {
+    mysql_close(&mysql);
+  }
 } // myvector_binlog_loop()
 
 void vector_q_thread_fn(int id) {

@@ -52,6 +52,7 @@ my_service<SERVICE_TYPE(mysql_udf_metadata)> *h_udf_metadata_service = nullptr;
 
 MYSQL_PLUGIN gplugin;
 std::atomic<bool> shutdown_binlog_thread(false);
+MYSQL *binlog_mysql_conn = nullptr;
 
 void myvector_binlog_loop(int id);
 
@@ -59,6 +60,10 @@ static std::thread *binlog_thread = nullptr;
 
 static int plugin_deinit(MYSQL_PLUGIN plugin_info) {
   shutdown_binlog_thread.store(true);
+  if (binlog_mysql_conn) {
+    mysql_close(binlog_mysql_conn);
+    binlog_mysql_conn = nullptr;
+  }
   if (binlog_thread) {
     binlog_thread->join();
     delete binlog_thread;
