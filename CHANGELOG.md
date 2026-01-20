@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Break connection retry loop on shutdown: The binlog connection retry loop now checks the `shutdown_binlog_thread` flag, allowing for graceful termination if the plugin is unloaded while MySQL is down.
 - Implement `plugin_deinit` to gracefully shut down the binlog thread and release plugin resources, preventing leaks and hangs during plugin unload/reload. This includes closing the MySQL connection used by the binlog thread and properly deleting allocated services.
 - Include `<mysql.h>` in `myvector_plugin.cc` to resolve compilation errors related to `MYSQL` type and `mysql_close` function.
 - Fix typo in DEMO.md that broke user setup (`.dist=L2` → `,dist=L2`) (#1)
