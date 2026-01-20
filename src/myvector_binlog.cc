@@ -91,6 +91,17 @@ extern MYSQL_PLUGIN gplugin;
 extern std::atomic<bool> shutdown_binlog_thread;
 extern MYSQL *binlog_mysql_conn;
 
+#if defined(__GNUC__) || defined(__clang__)
+#define MYVECTOR_DIAGNOSTIC_PUSH _Pragma("GCC diagnostic push")
+#define MYVECTOR_DIAGNOSTIC_POP _Pragma("GCC diagnostic pop")
+#define MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS \
+  _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#else
+#define MYVECTOR_DIAGNOSTIC_PUSH
+#define MYVECTOR_DIAGNOSTIC_POP
+#define MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS
+#endif
+
 #define debug_print(...)                                                       \
   my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, __VA_ARGS__)
 #define info_print(...)                                                        \
@@ -701,6 +712,7 @@ void FlushOnlineVectorIndexes() {
 }
 
 void myvector_binlog_loop(int id) {
+  (void)id;
   MYSQL mysql;
 
   int ret;
@@ -777,17 +789,29 @@ void myvector_binlog_loop(int id) {
 
   TableMapEvent tev;
   while (!shutdown_binlog_thread.load() && !mysql_binlog_fetch(&mysql, &rpl)) {
-
 #if MYSQL_VERSION_ID >= 80400
-    binary_log::Log_event_type type =
-        (binary_log::Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
+    MYVECTOR_DIAGNOSTIC_PUSH
+    MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS
+    using MyvectorLogEventType = binary_log::Log_event_type;
+    constexpr MyvectorLogEventType kRotateEvent = binary_log::ROTATE_EVENT;
+    constexpr MyvectorLogEventType kTableMapEvent =
+        binary_log::TABLE_MAP_EVENT;
+    constexpr MyvectorLogEventType kWriteRowsEvent =
+        binary_log::WRITE_ROWS_EVENT;
+    MYVECTOR_DIAGNOSTIC_POP
 #else
-    Log_event_type type = (Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
+    using MyvectorLogEventType = Log_event_type;
+    constexpr MyvectorLogEventType kRotateEvent = ROTATE_EVENT;
+    constexpr MyvectorLogEventType kTableMapEvent = TABLE_MAP_EVENT;
+    constexpr MyvectorLogEventType kWriteRowsEvent = WRITE_ROWS_EVENT;
 #endif
+
+    MyvectorLogEventType type =
+        static_cast<MyvectorLogEventType>(rpl.buffer[1 + EVENT_TYPE_OFFSET]);
     unsigned long event_len = rpl.size - 1;
     const unsigned char *event_buf = rpl.buffer + 1;
 
-    if (type == binary_log::ROTATE_EVENT) {
+    if (type == kRotateEvent) {
       if (currentBinlogFile.length()) {
         FlushOnlineVectorIndexes();
       }
@@ -801,9 +825,9 @@ void myvector_binlog_loop(int id) {
     currentBinlogPos += event_len;
     if (g_OnlineVectorIndexes.size() == 0)
       continue; // optimization!
-    if (type == binary_log::TABLE_MAP_EVENT) {
+    if (type == kTableMapEvent) {
       parseTableMapEvent(event_buf, event_len, tev);
-    } else if (type == binary_log::WRITE_ROWS_EVENT) {
+    } else if (type == kWriteRowsEvent) {
       string key = tev.dbName + "." + tev.tableName;
       if (g_OnlineVectorIndexes.find(key) == g_OnlineVectorIndexes.end()) {
         continue;
