@@ -13,7 +13,7 @@
                const std::string & file, int line)
     {
         ssize_t rc = write(fd, buf, nbytes);
-        if (rc == -1 || rc != nbytes)
+        if (rc < 0 || static_cast<size_t>(rc) != nbytes)
         {
             std::stringstream ss;
             ss << "Error writing " << nbytes << " bytes to " << file
@@ -26,7 +26,7 @@
               const std::string & file, int line)
     {
         ssize_t rc = read(fd, buf, nbytes);
-        if (rc == -1 || rc != nbytes)
+        if (rc < 0 || static_cast<size_t>(rc) != nbytes)
         {
             std::stringstream ss;
             ss << "Error reading " << nbytes << " bytes from " << file
@@ -125,6 +125,7 @@
     }
     void addNodeLinksLevelGt0ToFlushList(std::set<tableint> & ids, int level)
     {
+        (void)level;
         unsigned int index = rand() % FLUSH_LIST_PARTS;
         std::unique_lock <std::mutex> locklist(m_flushListMutex[index]);
         for (auto id : ids)
@@ -176,8 +177,8 @@
         char buf1[256], buf2[256];
 
         int stfd = Open(statusFileName.c_str(), O_RDWR);
-        read(stfd, buf1, sizeof(buf1));
-        read(stfd, buf2, sizeof(buf2));
+        Read(stfd, buf1, sizeof(buf1), statusFileName, __LINE__);
+        Read(stfd, buf2, sizeof(buf2), statusFileName, __LINE__);
         Close(stfd, statusFileName);
 
         char *p = strchr(buf1, '|');
@@ -219,8 +220,8 @@
         outts = 0;
 
         int stfd = Open(statusFileName.c_str(), O_RDWR);
-        read(stfd, buf1, sizeof(buf1));
-        read(stfd, buf2, sizeof(buf2));
+        Read(stfd, buf1, sizeof(buf1), statusFileName, __LINE__);
+        Read(stfd, buf2, sizeof(buf2), statusFileName, __LINE__);
         Close(stfd, statusFileName);
 
         char *p = strchr(buf1, '|');
@@ -313,7 +314,7 @@
           ckptf = Open(statusFileName.c_str(), O_RDWR);
         }
 
-        read(ckptf, buf, sizeof(buf));
+        Read(ckptf, buf, sizeof(buf), statusFileName, __LINE__);
 
         if (status == CKPT_BEGIN_INCR_PASS1 ||
             status == CKPT_BEGIN_FULL_WRITE) {
@@ -572,9 +573,11 @@
 
       size_t nodeCount = 0, nodeLevel0LinksCount = 0, nodeLevelGt0LinksCount = 0;
 
-      read(ckptFile, &nodeCount, sizeof(nodeCount));
-      read(ckptFile, &nodeLevel0LinksCount, sizeof(nodeLevel0LinksCount));
-      read(ckptFile, &nodeLevelGt0LinksCount, sizeof(nodeLevelGt0LinksCount));
+      Read(ckptFile, &nodeCount, sizeof(nodeCount), ckptFileName, __LINE__);
+      Read(ckptFile, &nodeLevel0LinksCount, sizeof(nodeLevel0LinksCount),
+           ckptFileName, __LINE__);
+      Read(ckptFile, &nodeLevelGt0LinksCount, sizeof(nodeLevelGt0LinksCount),
+           ckptFileName, __LINE__);
 
       debug_print("Recovery of %s, nodeCount=%lu,level0Links=%lu,levelGt0Links=%lu.",
                   hnswFileName.c_str(), nodeCount, nodeLevel0LinksCount,
@@ -588,10 +591,10 @@
         tableint nodeId;
         unsigned int sz;
         
-        read(ckptFile, &nodeId, sizeof(nodeId));
-        read(ckptFile, &sz,     sizeof(sz)); 
+        Read(ckptFile, &nodeId, sizeof(nodeId), ckptFileName, __LINE__);
+        Read(ckptFile, &sz, sizeof(sz), ckptFileName, __LINE__);
 
-        read(ckptFile, rdbuf,   sz);
+        Read(ckptFile, rdbuf, sz, ckptFileName, __LINE__);
 
         size_t ofs = (nodeId * size_data_per_element_) + offsetData_ +
                         HNSW_FILE_METADATA_SIZE;
@@ -600,9 +603,9 @@
         Write(hnswFile, rdbuf, sz, hnswFileName, __LINE__);
 	
         unsigned int listsz = 0;
-        read(ckptFile, &listsz, sizeof(listsz));
+        Read(ckptFile, &listsz, sizeof(listsz), ckptFileName, __LINE__);
         if (listsz) {
-          read(ckptFile, rdbuf, listsz);
+          Read(ckptFile, rdbuf, listsz, ckptFileName, __LINE__);
           std::vector<unsigned char> saveList(rdbuf, rdbuf + listsz);
           levelGt0NodesLists[nodeId] = saveList; // stash for later
         }
@@ -612,10 +615,10 @@
         tableint nodeId;
         unsigned int listsz;
 
-        read(ckptFile, &nodeId, sizeof(nodeId));
-        read(ckptFile, &listsz, sizeof(listsz));
+        Read(ckptFile, &nodeId, sizeof(nodeId), ckptFileName, __LINE__);
+        Read(ckptFile, &listsz, sizeof(listsz), ckptFileName, __LINE__);
 
-        read(ckptFile, rdbuf, listsz);
+        Read(ckptFile, rdbuf, listsz, ckptFileName, __LINE__);
 
         size_t ofs = (nodeId * size_data_per_element_) + offsetLevel0_ + 
                         HNSW_FILE_METADATA_SIZE;
@@ -628,10 +631,10 @@
         tableint nodeId;
         unsigned int listsz;
         
-        read(ckptFile, &nodeId, sizeof(nodeId));
-        read(ckptFile, &listsz, sizeof(listsz));
+        Read(ckptFile, &nodeId, sizeof(nodeId), ckptFileName, __LINE__);
+        Read(ckptFile, &listsz, sizeof(listsz), ckptFileName, __LINE__);
         
-        read(ckptFile, rdbuf, listsz);
+        Read(ckptFile, rdbuf, listsz, ckptFileName, __LINE__);
         
         std::vector<unsigned char> saveList(rdbuf, rdbuf + listsz);
         levelGt0NodesLists[nodeId] = saveList;

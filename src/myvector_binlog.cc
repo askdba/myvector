@@ -800,10 +800,12 @@ void myvector_binlog_loop(int id) {
         binary_log::WRITE_ROWS_EVENT;
     MYVECTOR_DIAGNOSTIC_POP
 #else
-    using MyvectorLogEventType = Log_event_type;
-    constexpr MyvectorLogEventType kRotateEvent = ROTATE_EVENT;
-    constexpr MyvectorLogEventType kTableMapEvent = TABLE_MAP_EVENT;
-    constexpr MyvectorLogEventType kWriteRowsEvent = WRITE_ROWS_EVENT;
+    using MyvectorLogEventType = binary_log::Log_event_type;
+    constexpr MyvectorLogEventType kRotateEvent = binary_log::ROTATE_EVENT;
+    constexpr MyvectorLogEventType kTableMapEvent =
+        binary_log::TABLE_MAP_EVENT;
+    constexpr MyvectorLogEventType kWriteRowsEvent =
+        binary_log::WRITE_ROWS_EVENT;
 #endif
 
     MyvectorLogEventType type =
