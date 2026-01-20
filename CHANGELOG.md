@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restore `h_udf_metadata_service` initialization required for UDF character set handling.
 
 ### Changed
+- Improved `README.md` documentation covering:
+  - Clarified plugin build output paths in the "Install the Plugin" section.
+  - Added a new "Query Rewriting" section explaining audit/query rewrite behavior.
+  - Introduced "Operational Guidance" for monitoring, troubleshooting, and index health.
 - Restructured repository layout to match `mysql-mcp-server` standard (#21)
   - Moved source files to `src/`
   - Moved headers to `include/`
