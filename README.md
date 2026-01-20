@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/Banner_Image.jpeg" alt="MyVector Banner" width="100%">
+  <img src="assets/Banner_Image.png" alt="MyVector Banner" width="100%">
 </p>
 
 <p align="center">
@@ -302,7 +302,7 @@ This project is licensed under the GNU General Public License v2.0 - see the [LI
 ---
 
 <p align="center">
-  <img src="assets/Logo_Image.jpeg" alt="MyVector Logo" width="80">
+  <img src="assets/Logo_Image.png" alt="MyVector Logo" width="80">
 </p>
 
 <p align="center">
