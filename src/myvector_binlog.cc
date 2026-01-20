@@ -711,6 +711,7 @@ void myvector_binlog_loop(int id) {
 
   if (myvector_feature_level & 1) {
     info_print("Binlog event thread is disabled!");
+    binlog_mysql_conn = nullptr; // Ensure global pointer is cleared on early exit.
     return;
   }
 
@@ -820,9 +821,10 @@ void myvector_binlog_loop(int id) {
     cnt++;
   } // while (binlog_fetch)
   error_print("Exiting binlog func, error %s", mysql_error(&mysql));
-  if (!shutdown_binlog_thread.load()) {
-    mysql_close(&mysql);
-  }
+  // The connection is now closed by plugin_deinit, so no need to close here
+  // if (!shutdown_binlog_thread.load()) {
+  //   mysql_close(&mysql);
+  // }
 } // myvector_binlog_loop()
 
 void vector_q_thread_fn(int id) {
