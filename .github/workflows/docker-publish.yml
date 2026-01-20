@@ -13,7 +13,7 @@ jobs:
         include:
           - mysql-tag: 'mysql-8.0.40'
             mysql-version: '8.0'
-          - mysql-tag: 'mysql-8.4.3'
+          - mysql-tag: 'mysql-8.4.8'
             mysql-version: '8.4'
           - mysql-tag: 'mysql-9.0.0'
             mysql-version: '9.0'

@@ -15,13 +15,13 @@ jobs:
           - os: ubuntu-latest
             mysql-version: '8.0.35'
           - os: ubuntu-latest
-            mysql-version: '8.4.0'
+            mysql-version: '8.4.8'
           - os: ubuntu-latest
             mysql-version: '9.0.0'
           - os: macos-latest
             mysql-version: '8.0.35'
           - os: macos-latest
-            mysql-version: '8.4.0'
+            mysql-version: '8.4.8'
           - os: macos-latest
             mysql-version: '9.0.0'
 
