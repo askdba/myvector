@@ -22,6 +22,19 @@
         }
     }
 
+    void Read(int fd, void * buf, size_t nbytes,
+              const std::string & file, int line)
+    {
+        ssize_t rc = read(fd, buf, nbytes);
+        if (rc == -1 || rc != nbytes)
+        {
+            std::stringstream ss;
+            ss << "Error reading " << nbytes << " bytes from " << file
+               << " at line " << line << ",rc = " << rc << ",errno = " << errno;
+            throw std::runtime_error(ss.str());
+        }
+    }
+
     void Fsync(int fd, const std::string & file)
     {
         int rc = fsync(fd);
@@ -748,19 +761,19 @@
     }
     
     void readIndexHeader(int hnswFile) {
-        read(hnswFile, &offsetLevel0_, sizeof(offsetLevel0_));
-        read(hnswFile, &max_elements_, sizeof(max_elements_));
-        read(hnswFile, &cur_element_count, sizeof(cur_element_count));
-        read(hnswFile, &size_data_per_element_, sizeof(size_data_per_element_));
-        read(hnswFile, &label_offset_, sizeof(label_offset_));
-        read(hnswFile, &offsetData_, sizeof(offsetData_));
-        read(hnswFile, &maxlevel_, sizeof(maxlevel_));
-        read(hnswFile, &enterpoint_node_, sizeof(enterpoint_node_));
-        read(hnswFile, &maxM_, sizeof(maxM_));
-        read(hnswFile, &maxM0_, sizeof(maxM0_));
-        read(hnswFile, &M_, sizeof(M_));
-        read(hnswFile, &mult_, sizeof(mult_));
-        read(hnswFile, &ef_construction_, sizeof(ef_construction_));
+        Read(hnswFile, &offsetLevel0_, sizeof(offsetLevel0_), __FILE__, __LINE__);
+        Read(hnswFile, &max_elements_, sizeof(max_elements_), __FILE__, __LINE__);
+        Read(hnswFile, &cur_element_count, sizeof(cur_element_count), __FILE__, __LINE__);
+        Read(hnswFile, &size_data_per_element_, sizeof(size_data_per_element_), __FILE__, __LINE__);
+        Read(hnswFile, &label_offset_, sizeof(label_offset_), __FILE__, __LINE__);
+        Read(hnswFile, &offsetData_, sizeof(offsetData_), __FILE__, __LINE__);
+        Read(hnswFile, &maxlevel_, sizeof(maxlevel_), __FILE__, __LINE__);
+        Read(hnswFile, &enterpoint_node_, sizeof(enterpoint_node_), __FILE__, __LINE__);
+        Read(hnswFile, &maxM_, sizeof(maxM_), __FILE__, __LINE__);
+        Read(hnswFile, &maxM0_, sizeof(maxM0_), __FILE__, __LINE__);
+        Read(hnswFile, &M_, sizeof(M_), __FILE__, __LINE__);
+        Read(hnswFile, &mult_, sizeof(mult_), __FILE__, __LINE__);
+        Read(hnswFile, &ef_construction_, sizeof(ef_construction_), __FILE__, __LINE__);
     }
 
     void debug() {

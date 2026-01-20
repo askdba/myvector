@@ -86,7 +86,7 @@ static bool AVXCapable() {
     return HW_AVX && avxSupported;
 }
 
-static bool AVX512Capable() {
+[[maybe_unused]] static bool AVX512Capable() {
     if (!AVXCapable()) return false;
 
     int cpuInfo[4];
