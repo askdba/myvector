@@ -79,6 +79,7 @@ static int plugin_deinit(MYSQL_PLUGIN plugin_info) {
 
 static int plugin_init(MYSQL_PLUGIN plugin_info) {
   gplugin = plugin_info;
+  shutdown_binlog_thread.store(false);
 
   h_registry = mysql_plugin_registry_acquire();
   h_udf_metadata_service = new my_service<SERVICE_TYPE(mysql_udf_metadata)>(
