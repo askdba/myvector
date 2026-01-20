@@ -88,6 +88,7 @@ using std::unique_lock;
 using std::vector;
 
 extern MYSQL_PLUGIN gplugin;
+extern std::atomic<bool> shutdown_binlog_thread;
 
 #define debug_print(...)                                                       \
   my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, __VA_ARGS__)
@@ -766,7 +767,7 @@ void myvector_binlog_loop(int id) {
   size_t nrows = 0;
 
   TableMapEvent tev;
-  while (!mysql_binlog_fetch(&mysql, &rpl)) {
+  while (!shutdown_binlog_thread.load() && !mysql_binlog_fetch(&mysql, &rpl)) {
 
 #if MYSQL_VERSION_ID >= 80400
     binary_log::Log_event_type type =
