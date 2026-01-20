@@ -714,6 +714,12 @@ void FlushOnlineVectorIndexes() {
 void myvector_binlog_loop(int id) {
   (void)id;
   MYSQL mysql;
+  auto close_binlog_mysql = [&]() {
+    if (binlog_mysql_conn == &mysql) {
+      mysql_close(&mysql);
+      binlog_mysql_conn = nullptr;
+    }
+  };
 
   int ret;
 
@@ -743,14 +749,14 @@ void myvector_binlog_loop(int id) {
       sleep(1);
       if (shutdown_binlog_thread.load()) { // Check shutdown flag after sleep
         error_print("Binlog thread shutting down during connect retry.");
-        binlog_mysql_conn = nullptr;
+        close_binlog_mysql();
         return;
       }
       connect_attempts++;
       if (connect_attempts > 600) {
         error_print("MyVector binlog thread failed to connect (%s)",
                     mysql_error(&mysql));
-        binlog_mysql_conn = nullptr; // Clear global pointer on failure
+        close_binlog_mysql();
         return;
       }
       continue;
@@ -847,10 +853,7 @@ void myvector_binlog_loop(int id) {
     cnt++;
   } // while (binlog_fetch)
   error_print("Exiting binlog func, error %s", mysql_error(&mysql));
-  // The connection is now closed by plugin_deinit, so no need to close here
-  // if (!shutdown_binlog_thread.load()) {
-  //   mysql_close(&mysql);
-  // }
+  close_binlog_mysql();
 } // myvector_binlog_loop()
 
 void vector_q_thread_fn(int id) {
