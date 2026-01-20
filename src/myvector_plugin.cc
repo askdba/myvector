@@ -25,6 +25,7 @@
 #include <mysql/service_my_plugin_log.h>
 #include <mysql/service_mysql_alloc.h>
 #include <mysql/service_plugin_registry.h>
+#include <mysql/mysql.h>
 #include <mysql/status_var.h>
 #include <mysql_version.h>
 
@@ -51,13 +52,31 @@ my_service<SERVICE_TYPE(mysql_udf_metadata)> *h_udf_metadata_service = nullptr;
 #include "myvector.h"
 
 MYSQL_PLUGIN gplugin;
+std::atomic<bool> shutdown_binlog_thread(false);
+MYSQL *binlog_mysql_conn = nullptr;
 
 void myvector_binlog_loop(int id);
 
 static std::thread *binlog_thread = nullptr;
 
+static int plugin_deinit(MYSQL_PLUGIN plugin_info) {
+  shutdown_binlog_thread.store(true);
+  if (binlog_thread) {
+    binlog_thread->join();
+    delete binlog_thread;
+    binlog_thread = nullptr;
+  }
+
+  delete h_udf_metadata_service;
+  if (h_registry)
+    mysql_plugin_registry_release(h_registry);
+
+  return 0; /* success */
+}
+
 static int plugin_init(MYSQL_PLUGIN plugin_info) {
   gplugin = plugin_info;
+  shutdown_binlog_thread.store(false);
 
   h_registry = mysql_plugin_registry_acquire();
   h_udf_metadata_service = new my_service<SERVICE_TYPE(mysql_udf_metadata)>(
@@ -141,7 +160,7 @@ mysql_declare_plugin(myvector){
     PLUGIN_LICENSE_GPL,                         /* license                 */
     plugin_init,                                /* plugin initializer      */
     nullptr,                                    /* plugin check uninstall  */
-    nullptr,                                    /* plugin deinitializer    */
+    plugin_deinit,                              /* plugin deinitializer    */
     0x0100,                                     /* version                 */
     nullptr,                                    /* status variables        */
     myvector_system_variables,                  /* system variables        */

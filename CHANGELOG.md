@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Reset `shutdown_binlog_thread` on plugin initialization to prevent immediate thread exit on plugin reload.
+- Centralize `MYSQL` connection closing in `plugin_deinit` and ensure `binlog_mysql_conn` is nulled on early exits from `myvector_binlog_loop` to prevent double-free and use-after-free issues.
+- Break connection retry loop on shutdown: The binlog connection retry loop now checks the `shutdown_binlog_thread` flag, allowing for graceful termination if the plugin is unloaded while MySQL is down.
+- Implement `plugin_deinit` to gracefully shut down the binlog thread and release plugin resources, preventing leaks and hangs during plugin unload/reload. This includes closing the MySQL connection used by the binlog thread and properly deleting allocated services.
+- Include `<mysql.h>` in `myvector_plugin.cc` to resolve compilation errors related to `MYSQL` type and `mysql_close` function.
 - Fix typo in DEMO.md that broke user setup (`.dist=L2` → `,dist=L2`) (#1)
 - Fix Windows `strcasecmp` to be case-insensitive using `_stricmp` (#2)
 - Fix memory leak in thread-local storage `tls_distances` by using static thread_local object (#3)

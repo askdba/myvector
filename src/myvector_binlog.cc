@@ -88,6 +88,19 @@ using std::unique_lock;
 using std::vector;
 
 extern MYSQL_PLUGIN gplugin;
+extern std::atomic<bool> shutdown_binlog_thread;
+extern MYSQL *binlog_mysql_conn;
+
+#if defined(__GNUC__) || defined(__clang__)
+#define MYVECTOR_DIAGNOSTIC_PUSH _Pragma("GCC diagnostic push")
+#define MYVECTOR_DIAGNOSTIC_POP _Pragma("GCC diagnostic pop")
+#define MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS \
+  _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#else
+#define MYVECTOR_DIAGNOSTIC_PUSH
+#define MYVECTOR_DIAGNOSTIC_POP
+#define MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS
+#endif
 
 #define debug_print(...)                                                       \
   my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, __VA_ARGS__)
@@ -699,7 +712,14 @@ void FlushOnlineVectorIndexes() {
 }
 
 void myvector_binlog_loop(int id) {
+  (void)id;
   MYSQL mysql;
+  auto close_binlog_mysql = [&]() {
+    if (binlog_mysql_conn == &mysql) {
+      mysql_close(&mysql);
+      binlog_mysql_conn = nullptr;
+    }
+  };
 
   int ret;
 
@@ -709,6 +729,7 @@ void myvector_binlog_loop(int id) {
 
   if (myvector_feature_level & 1) {
     info_print("Binlog event thread is disabled!");
+    binlog_mysql_conn = nullptr; // Ensure global pointer is cleared on early exit.
     return;
   }
 
@@ -716,6 +737,7 @@ void myvector_binlog_loop(int id) {
   while (1) {
 
     mysql_init(&mysql);
+    binlog_mysql_conn = &mysql;
 
     if (!mysql_real_connect(
             &mysql, myvector_conn_host.c_str(), myvector_conn_user_id.c_str(),
@@ -725,10 +747,16 @@ void myvector_binlog_loop(int id) {
             myvector_conn_socket.c_str(), CLIENT_IGNORE_SIGPIPE)) {
       /// fprintf(stderr, "real connect failed %s\n", mysql_error(&mysql));
       sleep(1);
+      if (shutdown_binlog_thread.load()) { // Check shutdown flag after sleep
+        error_print("Binlog thread shutting down during connect retry.");
+        close_binlog_mysql();
+        return;
+      }
       connect_attempts++;
       if (connect_attempts > 600) {
         error_print("MyVector binlog thread failed to connect (%s)",
                     mysql_error(&mysql));
+        close_binlog_mysql();
         return;
       }
       continue;
@@ -766,18 +794,32 @@ void myvector_binlog_loop(int id) {
   size_t nrows = 0;
 
   TableMapEvent tev;
-  while (!mysql_binlog_fetch(&mysql, &rpl)) {
-
+  while (!shutdown_binlog_thread.load() && !mysql_binlog_fetch(&mysql, &rpl)) {
 #if MYSQL_VERSION_ID >= 80400
-    binary_log::Log_event_type type =
-        (binary_log::Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
+    MYVECTOR_DIAGNOSTIC_PUSH
+    MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS
+    using MyvectorLogEventType = binary_log::Log_event_type;
+    constexpr MyvectorLogEventType kRotateEvent = binary_log::ROTATE_EVENT;
+    constexpr MyvectorLogEventType kTableMapEvent =
+        binary_log::TABLE_MAP_EVENT;
+    constexpr MyvectorLogEventType kWriteRowsEvent =
+        binary_log::WRITE_ROWS_EVENT;
+    MYVECTOR_DIAGNOSTIC_POP
 #else
-    Log_event_type type = (Log_event_type)rpl.buffer[1 + EVENT_TYPE_OFFSET];
+    using MyvectorLogEventType = binary_log::Log_event_type;
+    constexpr MyvectorLogEventType kRotateEvent = binary_log::ROTATE_EVENT;
+    constexpr MyvectorLogEventType kTableMapEvent =
+        binary_log::TABLE_MAP_EVENT;
+    constexpr MyvectorLogEventType kWriteRowsEvent =
+        binary_log::WRITE_ROWS_EVENT;
 #endif
+
+    MyvectorLogEventType type =
+        static_cast<MyvectorLogEventType>(rpl.buffer[1 + EVENT_TYPE_OFFSET]);
     unsigned long event_len = rpl.size - 1;
     const unsigned char *event_buf = rpl.buffer + 1;
 
-    if (type == binary_log::ROTATE_EVENT) {
+    if (type == kRotateEvent) {
       if (currentBinlogFile.length()) {
         FlushOnlineVectorIndexes();
       }
@@ -791,9 +833,9 @@ void myvector_binlog_loop(int id) {
     currentBinlogPos += event_len;
     if (g_OnlineVectorIndexes.size() == 0)
       continue; // optimization!
-    if (type == binary_log::TABLE_MAP_EVENT) {
+    if (type == kTableMapEvent) {
       parseTableMapEvent(event_buf, event_len, tev);
-    } else if (type == binary_log::WRITE_ROWS_EVENT) {
+    } else if (type == kWriteRowsEvent) {
       string key = tev.dbName + "." + tev.tableName;
       if (g_OnlineVectorIndexes.find(key) == g_OnlineVectorIndexes.end()) {
         continue;
@@ -811,8 +853,7 @@ void myvector_binlog_loop(int id) {
     cnt++;
   } // while (binlog_fetch)
   error_print("Exiting binlog func, error %s", mysql_error(&mysql));
-  // TODO : need to handle "Exiting binlog func, error Could not find first log
-  // file name in binary log index file"
+  close_binlog_mysql();
 } // myvector_binlog_loop()
 
 void vector_q_thread_fn(int id) {
