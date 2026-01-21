@@ -28,6 +28,7 @@ cp src/*.cc "$BUILD_DIR/mysql-server/plugin/myvector/"
 cp include/*.h "$BUILD_DIR/mysql-server/plugin/myvector/"
 cp include/*.i "$BUILD_DIR/mysql-server/plugin/myvector/" 2>/dev/null || true
 cp CMakeLists.txt "$BUILD_DIR/mysql-server/plugin/myvector/"
+cp -r sql "$BUILD_DIR/mysql-server/plugin/myvector/"
 
 
 # Install Dependencies (for Ubuntu)
