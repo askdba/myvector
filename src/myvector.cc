@@ -77,6 +77,7 @@ int gettimeofday(struct timeval *tv, struct timezone *tz) {
 #include "mysql/udf_registration_types.h"
 #include "mysql_version.h"
 #include "myvector.h"
+#include "myvector_errors.h"
 
 extern MYSQL_PLUGIN gplugin;
 
@@ -1466,9 +1467,7 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT *initid, UDF_ARGS *args,
                                          char *message) {
   initid->ptr = nullptr;
   if (args->arg_count < 3 || args->arg_count > 4) {
-    strcpy(message,
-           "Incorrect arguments, usage : "
-           "myvector_ann_set('vec column', 'id column', searchvec [,nn=<n>]).");
+    strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
     return true; // error
   }
 
@@ -1476,8 +1475,7 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT *initid, UDF_ARGS *args,
   AbstractVectorIndex *vi = g_indexes.get(col);
   SharedLockGuard l(vi);
   if (!vi) {
-    snprintf(message, MYSQL_ERRMSG_SIZE,
-             "Vector index (%s) not defined or not open for access.", col);
+    snprintf(message, MYSQL_ERRMSG_SIZE, ER_MYVECTOR_INDEX_NOT_FOUND, col);
     return true; // error
   }
 
@@ -1656,8 +1654,7 @@ char *myvector_construct_bv(const std::string &srctype, char *src, char *dst,
 PLUGIN_EXPORT bool myvector_construct_init(UDF_INIT *initid, UDF_ARGS *args,
                                            char *message) {
   if (args->arg_count < 1 || args->arg_count > 2) {
-    strcpy(message, "Incorrect arguments, usage : "
-                    "myvector_construct(vector_string [, input_format])");
+    strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
     return true; // error
   }
   initid->max_length = MYVECTOR_CONSTRUCT_MAX_LEN;
@@ -1785,8 +1782,7 @@ PLUGIN_EXPORT void myvector_construct_deinit(UDF_INIT *initid) {
 PLUGIN_EXPORT bool myvector_display_init(UDF_INIT *initid, UDF_ARGS *args,
                                          char *message) {
   if (args->arg_count == 0 || args->arg_count > 2) {
-    strcpy(message, "Incorrect arguments, usage : "
-                    "myvector_display(vec_col_expr, ['prec']).");
+    strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
     return true; // error
   }
   initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
@@ -1884,13 +1880,7 @@ PLUGIN_EXPORT void myvector_display_deinit(UDF_INIT *initid) {
 /* UDF MYVECTOR_DISTANCE() Implementation */
 PLUGIN_EXPORT bool myvector_distance_init(UDF_INIT *, UDF_ARGS *args,
                                           char *message) {
-  if (args->arg_count < 2) {
-    strcpy(message, "myvector_distance() requires atleast 2 arguments.");
-    return true; /// error
-  }
-  if (args->arg_count > 3) {
-    strcpy(message,
-           "Too many arguments, usage : myvector_distance(v1,v2 [,dist]).");
+    strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
     return true; /// error
   }
   return false;
@@ -1980,7 +1970,7 @@ PLUGIN_EXPORT void myvector_distance_deinit(UDF_INIT *initid) {}
 PLUGIN_EXPORT bool
 myvector_search_open_udf_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
   if (args->arg_count != 5) {
-    strcpy(message, "Incorrect arguments to MyVector internal UDF.");
+    strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
     return true;
   }
   return false;
@@ -2118,7 +2108,7 @@ PLUGIN_EXPORT void myvector_search_open_udf_deinit() {}
 PLUGIN_EXPORT bool
 myvector_search_save_udf_init(UDF_INIT *initid, UDF_ARGS *args, char *message) {
   if (args->arg_count != 5) {
-    strcpy(message, "Incorrect arguments to MyVector internal UDF.");
+    strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
     return true;
   }
   return false;
@@ -2212,8 +2202,7 @@ PLUGIN_EXPORT void myvector_search_add_row_udf_deinit(UDF_INIT *initid) {
 PLUGIN_EXPORT bool myvector_is_valid_init(UDF_INIT *initid, UDF_ARGS *args,
                                           char *message) {
   if (!initid || args->arg_count != 2) {
-    strcpy(message, "Incorrect arguments to myvector_is_valid(), "
-                    "Usage : myvector_is_valid(<vector>,<dim>)");
+    strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
     return true;
   }
   return false;
@@ -2258,8 +2247,7 @@ PLUGIN_EXPORT void myvector_is_valid_deinit(UDF_INIT *) {}
 PLUGIN_EXPORT bool myvector_row_distance_init(UDF_INIT *initid, UDF_ARGS *args,
                                               char *message) {
   if (!initid || args->arg_count != 1) {
-    strcpy(message, "Incorrect arguments to myvector_row_distance(), "
-                    "Usage : myvector_row_distance(idval)");
+    strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
     return true;
   }
   initid->const_item = 0;
