@@ -1,3 +1,6 @@
+/build_fast/
+/scripts/build-fast.sh
+/src/myvector.cc.tmp
 # Build artifacts
 *.o
 *.so
