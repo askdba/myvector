@@ -1,4 +1,5 @@
 #pragma once
+#include <cstring>
 #include <regex>
 #include <string>
 #include <unordered_map>
