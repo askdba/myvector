@@ -587,7 +587,7 @@
 
       std::map<tableint, std::vector<unsigned char>> levelGt0NodesLists;
 
-      for (int i = 0; i < nodeCount; i++) {
+      for (size_t i = 0; i < nodeCount; i++) {
         tableint nodeId;
         unsigned int sz;
         
@@ -611,7 +611,7 @@
         }
       }
 
-      for (int i = 0; i < nodeLevel0LinksCount; i++) {
+      for (size_t i = 0; i < nodeLevel0LinksCount; i++) {
         tableint nodeId;
         unsigned int listsz;
 
@@ -627,7 +627,7 @@
         Write(hnswFile, rdbuf, listsz, hnswFileName, __LINE__);
       }
 
-      for (int i = 0; i < nodeLevelGt0LinksCount; i++) {
+      for (size_t i = 0; i < nodeLevelGt0LinksCount; i++) {
         tableint nodeId;
         unsigned int listsz;
         

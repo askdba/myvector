@@ -60,6 +60,7 @@ void myvector_binlog_loop(int id);
 static std::thread *binlog_thread = nullptr;
 
 static int plugin_deinit(MYSQL_PLUGIN plugin_info) {
+  (void)plugin_info;
   shutdown_binlog_thread.store(true);
   if (binlog_thread) {
     binlog_thread->join();

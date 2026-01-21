@@ -38,9 +38,16 @@
 
 // #include <boost/lockfree/queue.hpp>
 #include "compression.h"
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #include "libbinlogevents/include/codecs/factory.h"
 #include "libbinlogevents/include/compression/factory.h"
 #include "libbinlogevents/include/trx_boundary_parser.h"
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 #include "my_byteorder.h"
 #include "my_dbug.h"
 #include "my_default.h"
@@ -201,9 +208,10 @@ typedef struct {
  */
 void parseTableMapEvent(const unsigned char *event_buf, unsigned int event_len,
                         TableMapEvent &tev) {
+  (void)event_len;
   tev = TableMapEvent();
 
-  int index = EVENT_HEADER_LENGTH;
+  unsigned int index = EVENT_HEADER_LENGTH;
 
   memcpy(&tev.tableId, &event_buf[index], 6);
   index += 6;
@@ -232,6 +240,7 @@ void parseTableMapEvent(const unsigned char *event_buf, unsigned int event_len,
                          &event_buf[index + tev.nColumns]);
   index += tev.nColumns;
   unsigned int metadatalen = (unsigned int)event_buf[index];
+  (void)metadatalen;
   index++;
 
   for (unsigned int i = 0; i < (unsigned int)tev.nColumns; i++) {
@@ -278,7 +287,7 @@ void parseTableMapEvent(const unsigned char *event_buf, unsigned int event_len,
 void parseRowsEvent(const unsigned char *event_buf, unsigned int event_len,
                     TableMapEvent &tev, unsigned int pos1, unsigned int pos2,
                     vector<VectorIndexUpdateItem *> &updates) {
-  int index = EVENT_HEADER_LENGTH;
+  unsigned int index = EVENT_HEADER_LENGTH;
 
   unsigned long tableId = 0;
 
@@ -297,11 +306,14 @@ void parseRowsEvent(const unsigned char *event_buf, unsigned int event_len,
   unsigned int ncols = (unsigned int)event_buf[index];
   index++;
   unsigned int inclen = (((unsigned int)(ncols) + 7) >> 3);
+  (void)inclen;
   // TODO : Assuming included & null bitmaps are single byte
   unsigned int incbitmap = (unsigned int)event_buf[index];
+  (void)incbitmap;
   index++;
   while (true) {
     unsigned int nullbitmap = (unsigned int)event_buf[index];
+    (void)nullbitmap;
     index++;
 
     unsigned int lval = 0;
@@ -309,7 +321,7 @@ void parseRowsEvent(const unsigned char *event_buf, unsigned int event_len,
 
     unsigned int idVal = 0, vecsz = 0;
     const unsigned char *vec = nullptr;
-    for (int i = 0; i < ncols; i++) {
+    for (unsigned int i = 0; i < ncols; i++) {
       switch (tev.columnTypes[i]) {
       case MYSQL_TYPE_LONG:
         memcpy(&lval, &event_buf[index], 4);
@@ -685,7 +697,6 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
 
   } // scope guard for binlog mutex lock
 
-exitFn:
   mysql_close(&mysql);
 }
 
@@ -790,8 +801,9 @@ void myvector_binlog_loop(int id) {
   int cnt = 0;
 
   void vector_q_thread_fn(int id);
-  for (int i = 0; i < myvector_index_bg_threads; i++)
-    std::thread *worker_thread = new std::thread(vector_q_thread_fn, i);
+  for (int i = 0; i < myvector_index_bg_threads; i++) {
+    std::thread(vector_q_thread_fn, i).detach();
+  }
 
   size_t nrows = 0;
 

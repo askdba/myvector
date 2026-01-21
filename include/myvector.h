@@ -122,7 +122,7 @@ public:
 
     virtual void setLastUpdateCoordinates(const std::string & /* file */, const size_t & /* pos */) {}
 
-    virtual void setSearchEffort(int ef_search) {} /* how much deep/wide to go? e.g ef_search in HNSW */
+    virtual void setSearchEffort(int ef_search) { (void)ef_search; } /* how much deep/wide to go? e.g ef_search in HNSW */
 
     void lockShared()      { m_mutex.lock_shared(); }
     void lockExclusive()   { m_mutex.lock(); }

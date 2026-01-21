@@ -563,6 +563,7 @@ public:
                           std::vector<std::pair<dist_t, tableint>>,
                           CompareByFirst> &top_candidates,
       int level, bool isUpdate) {
+    (void)data_point;
     size_t Mcurmax = level ? maxM_ : maxM0_;
     getNeighborsByHeuristic2(top_candidates, M_);
     if (top_candidates.size() > M_)
@@ -1182,7 +1183,7 @@ public:
             tableint *datal = (tableint *)(data + 1);
             for (int i = 0; i < size; i++) {
               tableint cand = datal[i];
-              if (cand < 0 || cand > max_elements_)
+              if (cand > max_elements_)
                 throw std::runtime_error("cand error");
               dist_t d = fstdistfunc_(data_point, getDataByInternalId(cand),
                                       dist_func_param_);
@@ -1256,7 +1257,7 @@ public:
         tableint *datal = (tableint *)(data + 1);
         for (int i = 0; i < size; i++) {
           tableint cand = datal[i];
-          if (cand < 0 || cand > max_elements_)
+          if (cand > max_elements_)
             throw std::runtime_error("cand error");
           dist_t d = fstdistfunc_(query_data, getDataByInternalId(cand),
                                   dist_func_param_);
