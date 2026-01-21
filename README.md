@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/Banner_Image.png" alt="MyVector Banner" width="100%">
+  <img src="https://raw.githubusercontent.com/askdba/myvector/main/assets/Banner_Image.png" alt="MyVector Banner" width="100%">
 </p>
 
 <p align="center">
@@ -117,15 +117,8 @@ make
 
 ### Install the Plugin
 
-Once built, the `myvector.so` plugin shared library can be found in `mysql-server/bld/plugin_output_directory/` or within the build directory. You can locate it using `find . -name "myvector.so"` from `mysql-server/bld/`.
-
 ```bash
-# Example: Copy the plugin shared library
-# First, locate the built plugin:
-find mysql-server/bld -name "myvector.so"
-
-# Then copy it to your MySQL plugin directory (adjust path as needed)
-# Example path if found at mysql-server/bld/plugin_output_directory/myvector.so
+# Copy the plugin shared library
 cp mysql-server/bld/plugin_output_directory/myvector.so /usr/local/mysql/lib/plugin/
 
 # Register the plugin and create stored procedures
@@ -160,19 +153,6 @@ The plugin connects to MySQL for:
 - Receiving binlog events for online index updates
 
 Required privileges: `SELECT` on base tables, `REPLICATION_CLIENT`, `REPLICATION_SLAVE`
-
----
-
-## 🔄 Query Rewriting
-
-MyVector uses the MySQL Audit `PREPARSE` hook to rewrite certain queries internally. This is primarily done to translate MyVector-specific SQL syntax into executable forms (e.g., `MYVECTOR_IS_ANN()` or `MYVECTOR_SEARCH[]` constructs) while maintaining compatibility with MySQL's parser.
-
-**Implications:**
-- **Query Logs**: Rewritten queries may appear in the general query log or slow query log in their modified form, which might be unexpected.
-- **Performance**: The rewriting process itself is highly optimized and introduces minimal overhead.
-
-**Observing Rewrites:**
-- To see the rewritten queries, enable the general query log (`SET GLOBAL general_log = 'ON'; SET GLOBAL log_output = 'FILE';`).
 
 ---
 
@@ -216,41 +196,6 @@ FROM words50d
 ORDER BY dist 
 LIMIT 10;
 ```
-
----
-
-## 🔄 Query Rewriting
-
-MyVector uses the MySQL Audit `PREPARSE` hook to rewrite certain queries internally. This is primarily done to translate MyVector-specific SQL syntax into executable forms (e.g., `MYVECTOR_IS_ANN()` or `MYVECTOR_SEARCH[]` constructs) while maintaining compatibility with MySQL's parser.
-
-**Implications:**
-- **Query Logs**: Rewritten queries may appear in the general query log or slow query log in their modified form, which might be unexpected.
-- **Performance**: The rewriting process itself is highly optimized and introduces minimal overhead.
-
-**Observing Rewrites:**
-- To see the rewritten queries, enable the general query log (`SET GLOBAL general_log = 'ON'; SET GLOBAL log_output = 'FILE';`).
-
----
-
-## 📋 Operational Guidance
-
-For effective operation of MyVector, consider the following:
-
-### Monitoring
-- **MySQL Error Log**: Monitor the MySQL error log for messages prefixed with `[myvector]` for plugin-specific information, warnings, or errors. Increase verbosity (`log_error_verbosity = 3`) for more detailed output.
-- **Status Variables**: Check MyVector-specific status variables for runtime information:
-  ```sql
-  SHOW STATUS LIKE 'myvector_%';
-  ```
-- **`mysql.myvector_index_status()`**: Use this stored procedure to inspect the current state, size, and configuration of loaded indexes.
-
-### Troubleshooting
-- **Plugin Not Loading**: Verify that `myvector.so` is in the correct MySQL plugin directory (`SELECT @@plugin_dir;`) and has appropriate file permissions.
-- **Binlog Thread Issues**: If online updates are not working, check the MySQL error log for messages from the binlog processing thread. Ensure the `myvector_config_file` is correctly configured and accessible, and that the specified MySQL user has `REPLICATION_CLIENT` and `REPLICATION_SLAVE` privileges.
-- **Index Corruption**: In rare cases of index corruption, dropping and rebuilding the index (`mysql.myvector_index_drop()` then `mysql.myvector_index_build()`) may be necessary.
-
-### Index Health
-- Regularly check the output of `mysql.myvector_index_status()` to ensure indexes are loaded, consistent, and updating as expected.
 
 ---
 
@@ -357,7 +302,7 @@ This project is licensed under the GNU General Public License v2.0 - see the [LI
 ---
 
 <p align="center">
-  <img src="assets/Logo_Image.png" alt="MyVector Logo" width="80">
+  <img src="https://raw.githubusercontent.com/askdba/myvector/main/assets/Logo_Image.png" alt="MyVector Logo" width="80">
 </p>
 
 <p align="center">

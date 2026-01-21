@@ -61,10 +61,6 @@ static std::thread *binlog_thread = nullptr;
 
 static int plugin_deinit(MYSQL_PLUGIN plugin_info) {
   shutdown_binlog_thread.store(true);
-  if (binlog_mysql_conn) {
-    mysql_close(binlog_mysql_conn);
-    binlog_mysql_conn = nullptr;
-  }
   if (binlog_thread) {
     binlog_thread->join();
     delete binlog_thread;
