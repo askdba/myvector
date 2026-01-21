@@ -23,7 +23,12 @@ git clone --depth 1 --branch "mysql-${MYSQL_VERSION}" https://github.com/mysql/m
 )
 
 # Copy MyVector plugin source from the local checkout
-cp -r . "$BUILD_DIR/mysql-server/plugin/myvector"
+mkdir -p "$BUILD_DIR/mysql-server/plugin/myvector"
+cp src/*.cc "$BUILD_DIR/mysql-server/plugin/myvector/"
+cp include/*.h "$BUILD_DIR/mysql-server/plugin/myvector/"
+cp include/*.i "$BUILD_DIR/mysql-server/plugin/myvector/" 2>/dev/null || true
+cp CMakeLists.txt "$BUILD_DIR/mysql-server/plugin/myvector/"
+
 
 # Install Dependencies (for Ubuntu)
 if [ "$OS" == "linux" ]; then
@@ -44,7 +49,7 @@ fi
   else
     NUM_CORES=1
   fi
-  make -j$NUM_CORES myvector
+  make -j$NUM_CORES VERBOSE=1 myvector
 )
 
 # Package the release artifact

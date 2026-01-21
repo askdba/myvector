@@ -131,4 +131,5 @@ int binlogPositionCompare(const std::string &file1, size_t pos1,
   else
     return -1;
 }
+std::string quote_identifier(const std::string &identifier);
 #endif

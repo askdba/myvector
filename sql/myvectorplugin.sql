@@ -178,17 +178,17 @@ BEGIN
 	IF colinfo IS NULL THEN
 	  SELECT myvectorcolumn AS InputVectorColumnName, CONCAT(dbname,'.',tname,'.',cname) AS ParsedVectorColumnName;
           SELECT 'Please use the fully qualified vector column name : <database>.<table>.<column>' AS Message;
-	  SIGNAL SQLSTATE '50001' SET CONSTRAINT_NAME=myvectorcolumn, MESSAGE_TEXT = 'Vector column not found', MYSQL_ERRNO = 50001;
+	  SIGNAL SQLSTATE '50001' SET MESSAGE_TEXT = 'Vector column not found. Please use the fully qualified name: <database>.<table>.<column>.';
         END IF;
 
 	-- SELECT CONCAT('Column Comment is :',colinfo);
 
 	IF LOCATE("MYVECTOR COLUMN", colinfo) <> 1 THEN
-	  SIGNAL SQLSTATE '50002' SET MESSAGE_TEXT = 'Column is not a MYVECTOR column', MYSQL_ERRNO = 50002;
+	  SIGNAL SQLSTATE '50002' SET MESSAGE_TEXT = 'The specified column is not a MYVECTOR column.';
 	END IF;
 
 	IF action = "refresh" AND LOCATE("track=", colinfo) = 0 THEN
-	  SIGNAL SQLSTATE '50003' SET MESSAGE_TEXT = 'MyVector Tracking timestamp column not found for incremental refresh', MYSQL_ERRNO = 50003;
+	  SIGNAL SQLSTATE '50003' SET MESSAGE_TEXT = 'MyVector tracking timestamp column not found for incremental refresh.';
 	END IF;
 
         -- Call UDF to open/build/load index

@@ -563,6 +563,7 @@ public:
                           std::vector<std::pair<dist_t, tableint>>,
                           CompareByFirst> &top_candidates,
       int level, bool isUpdate) {
+    (void)data_point;
     size_t Mcurmax = level ? maxM_ : maxM0_;
     getNeighborsByHeuristic2(top_candidates, M_);
     if (top_candidates.size() > M_)
