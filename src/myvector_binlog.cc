@@ -72,7 +72,6 @@ static void usleep(int usec) { ::Sleep(usec / 1000); }
 #include "mysql/plugin.h"
 #include "mysql/service_my_plugin_log.h"
 #include "myvector.h"
-#include "myvector_errors.h"
 
 // using namespace std; - Removed for code quality
 using std::condition_variable;
@@ -114,7 +113,6 @@ extern MYSQL *binlog_mysql_conn;
 #include "myvectorutils.h"
 
 extern char *myvector_index_dir;
-extern char *myvector_creds_file;
 
 /// Format_description_event glob_description_event(BINLOG_VERSION,
 /// server_version);
@@ -416,16 +414,11 @@ void readConfigFile(const char *config_file) {
 
   MyVectorOptions vo(info);
 
-  if (myvector_conn_user_id.empty())
-    myvector_conn_user_id = vo.getOption("myvector_user_id");
-  if (myvector_conn_password.empty())
-    myvector_conn_password = vo.getOption("myvector_user_password");
-  if (myvector_conn_socket.empty())
-    myvector_conn_socket = vo.getOption("myvector_socket");
-  if (myvector_conn_host.empty())
-    myvector_conn_host = vo.getOption("myvector_host");
-  if (myvector_conn_port.empty())
-    myvector_conn_port = vo.getOption("myvector_port");
+  myvector_conn_user_id = vo.getOption("myvector_user_id");
+  myvector_conn_password = vo.getOption("myvector_user_password");
+  myvector_conn_socket = vo.getOption("myvector_socket");
+  myvector_conn_host = vo.getOption("myvector_host");
+  myvector_conn_port = vo.getOption("myvector_port");
 }
 
 /* GetBaseTableColumnPositions() - Get the column ordinal positions of the
@@ -604,18 +597,16 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
     return;
   }
 
-  snprintf(query, sizeof(query), "LOCK TABLES %s.%s READ",
-           quote_identifier(db).c_str(),
-           quote_identifier(table).c_str()); // No DMLs during build.
+  snprintf(query, sizeof(query), "LOCK TABLES %s.%s READ", db,
+           table); // No DMLs during build.
 
   if (mysql_real_query(&mysql, query, strlen(query))) {
     // TODO
     return;
   }
 
-  snprintf(query, sizeof(query), "SELECT %s, %s FROM %s.%s",
-           quote_identifier(idcol).c_str(), quote_identifier(veccol).c_str(),
-           quote_identifier(db).c_str(), quote_identifier(table).c_str());
+  snprintf(query, sizeof(query), "SELECT %s, %s FROM %s.%s", idcol, veccol, db,
+           table);
 
   /// table has been locked, now we perform the timestamp related stuff
   unsigned long current_ts = time(NULL);
@@ -626,8 +617,7 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
     unsigned long previous_ts = vi->getUpdateTs();
     snprintf(whereClause, sizeof(whereClause),
              " WHERE unix_timestamp(%s) > %lu AND unix_timestamp(%s) <= %lu",
-             quote_identifier(trackingColumn).c_str(), previous_ts,
-             quote_identifier(trackingColumn).c_str(), current_ts);
+             trackingColumn, previous_ts, trackingColumn, current_ts);
     strcat(query, whereClause);
   }
 
@@ -735,7 +725,6 @@ void myvector_binlog_loop(int id) {
 
   int connect_attempts = 0;
 
-  readConfigFile(myvector_creds_file);
   readConfigFile(myvector_config_file);
 
   if (myvector_feature_level & 1) {
