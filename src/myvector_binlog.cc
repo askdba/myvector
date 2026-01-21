@@ -38,9 +38,16 @@
 
 // #include <boost/lockfree/queue.hpp>
 #include "compression.h"
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
 #include "libbinlogevents/include/codecs/factory.h"
 #include "libbinlogevents/include/compression/factory.h"
 #include "libbinlogevents/include/trx_boundary_parser.h"
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 #include "my_byteorder.h"
 #include "my_dbug.h"
 #include "my_default.h"
