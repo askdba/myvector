@@ -297,11 +297,14 @@ void parseRowsEvent(const unsigned char *event_buf, unsigned int event_len,
   unsigned int ncols = (unsigned int)event_buf[index];
   index++;
   unsigned int inclen = (((unsigned int)(ncols) + 7) >> 3);
+  (void)inclen;
   // TODO : Assuming included & null bitmaps are single byte
   unsigned int incbitmap = (unsigned int)event_buf[index];
+  (void)incbitmap;
   index++;
   while (true) {
     unsigned int nullbitmap = (unsigned int)event_buf[index];
+    (void)nullbitmap;
     index++;
 
     unsigned int lval = 0;
@@ -685,7 +688,6 @@ void BuildMyVectorIndexSQL(const char *db, const char *table, const char *idcol,
 
   } // scope guard for binlog mutex lock
 
-exitFn:
   mysql_close(&mysql);
 }
 
@@ -792,6 +794,7 @@ void myvector_binlog_loop(int id) {
   void vector_q_thread_fn(int id);
   for (int i = 0; i < myvector_index_bg_threads; i++)
     std::thread *worker_thread = new std::thread(vector_q_thread_fn, i);
+    (void)worker_thread;
 
   size_t nrows = 0;
 
