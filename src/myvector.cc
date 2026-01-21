@@ -34,6 +34,11 @@
 #include <unordered_map>
 #include <vector>
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsuggest-override"
+#endif
+
 #ifdef WIN32
 #define PLUGIN_EXPORT extern "C" __declspec(dllexport)
 #else
@@ -295,7 +300,7 @@ double computeCosineDistance(const FP32 *__restrict v1,
 float computeCosineDistanceFn(const void *__restrict v1,
                               const void *__restrict v2,
                               const void *__restrict qty_ptr) {
-  size_t qty = *((size_t *)qty_ptr); /// dimension of the vector
+  size_t qty = *((const size_t *)qty_ptr); /// dimension of the vector
   return (float)computeCosineDistance((const FP32 *)v1, (const FP32 *)v2,
                                       (int)qty);
 }
@@ -326,11 +331,11 @@ public:
 float HammingDistanceFn(const void *__restrict pVect1,
                         const void *__restrict pVect2,
                         const void *__restrict qty_ptr) {
-  size_t qty = *((size_t *)qty_ptr); /// dimension of the vector
+  size_t qty = *((const size_t *)qty_ptr); /// dimension of the vector
   float dist = 0;
   unsigned long ldist = 0;
-  unsigned long *a = (unsigned long *)pVect1;
-  unsigned long *b = (unsigned long *)pVect2;
+  const unsigned long *a = (const unsigned long *)pVect1;
+  const unsigned long *b = (const unsigned long *)pVect2;
 
   /* Hamming Distance between 2 byte sequences - Number of bit positions
    * matching/different in both the sequences. In the plugin, we calculate
@@ -2330,3 +2335,7 @@ string myvector_find_earliest_binlog_file() {
   return g_indexes.FindEarliestBinlogFile();
 }
 /* end of myvector.cc */
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif

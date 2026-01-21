@@ -208,9 +208,10 @@ typedef struct {
  */
 void parseTableMapEvent(const unsigned char *event_buf, unsigned int event_len,
                         TableMapEvent &tev) {
+  (void)event_len;
   tev = TableMapEvent();
 
-  int index = EVENT_HEADER_LENGTH;
+  unsigned int index = EVENT_HEADER_LENGTH;
 
   memcpy(&tev.tableId, &event_buf[index], 6);
   index += 6;
@@ -239,6 +240,7 @@ void parseTableMapEvent(const unsigned char *event_buf, unsigned int event_len,
                          &event_buf[index + tev.nColumns]);
   index += tev.nColumns;
   unsigned int metadatalen = (unsigned int)event_buf[index];
+  (void)metadatalen;
   index++;
 
   for (unsigned int i = 0; i < (unsigned int)tev.nColumns; i++) {
@@ -285,7 +287,7 @@ void parseTableMapEvent(const unsigned char *event_buf, unsigned int event_len,
 void parseRowsEvent(const unsigned char *event_buf, unsigned int event_len,
                     TableMapEvent &tev, unsigned int pos1, unsigned int pos2,
                     vector<VectorIndexUpdateItem *> &updates) {
-  int index = EVENT_HEADER_LENGTH;
+  unsigned int index = EVENT_HEADER_LENGTH;
 
   unsigned long tableId = 0;
 
@@ -319,7 +321,7 @@ void parseRowsEvent(const unsigned char *event_buf, unsigned int event_len,
 
     unsigned int idVal = 0, vecsz = 0;
     const unsigned char *vec = nullptr;
-    for (int i = 0; i < ncols; i++) {
+    for (unsigned int i = 0; i < ncols; i++) {
       switch (tev.columnTypes[i]) {
       case MYSQL_TYPE_LONG:
         memcpy(&lval, &event_buf[index], 4);
@@ -799,9 +801,9 @@ void myvector_binlog_loop(int id) {
   int cnt = 0;
 
   void vector_q_thread_fn(int id);
-  for (int i = 0; i < myvector_index_bg_threads; i++)
-    std::thread *worker_thread = new std::thread(vector_q_thread_fn, i);
-    (void)worker_thread;
+  for (int i = 0; i < myvector_index_bg_threads; i++) {
+    std::thread(vector_q_thread_fn, i).detach();
+  }
 
   size_t nrows = 0;
 
