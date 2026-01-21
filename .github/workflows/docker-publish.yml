@@ -1,8 +1,18 @@
 name: Publish Docker Image
 
 on:
-  push:
-    branches: [ "main" ]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      push:
+        description: 'Push images to GHCR'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   build-and-publish:
@@ -95,7 +105,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
-          push: true
+          push: ${{ github.event_name == 'release' || inputs.push == 'true' }}
           tags: ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}
           build-args: |
             MYSQL_VERSION=${{ matrix.mysql-version }}
@@ -106,7 +116,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
-          push: true
+          push: ${{ github.event_name == 'release' || inputs.push == 'true' }}
           tags: ghcr.io/${{ github.repository }}:latest
           build-args: |
             MYSQL_VERSION=${{ matrix.mysql-version }}

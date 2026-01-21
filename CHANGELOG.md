@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Re-added `mysql_close(binlog_mysql_conn)` in `plugin_deinit` to explicitly interrupt blocking `mysql_binlog_fetch` calls, ensuring graceful and non-blocking plugin shutdown.
 - Reset `shutdown_binlog_thread` on plugin initialization to prevent immediate thread exit on plugin reload.
 - Centralize `MYSQL` connection closing in `plugin_deinit` and ensure `binlog_mysql_conn` is nulled on early exits from `myvector_binlog_loop` to prevent double-free and use-after-free issues.
 - Break connection retry loop on shutdown: The binlog connection retry loop now checks the `shutdown_binlog_thread` flag, allowing for graceful termination if the plugin is unloaded while MySQL is down.
@@ -21,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Restore `h_udf_metadata_service` initialization required for UDF character set handling.
 
 ### Changed
+- Improved `README.md` documentation covering:
+  - Clarified plugin build output paths in the "Install the Plugin" section.
+  - Added a new "Query Rewriting" section explaining audit/query rewrite behavior.
+  - Introduced "Operational Guidance" for monitoring, troubleshooting, and index health.
 - Restructured repository layout to match `mysql-mcp-server` standard (#21)
   - Moved source files to `src/`
   - Moved headers to `include/`
