@@ -1,13 +1,10 @@
 ARG MYSQL_VERSION=8.0
-FROM oraclelinux:9 AS libstdcxx
-RUN dnf -y install oraclelinux-developer-release-el9 dnf-plugins-core && \
-    dnf config-manager --enable ol9_codeready_builder && \
-    dnf -y install gcc-toolset-12 && \
-    mkdir -p /opt/libstdcxx && \
-    libstdcxx_file="$(find /opt/rh/gcc-toolset-12 -name 'libstdc++.so.*' -type f | sort | tail -n1)" && \
+FROM ubuntu:22.04 AS libstdcxx
+RUN apt-get update && apt-get install -y libstdc++6 && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /opt/libstdcxx && \
+    libstdcxx_file="$(ls /usr/lib/x86_64-linux-gnu/libstdc++.so.6.* | head -n1)" && \
     cp -a "$libstdcxx_file" /opt/libstdcxx/ && \
-    ln -s "$(basename "$libstdcxx_file")" /opt/libstdcxx/libstdc++.so.6 && \
-    dnf clean all
+    ln -s "$(basename "$libstdcxx_file")" /opt/libstdcxx/libstdc++.so.6
 
 # Use MySQL as the base image
 FROM mysql:${MYSQL_VERSION}
@@ -20,13 +17,20 @@ RUN if [ -d /usr/lib64/mysql/plugin ]; then \
     fi
 COPY myvectorplugin.sql /docker-entrypoint-initdb.d/
 COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6 /usr/lib64/
-COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.* /usr/lib64/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6.* /usr/lib64/
 COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6 /usr/lib/
-COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.* /usr/lib/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6.* /usr/lib/
 COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6 /lib64/
-COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.* /lib64/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6.* /lib64/
 COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6 /lib/
-COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.* /lib/
-RUN ldconfig
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6.* /lib/
+RUN libstdcxx_real="$(ls /lib64/libstdc++.so.6.* | grep -v gdb | head -n1)" && \
+    ln -sf "$(basename "$libstdcxx_real")" /lib64/libstdc++.so.6 && \
+    ln -sf "$(basename "$libstdcxx_real")" /usr/lib64/libstdc++.so.6 && \
+    ln -sf "$(basename "$libstdcxx_real")" /usr/lib/libstdc++.so.6 && \
+    ln -sf "$(basename "$libstdcxx_real")" /lib/libstdc++.so.6 && \
+    rm -f /lib64/libstdc++.so.6.*gdb* /lib/libstdc++.so.6.*gdb* \
+      /usr/lib64/libstdc++.so.6.*gdb* /usr/lib/libstdc++.so.6.*gdb* && \
+    ldconfig
 
 # The rest will be handled by the default MySQL entrypoint
