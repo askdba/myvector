@@ -3,7 +3,8 @@ FROM oraclelinux:8 AS libstdcxx
 RUN dnf -y install oraclelinux-developer-release-el8 dnf-plugins-core && \
     dnf config-manager --enable ol8_codeready_builder && \
     dnf -y install gcc-toolset-11 && \
-    cp -a /opt/rh/gcc-toolset-11/root/usr/lib64/libstdc++.so.* /opt/libstdcxx/ && \
+    mkdir -p /opt/libstdcxx && \
+    find /opt/rh/gcc-toolset-11 -name 'libstdc++.so.*' -type f -exec cp -a {} /opt/libstdcxx/ \; && \
     dnf clean all
 
 # Use MySQL as the base image
