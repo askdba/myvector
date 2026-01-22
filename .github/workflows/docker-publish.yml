@@ -33,8 +33,8 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             cmake \
-            gcc-9 \
-            g++-9 \
+            gcc-10 \
+            g++-10 \
             libssl-dev \
             libncurses5-dev \
             pkg-config \
@@ -66,8 +66,8 @@ jobs:
           cd mysql-server
           mkdir -p bld && cd bld
           cmake .. \
-            -DCMAKE_C_COMPILER=gcc-9 \
-            -DCMAKE_CXX_COMPILER=g++-9 \
+            -DCMAKE_C_COMPILER=gcc-10 \
+            -DCMAKE_CXX_COMPILER=g++-10 \
             -DDOWNLOAD_BOOST=1 \
             -DWITH_BOOST=../../boost_cache \
             -DWITH_UNIT_TESTS=OFF \
