@@ -18,7 +18,9 @@ docker run -d \
   "$IMAGE" >/dev/null
 
 ensure_container_running() {
-  if ! docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" >/dev/null 2>&1; then
+  local running
+  running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+  if [ "$running" != "true" ]; then
     echo "Container stopped before MySQL was ready."
     docker logs "$CONTAINER_NAME" || true
     exit 1
