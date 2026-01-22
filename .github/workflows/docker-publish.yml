@@ -19,10 +19,13 @@ jobs:
         include:
           - mysql-tag: 'mysql-8.0.40'
             mysql-version: '8.0'
+            dockerfile: Dockerfile.oraclelinux
           - mysql-tag: 'mysql-8.4.8'
             mysql-version: '8.4'
+            dockerfile: Dockerfile.oraclelinux
           - mysql-tag: 'mysql-9.0.0'
             mysql-version: '9.0'
+            dockerfile: Dockerfile.oraclelinux
     steps:
       - name: Checkout MyVector Code
         uses: actions/checkout@v4
@@ -91,6 +94,7 @@ jobs:
       - name: Smoke test image contents
         run: |
           docker build \
+            --file ${{ matrix.dockerfile }} \
             --build-arg MYSQL_VERSION=${{ matrix.mysql-version }} \
             -t myvector-smoke:${{ matrix.mysql-version }} \
             .
@@ -119,6 +123,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' }}
           tags: ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}
@@ -130,6 +135,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
           push: ${{ github.event_name == 'push' }}
           tags: ghcr.io/${{ github.repository }}:latest
