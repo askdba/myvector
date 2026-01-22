@@ -19,6 +19,8 @@ RUN if [ -d /usr/lib64/mysql/plugin ]; then \
 COPY myvectorplugin.sql /docker-entrypoint-initdb.d/
 COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.* /usr/lib64/
 COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.* /usr/lib/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.* /lib64/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.* /lib/
 RUN ldconfig
 
 # The rest will be handled by the default MySQL entrypoint
