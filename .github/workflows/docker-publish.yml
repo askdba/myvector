@@ -50,6 +50,7 @@ jobs:
           mkdir -p mysql-server/plugin/myvector
           cp src/*.cc mysql-server/plugin/myvector/
           cp include/*.h mysql-server/plugin/myvector/
+          cp include/*.i mysql-server/plugin/myvector/ 2>/dev/null || true
           cp CMakeLists.txt mysql-server/plugin/myvector/
 
       - name: Configure MySQL Build
