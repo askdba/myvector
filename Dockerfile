@@ -1,10 +1,10 @@
 ARG MYSQL_VERSION=8.0
-FROM oraclelinux:8 AS libstdcxx
-RUN dnf -y install oraclelinux-developer-release-el8 dnf-plugins-core && \
-    dnf config-manager --enable ol8_codeready_builder && \
-    dnf -y install gcc-toolset-11 && \
+FROM oraclelinux:9 AS libstdcxx
+RUN dnf -y install oraclelinux-developer-release-el9 dnf-plugins-core && \
+    dnf config-manager --enable ol9_codeready_builder && \
+    dnf -y install gcc-toolset-12 && \
     mkdir -p /opt/libstdcxx && \
-    libstdcxx_file="$(find /opt/rh/gcc-toolset-11 -name 'libstdc++.so.*' -type f | sort | tail -n1)" && \
+    libstdcxx_file="$(find /opt/rh/gcc-toolset-12 -name 'libstdc++.so.*' -type f | sort | tail -n1)" && \
     cp -a "$libstdcxx_file" /opt/libstdcxx/ && \
     ln -s "$(basename "$libstdcxx_file")" /opt/libstdcxx/libstdc++.so.6 && \
     dnf clean all
