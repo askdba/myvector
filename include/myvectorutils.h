@@ -37,9 +37,9 @@ private:
   bool parseKV(const char *line) {
     /* e.g options list-MYVECTOR(type=hnsw,dim=50,size=4000000,M=64,ef=100) */
     const char *ptr1 = line;
-    if (strchr(line, '|')) /// start marker
+    if (std::strchr(line, '|')) /// start marker
     {
-      ptr1 = strchr(line, '|');
+      ptr1 = std::strchr(line, '|');
       ptr1++;
     }
     std::string sline(ptr1);
