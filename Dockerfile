@@ -1,6 +1,9 @@
 ARG MYSQL_VERSION=8.0
 FROM oraclelinux:8 AS libstdcxx
-RUN dnf -y install gcc-toolset-11-libstdc++ && dnf clean all
+RUN dnf -y install oraclelinux-developer-release-el8 dnf-plugins-core && \
+    dnf config-manager --enable ol8_developer && \
+    dnf -y install gcc-toolset-11-libstdc++ && \
+    dnf clean all
 
 # Use MySQL as the base image
 FROM mysql:${MYSQL_VERSION}
