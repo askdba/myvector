@@ -3,6 +3,7 @@ FROM oraclelinux:8 AS libstdcxx
 RUN dnf -y install oraclelinux-developer-release-el8 dnf-plugins-core && \
     dnf config-manager --enable ol8_codeready_builder && \
     dnf -y install gcc-toolset-11 && \
+    cp -a /opt/rh/gcc-toolset-11/root/usr/lib64/libstdc++.so.* /opt/libstdcxx/ && \
     dnf clean all
 
 # Use MySQL as the base image
@@ -15,8 +16,8 @@ RUN if [ -d /usr/lib64/mysql/plugin ]; then \
       cp /usr/lib/mysql/plugin/myvector.so /usr/lib64/mysql/plugin/; \
     fi
 COPY myvectorplugin.sql /docker-entrypoint-initdb.d/
-COPY --from=libstdcxx /opt/rh/gcc-toolset-11/root/usr/lib64/libstdc++.so.6 /usr/lib64/
-COPY --from=libstdcxx /opt/rh/gcc-toolset-11/root/usr/lib64/libstdc++.so.6 /usr/lib/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.* /usr/lib64/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.* /usr/lib/
 RUN ldconfig
 
 # The rest will be handled by the default MySQL entrypoint
