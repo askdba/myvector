@@ -1,6 +1,6 @@
 ARG MYSQL_VERSION=8.0
-FROM ubuntu:22.04 AS libstdcxx
-RUN apt-get update && apt-get install -y libstdc++6 && rm -rf /var/lib/apt/lists/*
+FROM oraclelinux:8 AS libstdcxx
+RUN dnf -y install gcc-toolset-11-libstdc++ && dnf clean all
 
 # Use MySQL as the base image
 FROM mysql:${MYSQL_VERSION}
@@ -12,8 +12,8 @@ RUN if [ -d /usr/lib64/mysql/plugin ]; then \
       cp /usr/lib/mysql/plugin/myvector.so /usr/lib64/mysql/plugin/; \
     fi
 COPY myvectorplugin.sql /docker-entrypoint-initdb.d/
-COPY --from=libstdcxx /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /usr/lib64/
-COPY --from=libstdcxx /usr/lib/x86_64-linux-gnu/libstdc++.so.6 /usr/lib/
+COPY --from=libstdcxx /opt/rh/gcc-toolset-11/root/usr/lib64/libstdc++.so.6 /usr/lib64/
+COPY --from=libstdcxx /opt/rh/gcc-toolset-11/root/usr/lib64/libstdc++.so.6 /usr/lib/
 RUN ldconfig
 
 # The rest will be handled by the default MySQL entrypoint
