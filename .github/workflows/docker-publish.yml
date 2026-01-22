@@ -82,6 +82,19 @@ jobs:
           cp mysql-server/bld/plugin_output_directory/myvector.so .
           cp sql/myvectorplugin.sql .
 
+      - name: Smoke test image contents
+        run: |
+          docker build \
+            --build-arg MYSQL_VERSION=${{ matrix.mysql-version }} \
+            -t myvector-smoke:${{ matrix.mysql-version }} \
+            .
+          docker run --rm myvector-smoke:${{ matrix.mysql-version }} \
+            /bin/sh -c "test -f /usr/lib/mysql/plugin/myvector.so && test -f /docker-entrypoint-initdb.d/myvectorplugin.sql"
+
+      - name: Smoke test README examples
+        run: |
+          bash scripts/smoke-readme.sh myvector-smoke:${{ matrix.mysql-version }}
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
