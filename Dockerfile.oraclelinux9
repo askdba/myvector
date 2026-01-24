@@ -1,10 +1,20 @@
 ARG MYSQL_VERSION=8.0
-FROM ubuntu:22.04 AS libstdcxx
-RUN apt-get update && apt-get install -y libstdc++6 && rm -rf /var/lib/apt/lists/*
-RUN mkdir -p /opt/libstdcxx && \
-    libstdcxx_file="$(ls /usr/lib/x86_64-linux-gnu/libstdc++.so.6.* | head -n1)" && \
+FROM oraclelinux:9 AS libstdcxx
+RUN dnf -y install oraclelinux-developer-release-el9 dnf-plugins-core && \
+    dnf config-manager --enable ol9_codeready_builder && \
+    dnf -y install gcc-toolset-12 && \
+    mkdir -p /opt/libstdcxx && \
+    libstdcxx_file="$(find /opt/rh -name 'libstdc++.so.6.*' -type f ! -name '*gdb.py' ! -name '*gdb.cpython*' | sort | tail -n1)" && \
+    if [ -z "$libstdcxx_file" ]; then \
+      libstdcxx_file="$(find /usr -name 'libstdc++.so.6.*' -type f ! -name '*gdb.py' ! -name '*gdb.cpython*' | sort | tail -n1)"; \
+    fi && \
+    if [ -z "$libstdcxx_file" ]; then \
+      echo "libstdc++ not found in toolset or system paths" >&2; \
+      exit 1; \
+    fi && \
     cp -a "$libstdcxx_file" /opt/libstdcxx/ && \
-    ln -s "$(basename "$libstdcxx_file")" /opt/libstdcxx/libstdc++.so.6
+    ln -s "$(basename "$libstdcxx_file")" /opt/libstdcxx/libstdc++.so.6 && \
+    dnf clean all
 
 # Use MySQL as the base image
 FROM mysql:${MYSQL_VERSION}

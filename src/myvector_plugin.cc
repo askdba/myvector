@@ -25,7 +25,7 @@
 #include <mysql/service_my_plugin_log.h>
 #include <mysql/service_mysql_alloc.h>
 #include <mysql/service_plugin_registry.h>
-#include <mysql/mysql.h>
+#include <mysql.h>
 #include <mysql/status_var.h>
 #include <mysql_version.h>
 

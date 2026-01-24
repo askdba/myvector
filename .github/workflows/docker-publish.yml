@@ -3,6 +3,8 @@ name: Publish Docker Image
 on:
   push:
     branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 permissions:
   contents: read
@@ -10,17 +12,20 @@ permissions:
 
 jobs:
   build-and-publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          - mysql-tag: 'mysql-8.0.40'
+          - mysql-tag: 'mysql-8.0.45'
             mysql-version: '8.0'
+            dockerfile: Dockerfile.oraclelinux8
           - mysql-tag: 'mysql-8.4.8'
             mysql-version: '8.4'
-          - mysql-tag: 'mysql-9.0.0'
-            mysql-version: '9.0'
+            dockerfile: Dockerfile.oraclelinux9
+          - mysql-tag: 'mysql-9.6.0'
+            mysql-version: '9.6'
+            dockerfile: Dockerfile.oraclelinux9
     steps:
       - name: Checkout MyVector Code
         uses: actions/checkout@v4
@@ -31,6 +36,8 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             cmake \
+            gcc-10 \
+            g++-10 \
             libssl-dev \
             libncurses5-dev \
             pkg-config \
@@ -62,6 +69,8 @@ jobs:
           cd mysql-server
           mkdir -p bld && cd bld
           cmake .. \
+            -DCMAKE_C_COMPILER=gcc-10 \
+            -DCMAKE_CXX_COMPILER=g++-10 \
             -DDOWNLOAD_BOOST=1 \
             -DWITH_BOOST=../../boost_cache \
             -DWITH_UNIT_TESTS=OFF \
@@ -85,6 +94,7 @@ jobs:
       - name: Smoke test image contents
         run: |
           docker build \
+            --file ${{ matrix.dockerfile }} \
             --build-arg MYSQL_VERSION=${{ matrix.mysql-version }} \
             -t myvector-smoke:${{ matrix.mysql-version }} \
             .
@@ -102,6 +112,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
+        if: github.event_name == 'push'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -112,19 +123,21 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
-          push: true
+          push: ${{ github.event_name == 'push' }}
           tags: ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}
           build-args: |
             MYSQL_VERSION=${{ matrix.mysql-version }}
 
       - name: Tag and push latest
-        if: matrix.mysql-version == '8.0'
+        if: matrix.mysql-version == '8.0' && github.event_name == 'push'
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
-          push: true
+          push: ${{ github.event_name == 'push' }}
           tags: ghcr.io/${{ github.repository }}:latest
           build-args: |
             MYSQL_VERSION=${{ matrix.mysql-version }}
