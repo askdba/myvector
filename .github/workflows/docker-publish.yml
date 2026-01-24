@@ -17,15 +17,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - mysql-tag: 'mysql-8.0.40'
+          - mysql-tag: 'mysql-8.0.45'
             mysql-version: '8.0'
-            dockerfile: Dockerfile.oraclelinux
+            dockerfile: Dockerfile.oraclelinux8
           - mysql-tag: 'mysql-8.4.8'
             mysql-version: '8.4'
-            dockerfile: Dockerfile.oraclelinux
-          - mysql-tag: 'mysql-9.0.0'
-            mysql-version: '9.0'
-            dockerfile: Dockerfile.oraclelinux
+            dockerfile: Dockerfile.oraclelinux9
+          - mysql-tag: 'mysql-9.6.0'
+            mysql-version: '9.6'
+            dockerfile: Dockerfile.oraclelinux9
     steps:
       - name: Checkout MyVector Code
         uses: actions/checkout@v4

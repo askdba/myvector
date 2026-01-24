@@ -1,0 +1,46 @@
+ARG MYSQL_VERSION=8.0
+FROM oraclelinux:8 AS libstdcxx
+RUN dnf -y install oraclelinux-developer-release-el8 dnf-plugins-core && \
+    dnf config-manager --enable ol8_codeready_builder && \
+    dnf -y install gcc-toolset-12 && \
+    mkdir -p /opt/libstdcxx && \
+    libstdcxx_file="$(find /opt/rh -name 'libstdc++.so.6.*' -type f ! -name '*gdb.py' ! -name '*gdb.cpython*' | sort | tail -n1)" && \
+    if [ -z "$libstdcxx_file" ]; then \
+      libstdcxx_file="$(find /usr -name 'libstdc++.so.6.*' -type f ! -name '*gdb.py' ! -name '*gdb.cpython*' | sort | tail -n1)"; \
+    fi && \
+    if [ -z "$libstdcxx_file" ]; then \
+      echo "libstdc++ not found in toolset or system paths" >&2; \
+      exit 1; \
+    fi && \
+    cp -a "$libstdcxx_file" /opt/libstdcxx/ && \
+    ln -s "$(basename "$libstdcxx_file")" /opt/libstdcxx/libstdc++.so.6 && \
+    dnf clean all
+
+# Use MySQL as the base image
+FROM mysql:${MYSQL_VERSION}
+
+# Copy the MyVector plugin and installation script
+# MySQL images use /usr/lib64/mysql/plugin on some distros.
+COPY myvector.so /usr/lib/mysql/plugin/
+RUN if [ -d /usr/lib64/mysql/plugin ]; then \
+      cp /usr/lib/mysql/plugin/myvector.so /usr/lib64/mysql/plugin/; \
+    fi
+COPY myvectorplugin.sql /docker-entrypoint-initdb.d/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6 /usr/lib64/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6.* /usr/lib64/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6 /usr/lib/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6.* /usr/lib/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6 /lib64/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6.* /lib64/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6 /lib/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6.* /lib/
+RUN libstdcxx_real="$(ls /lib64/libstdc++.so.6.* | grep -v gdb | head -n1)" && \
+    ln -sf "$(basename "$libstdcxx_real")" /lib64/libstdc++.so.6 && \
+    ln -sf "$(basename "$libstdcxx_real")" /usr/lib64/libstdc++.so.6 && \
+    ln -sf "$(basename "$libstdcxx_real")" /usr/lib/libstdc++.so.6 && \
+    ln -sf "$(basename "$libstdcxx_real")" /lib/libstdc++.so.6 && \
+    rm -f /lib64/libstdc++.so.6.*gdb* /lib/libstdc++.so.6.*gdb* \
+      /usr/lib64/libstdc++.so.6.*gdb* /usr/lib/libstdc++.so.6.*gdb* && \
+    ldconfig
+
+# The rest will be handled by the default MySQL entrypoint
