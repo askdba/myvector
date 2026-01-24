@@ -2,7 +2,7 @@ ARG MYSQL_VERSION=8.0
 FROM oraclelinux:9 AS libstdcxx
 RUN dnf -y install oraclelinux-developer-release-el9 dnf-plugins-core && \
     dnf config-manager --enable ol9_codeready_builder && \
-    dnf -y install gcc-toolset-12 && \
+    dnf -y install gcc-toolset-13 && \
     mkdir -p /opt/libstdcxx && \
     libstdcxx_file="$(find /opt/rh -name 'libstdc++.so.6.*' -type f ! -name '*gdb.py' ! -name '*gdb.cpython*' | sort | tail -n1)" && \
     if [ -z "$libstdcxx_file" ]; then \
