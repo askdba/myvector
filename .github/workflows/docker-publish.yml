@@ -20,12 +20,15 @@ jobs:
           - mysql-tag: 'mysql-8.0.45'
             mysql-version: '8.0'
             dockerfile: Dockerfile.oraclelinux8
+            compiler: 10
           - mysql-tag: 'mysql-8.4.8'
             mysql-version: '8.4'
             dockerfile: Dockerfile.oraclelinux9
+            compiler: 10
           - mysql-tag: 'mysql-9.6.0'
             mysql-version: '9.6'
             dockerfile: Dockerfile.oraclelinux9
+            compiler: 11
     steps:
       - name: Checkout MyVector Code
         uses: actions/checkout@v4
@@ -38,6 +41,8 @@ jobs:
             cmake \
             gcc-10 \
             g++-10 \
+            gcc-11 \
+            g++-11 \
             libssl-dev \
             libncurses5-dev \
             pkg-config \
@@ -69,8 +74,8 @@ jobs:
           cd mysql-server
           mkdir -p bld && cd bld
           cmake .. \
-            -DCMAKE_C_COMPILER=gcc-10 \
-            -DCMAKE_CXX_COMPILER=g++-10 \
+            -DCMAKE_C_COMPILER=gcc-${{ matrix.compiler }} \
+            -DCMAKE_CXX_COMPILER=g++-${{ matrix.compiler }} \
             -DDOWNLOAD_BOOST=1 \
             -DWITH_BOOST=../../boost_cache \
             -DWITH_UNIT_TESTS=OFF \
