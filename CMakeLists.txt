@@ -17,3 +17,8 @@ MYSQL_ADD_PLUGIN(myvector
   MODULE_ONLY
   MODULE_OUTPUT_NAME "myvector"
   )
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  set_property(TARGET myvector APPEND_STRING PROPERTY LINK_FLAGS
+    " -static-libstdc++ -static-libgcc")
+endif()
