@@ -85,7 +85,7 @@ if [ "$SMOKE_STANFORD" = "1" ] && [ -d "$STANFORD_DIR" ]; then
 	fi
 
 	tmpdir="$(mktemp -d)"
-	gzip -cd "$STANFORD_DIR/insert50d.sql.gz" | head -n "$STANFORD_LINES" > "$tmpdir/insert50d_subset.sql"
+	gzip -cd "$STANFORD_DIR/insert50d.sql.gz" | head -n "$STANFORD_LINES" >"$tmpdir/insert50d_subset.sql"
 	cp "$STANFORD_DIR/create.sql" "$tmpdir/create.sql"
 
 	docker cp "$tmpdir/create.sql" "$CONTAINER_NAME":/tmp/create.sql

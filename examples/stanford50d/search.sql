@@ -26,7 +26,8 @@ where myvector_is_ann(
 );
 
 -- repeat same search with KNN
-select word,
+select
+    word,
     myvector_distance(
         wordvec,
         (select wordvec from words50d where word = 'harvard')

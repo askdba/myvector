@@ -155,7 +155,7 @@ jobs:
         cd mysql-server/bld
         
         # Build only the myvector plugin target
-        make myvector -j$(nproc)
+        make myvector -j"$(nproc)"
 
     - name: Verify Build
       run: |

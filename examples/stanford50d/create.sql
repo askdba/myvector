@@ -7,5 +7,5 @@
 create table words50d (
     wordid int auto_increment primary key,
     word varchar(200),
-    wordvec myvector(type=hnsw, dim=50, size=400000, m=64, ef=100)
+    wordvec myvector (type = hnsw, dim = 50, size = 400000, m = 64, ef = 100)
 );
