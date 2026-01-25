@@ -1,6 +1,7 @@
 # Project Structure
 
-This repository follows a standard layout inspired by `mysql-mcp-server` and modern C++ projects.
+This repository follows a standard layout inspired by `mysql-mcp-server`
+and modern C++ projects.
 
 ## Directory Layout
 

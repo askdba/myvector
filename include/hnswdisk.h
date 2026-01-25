@@ -710,7 +710,7 @@ public:
           linksSet2.insert(neighbourId);
         // addNodeLinksLevelGt0ToFlushList(neighbourId, level);
       } // if reverse links update from neighbours
-    }   // for all new node neighbours
+    } // for all new node neighbours
 
     addNodeLinksLevel0ToFlushList(linksSet1);
     addNodeLinksLevelGt0ToFlushList(linksSet2, 100);

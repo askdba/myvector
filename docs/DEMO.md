@@ -1,58 +1,65 @@
-***Amazon Product Catalog Dataset with Embeddings***
+# Amazon Product Catalog Dataset with Embeddings
 
-This is the best MyVector Demo! We are going to load a real world product catalog (from Amazon) into a MySQL database, build an HNSW index and then perform vector search to find semantically relevant results.
+This is the best MyVector Demo! We are going to load a real world product catalog (from Amazon) 
+into a MySQL database, build an HNSW index and then perform vector search to find semantically 
+relevant results.
 
-Sneak Peek : https://asciinema.org/a/709302
+Sneak Peek : <https://asciinema.org/a/709302>
 
-Dataset Source : https://www.kaggle.com/datasets/piyushjain16/amazon-product-data
+Dataset Source : <https://www.kaggle.com/datasets/piyushjain16/amazon-product-data>
 
 Rows : 2000000 (2 Million)
 
 Embeddings : 768 Dimension using SentenceTransformer model **all-mpnet-base-v2**
 
-https://huggingface.co/sentence-transformers/all-mpnet-base-v2    
+<https://huggingface.co/sentence-transformers/all-mpnet-base-v2>
 
 - Create the table using the following SQL statement
 
-Please review the following parameters : ```M, ef, threads``` in the MYVECTOR column specification. On our benchmark VM, it took 2 minutes to create the vector index with the following parameters : ```M=64,ef=128,threads=48```. That's right, only 2 minutes! The SQL script below has ```threads=4```, please increase if your VM has more compute.
+Please review the following parameters : ```M, ef, threads``` in the MYVECTOR column 
+specification. On our benchmark VM, it took 2 minutes to create the vector 
+index with the following parameters : ```M=64,ef=128,threads=48```. That's right, 
+only 2 minutes! The SQL script below has ```threads=4```, please increase if 
+your VM has more compute.
 
-```
+```sql
 create table amazon_products
  (
   id int primary key auto_increment,
   product_listing varchar(8192),
   vec MYVECTOR(type=HNSW,dim=768,size=2100000,M=64,ef=128,ef_search=64,threads=4,dist=L2)
  );
-
-
 ```
+
 - Load the dataset
 
-SQL scripts for INSERT'ing the 2 million rows are available in Google Drive. Both files are around 4.6 GB each (compressed). Their uncompressed sizes are around 11.5 GB each. Please download them using below commands :-
-```
-$ wget "https://drive.usercontent.google.com/download?id=1Uwcalzh_yuTukkJfDRcoAm0Tp-ZSqV2t&export=download&authuser=0&confirm=a" -O insert1.sql.gz
+SQL scripts for INSERT'ing the 2 million rows are available in Google Drive.
+Both files are around 4.6 GB each (compressed). Their uncompressed sizes are
+around 11.5 GB each. Please download them using below commands :-
 
-$ wget "https://drive.usercontent.google.com/download?id=1EnpCL7kqc1xT5HSPyxBqRlh27Br1CT7R&export=download&authuser=0&confirm=a" -O insert2.sql.gz                     
+```bash
+wget "https://drive.usercontent.google.com/download?id=1Uwcalzh_yuTukkJfDRcoAm0Tp-ZSqV2t&export=download&authuser=0&confirm=a" -O insert1.sql.gz
+
+wget "https://drive.usercontent.google.com/download?id=1EnpCL7kqc1xT5HSPyxBqRlh27Br1CT7R&export=download&authuser=0&confirm=a" -O insert2.sql.gz
 ```
 
 Both the scripts run the INSERTS under a single transaction and COMMIT at the end. It should take around a couple of minutes each to execute the load scripts.
 
 Example command to run the INSERT scripts
 
-```
-$ gunzip insert1.sql.gz
+```bash
+gunzip insert1.sql.gz
 
-$ mysql -u <user> -p<password> < insert1.sql
+mysql -u <user> -p<password> < insert1.sql
 
-$ gunzip insert2.sql.gz
+gunzip insert2.sql.gz
 
-$ mysql -u <user> -p<password> < insert2.sql
-
+mysql -u <user> -p<password> < insert2.sql
 ```
 
 - Create the Vector Index
 
-```
+```sql
  call mysql.myvector_index_build('test.amazon_products.vec','id');
 ```
 
@@ -60,11 +67,14 @@ This step requires around 9GB of memory if 2 million rows were loaded into the t
 
 - Vector Search Examples
 
-The process of semantic search is simple - Accept a search query from user in natural language -> Embed the search query using the embedding model -> Search the query embedding vector in the vector index to find the nearest neighbours -> Retrieve rows from the MySQL operation table corresponding to the neighbours
+The process of semantic search is simple - Accept a search query from user in natural 
+language -> Embed the search query using the embedding model -> Search the query 
+embedding vector in the vector index to find the nearest neighbours -> Retrieve 
+rows from the MySQL operation table corresponding to the neighbours
 
 A complete Python script is provided below. Make sure to edit the connection properties.
 
-```
+```python
 # search.py - MyVector Demo Script
 #
 import sys
@@ -85,7 +95,9 @@ print("Generating vector embedding for search query : '", input_query, "' ...", 
 
 embeddings = model.encode(input_query)
 
-mysql_query = "select id, substr(product_listing,1, 200) from amazon_products WHERE MYVECTOR_IS_ANN('test.amazon_products.vec','id',myvector_construct('" + str(embeddings) + "'));"
+mysql_query = "select id, substr(product_listing,1, 200) from amazon_products"
+" WHERE MYVECTOR_IS_ANN('test.amazon_products.vec','id',myvector_construct('" 
++ str(embeddings) + "'));"
 
 print("Connecting to MySQL ....", flush=True)
 
@@ -108,6 +120,4 @@ myresult = mycursor.fetchall()
 
 for x in myresult:
   print(x)
-
 ```
-

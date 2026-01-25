@@ -1,15 +1,15 @@
-** ANN Benchmark - MyVector vs PGVector vs MariaDB **
+# ANN Benchmark - MyVector vs PGVector vs MariaDB
 
-_Server_
+## Server
 
-```
+```bash
 Cloud : OVH
 Model Name      : AMD EPYC 9254 24-Core Processor
 CPU : 48
 RAM : 128GB
 ```
 
-_gist-960-euclidean_
+## gist-960-euclidean
 
 Index Build (Distance : L2/Euclidean)
 
@@ -25,8 +25,7 @@ Index Build (Distance : L2/Euclidean)
 | PGVector  |     |                |           |            |
 | MariaDB   | 24  |     N.A        | 1         | 120m       |
 
-
-_dbpedia-openai-1000k-angular_
+## dbpedia-openai-1000k-angular
 
 Index Build (Distance : Cosine)
 
@@ -37,8 +36,7 @@ Index Build (Distance : Cosine)
 | MariaDB   | 24  |     N.A        | 1         | 98m        |
 
 MariaDB does not have a equivalent efconstruction ->
-https://lists.mariadb.org/hyperkitty/list/discuss@lists.mariadb.org/thread/PPRJF4JAFE3RIKMEPAFY2IUJJ4RPHPAW/
-
+<https://lists.mariadb.org/hyperkitty/list/discuss@lists.mariadb.org/thread/PPRJF4JAFE3RIKMEPAFY2IUJJ4RPHPAW/>
 
 ANN Search, k = 10
 
