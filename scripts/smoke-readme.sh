@@ -20,6 +20,7 @@ docker run -d \
 	-e MYSQL_DATABASE="$MYSQL_DATABASE" \
 	"$IMAGE" >/dev/null
 
+# ensure_container_running checks that the Docker container named by CONTAINER_NAME is running; if not, it prints an error message, outputs the container logs, and exits with status 1.
 ensure_container_running() {
 	local running
 	running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || true)"
