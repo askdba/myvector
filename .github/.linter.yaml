@@ -1,0 +1,17 @@
+---
+# .github/.linter.yaml
+# Configuration for super-linter
+
+# Disable all linters by default, and enable them one by one.
+# This will help us focus on fixing one thing at a time.
+DEFAULT_BRANCH: main
+VALIDATE_ALL_CODEBASE: true
+DISABLE_ERRORS: false
+LINTER_RULES_PATH: .github
+
+# C++ configuration
+VALIDATE_CPP: true
+CPP_FILE_EXTENSIONS: ".cc,.cpp,.h"
+
+# Ignore the include directory for JSCPD
+JSCPD_CONFIG_FILE: .jscpd.json

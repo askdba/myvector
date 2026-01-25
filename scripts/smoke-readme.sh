@@ -5,6 +5,9 @@ IMAGE="${1:-myvector-smoke:local}"
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-myvector}"
 MYSQL_DATABASE="${MYSQL_DATABASE:-vectordb}"
 CONTAINER_NAME="myvector-smoke-$$"
+SMOKE_STANFORD="${MYVECTOR_SMOKE_STANFORD:-0}"
+STANFORD_LINES="${MYVECTOR_SMOKE_STANFORD_LINES:-2000}"
+STANFORD_DIR="examples/stanford50d"
 
 cleanup() {
 	docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
@@ -74,3 +77,28 @@ SELECT myvector_distance(
   'L2'
 ) AS dist_l2;
 SQL
+
+if [ "$SMOKE_STANFORD" = "1" ] && [ -d "$STANFORD_DIR" ]; then
+  if [ ! -f "$STANFORD_DIR/create.sql" ] || [ ! -f "$STANFORD_DIR/insert50d.sql.gz" ]; then
+    echo "Stanford 50d demo files missing, skipping sample load."
+    exit 0
+  fi
+
+  tmpdir="$(mktemp -d)"
+  gzip -cd "$STANFORD_DIR/insert50d.sql.gz" | head -n "$STANFORD_LINES" > "$tmpdir/insert50d_subset.sql"
+  cp "$STANFORD_DIR/create.sql" "$tmpdir/create.sql"
+
+  docker cp "$tmpdir/create.sql" "$CONTAINER_NAME":/tmp/create.sql
+  docker cp "$tmpdir/insert50d_subset.sql" "$CONTAINER_NAME":/tmp/insert50d_subset.sql
+
+  docker exec -i "$CONTAINER_NAME" \
+    mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" <<'SQL'
+SOURCE /tmp/create.sql;
+SOURCE /tmp/insert50d_subset.sql;
+SELECT myvector_display(wordvec) AS vec FROM words50d WHERE word='the';
+SELECT word, myvector_distance(wordvec, (SELECT wordvec FROM words50d WHERE word='the')) AS dist
+FROM words50d
+ORDER BY dist
+LIMIT 5;
+SQL
+fi
