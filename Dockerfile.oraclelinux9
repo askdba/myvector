@@ -11,7 +11,7 @@ RUN if [ -d /usr/lib64/mysql/plugin ]; then \
 COPY myvectorplugin.sql /docker-entrypoint-initdb.d/
 
 # checkov:skip=CKV_DOCKER_3:MySQL entrypoint needs root for initialization
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD-SHELL \
+HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD \
   if [ -n "$MYSQL_RANDOM_ROOT_PASSWORD" ] && [ -z "${MYSQL_ROOT_PASSWORD:-}" ]; then exit 0; fi; \
   if [ -n "${MYSQL_ROOT_PASSWORD:-}" ]; then mysqladmin ping -uroot -p"$MYSQL_ROOT_PASSWORD" --silent; \
   else mysqladmin ping -uroot --silent; fi
