@@ -1,0 +1,14 @@
+.git
+.github
+.cursor
+.vscode
+.DS_Store
+
+# Local build artifacts
+build*/
+mysql-server*/
+boost_cache/
+tmp/
+
+# Large logs and outputs
+*.log

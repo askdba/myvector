@@ -20,12 +20,12 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 */
+#include <mysql.h>
 #include <mysql/plugin.h>
 #include <mysql/plugin_audit.h>
 #include <mysql/service_my_plugin_log.h>
 #include <mysql/service_mysql_alloc.h>
 #include <mysql/service_plugin_registry.h>
-#include <mysql.h>
 #include <mysql/status_var.h>
 #include <mysql_version.h>
 

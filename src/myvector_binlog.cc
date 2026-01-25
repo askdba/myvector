@@ -101,7 +101,7 @@ extern MYSQL *binlog_mysql_conn;
 #if defined(__GNUC__) || defined(__clang__)
 #define MYVECTOR_DIAGNOSTIC_PUSH _Pragma("GCC diagnostic push")
 #define MYVECTOR_DIAGNOSTIC_POP _Pragma("GCC diagnostic pop")
-#define MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS \
+#define MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS                                \
   _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
 #else
 #define MYVECTOR_DIAGNOSTIC_PUSH
@@ -368,7 +368,7 @@ void parseRowsEvent(const unsigned char *event_buf, unsigned int event_len,
       default:
         error_print("unrecognized column type %d", (int)tev.columnTypes[i]);
       } // switch
-    }   // for columns
+    } // for columns
 
     VectorIndexUpdateItem *item = new VectorIndexUpdateItem();
     string key = tev.dbName + "." + tev.tableName;
@@ -740,7 +740,8 @@ void myvector_binlog_loop(int id) {
 
   if (myvector_feature_level & 1) {
     info_print("Binlog event thread is disabled!");
-    binlog_mysql_conn = nullptr; // Ensure global pointer is cleared on early exit.
+    binlog_mysql_conn =
+        nullptr; // Ensure global pointer is cleared on early exit.
     return;
   }
 
@@ -826,16 +827,14 @@ void myvector_binlog_loop(int id) {
     MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS
     using MyvectorLogEventType = binary_log::Log_event_type;
     constexpr MyvectorLogEventType kRotateEvent = binary_log::ROTATE_EVENT;
-    constexpr MyvectorLogEventType kTableMapEvent =
-        binary_log::TABLE_MAP_EVENT;
+    constexpr MyvectorLogEventType kTableMapEvent = binary_log::TABLE_MAP_EVENT;
     constexpr MyvectorLogEventType kWriteRowsEvent =
         binary_log::WRITE_ROWS_EVENT;
     MYVECTOR_DIAGNOSTIC_POP
 #else
     using MyvectorLogEventType = binary_log::Log_event_type;
     constexpr MyvectorLogEventType kRotateEvent = binary_log::ROTATE_EVENT;
-    constexpr MyvectorLogEventType kTableMapEvent =
-        binary_log::TABLE_MAP_EVENT;
+    constexpr MyvectorLogEventType kTableMapEvent = binary_log::TABLE_MAP_EVENT;
     constexpr MyvectorLogEventType kWriteRowsEvent =
         binary_log::WRITE_ROWS_EVENT;
 #endif

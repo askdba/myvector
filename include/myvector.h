@@ -25,13 +25,14 @@
 
 #define MYVECTOR_PLUGIN_VERSION "1.0.0"
 
-#include <string>
+#include <map>
 #include <mutex>
 #include <shared_mutex>
-#include <map>
+#include <string>
 #include <unordered_map>
 
-bool myvector_query_rewrite(const std::string &query, std::string *rewritten_query);
+bool myvector_query_rewrite(const std::string &query,
+                            std::string *rewritten_query);
 
 /* MyVector only supports INT/BIGINT key type. 2 options for users :-
 
@@ -43,7 +44,6 @@ bool myvector_query_rewrite(const std::string &query, std::string *rewritten_que
 
 typedef size_t KeyTypeInteger;
 
-
 /* v1 uses 4-byte floats for representing vector dimensions.
    Just by templatizing all references to FP32, MyVector can support
    FP16, 8-bit SQ etc in v2 :-
@@ -51,9 +51,9 @@ typedef size_t KeyTypeInteger;
       Replace all references to FP32 with T.
       Add template<class T> before the functions/classes.
  */
-typedef float       FP32;
+typedef float FP32;
 
-typedef void*       VectorPtr;
+typedef void *VectorPtr;
 
 /* using namespace std; - Removed for code quality */
 
@@ -61,102 +61,106 @@ typedef void*       VectorPtr;
  * on 2 index types - 1) KNN in-memory using vector<> and priority_queue<>
  * 2) HNSW in-memory with persistence from hnswlib.
  */
-class AbstractVectorIndex
-{
+class AbstractVectorIndex {
 public:
-    virtual ~AbstractVectorIndex() {}
+  virtual ~AbstractVectorIndex() {}
 
-    virtual std::string getName() = 0;
+  virtual std::string getName() = 0;
 
-    virtual std::string getType() = 0;
+  virtual std::string getType() = 0;
 
-    virtual int         getDimension() { return 0; }
+  virtual int getDimension() { return 0; }
 
-    virtual bool        supportsIncrUpdates() { return false; }
+  virtual bool supportsIncrUpdates() { return false; }
 
-    virtual bool        supportsPersist() { return false; }
+  virtual bool supportsPersist() { return false; }
 
-    virtual bool        supportsConcurrentUpdates() { return false; }
+  virtual bool supportsConcurrentUpdates() { return false; }
 
-    virtual bool        supportsIncrRefresh() { return false; }
+  virtual bool supportsIncrRefresh() { return false; }
 
-    virtual bool        isReady() { return false; }
+  virtual bool isReady() { return false; }
 
-    virtual bool        isDirty() { return false; }
+  virtual bool isDirty() { return false; }
 
-    virtual std::string      getStatus() { return getName() + "<Status>"; }
+  virtual std::string getStatus() { return getName() + "<Status>"; }
 
-    virtual bool loadIndex(const std::string & path)  = 0;
+  virtual bool loadIndex(const std::string &path) = 0;
 
-    virtual bool saveIndex(const std::string & path, const std::string & option = "")  = 0;
-          
-    virtual bool saveIndexIncr(const std::string & path, const std::string & option = "")  = 0;
-          
-    virtual bool dropIndex(const std::string & path)  = 0;
+  virtual bool saveIndex(const std::string &path,
+                         const std::string &option = "") = 0;
 
-    virtual bool initIndex()                     = 0;
+  virtual bool saveIndexIncr(const std::string &path,
+                             const std::string &option = "") = 0;
 
-    virtual bool closeIndex()                    = 0;
+  virtual bool dropIndex(const std::string &path) = 0;
 
-    /* searchVectorNN - search and return 'n' Nearest Neighbours */
-    virtual bool searchVectorNN(VectorPtr qvec, int dim,
-                                std::vector<KeyTypeInteger> & nnkeys,
-                                int n) = 0;
+  virtual bool initIndex() = 0;
 
-    /* insertVectortor - insert a vector into the index */
-    virtual bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id) = 0;
+  virtual bool closeIndex() = 0;
 
-    /* startParallelBuild - User has initiated parallel index build/rebuild */
-    virtual bool startParallelBuild(int nthreads) = 0;
+  /* searchVectorNN - search and return 'n' Nearest Neighbours */
+  virtual bool searchVectorNN(VectorPtr qvec, int dim,
+                              std::vector<KeyTypeInteger> &nnkeys, int n) = 0;
 
-    /* setUpdateTs - timestamp when the last index build/refresh was started */
-    virtual void setUpdateTs(unsigned long ts) = 0;
+  /* insertVectortor - insert a vector into the index */
+  virtual bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id) = 0;
 
-    /* getUpdateTs - get timestamp when the last index build/refresh was started */
-    virtual unsigned long getUpdateTs() = 0;
+  /* startParallelBuild - User has initiated parallel index build/rebuild */
+  virtual bool startParallelBuild(int nthreads) = 0;
 
-    /* getRowCount - get number of vectors present in the index */
-    virtual unsigned long getRowCount() = 0;
-          
-    virtual void getLastUpdateCoordinates(std::string & /* file */, size_t & /* pos */) {}
+  /* setUpdateTs - timestamp when the last index build/refresh was started */
+  virtual void setUpdateTs(unsigned long ts) = 0;
 
-    virtual void setLastUpdateCoordinates(const std::string & /* file */, const size_t & /* pos */) {}
+  /* getUpdateTs - get timestamp when the last index build/refresh was started
+   */
+  virtual unsigned long getUpdateTs() = 0;
 
-    virtual void setSearchEffort(int ef_search) { (void)ef_search; } /* how much deep/wide to go? e.g ef_search in HNSW */
+  /* getRowCount - get number of vectors present in the index */
+  virtual unsigned long getRowCount() = 0;
 
-    void lockShared()      { m_mutex.lock_shared(); }
-    void lockExclusive()   { m_mutex.lock(); }
+  virtual void getLastUpdateCoordinates(std::string & /* file */,
+                                        size_t & /* pos */) {}
 
-    void unlockShared()    { m_mutex.unlock_shared(); }
-    void unlockExclusive() { m_mutex.unlock(); }
+  virtual void setLastUpdateCoordinates(const std::string & /* file */,
+                                        const size_t & /* pos */) {}
 
-    std::shared_mutex & mutex()  { return m_mutex; }
-private:
-    mutable std::shared_mutex m_mutex;
-};
+  virtual void setSearchEffort(int ef_search) {
+    (void)ef_search;
+  } /* how much deep/wide to go? e.g ef_search in HNSW */
 
-class VectorIndexCollection
-{
-public:
-    AbstractVectorIndex* open(const std::string & name,
-                              const std::string & options,
-                              const std::string & useraction);
+  void lockShared() { m_mutex.lock_shared(); }
+  void lockExclusive() { m_mutex.lock(); }
 
-    AbstractVectorIndex* get(const std::string & name);
+  void unlockShared() { m_mutex.unlock_shared(); }
+  void unlockExclusive() { m_mutex.unlock(); }
 
-    bool                 close(AbstractVectorIndex * hindex);
-
-    std::string               FindEarliestBinlogFile();
+  std::shared_mutex &mutex() { return m_mutex; }
 
 private:
-    std::unordered_map<std::string, AbstractVectorIndex*> m_indexes;
-    std::mutex m_mutex;
+  mutable std::shared_mutex m_mutex;
 };
 
-#define MYVECTOR_BUFF_SIZE       1024
+class VectorIndexCollection {
+public:
+  AbstractVectorIndex *open(const std::string &name, const std::string &options,
+                            const std::string &useraction);
+
+  AbstractVectorIndex *get(const std::string &name);
+
+  bool close(AbstractVectorIndex *hindex);
+
+  std::string FindEarliestBinlogFile();
+
+private:
+  std::unordered_map<std::string, AbstractVectorIndex *> m_indexes;
+  std::mutex m_mutex;
+};
+
+#define MYVECTOR_BUFF_SIZE 1024
 
 extern long myvector_index_bg_threads;
 extern long myvector_feature_level;
-extern char* myvector_config_file;
+extern char *myvector_config_file;
 
-#endif  // PLUGIN_MYVECTOR_H
+#endif // PLUGIN_MYVECTOR_H

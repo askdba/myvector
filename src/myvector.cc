@@ -1641,7 +1641,7 @@ char *myvector_construct_bv(const std::string &srctype, char *src, char *dst,
 
       retlen += sizeof(unsigned char);
     } // while
-  }   // else
+  } // else
 
 #if MYSQL_VERSION_ID < 90000
   unsigned int metadata = MYVECTOR_V1_BV_METADATA;
