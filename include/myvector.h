@@ -31,8 +31,8 @@
 #include <string>
 #include <unordered_map>
 
-bool myvector_query_rewrite(const std::string &query,
-                            std::string *rewritten_query);
+bool myvector_query_rewrite(const std::string& query,
+                            std::string* rewritten_query);
 
 /* MyVector only supports INT/BIGINT key type. 2 options for users :-
 
@@ -53,7 +53,7 @@ typedef size_t KeyTypeInteger;
  */
 typedef float FP32;
 
-typedef void *VectorPtr;
+typedef void* VectorPtr;
 
 /* using namespace std; - Removed for code quality */
 
@@ -63,104 +63,107 @@ typedef void *VectorPtr;
  */
 class AbstractVectorIndex {
 public:
-  virtual ~AbstractVectorIndex() {}
+    virtual ~AbstractVectorIndex() {}
 
-  virtual std::string getName() = 0;
+    virtual std::string getName() = 0;
 
-  virtual std::string getType() = 0;
+    virtual std::string getType() = 0;
 
-  virtual int getDimension() { return 0; }
+    virtual int getDimension() { return 0; }
 
-  virtual bool supportsIncrUpdates() { return false; }
+    virtual bool supportsIncrUpdates() { return false; }
 
-  virtual bool supportsPersist() { return false; }
+    virtual bool supportsPersist() { return false; }
 
-  virtual bool supportsConcurrentUpdates() { return false; }
+    virtual bool supportsConcurrentUpdates() { return false; }
 
-  virtual bool supportsIncrRefresh() { return false; }
+    virtual bool supportsIncrRefresh() { return false; }
 
-  virtual bool isReady() { return false; }
+    virtual bool isReady() { return false; }
 
-  virtual bool isDirty() { return false; }
+    virtual bool isDirty() { return false; }
 
-  virtual std::string getStatus() { return getName() + "<Status>"; }
+    virtual std::string getStatus() { return getName() + "<Status>"; }
 
-  virtual bool loadIndex(const std::string &path) = 0;
+    virtual bool loadIndex(const std::string& path) = 0;
 
-  virtual bool saveIndex(const std::string &path,
-                         const std::string &option = "") = 0;
+    virtual bool saveIndex(const std::string& path,
+                           const std::string& option = "") = 0;
 
-  virtual bool saveIndexIncr(const std::string &path,
-                             const std::string &option = "") = 0;
+    virtual bool saveIndexIncr(const std::string& path,
+                               const std::string& option = "") = 0;
 
-  virtual bool dropIndex(const std::string &path) = 0;
+    virtual bool dropIndex(const std::string& path) = 0;
 
-  virtual bool initIndex() = 0;
+    virtual bool initIndex() = 0;
 
-  virtual bool closeIndex() = 0;
+    virtual bool closeIndex() = 0;
 
-  /* searchVectorNN - search and return 'n' Nearest Neighbours */
-  virtual bool searchVectorNN(VectorPtr qvec, int dim,
-                              std::vector<KeyTypeInteger> &nnkeys, int n) = 0;
+    /* searchVectorNN - search and return 'n' Nearest Neighbours */
+    virtual bool searchVectorNN(VectorPtr qvec,
+                                int dim,
+                                std::vector<KeyTypeInteger>& nnkeys,
+                                int n) = 0;
 
-  /* insertVectortor - insert a vector into the index */
-  virtual bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id) = 0;
+    /* insertVectortor - insert a vector into the index */
+    virtual bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id) = 0;
 
-  /* startParallelBuild - User has initiated parallel index build/rebuild */
-  virtual bool startParallelBuild(int nthreads) = 0;
+    /* startParallelBuild - User has initiated parallel index build/rebuild */
+    virtual bool startParallelBuild(int nthreads) = 0;
 
-  /* setUpdateTs - timestamp when the last index build/refresh was started */
-  virtual void setUpdateTs(unsigned long ts) = 0;
+    /* setUpdateTs - timestamp when the last index build/refresh was started */
+    virtual void setUpdateTs(unsigned long ts) = 0;
 
-  /* getUpdateTs - get timestamp when the last index build/refresh was started
-   */
-  virtual unsigned long getUpdateTs() = 0;
+    /* getUpdateTs - get timestamp when the last index build/refresh was started
+     */
+    virtual unsigned long getUpdateTs() = 0;
 
-  /* getRowCount - get number of vectors present in the index */
-  virtual unsigned long getRowCount() = 0;
+    /* getRowCount - get number of vectors present in the index */
+    virtual unsigned long getRowCount() = 0;
 
-  virtual void getLastUpdateCoordinates(std::string & /* file */,
-                                        size_t & /* pos */) {}
+    virtual void getLastUpdateCoordinates(std::string& /* file */,
+                                          size_t& /* pos */) {}
 
-  virtual void setLastUpdateCoordinates(const std::string & /* file */,
-                                        const size_t & /* pos */) {}
+    virtual void setLastUpdateCoordinates(const std::string& /* file */,
+                                          const size_t& /* pos */) {}
 
-  virtual void setSearchEffort(int ef_search) {
-    (void)ef_search;
-  } /* how much deep/wide to go? e.g ef_search in HNSW */
+    virtual void setSearchEffort(int ef_search) {
+        (void)ef_search;
+    } /* how much deep/wide to go? e.g ef_search in HNSW */
 
-  void lockShared() { m_mutex.lock_shared(); }
-  void lockExclusive() { m_mutex.lock(); }
+    void lockShared() { m_mutex.lock_shared(); }
+    void lockExclusive() { m_mutex.lock(); }
 
-  void unlockShared() { m_mutex.unlock_shared(); }
-  void unlockExclusive() { m_mutex.unlock(); }
+    void unlockShared() { m_mutex.unlock_shared(); }
+    void unlockExclusive() { m_mutex.unlock(); }
 
-  std::shared_mutex &mutex() { return m_mutex; }
+    std::shared_mutex& mutex() { return m_mutex; }
 
 private:
-  mutable std::shared_mutex m_mutex;
+    mutable std::shared_mutex m_mutex;
 };
 
 class VectorIndexCollection {
 public:
-  AbstractVectorIndex *open(const std::string &name, const std::string &options,
-                            const std::string &useraction);
+    AbstractVectorIndex* open(const std::string& name,
+                              const std::string& options,
+                              const std::string& useraction);
 
-  AbstractVectorIndex *get(const std::string &name);
+    AbstractVectorIndex* get(const std::string& name);
 
-  bool close(AbstractVectorIndex *hindex);
+    bool close(AbstractVectorIndex* hindex);
 
-  std::string FindEarliestBinlogFile();
+    std::string FindEarliestBinlogFile();
 
 private:
-  std::unordered_map<std::string, AbstractVectorIndex *> m_indexes;
-  std::mutex m_mutex;
+    std::unordered_map<std::string, AbstractVectorIndex*> m_indexes;
+    std::mutex m_mutex;
 };
 
 #define MYVECTOR_BUFF_SIZE 1024
 
 extern long myvector_index_bg_threads;
 extern long myvector_feature_level;
-extern char *myvector_config_file;
+extern char* myvector_config_file;
 
-#endif // PLUGIN_MYVECTOR_H
+#endif  // PLUGIN_MYVECTOR_H

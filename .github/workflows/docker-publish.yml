@@ -124,7 +124,6 @@ jobs:
               --platform "linux/${arch}" \
               --file ${{ matrix.dockerfile }} \
               --build-arg MYSQL_VERSION=${{ matrix.mysql-version }} \
-              --build-arg MYVECTOR_SO="myvector-${arch}.so" \
               -t "myvector-smoke:${{ matrix.mysql-version }}-${arch}" \
               --load \
               .
@@ -154,35 +153,11 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}-amd64
+          tags: ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}
           build-args: |
             MYSQL_VERSION=${{ matrix.mysql-version }}
-            MYVECTOR_SO=myvector-amd64.so
-
-      - name: Build and push (arm64)
-        if: github.event_name == 'push'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/arm64
-          push: true
-          tags: ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}-arm64
-          build-args: |
-            MYSQL_VERSION=${{ matrix.mysql-version }}
-            MYVECTOR_SO=myvector-arm64.so
-
-      - name: Create and push manifest
-        if: github.event_name == 'push'
-        run: |
-          docker manifest create \
-            ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }} \
-            ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}-amd64 \
-            ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}-arm64
-          docker manifest push \
-            ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}
 
       - name: Tag and push latest
         if: matrix.mysql-version == '8.0' && github.event_name == 'push'
@@ -190,32 +165,8 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository }}:latest-amd64
+          tags: ghcr.io/${{ github.repository }}:latest
           build-args: |
             MYSQL_VERSION=${{ matrix.mysql-version }}
-            MYVECTOR_SO=myvector-amd64.so
-
-      - name: Tag and push latest (arm64)
-        if: matrix.mysql-version == '8.0' && github.event_name == 'push'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/arm64
-          push: true
-          tags: ghcr.io/${{ github.repository }}:latest-arm64
-          build-args: |
-            MYSQL_VERSION=${{ matrix.mysql-version }}
-            MYVECTOR_SO=myvector-arm64.so
-
-      - name: Create and push latest manifest
-        if: matrix.mysql-version == '8.0' && github.event_name == 'push'
-        run: |
-          docker manifest create \
-            ghcr.io/${{ github.repository }}:latest \
-            ghcr.io/${{ github.repository }}:latest-amd64 \
-            ghcr.io/${{ github.repository }}:latest-arm64
-          docker manifest push \
-            ghcr.io/${{ github.repository }}:latest

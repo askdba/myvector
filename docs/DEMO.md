@@ -1,8 +1,8 @@
 # Amazon Product Catalog Dataset with Embeddings
 
-This is the best MyVector Demo! We are going to load a real world product catalog (from Amazon) 
-into a MySQL database, build an HNSW index and then perform vector search to find semantically 
-relevant results.
+This is the best MyVector Demo! We are going to load a real world product 
+catalog (from Amazon) into a MySQL database, build an HNSW index and then 
+perform vector search to find semantically relevant results.
 
 Sneak Peek : <https://asciinema.org/a/709302>
 
@@ -16,11 +16,11 @@ Embeddings : 768 Dimension using SentenceTransformer model **all-mpnet-base-v2**
 
 - Create the table using the following SQL statement
 
-Please review the following parameters : ```M, ef, threads``` in the MYVECTOR column 
-specification. On our benchmark VM, it took 2 minutes to create the vector 
-index with the following parameters : ```M=64,ef=128,threads=48```. That's right, 
-only 2 minutes! The SQL script below has ```threads=4```, please increase if 
-your VM has more compute.
+Please review the following parameters : ```M, ef, threads``` in the MYVECTOR 
+column specification. On our benchmark VM, it took 2 minutes to create the 
+vector index with the following parameters : ```M=64,ef=128,threads=48```. 
+That's right, only 2 minutes! The SQL script below has ```threads=4```, 
+please increase if your VM has more compute.
 
 ```sql
 create table amazon_products
@@ -33,8 +33,8 @@ create table amazon_products
 
 - Load the dataset
 
-SQL scripts for INSERT'ing the 2 million rows are available in Google Drive.
-Both files are around 4.6 GB each (compressed). Their uncompressed sizes are
+SQL scripts for INSERT'ing the 2 million rows are available in Google Drive. 
+Both files are around 4.6 GB each (compressed). Their uncompressed sizes are 
 around 11.5 GB each. Please download them using below commands :-
 
 ```bash
@@ -67,10 +67,11 @@ This step requires around 9GB of memory if 2 million rows were loaded into the t
 
 - Vector Search Examples
 
-The process of semantic search is simple - Accept a search query from user in natural 
-language -> Embed the search query using the embedding model -> Search the query 
-embedding vector in the vector index to find the nearest neighbours -> Retrieve 
-rows from the MySQL operation table corresponding to the neighbours
+The process of semantic search is simple - Accept a search query from user in 
+natural language -> Embed the search query using the embedding model -> Search 
+the query embedding vector in the vector index to find the nearest neighbours 
+-> Retrieve rows from the MySQL operation table corresponding to the 
+neighbours
 
 A complete Python script is provided below. Make sure to edit the connection properties.
 
@@ -96,7 +97,7 @@ print("Generating vector embedding for search query : '", input_query, "' ...", 
 embeddings = model.encode(input_query)
 
 mysql_query = "select id, substr(product_listing,1, 200) from amazon_products"
-" WHERE MYVECTOR_IS_ANN('test.amazon_products.vec','id',myvector_construct('" 
+" WHERE MYVECTOR_IS_ANN('test.amazon_products.vec','id',myvector_construct('"
 + str(embeddings) + "'));"
 
 print("Connecting to MySQL ....", flush=True)

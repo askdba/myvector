@@ -7,66 +7,66 @@ MYSQL_DATABASE="${MYSQL_DATABASE:-vectordb}"
 CONTAINER_NAME="myvector-smoke-$$"
 
 cleanup() {
-  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+	docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 docker run -d \
-  --name "$CONTAINER_NAME" \
-  -e MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" \
-  -e MYSQL_DATABASE="$MYSQL_DATABASE" \
-  "$IMAGE" >/dev/null
+	--name "$CONTAINER_NAME" \
+	-e MYSQL_ROOT_PASSWORD="$MYSQL_ROOT_PASSWORD" \
+	-e MYSQL_DATABASE="$MYSQL_DATABASE" \
+	"$IMAGE" >/dev/null
 
 ensure_container_running() {
-  local running
-  running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || true)"
-  if [ "$running" != "true" ]; then
-    echo "Container stopped before MySQL was ready."
-    docker logs "$CONTAINER_NAME" || true
-    exit 1
-  fi
+	local running
+	running="$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || true)"
+	if [ "$running" != "true" ]; then
+		echo "Container stopped before MySQL was ready."
+		docker logs "$CONTAINER_NAME" || true
+		exit 1
+	fi
 }
 
 echo "Waiting for MySQL to be ready..."
 for _ in $(seq 1 30); do
-  ensure_container_running
-  if docker exec "$CONTAINER_NAME" \
-    mysqladmin ping -uroot -p"$MYSQL_ROOT_PASSWORD" --silent >/dev/null 2>&1; then
-    break
-  fi
-  sleep 2
+	ensure_container_running
+	if docker exec "$CONTAINER_NAME" \
+		mysqladmin ping -uroot -p"$MYSQL_ROOT_PASSWORD" --silent >/dev/null 2>&1; then
+		break
+	fi
+	sleep 2
 done
 
 ensure_container_running
 if ! docker exec "$CONTAINER_NAME" \
-  mysqladmin ping -uroot -p"$MYSQL_ROOT_PASSWORD" --silent >/dev/null; then
-  echo "MySQL did not become ready in time."
-  docker logs "$CONTAINER_NAME" || true
-  exit 1
+	mysqladmin ping -uroot -p"$MYSQL_ROOT_PASSWORD" --silent >/dev/null; then
+	echo "MySQL did not become ready in time."
+	docker logs "$CONTAINER_NAME" || true
+	exit 1
 fi
 
 echo "Waiting for MyVector UDFs to be available..."
 for _ in $(seq 1 30); do
-  ensure_container_running
-  if docker exec "$CONTAINER_NAME" \
-    mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" \
-    -e "SELECT myvector_construct('[1.0, 2.0, 3.0]');" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 2
+	ensure_container_running
+	if docker exec "$CONTAINER_NAME" \
+		mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" \
+		-e "SELECT myvector_construct('[1.0, 2.0, 3.0]');" >/dev/null 2>&1; then
+		break
+	fi
+	sleep 2
 done
 
 ensure_container_running
 if ! docker exec "$CONTAINER_NAME" \
-  mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" \
-  -e "SELECT myvector_construct('[1.0, 2.0, 3.0]');" >/dev/null; then
-  echo "MyVector UDFs did not become available in time."
-  docker logs "$CONTAINER_NAME" || true
-  exit 1
+	mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" \
+	-e "SELECT myvector_construct('[1.0, 2.0, 3.0]');" >/dev/null; then
+	echo "MyVector UDFs did not become available in time."
+	docker logs "$CONTAINER_NAME" || true
+	exit 1
 fi
 
 docker exec -i "$CONTAINER_NAME" \
-  mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" <<'SQL'
+	mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" <<'SQL'
 SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]')) AS vec;
 SELECT myvector_distance(
   myvector_construct('[1.0, 0.0]'),
