@@ -1,11 +1,10 @@
 ARG MYSQL_VERSION=8.0
-ARG MYVECTOR_SO=myvector.so
 FROM mysql:${MYSQL_VERSION}
-ARG MYVECTOR_SO
+ARG TARGETARCH
 
 # Copy the MyVector plugin and installation script
 # MySQL images use /usr/lib64/mysql/plugin on some distros.
-COPY ${MYVECTOR_SO} /usr/lib/mysql/plugin/myvector.so
+COPY myvector-${TARGETARCH}.so /usr/lib/mysql/plugin/myvector.so
 RUN if [ -d /usr/lib64/mysql/plugin ]; then \
       cp /usr/lib/mysql/plugin/myvector.so /usr/lib64/mysql/plugin/; \
     fi
