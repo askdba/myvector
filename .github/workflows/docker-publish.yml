@@ -56,6 +56,12 @@ jobs:
             libprotobuf-dev \
             protobuf-compiler
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build MyVector plugin (amd64/arm64)
         run: |
           set -euo pipefail
@@ -133,12 +139,6 @@ jobs:
             DOCKER_DEFAULT_PLATFORM="linux/${arch}" \
               bash scripts/smoke-readme.sh "myvector-smoke:${{ matrix.mysql-version }}-${arch}"
           done
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
         if: github.event_name == 'push'
