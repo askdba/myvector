@@ -39,7 +39,7 @@ CREATE TABLE test_vectors (
 ```
 
 ## Error Messages
-```
+```text
 Paste any error messages from MySQL error log or client
 ```
 

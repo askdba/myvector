@@ -30,39 +30,41 @@ ensure_container_running() {
 	fi
 }
 
-echo "Waiting for MySQL to be ready..."
-for _ in $(seq 1 30); do
+MAX_ATTEMPTS=120
+READY_STREAK=0
+UDF_STREAK=0
+UDF_READY=0
+
+echo "Waiting for MySQL and MyVector UDFs to be ready..."
+for _ in $(seq 1 "$MAX_ATTEMPTS"); do
 	ensure_container_running
 	if docker exec "$CONTAINER_NAME" \
 		mysqladmin ping -uroot -p"$MYSQL_ROOT_PASSWORD" --silent >/dev/null 2>&1; then
+		READY_STREAK=$((READY_STREAK + 1))
+	else
+		READY_STREAK=0
+		UDF_STREAK=0
+	fi
+	if [ "$READY_STREAK" -ge 2 ]; then
+		if docker exec "$CONTAINER_NAME" \
+			mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" \
+			-e "SELECT myvector_construct('[1.0, 2.0, 3.0]');" >/dev/null 2>&1; then
+			UDF_STREAK=$((UDF_STREAK + 1))
+		else
+			UDF_STREAK=0
+		fi
+	else
+		UDF_STREAK=0
+	fi
+	if [ "$UDF_STREAK" -ge 2 ]; then
+		UDF_READY=1
 		break
 	fi
 	sleep 2
 done
 
 ensure_container_running
-if ! docker exec "$CONTAINER_NAME" \
-	mysqladmin ping -uroot -p"$MYSQL_ROOT_PASSWORD" --silent >/dev/null; then
-	echo "MySQL did not become ready in time."
-	docker logs "$CONTAINER_NAME" || true
-	exit 1
-fi
-
-echo "Waiting for MyVector UDFs to be available..."
-for _ in $(seq 1 30); do
-	ensure_container_running
-	if docker exec "$CONTAINER_NAME" \
-		mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" \
-		-e "SELECT myvector_construct('[1.0, 2.0, 3.0]');" >/dev/null 2>&1; then
-		break
-	fi
-	sleep 2
-done
-
-ensure_container_running
-if ! docker exec "$CONTAINER_NAME" \
-	mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" \
-	-e "SELECT myvector_construct('[1.0, 2.0, 3.0]');" >/dev/null; then
+if [ "$UDF_READY" -ne 1 ]; then
 	echo "MyVector UDFs did not become available in time."
 	docker logs "$CONTAINER_NAME" || true
 	exit 1
@@ -79,20 +81,20 @@ SELECT myvector_distance(
 SQL
 
 if [ "$SMOKE_STANFORD" = "1" ] && [ -d "$STANFORD_DIR" ]; then
-  if [ ! -f "$STANFORD_DIR/create.sql" ] || [ ! -f "$STANFORD_DIR/insert50d.sql.gz" ]; then
-    echo "Stanford 50d demo files missing, skipping sample load."
-    exit 0
-  fi
+	if [ ! -f "$STANFORD_DIR/create.sql" ] || [ ! -f "$STANFORD_DIR/insert50d.sql.gz" ]; then
+		echo "Stanford 50d demo files missing, skipping sample load."
+		exit 0
+	fi
 
-  tmpdir="$(mktemp -d)"
-  gzip -cd "$STANFORD_DIR/insert50d.sql.gz" | head -n "$STANFORD_LINES" > "$tmpdir/insert50d_subset.sql"
-  cp "$STANFORD_DIR/create.sql" "$tmpdir/create.sql"
+	tmpdir="$(mktemp -d)"
+	gzip -cd "$STANFORD_DIR/insert50d.sql.gz" | head -n "$STANFORD_LINES" >"$tmpdir/insert50d_subset.sql"
+	cp "$STANFORD_DIR/create.sql" "$tmpdir/create.sql"
 
-  docker cp "$tmpdir/create.sql" "$CONTAINER_NAME":/tmp/create.sql
-  docker cp "$tmpdir/insert50d_subset.sql" "$CONTAINER_NAME":/tmp/insert50d_subset.sql
+	docker cp "$tmpdir/create.sql" "$CONTAINER_NAME":/tmp/create.sql
+	docker cp "$tmpdir/insert50d_subset.sql" "$CONTAINER_NAME":/tmp/insert50d_subset.sql
 
-  docker exec -i "$CONTAINER_NAME" \
-    mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" <<'SQL'
+	docker exec -i "$CONTAINER_NAME" \
+		mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" <<'SQL'
 SOURCE /tmp/create.sql;
 SOURCE /tmp/insert50d_subset.sql;
 SELECT myvector_display(wordvec) AS vec FROM words50d WHERE word='the';

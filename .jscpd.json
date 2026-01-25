@@ -1,3 +1,4 @@
 {
-  "ignore": ["include/**"]
+  "ignore": ["include/**"],
+  "threshold": 10
 }

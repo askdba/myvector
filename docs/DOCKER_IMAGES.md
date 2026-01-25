@@ -2,11 +2,11 @@
 
 ## Location
 
-<https://hub.docker.com/repository/docker/pulbdb/myvector/>
+<https://github.com/askdba/myvector/pkgs/container/myvector>
 
 We have our own dedicated image repository!
 
-The MyVector docker images are built on top of community MySQL docker images 
+The MyVector docker images are built on top of community MySQL docker images
 from -
 
 <https://hub.docker.com/r/mysql/mysql-server/>
@@ -16,43 +16,42 @@ from -
 Pre-built MyVector plugin (myvector.so) and installation script (myvectorplugin.sql)
 
 ```bash
--  /usr/lib64/mysql/plugin/myvector.so
--  /usr/share/mysql-<version>/myvectorplugin.sql
--  /usr/share/mysql-<version>/myvector.README
+- /usr/lib/mysql/plugin/myvector.so
+- /docker-entrypoint-initdb.d/myvectorplugin.sql
 ```
 
-NOTE NOTE : Detailed instructions are present inside the Docker image in :
-/usr/share/mysql-`<version>`/myvector.README
+NOTE: The MySQL image entrypoint will run the SQL script automatically on first
+startup. If you need to re-run it manually, use:
+`mysql -u root -p < /docker-entrypoint-initdb.d/myvectorplugin.sql`
 
 ## Installation
 
-The first step is to run the docker container and get MySQL instance running.
+The first step is to run the docker container and get a MySQL instance running.
 
 Please review - <https://dev.mysql.com/doc/refman/8.0/en/linux-installation-docker.html>
 
 TL;DR - If you only want to try out vectors, just run the docker container
-and that will start a MySQL instance with newly initialized data directory and 
-empty root password. For advanced options and specifically to run the container against an existing
+and that will start a MySQL instance with a newly initialized data directory.
+For advanced options and specifically to run the container against an existing
 MySQL database, please thoroughly review the documentation link above.
 
-After the MySQL instance is up, just run the MyVector installation script 
+After the MySQL instance is up, you can run the MyVector installation script
 as MySQL root user -
 
 ```sql
-$ mysql <root user>
-
-mysql> source /usr/share/mysql-<version>/myvectorplugin.sql
+$ mysql -u root -p
+mysql> source /docker-entrypoint-initdb.d/myvectorplugin.sql
 ```
 
-After the plugin is installed/registered above, please follow the CONFIGURE 
-instructions from -
+After the plugin is installed/registered above, please follow the usage
+instructions in the main README:
 
-<https://github.com/p3io/myvector-dev/blob/main/README.md>
+<https://github.com/askdba/myvector#-usage-examples>
 
 ## MyVector Demos
 
-<https://github.com/p3io/myvector-dev/tree/main/examples/stanford5d>
+<https://github.com/askdba/myvector/tree/main/examples/stanford50d>
 
 ## Versions
 
-Docker images for MySQL 8.0.41, 8.4.4, 9.2 are available.
+Docker images for MySQL 8.0.x, 8.4.x, and 9.0.x are available.

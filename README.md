@@ -1,214 +1,194 @@
+# MyVector
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/askdba/myvector/main/assets/Banner_Image.png" alt="MyVector Banner" width="100%">
 </p>
 
 <p align="center">
-  <strong>Vector Storage & Search Plugin for MySQL</strong>
+  <strong>MyVector: The native vector search plugin for MySQL</strong>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.0-blue?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/C%2B%2B-17-blue?style=flat-square" alt="C++17">
-  <img src="https://img.shields.io/badge/MySQL-8.0%20|%208.4%20|%209.0-blue?style=flat-square" alt="MySQL">
-  <a href="https://github.com/askdba/myvector/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/license-GPL--2.0-brightgreen?style=flat-square" alt="License">
-  </a>
-  <a href="https://github.com/askdba/myvector/actions/workflows/ci.yml">
-    <img src="https://github.com/askdba/myvector/actions/workflows/ci.yml/badge.svg" alt="CI">
-  </a>
+  <a href="https://github.com/askdba/myvector/releases"><img src="https://img.shields.io/github/v/release/askdba/myvector?style=flat-square" alt="Latest Release"></a>
+  <a href="https://github.com/askdba/myvector/blob/main/LICENSE"><img src="https://img.shields.io/github/license/askdba/myvector?style=flat-square" alt="License"></a>
+  <a href="https://github.com/askdba/myvector/actions/workflows/ci.yml"><img src="https://github.com/askdba/myvector/actions/workflows/ci.yml/badge.svg" alt="CI Status"></a>
+  <a href="https://github.com/askdba/myvector/actions/workflows/docker-publish.yml"><img src="https://github.com/askdba/myvector/actions/workflows/docker-publish.yml/badge.svg" alt="Docker Build"></a>
+  <a href="https://github.com/askdba/myvector/pkgs/container/myvector"><img src="https://img.shields.io/badge/ghcr.io-myvector-2496ed?style=flat-square&logo=github" alt="GHCR Package"></a>
 </p>
 
 <p align="center">
-  <a href="#-features">Features</a> •
+  <a href="#-why-myvector">Why MyVector?</a> •
   <a href="#-quick-start">Quick Start</a> •
-  <a href="#-installation">Installation</a> •
-  <a href="#-usage">Usage</a> •
+  <a href="#-features">Features</a> •
+  <a href="#-usage-examples">Usage</a> •
   <a href="#-docker">Docker</a> •
-  <a href="#-documentation">Documentation</a>
+  <a href="#-contributing">Contributing</a> •
+  <a href="#-documentation">Docs</a>
 </p>
 
 ---
 
-## 📢 Announcements
+**MyVector** brings the power of vector similarity search directly to your MySQL database. Built as a native plugin, it integrates seamlessly with your existing infrastructure, allowing you to build powerful semantic search, recommendation engines, and AI-powered applications without the need for external services.
 
-🎤 **FOSDEM 2025** - MySQL Devroom Session (Brussels, Feb 1-2, 2025):
-[Boosting MySQL with Vector Search: Introducing the MyVector Plugin](https://fosdem.org/2025/schedule/event/fosdem-2025-4230-boosting-mysql-with-vector-search-introducing-the-myvector-plugin/)
-
-🤖 **ChatGPT** generated an excellent description of MyVector:
-[View on ChatGPT](https://chatgpt.com/share/67b4af65-7d20-8011-aaa2-ff79442055b0)
+It's fast, scalable, and designed for real-world use cases, from simple word embeddings to complex image and audio analysis.
 
 ---
 
-## ✨ Features
+## 🤔 Why MyVector?
 
-| Feature | Description |
-|---------|-------------|
-| 🔍 **ANN Search** | Approximate Nearest Neighbor search using HNSW algorithm |
-| 📊 **KNN Search** | Brute-force K-Nearest Neighbor for exact results |
-| 📏 **Multiple Metrics** | L2 (Euclidean), Cosine, Inner Product, Hamming distance |
-| ⚡ **Real-time Updates** | Binlog-based online index updates |
-| 💾 **Persistent Indexes** | Save and load indexes to/from disk |
-| 🔌 **Native Plugin** | Seamless MySQL integration via UDFs |
+| Feature | MyVector | Other Solutions |
+| :--- | :--- | :--- |
+| **Deployment** | **Native MySQL Plugin:** No extra services to manage. | Often requires a separate, dedicated vector database. |
+| **Data Sync** | **Real-time:** Automatic index updates via MySQL binlogs. | Manual data synchronization or complex ETL pipelines. |
+| **Performance** | **Highly Optimized:** Built on the high-performance [HNSWlib](https://github.com/nmslib/hnswlib). | Performance varies; may require significant tuning. |
+| **Ease of Use** | **Simple SQL Interface:** Use familiar SQL UDFs and procedures. | Custom APIs and query languages. |
+| **Cost** | **Open Source:** Free to use and modify. | Can be expensive, especially at scale. |
+| **Ecosystem** | **Leverage MySQL:** Use your existing tools, connectors, and expertise. | Requires a new ecosystem of tools and connectors. |
 
 ---
 
-## 🎬 Demo
+## 🧭 Architecture
 
-[![asciicast](https://asciinema.org/a/673238.svg)](https://asciinema.org/a/673238)
+```mermaid
+flowchart LR
+  App[Application / SQL Client] --> MySQL[MySQL Server]
+  MySQL --> UDFs[MyVector UDFs]
+  MySQL --> Proc[MyVector Stored Procedures]
+  UDFs --> Index[Vector Index (HNSW/KNN)]
+  Proc --> Index
+  Binlog[MySQL Binlog] --> Sync[Binlog Listener]
+  Sync --> Index
+  Index --> Data[MyVector Data Files]
+```
 
 ---
 
 ## 🚀 Quick Start
 
-### Using Docker (Recommended)
+Get up and running with MyVector in minutes using our official Docker images.
+
+### 1. Start the Docker Container
 
 ```bash
-# Pull and run MySQL with MyVector pre-installed
-docker run -d -p 3306:3306 \
+docker run -d \
+  --name myvector-db \
+  -p 3306:3306 \
   -e MYSQL_ROOT_PASSWORD=myvector \
+  -e MYSQL_DATABASE=vectordb \
   ghcr.io/askdba/myvector:mysql-8.4
-
-# Connect
-mysql -h 127.0.0.1 -u root -pmyvector
 ```
 
-### Manual Installation
+### 2. Connect to MySQL
 
 ```bash
-# Clone into MySQL plugin directory
-cd mysql-server/plugin
-git clone https://github.com/askdba/myvector.git
-
-# Build
-cd ../bld
-cmake .. <your-cmake-options>
-cd plugin/myvector && make
-
-# Install
-cp myvector.so /usr/local/mysql/lib/plugin/
-mysql -u root -p mysql < ../../../plugin/myvector/sql/myvectorplugin.sql
+mysql -h 127.0.0.1 -u root -pmyvector vectordb
 ```
 
----
+### 3. Create a Table and Insert Data
 
-## 📦 Installation
-
-### Prerequisites
-
-- MySQL 8.0, 8.4, or 9.0
-- C++17 compatible compiler
-- CMake 3.14+
-
-### Build from Source
-
-```bash
-# Get the MyVector sources
-cd mysql-server/plugin
-git clone https://github.com/askdba/myvector.git
-
-# Generate makefile for the new plugin
-cd ../bld
-cmake .. <other options used for this build>
-
-# Build the plugin
-cd plugin/myvector
-make
-```
-
-### Install the Plugin
-
-```bash
-# Copy the plugin shared library
-cp mysql-server/bld/plugin_output_directory/myvector.so /usr/local/mysql/lib/plugin/
-
-# Register the plugin and create stored procedures
-mysql -u root -p mysql < mysql-server/plugin/myvector/sql/myvectorplugin.sql
-```
-
----
-
-## ⚙️ Configuration
-
-MyVector introduces two system variables:
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `myvector_index_dir` | Directory for vector index files | `/mysqldata` |
-| `myvector_config_file` | Path to MyVector config file | `myvector.cnf` |
-
-### Config File Setup
-
-Create a config file (e.g., `/mysqldata/myvector.cnf`):
-
-```ini
-myvector_user_id=<dbuser>
-myvector_user_password=<password>
-myvector_socket=/tmp/mysql.sock
-```
-
-> ⚠️ **Security**: This file should be readable **ONLY** by the `mysql` OS user.
-
-The plugin connects to MySQL for:
-- Reading the base table during index creation
-- Receiving binlog events for online index updates
-
-Required privileges: `SELECT` on base tables, `REPLICATION_CLIENT`, `REPLICATION_SLAVE`
-
----
-
-## 📖 Usage
-
-### Vector Distance Calculation
+Let\'s use a simple example with 50-dimensional word vectors.
 
 ```sql
--- Compare semantic similarity between words
-SELECT myvector_distance(
-    (SELECT wordvec FROM words50d WHERE word = 'school'),
-    (SELECT wordvec FROM words50d WHERE word = 'university')
-) AS distance;
--- Result: 13.96 (closer = more similar)
+-- Create a table for our word vectors
+CREATE TABLE words50d (
+  wordid INT PRIMARY KEY,
+  word VARCHAR(50),
+  wordvec VARBINARY(200) COMMENT 'MYVECTOR(type=HNSW,dim=50,size=100000,dist=L2)'
+);
 
-SELECT myvector_distance(
-    (SELECT wordvec FROM words50d WHERE word = 'school'),
-    (SELECT wordvec FROM words50d WHERE word = 'factory')
-) AS distance;
--- Result: 33.61 (farther = less similar)
+-- Download and insert the data (from the examples/stanford50d directory)
+-- In a real-world scenario, you would generate your own vectors.
+-- wget https://raw.githubusercontent.com/askdba/myvector/main/examples/stanford50d/insert50d.sql
+-- mysql -h 127.0.0.1 -u root -pmyvector vectordb < insert50d.sql
 ```
 
-### ANN Search (Fast, Approximate)
+### 4. Build the Vector Index
 
 ```sql
--- Find 10 words most similar to 'harvard' using HNSW index
-SELECT word FROM words50d 
-WHERE MYVECTOR_IS_ANN('test.words50d.wordvec', 'wordid', 
-    myvector_construct('[...]'));
-
--- Results: harvard, yale, princeton, graduate, cornell, stanford...
+CALL mysql.myvector_index_build('vectordb.words50d.wordvec', 'wordid');
 ```
 
-### KNN Search (Exact, Brute-force)
+### 5. Run a Similarity Search
+
+Find words similar to "school":
 
 ```sql
--- Exact nearest neighbor search with distances
-SELECT word, myvector_distance(wordvec, 
-    (SELECT wordvec FROM words50d WHERE word='harvard')) AS dist
+SET @school_vec = (SELECT wordvec FROM words50d WHERE word = 'school');
+
+SELECT word, myvector_row_distance() as distance
 FROM words50d
-ORDER BY dist 
-LIMIT 10;
+WHERE MYVECTOR_IS_ANN('vectordb.words50d.wordvec', 'wordid', @school_vec, 10);
 ```
+
+You should see results like "university," "student," "teacher," etc. It\'s that easy!
+
+---
+
+## ✨ Features
+
+- **Approximate Nearest Neighbor (ANN) Search:** Blazing-fast similarity search using the HNSW algorithm.
+- **Exact K-Nearest Neighbor (KNN) Search:** Brute-force search for 100% recall.
+- **Multiple Distance Metrics:** L2 (Euclidean), Cosine, and Inner Product.
+- **Real-time Index Updates:** Automatically keep your vector indexes in sync with your data using MySQL binlogs.
+- **Persistent Indexes:** Save and load indexes to and from disk for fast restarts.
+- **Native MySQL Integration:** Implemented as a standard MySQL plugin with User-Defined Functions (UDFs).
+
+---
+
+## 📖 Usage Examples
+
+### Index Management
+
+- **Build an Index:**
+  ```sql
+  CALL mysql.myvector_index_build('database.table.column', 'primary_key_column');
+  ```
+
+- **Check Index Status:**
+  ```sql
+  CALL mysql.myvector_index_status('database.table.column');
+  ```
+
+- **Drop an Index:**
+  ```sql
+  CALL mysql.myvector_index_drop('database.table.column');
+  ```
+
+- **Save and Load an Index:**
+  ```sql
+  -- Indexes are automatically saved. To load an index on startup:
+  CALL mysql.myvector_index_load('database.table.column');
+  ```
+
+### Vector Functions
+
+- **Create a Vector:**
+  ```sql
+  SET @my_vector = myvector_construct('[1.2, 3.4, 5.6]');
+  ```
+
+- **Calculate Distance:**
+  ```sql
+  SELECT myvector_distance(@vec1, @vec2, 'L2');
+  ```
+
+- **Display a Vector:**
+  ```sql
+  SELECT myvector_display(wordvec) FROM words50d LIMIT 1;
+  ```
 
 ---
 
 ## 🐳 Docker
 
-### Available Images
+We provide official Docker images for various MySQL versions.
 
-| Tag | MySQL Version | Description |
-|-----|---------------|-------------|
-| `ghcr.io/askdba/myvector:mysql-8.0` | 8.0.x | Stable LTS |
-| `ghcr.io/askdba/myvector:mysql-8.4` | 8.4.x | Latest LTS |
-| `ghcr.io/askdba/myvector:mysql-9.0` | 9.0.x | Innovation |
-| `ghcr.io/askdba/myvector:latest` | 8.4.x | Default |
+| Tag | MySQL Version |
+| :--- | :--- |
+| `ghcr.io/askdba/myvector:mysql-8.0` | 8.0.x |
+| `ghcr.io/askdba/myvector:mysql-8.4` | 8.4.x (Recommended) |
+| `ghcr.io/askdba/myvector:mysql-9.0` | 9.0.x |
+| `ghcr.io/askdba/myvector:latest` | 8.4.x |
 
 ### Docker Compose
 
@@ -230,81 +210,24 @@ volumes:
   myvector-data:
 ```
 
-```bash
-docker compose up -d
-```
-
----
-
-## 🧪 Testing
-
-MyVector includes a comprehensive test suite using MySQL Test Runner (MTR):
-
-```bash
-# Navigate to MySQL build directory
-cd mysql-server/bld/mysql-test
-
-# Run MyVector test suite
-./mysql-test-run.pl myvector --verbose
-```
-
-### Try the Stanford 50D Demo
-
-```bash
-cd examples/stanford50d
-gunzip insert50d.sql.gz
-
-mysql -u root -p test
-mysql> source create.sql
-mysql> source insert50d.sql
-mysql> source buildindex.sql  -- Edit for your database/table first
-mysql> source search.sql
-```
-
----
-
-## 📚 Documentation
-
-| Document | Description |
-|----------|-------------|
-| [DEMO.md](docs/DEMO.md) | Amazon Product Catalog demo |
-| [ANN_BENCHMARKS.md](docs/ANN_BENCHMARKS.md) | Performance benchmarks |
-| [STRUCTURE.md](docs/STRUCTURE.md) | Project structure |
-| [DOCKER_IMAGES.md](docs/DOCKER_IMAGES.md) | Docker image details |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guidelines |
-| [CHANGELOG.md](CHANGELOG.md) | Version history |
-
 ---
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details on how to get started.
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+## 📚 Documentation
 
----
+For more detailed information, please see the `docs` directory:
 
-## 📄 License
-
-This project is licensed under the GNU General Public License v2.0 - see the [LICENSE](LICENSE) file for details.
+- [**DEMO.md**](docs/DEMO.md): A full demo with the Amazon Product Catalog dataset.
+- [**ANN_BENCHMARKS.md**](docs/ANN_BENCHMARKS.md): Performance benchmarks.
+- [**DOCKER_IMAGES.md**](docs/DOCKER_IMAGES.md): More on using our Docker images.
+- [**CONTRIBUTING.md**](CONTRIBUTING.md): Our contribution guidelines.
 
 ---
 
 ## 🙏 Acknowledgments
 
-- [hnswlib](https://github.com/nmslib/hnswlib) - HNSW algorithm implementation
-- MySQL Community for the excellent plugin architecture
-
----
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/askdba/myvector/main/assets/Logo_Image.png" alt="MyVector Logo" width="80">
-</p>
-
-<p align="center">
-  Made with ❤️ for the MySQL community
-</p>
+- [**hnswlib**](https://github.com/nmslib/hnswlib): For the high-performance HNSW implementation.
+- The **MySQL Community**: For creating a powerful and extensible database.

@@ -43,4 +43,9 @@ RUN libstdcxx_real="$(ls /lib64/libstdc++.so.6.* | grep -v gdb | head -n1)" && \
       /usr/lib64/libstdc++.so.6.*gdb* /usr/lib/libstdc++.so.6.*gdb* && \
     ldconfig
 
+HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD \
+  mysqladmin ping -uroot -p"$MYSQL_ROOT_PASSWORD" || exit 1
+
+USER mysql
+
 # The rest will be handled by the default MySQL entrypoint
