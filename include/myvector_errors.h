@@ -11,23 +11,23 @@
 
 // UDF Errors
 #define ER_MYVECTOR_INCORRECT_ARGUMENTS                                        \
-  "Incorrect arguments. Please check the function's documentation."
+    "Incorrect arguments. Please check the function's documentation."
 #define ER_MYVECTOR_INDEX_NOT_FOUND                                            \
-  "Vector index not defined or not open for access."
+    "Vector index not defined or not open for access."
 #define ER_MYVECTOR_INVALID_VECTOR "Invalid vector format or checksum mismatch."
 
 // Stored Procedure Errors
 #define ER_MYVECTOR_COLUMN_NOT_FOUND                                           \
-  "Vector column not found. Please use the fully qualified name: "             \
-  "<database>.<table>.<column>."
+    "Vector column not found. Please use the fully qualified name: "           \
+    "<database>.<table>.<column>."
 #define ER_MYVECTOR_NOT_A_MYVECTOR_COLUMN                                      \
-  "The specified column is not a MYVECTOR column."
+    "The specified column is not a MYVECTOR column."
 #define ER_MYVECTOR_TRACKING_COLUMN_NOT_FOUND                                  \
-  "MyVector tracking timestamp column not found for incremental refresh."
+    "MyVector tracking timestamp column not found for incremental refresh."
 
 // SQLSTATES
 #define SQLSTATE_MYVECTOR_COLUMN_NOT_FOUND "50001"
 #define SQLSTATE_MYVECTOR_NOT_A_MYVECTOR_COLUMN "50002"
 #define SQLSTATE_MYVECTOR_TRACKING_COLUMN_NOT_FOUND "50003"
 
-#endif // MYVECTOR_ERRORS_H
+#endif  // MYVECTOR_ERRORS_H

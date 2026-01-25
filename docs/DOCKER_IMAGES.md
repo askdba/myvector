@@ -6,7 +6,8 @@
 
 We have our own dedicated image repository!
 
-The MyVector docker images are built on top of community MySQL docker images from -
+The MyVector docker images are built on top of community MySQL docker images 
+from -
 
 <https://hub.docker.com/r/mysql/mysql-server/>
 
@@ -30,9 +31,7 @@ The first step is to run the docker container and get MySQL instance running.
 Please review - <https://dev.mysql.com/doc/refman/8.0/en/linux-installation-docker.html>
 
 TL;DR - If you only want to try out vectors, just run the docker container
-
 and that will start a MySQL instance with newly initialized data directory and 
-
 empty root password. For advanced options and specifically to run the container against an existing
 MySQL database, please thoroughly review the documentation link above.
 
@@ -45,7 +44,8 @@ $ mysql <root user>
 mysql> source /usr/share/mysql-<version>/myvectorplugin.sql
 ```
 
-After the plugin is installed/registered above, please follow the CONFIGURE instructions from -
+After the plugin is installed/registered above, please follow the CONFIGURE 
+instructions from -
 
 <https://github.com/p3io/myvector-dev/blob/main/README.md>
 
