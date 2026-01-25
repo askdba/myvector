@@ -29,3 +29,4 @@ jobs:
           VALIDATE_CLANG_FORMAT: "false"
           VALIDATE_PERL: "false"
           VALIDATE_JSCPD: "false"
+          VALIDATE_SQLFLUFF: "false"
