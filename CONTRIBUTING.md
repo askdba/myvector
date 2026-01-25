@@ -4,7 +4,7 @@ Thank you for your interest in contributing to MyVector! This document outlines 
 
 ## Development Workflow
 
-```
+```text
 ┌─────────────────┐
 │  1. Create Issue │ ← Document and track the feature/improvement
 └────────┬────────┘
@@ -43,7 +43,7 @@ Before starting work, create a GitHub issue to:
 
 **Issue Types:**
 - 🐛 Bug Report
-- ✨ Feature Request  
+- ✨ Feature Request
 - 📚 Documentation
 - 🔧 Maintenance
 
@@ -62,7 +62,7 @@ Fixes #42"
 ```
 
 **Commit Message Format:**
-```
+```text
 <type>: <short summary>
 
 <detailed description>
@@ -120,7 +120,7 @@ Add your changes to `CHANGELOG.md` under `[Unreleased]`:
 - `Changed` - Changes in existing functionality
 - `Deprecated` - Soon-to-be removed features
 - `Removed` - Removed features
-- `Fixed` - Bug fixes
+- `Fixed` - Bugfixes
 - `Security` - Vulnerability fixes
 
 ### 6. Release Process

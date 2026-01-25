@@ -1,10 +1,13 @@
+---
 name: MyVector CI
 
 on:
   push:
-    branches: [ "main", "feature/*" ]
+    branches: ["main", "feature/*"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+
+permissions: read-all
 
 jobs:
   approval-gate:

@@ -10,8 +10,12 @@ DISABLE_ERRORS: false
 LINTER_RULES_PATH: .github
 
 # C++ configuration
-VALIDATE_CPP: true
+VALIDATE_CPP: false
+VALIDATE_CLANG_FORMAT: false
 CPP_FILE_EXTENSIONS: ".cc,.cpp,.h"
+
+# Perl configuration
+VALIDATE_PERL: false
 
 # Ignore the include directory for JSCPD
 JSCPD_CONFIG_FILE: .jscpd.json

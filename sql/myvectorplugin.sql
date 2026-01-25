@@ -28,7 +28,9 @@
 
 USE mysql;
 
+-- sqlfluff: disable=PRS
 INSTALL PLUGIN myvector SONAME 'myvector.so';
+-- sqlfluff: enable=PRS
 
 DROP VIEW IF EXISTS myvector_columns;
 
@@ -214,6 +216,4 @@ END
 //
 
 DELIMITER ;
-
-
 

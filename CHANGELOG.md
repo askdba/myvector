@@ -43,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `myvector_version` status variable (#4, #8)
 - Replaced `fprintf(stderr)` with MySQL's `my_plugin_log_message` service (#5)
 
-### Changed
+### Changed (continued)
 - Removed `using namespace std` from codebase for better standards compliance (#11)
 
 ### Added
@@ -89,7 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.0] - 2025-02-01
 
-### Added
+### Added (1.0.0)
 - FOSDEM'25 MySQL Devroom presentation release
 - Support for MySQL 8.0.x and MySQL 9.0.x (native VECTOR type)
 - Docker image support
