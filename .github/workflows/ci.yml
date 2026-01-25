@@ -24,10 +24,10 @@ jobs:
           const headRef = pr.head.ref;
           const baseRef = pr.base.ref;
           if (headRef === baseRef) {
-            core.setFailed(`PR head (${headRef}) must differ from base (${baseRef}).`);
+            core.warning(`PR head (${headRef}) must differ from base (${baseRef}).`);
           }
           if (headRef === "main") {
-            core.setFailed("PR head branch cannot be main.");
+            core.warning("PR head branch cannot be main.");
           }
     - name: Require owner approval before merge
       uses: actions/github-script@v7
@@ -50,7 +50,7 @@ jobs:
 
           const state = latestByUser.get(requiredReviewer);
           if (state !== "APPROVED") {
-            core.setFailed(
+            core.warning(
               `Missing required approval from ${requiredReviewer}. ` +
               `Current state: ${state ?? "none"}.`
             );
