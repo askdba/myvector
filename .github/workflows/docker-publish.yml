@@ -56,59 +56,83 @@ jobs:
             libprotobuf-dev \
             protobuf-compiler
 
-      - name: Clone MySQL Source
+      - name: Build MyVector plugin (amd64/arm64)
         run: |
-          git clone --depth 1 --branch ${{ matrix.mysql-tag }} \
-            https://github.com/mysql/mysql-server.git mysql-server
-
-      - name: Copy MyVector to Plugin Directory
-        run: |
-          mkdir -p mysql-server/plugin/myvector
-          cp src/*.cc mysql-server/plugin/myvector/
-          cp include/*.h mysql-server/plugin/myvector/
-          cp include/*.i mysql-server/plugin/myvector/ 2>/dev/null || true
-          cp CMakeLists.txt mysql-server/plugin/myvector/
-
-      - name: Configure MySQL Build
-        run: |
-          cd mysql-server
-          mkdir -p bld && cd bld
-          cmake .. \
-            -DCMAKE_C_COMPILER=gcc-${{ matrix.compiler }} \
-            -DCMAKE_CXX_COMPILER=g++-${{ matrix.compiler }} \
-            -DDOWNLOAD_BOOST=1 \
-            -DWITH_BOOST=../../boost_cache \
-            -DWITH_UNIT_TESTS=OFF \
-            -DWITH_ROUTER=OFF \
-            -DWITH_RAPID=OFF \
-            -DWITH_NDB=OFF \
-            -DWITH_NDBCLUSTER=OFF \
-            -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
-            -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build MyVector Plugin
-        run: |
-          cd mysql-server/bld
-          make myvector -j$(nproc)
-
-      - name: Prepare Docker build context
-        run: |
-          cp mysql-server/bld/plugin_output_directory/myvector.so .
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            build_dir="mysql-server-${arch}"
+            docker run --rm --platform "linux/${arch}" \
+              -v "$PWD":/work -w /work ubuntu:22.04 bash -lc "
+                set -euo pipefail
+                apt-get update
+                apt-get install -y \
+                  build-essential \
+                  cmake \
+                  gcc-${{ matrix.compiler }} \
+                  g++-${{ matrix.compiler }} \
+                  git \
+                  libssl-dev \
+                  libncurses5-dev \
+                  pkg-config \
+                  bison \
+                  libtirpc-dev \
+                  libldap2-dev \
+                  libsasl2-dev \
+                  libudev-dev \
+                  libre2-dev \
+                  libcurl4-openssl-dev \
+                  libprotobuf-dev \
+                  protobuf-compiler
+                rm -rf ${build_dir}
+                git clone --depth 1 --branch ${{ matrix.mysql-tag }} \
+                  https://github.com/mysql/mysql-server.git ${build_dir}
+                mkdir -p ${build_dir}/plugin/myvector
+                cp src/*.cc ${build_dir}/plugin/myvector/
+                cp include/*.h ${build_dir}/plugin/myvector/
+                cp include/*.i ${build_dir}/plugin/myvector/ 2>/dev/null || true
+                cp CMakeLists.txt ${build_dir}/plugin/myvector/
+                cd ${build_dir}
+                mkdir -p bld && cd bld
+                cmake .. \
+                  -DCMAKE_C_COMPILER=gcc-${{ matrix.compiler }} \
+                  -DCMAKE_CXX_COMPILER=g++-${{ matrix.compiler }} \
+                  -DDOWNLOAD_BOOST=1 \
+                  -DWITH_BOOST=../../boost_cache \
+                  -DWITH_UNIT_TESTS=OFF \
+                  -DWITH_ROUTER=OFF \
+                  -DWITH_RAPID=OFF \
+                  -DWITH_NDB=OFF \
+                  -DWITH_NDBCLUSTER=OFF \
+                  -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
+                  -DCMAKE_BUILD_TYPE=Release
+                make myvector -j\$(nproc)
+                cp plugin_output_directory/myvector.so /work/myvector-${arch}.so
+              "
+          done
           cp sql/myvectorplugin.sql .
 
       - name: Smoke test image contents
         run: |
-          docker build \
-            --file ${{ matrix.dockerfile }} \
-            --build-arg MYSQL_VERSION=${{ matrix.mysql-version }} \
-            -t myvector-smoke:${{ matrix.mysql-version }} \
-            .
-          docker run --rm myvector-smoke:${{ matrix.mysql-version }} \
-            /bin/sh -c "test -f /usr/lib/mysql/plugin/myvector.so && test -f /docker-entrypoint-initdb.d/myvectorplugin.sql"
+          for arch in amd64 arm64; do
+            docker buildx build \
+              --platform "linux/${arch}" \
+              --file ${{ matrix.dockerfile }} \
+              --build-arg MYSQL_VERSION=${{ matrix.mysql-version }} \
+              --build-arg MYVECTOR_SO="myvector-${arch}.so" \
+              -t "myvector-smoke:${{ matrix.mysql-version }}-${arch}" \
+              --load \
+              .
+            docker run --rm --platform "linux/${arch}" \
+              "myvector-smoke:${{ matrix.mysql-version }}-${arch}" \
+              /bin/sh -c "test -f /usr/lib/mysql/plugin/myvector.so && test -f /docker-entrypoint-initdb.d/myvectorplugin.sql"
+          done
 
       - name: Smoke test README examples
         run: |
-          bash scripts/smoke-readme.sh myvector-smoke:${{ matrix.mysql-version }}
+          for arch in amd64 arm64; do
+            DOCKER_DEFAULT_PLATFORM="linux/${arch}" \
+              bash scripts/smoke-readme.sh "myvector-smoke:${{ matrix.mysql-version }}-${arch}"
+          done
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -125,15 +149,40 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        if: github.event_name == 'push'
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
-          push: ${{ github.event_name == 'push' }}
-          tags: ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}
+          push: true
+          tags: ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}-amd64
           build-args: |
             MYSQL_VERSION=${{ matrix.mysql-version }}
+            MYVECTOR_SO=myvector-amd64.so
+
+      - name: Build and push (arm64)
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/arm64
+          push: true
+          tags: ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}-arm64
+          build-args: |
+            MYSQL_VERSION=${{ matrix.mysql-version }}
+            MYVECTOR_SO=myvector-arm64.so
+
+      - name: Create and push manifest
+        if: github.event_name == 'push'
+        run: |
+          docker manifest create \
+            ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }} \
+            ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}-amd64 \
+            ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}-arm64
+          docker manifest push \
+            ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}
 
       - name: Tag and push latest
         if: matrix.mysql-version == '8.0' && github.event_name == 'push'
@@ -142,7 +191,31 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64
-          push: ${{ github.event_name == 'push' }}
-          tags: ghcr.io/${{ github.repository }}:latest
+          push: true
+          tags: ghcr.io/${{ github.repository }}:latest-amd64
           build-args: |
             MYSQL_VERSION=${{ matrix.mysql-version }}
+            MYVECTOR_SO=myvector-amd64.so
+
+      - name: Tag and push latest (arm64)
+        if: matrix.mysql-version == '8.0' && github.event_name == 'push'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/arm64
+          push: true
+          tags: ghcr.io/${{ github.repository }}:latest-arm64
+          build-args: |
+            MYSQL_VERSION=${{ matrix.mysql-version }}
+            MYVECTOR_SO=myvector-arm64.so
+
+      - name: Create and push latest manifest
+        if: matrix.mysql-version == '8.0' && github.event_name == 'push'
+        run: |
+          docker manifest create \
+            ghcr.io/${{ github.repository }}:latest \
+            ghcr.io/${{ github.repository }}:latest-amd64 \
+            ghcr.io/${{ github.repository }}:latest-arm64
+          docker manifest push \
+            ghcr.io/${{ github.repository }}:latest
