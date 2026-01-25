@@ -86,7 +86,7 @@ mysql -h 127.0.0.1 -u root -pmyvector vectordb
 
 ### 3. Create a Table and Insert Data
 
-Let\'s use a simple example with 50-dimensional word vectors.
+Let's use a simple example with 50-dimensional word vectors.
 
 ```sql
 -- Create a table for our word vectors
@@ -120,7 +120,7 @@ FROM words50d
 WHERE MYVECTOR_IS_ANN('vectordb.words50d.wordvec', 'wordid', @school_vec, 10);
 ```
 
-You should see results like "university," "student," "teacher," etc. It\'s that easy!
+You should see results like "university," "student," "teacher," etc. It's that easy!
 
 ---
 

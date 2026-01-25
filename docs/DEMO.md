@@ -1,6 +1,6 @@
 # Amazon Product Catalog Dataset with Embeddings
 
-This is the best MyVector Demo! We are going to load a real world product
+This is the best MyVector Demo! We are going to load a real-world product
 catalog (from Amazon) into a MySQL database, build an HNSW index and then
 perform vector search to find semantically relevant results.
 
