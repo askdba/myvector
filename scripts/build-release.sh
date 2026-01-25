@@ -49,7 +49,7 @@ fi
 	else
 		NUM_CORES=1
 	fi
-	make -j$NUM_CORES VERBOSE=1 myvector
+	make -j"$NUM_CORES" VERBOSE=1 myvector
 )
 
 # Package the release artifact

@@ -11,7 +11,7 @@
   <a href="https://github.com/askdba/myvector/blob/main/LICENSE"><img src="https://img.shields.io/github/license/askdba/myvector?style=flat-square" alt="License"></a>
   <a href="https://github.com/askdba/myvector/actions/workflows/ci.yml"><img src="https://github.com/askdba/myvector/actions/workflows/ci.yml/badge.svg" alt="CI Status"></a>
   <a href="https://github.com/askdba/myvector/actions/workflows/docker-publish.yml"><img src="https://github.com/askdba/myvector/actions/workflows/docker-publish.yml/badge.svg" alt="Docker Build"></a>
-  <a href="https://hub.docker.com/r/askdba/myvector"><img src="https://img.shields.io/docker/pulls/askdba/myvector?style=flat-square" alt="Docker Pulls"></a>
+  <a href="https://github.com/askdba/myvector/pkgs/container/myvector"><img src="https://img.shields.io/badge/ghcr.io-myvector-2496ed?style=flat-square&logo=github" alt="GHCR Package"></a>
 </p>
 
 <p align="center">
@@ -42,6 +42,22 @@ It's fast, scalable, and designed for real-world use cases, from simple word emb
 | **Ease of Use** | **Simple SQL Interface:** Use familiar SQL UDFs and procedures. | Custom APIs and query languages. |
 | **Cost** | **Open Source:** Free to use and modify. | Can be expensive, especially at scale. |
 | **Ecosystem** | **Leverage MySQL:** Use your existing tools, connectors, and expertise. | Requires a new ecosystem of tools and connectors. |
+
+---
+
+## 🧭 Architecture
+
+```mermaid
+flowchart LR
+  App[Application / SQL Client] --> MySQL[MySQL Server]
+  MySQL --> UDFs[MyVector UDFs]
+  MySQL --> Proc[MyVector Stored Procedures]
+  UDFs --> Index[Vector Index (HNSW/KNN)]
+  Proc --> Index
+  Binlog[MySQL Binlog] --> Sync[Binlog Listener]
+  Sync --> Index
+  Index --> Data[MyVector Data Files]
+```
 
 ---
 

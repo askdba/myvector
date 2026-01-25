@@ -10,4 +10,9 @@ RUN if [ -d /usr/lib64/mysql/plugin ]; then \
     fi
 COPY myvectorplugin.sql /docker-entrypoint-initdb.d/
 
+HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD \
+  mysqladmin ping -uroot -p"$MYSQL_ROOT_PASSWORD" || exit 1
+
+USER mysql
+
 # The rest will be handled by the default MySQL entrypoint
