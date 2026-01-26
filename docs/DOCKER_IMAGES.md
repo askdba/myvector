@@ -30,7 +30,7 @@ Start a container with a fresh data directory:
 
 ```bash
 docker run -d \
-  --name myvector-db \
+  --name myvector-test \
   -e MYSQL_ROOT_PASSWORD=myvector \
   -e MYSQL_DATABASE=vectordb \
   -p 3306:3306 \
