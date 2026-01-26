@@ -11,11 +11,11 @@ aarch64) ARCH="arm64" ;;
 esac
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 BOOST_VERSION="1.77.0"
-BOOST_DIR="$BUILD_DIR/mysql-server/boost"
 
 # Create a temporary directory for the build
 BUILD_DIR=$(mktemp -d)
 trap 'rm -rf "$BUILD_DIR"' EXIT
+BOOST_DIR="$BUILD_DIR/mysql-server/boost"
 
 # Checkout MySQL Server
 git clone --depth 1 --branch "mysql-${MYSQL_VERSION}" https://github.com/mysql/mysql-server.git "$BUILD_DIR/mysql-server"
