@@ -183,7 +183,7 @@ mysql_declare_plugin(myvector){
     plugin_init,                                /* plugin initializer      */
     nullptr,                                    /* plugin check uninstall  */
     plugin_deinit,                              /* plugin deinitializer    */
-    0x0100,                                     /* version                 */
+    0x0103,                                     /* version                 */
     nullptr,                                    /* status variables        */
     myvector_system_variables,                  /* system variables        */
     nullptr,                                    /* reserved                */

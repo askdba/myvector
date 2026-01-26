@@ -32,33 +32,45 @@ cp include/*.i "$BUILD_DIR/mysql-server/plugin/myvector/" 2>/dev/null || true
 cp CMakeLists.txt "$BUILD_DIR/mysql-server/plugin/myvector/"
 cp -r sql "$BUILD_DIR/mysql-server/plugin/myvector/"
 
-# Install Dependencies (for Ubuntu)
+# Install Dependencies
 if [ "$OS" == "linux" ]; then
 	sudo apt-get update
 	sudo apt-get install -y cmake g++ bison libssl-dev libncurses5-dev libsasl2-dev libtirpc-dev
+elif [ "$OS" == "darwin" ]; then
+	brew install bison zlib
+	BISON_PREFIX="$(brew --prefix bison)"
+	export PATH="$BISON_PREFIX/bin:$PATH"
 fi
 
-# Pre-download Boost on macOS to avoid CMake extraction issues
-if [ "$OS" == "darwin" ]; then
+download_boost() {
 	mkdir -p "$BOOST_DIR"
 	BOOST_TARBALL="boost_${BOOST_VERSION//./_}.tar.bz2"
-	BOOST_URL="https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/${BOOST_TARBALL}"
+	BOOST_URLS=(
+		"https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/${BOOST_TARBALL}"
+		"https://downloads.sourceforge.net/project/boost/boost/${BOOST_VERSION}/${BOOST_TARBALL}"
+		"https://sourceforge.net/projects/boost/files/boost/${BOOST_VERSION}/${BOOST_TARBALL}/download"
+	)
 	download_ok=0
-	for _ in 1 2 3; do
-		curl -fL --retry 5 --retry-all-errors --retry-delay 2 "$BOOST_URL" -o "$BOOST_DIR/$BOOST_TARBALL"
-		if tar -tjf "$BOOST_DIR/$BOOST_TARBALL" >/dev/null 2>&1; then
-			download_ok=1
-			break
-		fi
-		rm -f "$BOOST_DIR/$BOOST_TARBALL"
-		sleep 2
+	for url in "${BOOST_URLS[@]}"; do
+		for _ in 1 2 3; do
+			curl -fL --retry 5 --retry-all-errors --retry-delay 2 "$url" -o "$BOOST_DIR/$BOOST_TARBALL" || true
+			if tar -tjf "$BOOST_DIR/$BOOST_TARBALL" >/dev/null 2>&1; then
+				download_ok=1
+				break 2
+			fi
+			rm -f "$BOOST_DIR/$BOOST_TARBALL"
+			sleep 2
+		done
 	done
 	if [ "$download_ok" -ne 1 ]; then
-		echo "Failed to download a valid Boost archive from $BOOST_URL" >&2
+		echo "Failed to download a valid Boost archive from all mirrors." >&2
 		exit 1
 	fi
 	tar -xjf "$BOOST_DIR/$BOOST_TARBALL" -C "$BOOST_DIR"
-fi
+}
+
+# Pre-download Boost to avoid CMake extraction issues and flaky mirrors
+download_boost
 
 # Configure and build
 (
@@ -66,9 +78,11 @@ fi
 	mkdir bld
 	cd bld
 	if [ "$OS" == "darwin" ]; then
-		cmake .. -DDOWNLOAD_BOOST=0 -DWITH_BOOST="../boost/boost_${BOOST_VERSION//./_}" -DFORCE_INSOURCE_BUILD=1
+		BISON_EXECUTABLE="$(brew --prefix bison)/bin/bison"
+		ZLIB_ROOT="$(brew --prefix zlib)"
+		cmake .. -DDOWNLOAD_BOOST=0 -DWITH_BOOST="../boost/boost_${BOOST_VERSION//./_}" -DBISON_EXECUTABLE="$BISON_EXECUTABLE" -DWITH_ZLIB=system -DZLIB_ROOT="$ZLIB_ROOT" -DFORCE_INSOURCE_BUILD=1
 	else
-		cmake .. -DDOWNLOAD_BOOST=1 -DWITH_BOOST=../boost -DFORCE_INSOURCE_BUILD=1
+		cmake .. -DDOWNLOAD_BOOST=0 -DWITH_BOOST="../boost/boost_${BOOST_VERSION//./_}" -DFORCE_INSOURCE_BUILD=1
 	fi
 	if [ "$OS" == "linux" ]; then
 		NUM_CORES=$(nproc)
