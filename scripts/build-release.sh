@@ -32,10 +32,13 @@ cp include/*.i "$BUILD_DIR/mysql-server/plugin/myvector/" 2>/dev/null || true
 cp CMakeLists.txt "$BUILD_DIR/mysql-server/plugin/myvector/"
 cp -r sql "$BUILD_DIR/mysql-server/plugin/myvector/"
 
-# Install Dependencies (for Ubuntu)
+# Install Dependencies
 if [ "$OS" == "linux" ]; then
 	sudo apt-get update
 	sudo apt-get install -y cmake g++ bison libssl-dev libncurses5-dev libsasl2-dev libtirpc-dev
+elif [ "$OS" == "darwin" ]; then
+	brew install bison
+	export PATH="$(brew --prefix bison)/bin:$PATH"
 fi
 
 download_boost() {
@@ -73,7 +76,12 @@ download_boost
 	cd "$BUILD_DIR/mysql-server"
 	mkdir bld
 	cd bld
-	cmake .. -DDOWNLOAD_BOOST=0 -DWITH_BOOST="../boost/boost_${BOOST_VERSION//./_}" -DFORCE_INSOURCE_BUILD=1
+	if [ "$OS" == "darwin" ]; then
+		BISON_EXECUTABLE="$(brew --prefix bison)/bin/bison"
+		cmake .. -DDOWNLOAD_BOOST=0 -DWITH_BOOST="../boost/boost_${BOOST_VERSION//./_}" -DBISON_EXECUTABLE="$BISON_EXECUTABLE" -DFORCE_INSOURCE_BUILD=1
+	else
+		cmake .. -DDOWNLOAD_BOOST=0 -DWITH_BOOST="../boost/boost_${BOOST_VERSION//./_}" -DFORCE_INSOURCE_BUILD=1
+	fi
 	if [ "$OS" == "linux" ]; then
 		NUM_CORES=$(nproc)
 	elif [ "$OS" == "darwin" ]; then
