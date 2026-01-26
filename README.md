@@ -43,14 +43,14 @@ It's fast, scalable, and designed for real-world use cases, from simple word emb
 
 ```mermaid
 flowchart LR
-  App[Application / SQL Client] --> MySQL[MySQL Server]
-  MySQL --> UDFs[MyVector UDFs]
-  MySQL --> Proc[MyVector Stored Procedures]
-  UDFs --> Index[Vector Index (HNSW/KNN)]
-  Proc --> Index
-  Binlog[MySQL Binlog] --> Sync[Binlog Listener]
-  Sync --> Index
-  Index --> Data[MyVector Data Files]
+  App[Application / SQL Client] --> MySQL[MySQL Server];
+  MySQL --> UDFs[MyVector UDFs];
+  MySQL --> Proc[MyVector Stored Procedures];
+  UDFs --> Index[Vector Index (HNSW/KNN)];
+  Proc --> Index;
+  Binlog[MySQL Binlog] --> Sync[Binlog Listener];
+  Sync --> Index;
+  Index --> Data[MyVector Data Files];
 ```
 
 ---
