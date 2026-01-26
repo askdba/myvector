@@ -23,7 +23,7 @@
 #ifndef PLUGIN_MYVECTOR_H
 #define PLUGIN_MYVECTOR_H
 
-#define MYVECTOR_PLUGIN_VERSION "1.0.0"
+#define MYVECTOR_PLUGIN_VERSION "1.0.2-rc2"
 
 #include <map>
 #include <mutex>

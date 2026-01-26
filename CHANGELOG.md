@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2-rc2] - 2026-01-26
+
+### Changed
+- Prepare 1.0.2 RC2 release (tests passed).
+
 ## [1.0.1] - 2026-01-25
 
 ### Fixed
@@ -100,9 +105,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 1.0.2-rc2 | 2026-01-26 | Release candidate 2 |
 | 1.0.1 | 2026-01-25 | Binlog shutdown fixes, docs and build refinements |
 | 1.0.0 | 2025-02-01 | FOSDEM'25 release, MySQL 9.0 VECTOR support |
 
-[Unreleased]: https://github.com/askdba/myvector/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/askdba/myvector/compare/v1.0.2-rc2...HEAD
+[1.0.2-rc2]: https://github.com/askdba/myvector/compare/v1.0.1...v1.0.2-rc2
 [1.0.1]: https://github.com/askdba/myvector/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/askdba/myvector/releases/tag/v1.0.0

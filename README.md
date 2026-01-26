@@ -1,30 +1,22 @@
 # MyVector
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/askdba/myvector/main/assets/Banner_Image.png" alt="MyVector Banner" width="100%">
-</p>
+![MyVector Banner](assets/Banner_Image.png)
 
-<p align="center">
-  <strong>MyVector: The native vector search plugin for MySQL</strong>
-</p>
+**MyVector: The native vector search plugin for MySQL**
 
-<p align="center">
-  <a href="https://github.com/askdba/myvector/releases"><img src="https://img.shields.io/github/v/release/askdba/myvector?style=flat-square" alt="Latest Release"></a>
-  <a href="https://github.com/askdba/myvector/blob/main/LICENSE"><img src="https://img.shields.io/github/license/askdba/myvector?style=flat-square" alt="License"></a>
-  <a href="https://github.com/askdba/myvector/actions/workflows/ci.yml"><img src="https://github.com/askdba/myvector/actions/workflows/ci.yml/badge.svg" alt="CI Status"></a>
-  <a href="https://github.com/askdba/myvector/actions/workflows/docker-publish.yml"><img src="https://github.com/askdba/myvector/actions/workflows/docker-publish.yml/badge.svg" alt="Docker Build"></a>
-  <a href="https://github.com/askdba/myvector/pkgs/container/myvector"><img src="https://img.shields.io/badge/ghcr.io-myvector-2496ed?style=flat-square&logo=github" alt="GHCR Package"></a>
-</p>
+[![Latest Release](https://img.shields.io/github/v/release/askdba/myvector?style=flat-square)](https://github.com/askdba/myvector/releases)
+[![License](https://img.shields.io/github/license/askdba/myvector?style=flat-square)](https://github.com/askdba/myvector/blob/main/LICENSE)
+[![CI Status](https://github.com/askdba/myvector/actions/workflows/ci.yml/badge.svg)](https://github.com/askdba/myvector/actions/workflows/ci.yml)
+[![Docker Build](https://github.com/askdba/myvector/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/askdba/myvector/actions/workflows/docker-publish.yml)
+[![GHCR Package](https://img.shields.io/badge/ghcr.io-myvector-2496ed?style=flat-square&logo=github)](https://github.com/askdba/myvector/pkgs/container/myvector)
 
-<p align="center">
-  <a href="#-why-myvector">Why MyVector?</a> •
-  <a href="#-quick-start">Quick Start</a> •
-  <a href="#-features">Features</a> •
-  <a href="#-usage-examples">Usage</a> •
-  <a href="#-docker">Docker</a> •
-  <a href="#-contributing">Contributing</a> •
-  <a href="#-documentation">Docs</a>
-</p>
+[Why MyVector?](#-why-myvector) •
+[Quick Start](#-quick-start) •
+[Features](#-features) •
+[Usage](#-usage-examples) •
+[Docker](#-docker) •
+[Contributing](#-contributing) •
+[Docs](#-documentation)
 
 ---
 
