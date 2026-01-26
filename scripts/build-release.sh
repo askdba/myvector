@@ -37,7 +37,7 @@ if [ "$OS" == "linux" ]; then
 	sudo apt-get update
 	sudo apt-get install -y cmake g++ bison libssl-dev libncurses5-dev libsasl2-dev libtirpc-dev
 elif [ "$OS" == "darwin" ]; then
-	brew install bison
+	brew install bison zlib
 	export PATH="$(brew --prefix bison)/bin:$PATH"
 fi
 
@@ -78,7 +78,8 @@ download_boost
 	cd bld
 	if [ "$OS" == "darwin" ]; then
 		BISON_EXECUTABLE="$(brew --prefix bison)/bin/bison"
-		cmake .. -DDOWNLOAD_BOOST=0 -DWITH_BOOST="../boost/boost_${BOOST_VERSION//./_}" -DBISON_EXECUTABLE="$BISON_EXECUTABLE" -DFORCE_INSOURCE_BUILD=1
+		ZLIB_ROOT="$(brew --prefix zlib)"
+		cmake .. -DDOWNLOAD_BOOST=0 -DWITH_BOOST="../boost/boost_${BOOST_VERSION//./_}" -DBISON_EXECUTABLE="$BISON_EXECUTABLE" -DWITH_ZLIB=system -DZLIB_ROOT="$ZLIB_ROOT" -DFORCE_INSOURCE_BUILD=1
 	else
 		cmake .. -DDOWNLOAD_BOOST=0 -DWITH_BOOST="../boost/boost_${BOOST_VERSION//./_}" -DFORCE_INSOURCE_BUILD=1
 	fi
