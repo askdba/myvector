@@ -43,8 +43,19 @@ if [ "$OS" == "darwin" ]; then
 	mkdir -p "$BOOST_DIR"
 	BOOST_TARBALL="boost_${BOOST_VERSION//./_}.tar.bz2"
 	BOOST_URL="https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/${BOOST_TARBALL}"
-	if [ ! -f "$BOOST_DIR/$BOOST_TARBALL" ]; then
-		curl -L "$BOOST_URL" -o "$BOOST_DIR/$BOOST_TARBALL"
+	download_ok=0
+	for _ in 1 2 3; do
+		curl -fL --retry 5 --retry-all-errors --retry-delay 2 "$BOOST_URL" -o "$BOOST_DIR/$BOOST_TARBALL"
+		if tar -tjf "$BOOST_DIR/$BOOST_TARBALL" >/dev/null 2>&1; then
+			download_ok=1
+			break
+		fi
+		rm -f "$BOOST_DIR/$BOOST_TARBALL"
+		sleep 2
+	done
+	if [ "$download_ok" -ne 1 ]; then
+		echo "Failed to download a valid Boost archive from $BOOST_URL" >&2
+		exit 1
 	fi
 	tar -xjf "$BOOST_DIR/$BOOST_TARBALL" -C "$BOOST_DIR"
 fi
