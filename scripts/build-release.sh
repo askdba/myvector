@@ -38,7 +38,8 @@ if [ "$OS" == "linux" ]; then
 	sudo apt-get install -y cmake g++ bison libssl-dev libncurses5-dev libsasl2-dev libtirpc-dev
 elif [ "$OS" == "darwin" ]; then
 	brew install bison zlib
-	export PATH="$(brew --prefix bison)/bin:$PATH"
+	BISON_PREFIX="$(brew --prefix bison)"
+	export PATH="$BISON_PREFIX/bin:$PATH"
 fi
 
 download_boost() {
