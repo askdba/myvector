@@ -4,7 +4,7 @@
 
 **MyVector: The native vector search plugin for MySQL**
 
-[![Latest Release](https://img.shields.io/github/v/release/askdba/myvector?style=flat-square)](https://github.com/askdba/myvector/releases)
+[![Latest Tag](https://img.shields.io/github/v/tag/askdba/myvector?style=flat-square&include_prereleases)](https://github.com/askdba/myvector/tags)
 [![License](https://img.shields.io/github/license/askdba/myvector?style=flat-square)](https://github.com/askdba/myvector/blob/main/LICENSE)
 [![CI Status](https://github.com/askdba/myvector/actions/workflows/ci.yml/badge.svg)](https://github.com/askdba/myvector/actions/workflows/ci.yml)
 [![Docker Build](https://github.com/askdba/myvector/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/askdba/myvector/actions/workflows/docker-publish.yml)
