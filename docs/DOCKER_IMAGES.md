@@ -39,15 +39,15 @@ docker run -d \
 
 Verify the plugin is loaded:
 
-```sql
-docker exec myvector-db mysql -uroot -pmyvector -e \
+```bash
+docker exec myvector-test mysql -uroot -pmyvector -e \
   "SELECT PLUGIN_NAME, PLUGIN_STATUS FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME='myvector';"
 ```
 
 If the plugin/UDFs are missing (e.g., reused data directory), reinstall:
 
-```sql
-docker exec myvector-db mysql -uroot -pmyvector -e \
+```bash
+docker exec myvector-test mysql -uroot -pmyvector -e \
   "SOURCE /docker-entrypoint-initdb.d/myvectorplugin.sql;"
 ```
 
@@ -56,8 +56,8 @@ docker exec myvector-db mysql -uroot -pmyvector -e \
 Create a table with a MYVECTOR column (note: use the MYVECTOR column syntax,
 not a COMMENT, so the plugin can rewrite the DDL properly):
 
-```sql
-docker exec -i myvector-db mysql -uroot -pmyvector vectordb <<'SQL'
+```bash
+docker exec -i myvector-test mysql -uroot -pmyvector vectordb <<'SQL'
 DROP TABLE IF EXISTS words50d;
 CREATE TABLE words50d (
   wordid INT AUTO_INCREMENT PRIMARY KEY,
@@ -72,20 +72,20 @@ Load the sample vectors (50d GloVe):
 ```bash
 curl -L -o /tmp/insert50d.sql.gz \
   https://raw.githubusercontent.com/askdba/myvector/main/examples/stanford50d/insert50d.sql.gz
-gunzip -c /tmp/insert50d.sql.gz | docker exec -i myvector-db mysql -uroot -pmyvector vectordb
+gunzip -c /tmp/insert50d.sql.gz | docker exec -i myvector-test mysql -uroot -pmyvector vectordb
 ```
 
 Build the vector index:
 
-```sql
-docker exec myvector-db mysql -uroot -pmyvector -e \
+```bash
+docker exec myvector-test mysql -uroot -pmyvector -e \
   "CALL mysql.myvector_index_build('vectordb.words50d.wordvec','wordid');" vectordb
 ```
 
 Run a similarity search (note: `myvector_row_distance` requires the id):
 
-```sql
-docker exec myvector-db mysql -uroot -pmyvector -e \
+```bash
+docker exec myvector-test mysql -uroot -pmyvector -e \
   "SET @school_vec = (SELECT wordvec FROM words50d WHERE word = 'school');
    SELECT word, myvector_row_distance(wordid) AS distance
    FROM words50d
@@ -98,19 +98,19 @@ If index build fails with a socket connection error, configure MyVector to use
 TCP inside the container and restart it:
 
 ```bash
-docker exec myvector-db bash -lc "cat >/var/lib/mysql/myvector.cnf <<'EOF'
+docker exec myvector-test bash -lc "cat >/var/lib/mysql/myvector.cnf <<'EOF'
 myvector_host=127.0.0.1
 myvector_port=3306
 myvector_user_id=root
 myvector_user_password=myvector
 EOF"
-docker restart myvector-db
+docker restart myvector-test
 ```
 
 Then reinstall the plugin/UDFs once after restart:
 
-```sql
-docker exec myvector-db mysql -uroot -pmyvector -e \
+```bash
+docker exec myvector-test mysql -uroot -pmyvector -e \
   "SOURCE /docker-entrypoint-initdb.d/myvectorplugin.sql;"
 ```
 
