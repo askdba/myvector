@@ -92,6 +92,71 @@ docker exec myvector-test mysql -uroot -pmyvector -e \
    WHERE MYVECTOR_IS_ANN('vectordb.words50d.wordvec','wordid',@school_vec,10);" vectordb
 ```
 
+## MySQL 9.x (Native VECTOR Type Example)
+
+Start a MySQL 9.x container (use `--platform linux/amd64` on Apple Silicon):
+
+```bash
+docker run -d \
+  --platform linux/amd64 \
+  --name myvector-test-96 \
+  -e MYSQL_ROOT_PASSWORD=myvector \
+  -e MYSQL_DATABASE=vectordb \
+  -p 3309:3306 \
+  ghcr.io/askdba/myvector:mysql9.6
+```
+
+Configure MyVector to use TCP and set the index directory, then restart:
+
+```bash
+docker exec myvector-test-96 bash -lc "cat >/var/lib/mysql/myvector.cnf <<'EOF'
+myvector_host=127.0.0.1
+myvector_port=3306
+myvector_user_id=root
+myvector_user_password=myvector
+EOF"
+docker restart myvector-test-96
+docker exec myvector-test-96 mysql -uroot -pmyvector -e \
+  "SET GLOBAL myvector_index_dir='/var/lib/mysql';"
+```
+
+Create the table and load the sample vectors:
+
+```bash
+docker exec -i myvector-test-96 mysql -uroot -pmyvector vectordb <<'SQL'
+DROP TABLE IF EXISTS words50d;
+CREATE TABLE words50d (
+  wordid INT AUTO_INCREMENT PRIMARY KEY,
+  word VARCHAR(200),
+  wordvec MYVECTOR(type=HNSW,dim=50,size=400000,dist=L2,m=64,ef=100)
+);
+SQL
+
+curl -L -o /tmp/insert50d.sql.gz \
+  https://raw.githubusercontent.com/askdba/myvector/main/examples/stanford50d/insert50d.sql.gz
+gunzip -c /tmp/insert50d.sql.gz | docker exec -i myvector-test-96 mysql -uroot -pmyvector vectordb
+```
+
+Build the vector index and run a similarity search:
+
+```bash
+docker exec myvector-test-96 mysql -uroot -pmyvector -e \
+  "CALL mysql.myvector_index_build('vectordb.words50d.wordvec','wordid');" vectordb
+
+docker exec myvector-test-96 mysql -uroot -pmyvector -e \
+  "SET @school_vec = (SELECT wordvec FROM words50d WHERE word = 'school');
+   SELECT word, myvector_row_distance(wordid) AS distance
+   FROM words50d
+   WHERE MYVECTOR_IS_ANN('vectordb.words50d.wordvec','wordid',@school_vec,10);" vectordb
+```
+
+Confirm the DDL was rewritten to the native `VECTOR` type:
+
+```bash
+docker exec myvector-test-96 mysql -uroot -pmyvector -e \
+  "SHOW CREATE TABLE words50d;" vectordb
+```
+
 ## Index Build Connection Notes
 
 If index build fails with a socket connection error, configure MyVector to use
