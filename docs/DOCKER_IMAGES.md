@@ -120,7 +120,7 @@ docker exec myvector-test-96 mysql -uroot -pmyvector -e \
   "SET GLOBAL myvector_index_dir='/var/lib/mysql';"
 ```
 
-Create the table and load the sample vectors:
+Create the table and load the sample vectors (native `VECTOR` type):
 
 ```bash
 docker exec -i myvector-test-96 mysql -uroot -pmyvector vectordb <<'SQL'
@@ -128,7 +128,7 @@ DROP TABLE IF EXISTS words50d;
 CREATE TABLE words50d (
   wordid INT AUTO_INCREMENT PRIMARY KEY,
   word VARCHAR(200),
-  wordvec MYVECTOR(type=HNSW,dim=50,size=400000,dist=L2,m=64,ef=100)
+  wordvec VECTOR(50) COMMENT 'MYVECTOR Column |type=HNSW,dim=50,size=400000,dist=L2,m=64,ef=100'
 );
 SQL
 
