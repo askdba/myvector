@@ -9,14 +9,14 @@ used in the MyVector project.
 
 - **File:** [LICENSE-Apache-2.0.txt](LICENSE-Apache-2.0.txt)
 - **Used by:** HNSWlib (Hierarchical Navigable Small World)
-- **Source:** <https://github.com/nmslib/hnswlib>
+- **Source:** [https://github.com/nmslib/hnswlib](https://github.com/nmslib/hnswlib)
 - **Purpose:** High-performance Approximate Nearest Neighbor (ANN) search
 
 ### Boost Software License 1.0
 
 - **File:** [LICENSE-Boost-1.0.txt](LICENSE-Boost-1.0.txt)
 - **Used by:** Boost C++ Libraries
-- **Source:** <https://www.boost.org/>
+- **Source:** [https://www.boost.org/](https://www.boost.org/)
 - **Purpose:** C++ utility libraries (headers provided by MySQL build environment)
 
 ### GNU General Public License v2.0
