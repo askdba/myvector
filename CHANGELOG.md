@@ -13,9 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `licenses/` directory with full license texts (Apache-2.0, Boost-1.0) and
   compatibility documentation.
 
-### Changed (RC3)
+### Changed (1.0.2)
 
-- Prepare 1.0.2 RC3 release.
+- Preparation for 1.0.2 (was RC3)
 - Update `README.md` with licensing information.
 
 ### Fixed
