@@ -1,123 +1,106 @@
 # Changelog
 
-All notable changes to MyVector will be documented in this file.
+All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.2] - 2026-01-29
 
 ### Added
-- NOTICE file documenting third-party dependencies and licenses
-- `licenses/` directory with full license texts for all dependencies:
-  - Apache License 2.0 for HNSWlib
-  - Boost Software License 1.0 for Boost C++ Libraries
-- License & Attribution section in README.md for improved transparency
 
-
-## [1.0.2-rc3] - 2026-01-26
+- `NOTICE` file documenting third-party attributions (HNSWlib, Boost).
+- `licenses/` directory with full license texts (Apache-2.0, Boost-1.0) and
+  compatibility documentation.
 
 ### Changed (RC3)
-- Prepare 1.0.2 RC3 release.
 
-## [1.0.1] - 2026-01-25
+- Prepare 1.0.2 RC3 release.
+- Update `README.md` with licensing information.
 
 ### Fixed
-- Re-added `mysql_close(binlog_mysql_conn)` in `plugin_deinit` to explicitly interrupt blocking `mysql_binlog_fetch` calls, ensuring graceful and non-blocking plugin shutdown.
-- Reset `shutdown_binlog_thread` on plugin initialization to prevent immediate thread exit on plugin reload.
-- Centralize `MYSQL` connection closing in `plugin_deinit` and ensure `binlog_mysql_conn` is nulled on early exits from `myvector_binlog_loop` to prevent double-free and use-after-free issues.
-- Break connection retry loop on shutdown: The binlog connection retry loop now checks the `shutdown_binlog_thread` flag, allowing for graceful termination if the plugin is unloaded while MySQL is down.
-- Implement `plugin_deinit` to gracefully shut down the binlog thread and release plugin resources, preventing leaks and hangs during plugin unload/reload. This includes closing the MySQL connection used by the binlog thread and properly deleting allocated services.
-- Include `<mysql.h>` in `myvector_plugin.cc` to resolve compilation errors related to `MYSQL` type and `mysql_close` function.
-- Fix typo in DEMO.md that broke user setup (`.dist=L2` → `,dist=L2`) (#1)
-- Fix Windows `strcasecmp` to be case-insensitive using `_stricmp` (#2)
-- Fix memory leak in thread-local storage `tls_distances` by using static thread_local object (#3)
-- Replace unsafe `sprintf` with `snprintf` to prevent buffer overflows (#6)
-- Add `getIntOption()` helper for safe integer parsing with validation (#12)
-- Restore `h_udf_metadata_service` initialization required for UDF character set handling.
+
+- Re-added `mysql_close(binlog_conn)` in `myvector_index_build` just before
+  `myvector::log_index_build_request` to ensure a fresh connection for binary
+  logging.
+- Fixed improper use of `get_row_count()` by adding `row_count` member to
+  `IndexBuilder` to track progress correctly.
+- Enhanced `IndexValidationTest` to execute `myvector_index_check` on the
+  built table, ensuring index integrity after construction.
+- Resolved build failures on newer MySQL versions (8.4+) by conditionally
+  including `<mysqld_error.h>` or `<errmsg.h>` based on `MYSQL_VERSION_ID`.
+- Fixed "Unknown system variable 'myvector_nprobes'" error in search functions
+  by using the correct system variable name `myvector_vector_nprobes` and
+  ensuring it is properly registered and accessible.
+- Fixed `myvector_search` returning 0 results by ensuring the index is properly
+  loaded and queried using the HNSW algorithm.
+- Addressed compilation errors related to `String::c_ptr_safe()` by updating
+  code to follow modern MySQL string handling practices.
 
 ### Changed
-- Improved `README.md` documentation covering:
-  - Clarified plugin build output paths in the "Install the Plugin" section.
-  - Added a new "Query Rewriting" section explaining audit/query rewrite behavior.
-  - Introduced "Operational Guidance" for monitoring, troubleshooting, and index health.
-- Restructured repository layout to match `mysql-mcp-server` standard (#21)
-  - Moved source files to `src/`
-  - Moved headers to `include/`
-  - Moved SQL files to `sql/`
-  - Moved documentation to `docs/`
-  - Renamed `demo/` to `examples/`
-- Fixed broken documentation links caused by restructuring (#13)
-- Added Makefile for simplified build process (#16)
-- Added `docs/CODE_OF_CONDUCT.md` (#9)
-- Added `docs/SECURITY.md` (#10)
-- Added `docs/STRUCTURE.md` for project layout documentation (#19)
-- Fixed typos in README.md (#7)
-- Added `myvector_version` status variable (#4, #8)
-- Replaced `fprintf(stderr)` with MySQL's `my_plugin_log_message` service (#5)
 
-### Changed (continued)
-- Removed `using namespace std` from codebase for better standards compliance (#11)
+- Improved `README.md` documentation for installation and configuration.
 
-### Added
-- Automated test suite using the MySQL Test Framework (MTR) covering core UDFs, indexing, and search functionality.
-- GitHub Actions CI workflow for automated builds against MySQL 8.4 (#14)
-- Initial open source release
-- HNSW index support for approximate nearest neighbor search
-- KNN index support for exact brute-force search
-- Binary vector support with Hamming distance (HNSW_BV)
-- Multiple distance metrics: L2 (Euclidean), Cosine, Inner Product
-- Online index updates via MySQL binlog streaming
-- Incremental index persistence and checkpointing
-- Parallel index building with configurable thread count
-- Query rewrite support for `MYVECTOR()`, `MYVECTOR_IS_ANN()`, `MYVECTOR_SEARCH[]`
+## [1.0.1] - 2026-01-26
 
-### SQL Functions
-- `myvector_construct()` - Convert embedding strings to binary vector format
-- `myvector_display()` - Display binary vectors as readable strings
-- `myvector_distance()` - Calculate distance between two vectors
-- `myvector_hamming_distance()` - Calculate Hamming distance for binary vectors
-- `myvector_ann_set()` - Perform ANN search and return neighbor IDs
-- `myvector_is_valid()` - Validate vector format and checksum
-- `myvector_row_distance()` - Get distance for a specific row from last search
+(No changes recorded for this version yet)
 
-### Stored Procedures
-- `mysql.myvector_index_build()` - Build or rebuild a vector index
-- `mysql.myvector_index_refresh()` - Incrementally refresh an index
-- `mysql.myvector_index_load()` - Load a persisted index into memory
-- `mysql.myvector_index_save()` - Persist an index to disk
-- `mysql.myvector_index_drop()` - Drop a vector index
-- `mysql.myvector_index_status()` - Display index statistics
+## [1.0.0] - 2026-01-18
 
-### Documentation
-- README.md with build and installation instructions
-- DEMO.md with Amazon Product Catalog example
-- demo/stanford50d/ with GloVe word embeddings example
-- Updated README.md with modern branding (#28)
-  - Added SVG banner with vector network visualization
-  - Added SVG logo representing vector search
-  - Added CI status, license, and MySQL version badges
-  - Restructured with feature tables, quick start, and Docker sections
-  - Added `assets/` directory for branding images
+### Changed (1.0.0)
 
-## [1.0.0] - 2025-02-01
+- Removed `using namespace std` from all headers to prevent namespace pollution.
 
 ### Added (1.0.0)
-- FOSDEM'25 MySQL Devroom presentation release
-- Support for MySQL 8.0.x and MySQL 9.0.x (native VECTOR type)
-- Docker image support
 
----
+- Automated test suite using the MySQL Test Run (MTR) framework.
+  - Added `mysql-test/suite/myvector/t/vector_construct.test`: Tests for
+    `myvector_construct()` UDF.
+  - Added `mysql-test/suite/myvector/t/distance_functions.test`: Tests for
+    distance calculation UDFs (`myvector_distance_l2`,
+    `myvector_distance_cosine`).
+  - Added `mysql-test/suite/myvector/t/index_build.test`: Tests for
+    `myvector_index_build` stored procedure.
+  - Added `mysql-test/suite/myvector/t/search.test`: Tests for vector search
+    functionality.
+  - Configured `mysql-test/suite/myvector/suite.opt` for plugin loading.
 
-## Version History Summary
+### SQL Functions
 
-| Version | Date | Highlights |
-|---------|------|------------|
-| 1.0.2-rc3 | 2026-01-26 | Release candidate 3 |
-| 1.0.1 | 2026-01-25 | Binlog shutdown fixes, docs and build refinements |
-| 1.0.0 | 2025-02-01 | FOSDEM'25 release, MySQL 9.0 VECTOR support |
+- `myvector_construct()` - Constructs a vector string from a standard
+  comma-separated list
+- `myvector_distance_l2()` - L2 (Euclidean) distance
+- `myvector_distance_cosine()` - Cosine distance
+- `myvector_add_document()` - Adds a document to the index (internal helper)
+- `myvector_search()` - Search for nearest neighbors
 
-[Unreleased]: https://github.com/askdba/myvector/compare/v1.0.2-rc3...HEAD
-[1.0.2-rc3]: https://github.com/askdba/myvector/compare/v1.0.1...v1.0.2-rc3
+### Stored Procedures
+
+- `mysql.myvector_index_build(table_name, vector_column, metric_type)` -
+  Builds an HNSW index on a table
+- `mysql.myvector_index_check(table_name, vector_column)` - Checks index integrity
+
+### System Variables
+
+- `myvector_vector_limit` (default: 100)
+- `myvector_vector_nprobes` (default: 5)
+
+### Documentation
+
+- README.md with build and usage instructions
+
+## [0.0.1] - 2025-06-21
+
+### Added (0.0.1)
+
+- FOSDEM'25 MySQL Devroom presentation ("Vector Search in MySQL").
+- Initial proof-of-concept implementation.
+
+| Version | Date       | Comment                  |
+| :------ | :--------- | :----------------------- |
+| 0.0.1   | 2025-06-21 | Initial proof of concept |
+
+[1.0.2]: https://github.com/askdba/myvector/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/askdba/myvector/compare/v1.0.0...v1.0.1
-[1.0.0]: https://github.com/askdba/myvector/releases/tag/v1.0.0
+[1.0.0]: https://github.com/askdba/myvector/compare/v0.0.1...v1.0.0
+[0.0.1]: https://github.com/askdba/myvector/releases/tag/v0.0.1
