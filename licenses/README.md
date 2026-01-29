@@ -26,7 +26,7 @@ This directory contains the full license texts for all third-party dependencies 
 ## License Compatibility
 
 All third-party licenses listed here are compatible with the main project license (GPL v2.0):
-- Apache 2.0 → GPL v2.0: ✅ Compatible (permissive to copyleft)
+- Apache 2.0 → GPL v2.0: ⚠️ Not compatible with GPL v2-only; compatible only if GPL code is "GPL v2 or later" (allowing upgrade to GPL v3) or GPL v3
 - Boost 1.0 → GPL v2.0: ✅ Compatible (permissive to copyleft)
 - GPL v2.0 → GPL v2.0: ✅ Compatible (same license)
 
