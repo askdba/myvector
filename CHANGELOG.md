@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- NOTICE file documenting third-party dependencies and licenses
+- `licenses/` directory with full license texts for all dependencies:
+  - Apache License 2.0 for HNSWlib
+  - Boost Software License 1.0 for Boost C++ Libraries
+- License & Attribution section in README.md for improved transparency
+
+
 ## [1.0.2-rc3] - 2026-01-26
 
 ### Changed (RC3)

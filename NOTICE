@@ -1,0 +1,91 @@
+MyVector - Vector Storage & Search Plugin for MySQL
+Copyright (c) 2024 p3io.in / shiyer22@gmail.com
+
+This product is licensed under the GNU General Public License v2.0.
+See the LICENSE file for the full license text.
+
+================================================================================
+
+This product includes software developed by third parties:
+
+================================================================================
+HNSWlib (Hierarchical Navigable Small World)
+================================================================================
+
+Copyright (c) 2016-2024 Yury Malkov, Dmitry Yashunin, and contributors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+Source: https://github.com/nmslib/hnswlib
+
+HNSWlib is used in MyVector to provide high-performance Approximate Nearest
+Neighbor (ANN) search capabilities using the Hierarchical Navigable Small
+World (HNSW) algorithm.
+
+The following files are derived from or based on HNSWlib:
+  - include/hnswlib.h
+  - include/hnswalg.h
+  - include/bruteforce.h
+  - include/space_l2.h
+  - include/space_ip.h
+  - include/visited_list_pool.h
+  - include/stop_condition.h
+
+================================================================================
+MySQL Server
+================================================================================
+
+Copyright (c) 2000, 2024, Oracle and/or its affiliates.
+
+This product depends on MySQL Server, which is licensed under the
+GNU General Public License v2.0 with FOSS License Exception.
+
+Source: https://github.com/mysql/mysql-server
+
+MyVector is designed as a plugin for MySQL Server and uses MySQL's
+plugin API and service libraries.
+
+================================================================================
+Boost C++ Libraries
+================================================================================
+
+Copyright (c) Boost.org contributors
+
+Licensed under the Boost Software License, Version 1.0.
+You may obtain a copy of the License at
+
+    https://www.boost.org/LICENSE_1_0.txt
+
+Source: https://www.boost.org/
+
+MyVector uses Boost headers provided by the MySQL Server build environment.
+
+================================================================================
+
+ADDITIONAL ACKNOWLEDGMENTS
+
+The MyVector project acknowledges and thanks:
+
+- The hnswlib authors and contributors for their excellent work on the
+  HNSW algorithm implementation.
+  
+- The MySQL Community for creating a powerful and extensible database system.
+
+- All contributors to the MyVector project.
+
+================================================================================
+
+For questions about licensing or third-party components, please open an issue
+at https://github.com/askdba/myvector/issues
+
+Last Updated: 2026-01-29

@@ -223,3 +223,11 @@ For more detailed information, please see the `docs` directory:
 
 - [**hnswlib**](https://github.com/nmslib/hnswlib): For the high-performance HNSW implementation.
 - The **MySQL Community**: For creating a powerful and extensible database.
+
+## 📄 License & Attribution
+
+MyVector is licensed under the [GNU General Public License v2.0](LICENSE).
+
+For information about third-party dependencies and their licenses, see:
+- [NOTICE](NOTICE) - Third-party attribution notices
+- [licenses/](licenses/) - Full license texts for all dependencies
