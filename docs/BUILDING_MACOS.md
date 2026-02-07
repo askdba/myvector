@@ -1,5 +1,7 @@
 # Building and testing MySQL on macOS (Apple Silicon)
 
+**Source:** [Building and Testing MySQL 8.0.45, 8.4.8, and 9.6.0](https://of-code.blogspot.com/2026/01/building-and-testing-mysql-8045-848-and.html)
+
 This note captures build and test observations for recent MySQL releases
 on macOS Apple Silicon. It is intended as a reference while building.
 
