@@ -1,24 +1,99 @@
-INCLUDE_DIRECTORIES(SYSTEM ${BOOST_PATCHES_DIR} ${BOOST_INCLUDE_DIR})
-if(DEFINED MYSQL_SOURCE_DIR AND EXISTS "${MYSQL_SOURCE_DIR}/include")
-  INCLUDE_DIRECTORIES(SYSTEM "${MYSQL_SOURCE_DIR}/include")
-endif()
-if(DEFINED MYSQL_BUILD_DIR AND EXISTS "${MYSQL_BUILD_DIR}/include")
-  INCLUDE_DIRECTORIES(SYSTEM "${MYSQL_BUILD_DIR}/include")
+cmake_minimum_required(VERSION 3.5)
+project(MyVectorComponent LANGUAGES CXX)
+
+# -----------------------------------------------------------------------------
+# Step 4: Component build system (see docs/COMPONENT_MIGRATION_PLAN.md).
+# Component headers (e.g. mysql/components/component_implementation.h) come
+# from the MySQL server source tree, not from the client package.
+# -----------------------------------------------------------------------------
+# Required:
+#   MYSQL_SOURCE_DIR  - Path to MySQL server source root (must contain
+#                       include/mysql/components/component_implementation.h).
+# Optional:
+#   MYSQL_BUILD_DIR   - Path to MySQL server build dir (for generated headers).
+#   MYSQL_DIR         - Path to MySQL install or client package; used to find
+#                       libmysqlclient and client includes if not under source.
+# -----------------------------------------------------------------------------
+
+if(NOT DEFINED MYSQL_SOURCE_DIR OR NOT EXISTS "${MYSQL_SOURCE_DIR}/include/mysql/components/component_implementation.h")
+  message(FATAL_ERROR
+    "MYSQL_SOURCE_DIR must point to MySQL server source root (containing "
+    "include/mysql/components/component_implementation.h). "
+    "Example: cmake -DMYSQL_SOURCE_DIR=/path/to/mysql-server/ ..")
 endif()
 
-# Source files - paths are relative to this CMakeLists.txt location
-# When building within MySQL source tree, files should be in plugin/myvector/
-MYSQL_ADD_PLUGIN(myvector
-  myvector_plugin.cc
-  myvector.cc
-  myvector_binlog.cc
-  myvectorutils.cc
-  LINK_LIBRARIES ${LIBMYSQLCLIENT}
-  MODULE_ONLY
-  MODULE_OUTPUT_NAME "myvector"
-  )
+set(MYSQL_SOURCE_DIR "${MYSQL_SOURCE_DIR}" CACHE PATH "MySQL server source root")
+
+# Optional server build dir (for generated headers)
+if(DEFINED MYSQL_BUILD_DIR AND EXISTS "${MYSQL_BUILD_DIR}/include")
+  set(MYSQL_BUILD_DIR "${MYSQL_BUILD_DIR}" CACHE PATH "MySQL server build dir")
+endif()
+
+# Optional MySQL install/client dir (for libmysqlclient and client includes)
+if(DEFINED MYSQL_DIR)
+  set(MYSQL_DIR "${MYSQL_DIR}" CACHE PATH "MySQL install or client package root")
+endif()
+
+# Include directories: project include/ and server (and optionally build) includes
+set(MYVECTOR_INCLUDE_DIRS
+  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  "${MYSQL_SOURCE_DIR}/include"
+)
+if(DEFINED MYSQL_BUILD_DIR AND EXISTS "${MYSQL_BUILD_DIR}/include")
+  list(APPEND MYVECTOR_INCLUDE_DIRS "${MYSQL_BUILD_DIR}/include")
+endif()
+
+# Find libmysqlclient (required for MYSQL C API used in binlog and UDF code)
+find_library(MYSQLCLIENT_LIBRARY
+  NAMES mysqlclient
+  HINTS "${MYSQL_DIR}" "${MYSQL_BUILD_DIR}" "${MYSQL_SOURCE_DIR}"
+  PATH_SUFFIXES lib lib64 lib/mysql
+)
+if(NOT MYSQLCLIENT_LIBRARY)
+  message(FATAL_ERROR
+    "libmysqlclient not found. Set MYSQL_DIR to MySQL install root, or "
+    "ensure libmysqlclient is in CMAKE_LIBRARY_PATH.")
+endif()
+
+# Optional: extra client include path if different from server source
+if(DEFINED MYSQL_DIR AND EXISTS "${MYSQL_DIR}/include")
+  list(APPEND MYVECTOR_INCLUDE_DIRS "${MYSQL_DIR}/include")
+endif()
+
+# Boost (used by existing source)
+if(DEFINED BOOST_PATCHES_DIR)
+  list(APPEND MYVECTOR_INCLUDE_DIRS ${BOOST_PATCHES_DIR})
+endif()
+if(DEFINED BOOST_INCLUDE_DIR)
+  list(APPEND MYVECTOR_INCLUDE_DIRS ${BOOST_INCLUDE_DIR})
+endif()
+
+# Source files for the MyVector component (exclude plugin entry)
+set(MYVECTOR_COMPONENT_SRCS
+  src/component_src/myvector_component.cc
+  src/component_src/myvector_query_rewrite_service.cc
+  src/component_src/myvector_binlog_service.cc
+  src/component_src/myvector_udf_service.cc
+  src/myvector.cc
+  src/myvector_binlog.cc
+  src/myvectorutils.cc
+)
+
+add_library(myvector_component SHARED ${MYVECTOR_COMPONENT_SRCS})
+target_include_directories(myvector_component PRIVATE ${MYVECTOR_INCLUDE_DIRS})
+target_link_libraries(myvector_component PRIVATE ${MYSQLCLIENT_LIBRARY})
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  set_property(TARGET myvector APPEND_STRING PROPERTY LINK_FLAGS
+  set_property(TARGET myvector_component APPEND_STRING PROPERTY LINK_FLAGS
     " -static-libstdc++ -static-libgcc")
 endif()
+
+# Install: shared library and component manifest
+install(TARGETS myvector_component
+  LIBRARY DESTINATION lib/plugin
+  RUNTIME DESTINATION lib/plugin
+  ARCHIVE DESTINATION lib
+)
+install(FILES src/component_src/myvector.json
+  DESTINATION share/mysql/component
+)
