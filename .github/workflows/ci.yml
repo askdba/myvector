@@ -81,7 +81,18 @@ jobs:
           build-essential \
           cmake \
           libmysqlclient-dev \
-          pkg-config
+          pkg-config \
+          libssl-dev \
+          libncurses5-dev \
+          bison \
+          libtirpc-dev \
+          libldap2-dev \
+          libsasl2-dev \
+          libudev-dev \
+          libre2-dev \
+          libcurl4-openssl-dev \
+          libprotobuf-dev \
+          protobuf-compiler
 
     - name: Cache MySQL Source
       id: cache-mysql-component
