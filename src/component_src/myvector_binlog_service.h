@@ -1,6 +1,7 @@
 #ifndef MYVECTOR_BINLOG_SERVICE_H
 #define MYVECTOR_BINLOG_SERVICE_H
 
+#include "mysql_component_service_base.h"
 #include <mysql/components/my_service.h>
 #include <mysql/components/component_implementation.h>
 
