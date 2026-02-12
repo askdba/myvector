@@ -64,8 +64,10 @@ static int myvector_component_deinit() {
     return ret;
 }
 
-// Component descriptor
+// Component descriptor (query rewriter only when MySQL provides query_rewrite.h, e.g. 9.0+)
+#ifdef MYVECTOR_HAS_QUERY_REWRITE_SERVICE
 extern class myvector_component::QueryRewriterService s_query_rewriter_service;
+#endif
 
 mysql_declare_component(myvector)
 {
@@ -77,7 +79,9 @@ mysql_declare_component(myvector)
     myvector_component_deinit,
     nullptr, // No global component services yet
     {
+#ifdef MYVECTOR_HAS_QUERY_REWRITE_SERVICE
         &s_query_rewriter_service,
+#endif
         &s_binlog_service, // Register the binlog service
         &s_udf_service,    // Register the UDF service
         nullptr

@@ -88,20 +88,23 @@ if(DEFINED BOOST_INCLUDE_DIR)
 endif()
 
 # Source files for the MyVector component (exclude plugin entry and plugin binlog).
-# The component has its own binlog implementation in myvector_binlog_service.cc;
-# including src/myvector_binlog.cc would cause ODR/linker errors (duplicate
-# parseTableMapEvent, parseRowsEvent, etc.).
+# query_rewrite service header exists in MySQL 9.0+ only; omit for 8.0/8.4.
 set(MYVECTOR_COMPONENT_SRCS
   src/component_src/myvector_component.cc
-  src/component_src/myvector_query_rewrite_service.cc
   src/component_src/myvector_binlog_service.cc
   src/component_src/myvector_udf_service.cc
   src/myvector.cc
   src/myvectorutils.cc
 )
+set(MYVECTOR_COMPONENT_DEFS "")
+if(EXISTS "${MYSQL_SOURCE_DIR}/include/mysql/components/services/query_rewrite.h")
+  list(APPEND MYVECTOR_COMPONENT_SRCS src/component_src/myvector_query_rewrite_service.cc)
+  list(APPEND MYVECTOR_COMPONENT_DEFS MYVECTOR_HAS_QUERY_REWRITE_SERVICE)
+endif()
 
 add_library(myvector_component SHARED ${MYVECTOR_COMPONENT_SRCS})
 target_include_directories(myvector_component PRIVATE ${MYVECTOR_INCLUDE_DIRS})
+target_compile_definitions(myvector_component PRIVATE ${MYVECTOR_COMPONENT_DEFS})
 target_link_libraries(myvector_component PRIVATE ${MYSQLCLIENT_LIBRARY})
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
