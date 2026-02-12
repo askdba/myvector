@@ -24,17 +24,21 @@ public:
 
     int rewrite_query(const Query_rewrite_request* request,
                       Query_rewrite_response* response) override {
-        std::string rewritten_query_str;
-        if (myvector_query_rewrite(request->original_query.str,
-                                   &rewritten_query_str)) {
-            response->rewritten_query = rewritten_query_str;
-            return 0; // Success
+        if (!request || !response) {
+            return -1;  // Invalid input
         }
-        return 1; // No rewrite or error
+        const char* orig = request->original_query.str;
+        std::string original(orig ? orig : "");
+        std::string rewritten_query_str;
+        if (myvector_query_rewrite(original, &rewritten_query_str)) {
+            response->rewritten_query = rewritten_query_str;
+            return 0;  // Success
+        }
+        return 1;  // No rewrite (caller can distinguish from -1 invalid / error)
     }
 };
 
-static QueryRewriterService s_query_rewriter_service;
+QueryRewriterService s_query_rewriter_service;
 
 SERVICE_REGISTRATION(myvector_query_rewriter_service, &s_query_rewriter_service);
 

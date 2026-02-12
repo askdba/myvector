@@ -20,8 +20,13 @@ static int myvector_component_init() {
     if (h_udf_metadata_service->is_valid()) {
         ret = myvector_component::s_udf_service.register_udfs(
             h_udf_metadata_service->get_service());
-        if (ret == 0)
+        if (ret == 0) {
             udfs_registered = true;
+        } else {
+            // Roll back any UDFs that were registered before the failure
+            myvector_component::s_udf_service.deregister_udfs(
+                h_udf_metadata_service->get_service());
+        }
     } else {
         // Handle error: UDF metadata service not available
         ret = 1;

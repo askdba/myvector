@@ -66,12 +66,23 @@ extern VectorIndexCollection g_indexes;
 // Placeholder for error logging - to be replaced by component-specific logging
 #define UDF_ERROR_LOG(...) do { /* fprintf(stderr, __VA_ARGS__); */ } while(0)
 
-#define SET_UDF_ERROR_AND_RETURN(...)                                          
-    {                                                                          
-        UDF_ERROR_LOG(__VA_ARGS__);          
-        *error = 1;                                                            
-        return (result);                                                       
+#define SET_UDF_ERROR_AND_RETURN(...) \
+    do { \
+        UDF_ERROR_LOG(__VA_ARGS__); \
+        *error = 1; \
+        return (result); \
+    } while (0)
+
+/** On success returns false and sets initid->ptr. On allocation failure sets message and returns true. */
+static bool myvector_alloc_init_ptr(UDF_INIT* initid, size_t size, char* message) {
+    void* p = malloc(size);
+    if (!p) {
+        snprintf(message, MYSQL_ERRMSG_SIZE, "myvector UDF init: allocation failed");
+        return true;  // failure
     }
+    initid->ptr = (char*)p;
+    return false;  // success
+}
 
 namespace myvector_component {
 
@@ -85,14 +96,15 @@ bool myvector_ann_set_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
 
     char* col = (char*)args->args[0];
     AbstractVectorIndex* vi = g_indexes.get(col);
-    SharedLockGuard l(vi);
     if (!vi) {
         snprintf(message, MYSQL_ERRMSG_SIZE, ER_MYVECTOR_INDEX_NOT_FOUND, col);
         return true;  // error
     }
+    SharedLockGuard l(vi);
 
     initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
-    initid->ptr = (char*)malloc(initid->max_length);
+    if (myvector_alloc_init_ptr(initid, initid->max_length, message))
+        return true;
     // (*h_udf_metadata_service)->result_set(initid, "charset", latin1); // This requires h_udf_metadata_service
 
     tls_distances->clear();
@@ -128,7 +140,7 @@ char* myvector_ann_set(UDF_INIT* initid,
 
     int nn = MYVECTOR_DEFAULT_ANN_RETURN_COUNT;
     int ef_search = 0;
-    if (searchoptions && args->lengths[3]) {
+    if (args->arg_count >= 4 && searchoptions && args->lengths[3]) {
         MyVectorOptions vo(searchoptions);
 
         nn = vo.getIntOption("nn", MYVECTOR_DEFAULT_ANN_RETURN_COUNT);
@@ -163,9 +175,15 @@ char* myvector_ann_set(UDF_INIT* initid,
         ss << "[NULL]";
     }
 
-    *length = ss.str().length();
+    size_t out_len = ss.str().size();
+    size_t max_copy = (initid->max_length > 0) ? (size_t)(initid->max_length - 1) : 0;
+    if (out_len > max_copy)
+        out_len = max_copy;
     result = (char*)initid->ptr;
-    strcpy(result, ss.str().c_str());
+    if (out_len > 0)
+        memcpy(result, ss.str().c_str(), out_len);
+    result[out_len] = '\0';
+    *length = out_len;
     return result;
 }
 
@@ -235,9 +253,11 @@ char* myvector_construct_bv(const std::string& srctype,
             while (*ptr != ' ' && *ptr != ',' && *ptr != endch)
                 ptr++;
             char buff[64];
-
-            strncpy(buff, p1, (ptr - p1));
-            buff[(int)(ptr - p1)] = 0;
+            size_t len = (size_t)(ptr - p1);
+            if (len >= sizeof(buff))
+                len = sizeof(buff) - 1;
+            memcpy(buff, p1, len);
+            buff[len] = '\0';
 
             dst[retlen] = (unsigned char)(atoi(buff));
 
@@ -265,8 +285,7 @@ bool myvector_construct_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
         return true;  // error
     }
     initid->max_length = MYVECTOR_CONSTRUCT_MAX_LEN;
-    initid->ptr = (char*)malloc(MYVECTOR_CONSTRUCT_MAX_LEN);
-    return false;
+    return myvector_alloc_init_ptr(initid, MYVECTOR_CONSTRUCT_MAX_LEN, message);
 }
 
 char* myvector_construct(UDF_INIT* initid,
@@ -337,7 +356,11 @@ char* myvector_construct(UDF_INIT* initid,
         while (*ptr != ' ' && *ptr != ',' && *ptr != endch)
             ptr++;
         char buff[64];
-        strncpy(buff, p1, (ptr - p1));
+        size_t len = (size_t)(ptr - p1);
+        if (len >= sizeof(buff))
+            len = sizeof(buff) - 1;
+        memcpy(buff, p1, len);
+        buff[len] = '\0';
 
         FP32 fval = atof(buff);
         memcpy(&retvec[retlen], &fval, sizeof(FP32));
@@ -372,8 +395,8 @@ bool myvector_display_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
         return true;  // error
     }
     initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
-    initid->ptr = (char*)malloc(MYVECTOR_DISPLAY_MAX_LEN);
-    // (*h_udf_metadata_service)->result_set(initid, "charset", latin1); // This requires h_udf_metadata_service
+    if (myvector_alloc_init_ptr(initid, MYVECTOR_DISPLAY_MAX_LEN, message))
+        return true;
     return false;
 }
 
@@ -410,7 +433,9 @@ char* myvector_display(UDF_INIT* initid,
         0, (const unsigned char*)raw, args->lengths[0] - sizeof(ha_checksum));
     if (cksum1 != cksum2) {
         *error = 1;
-        return (char*)"<invalid vector>";
+        *is_null = 1;
+        *length = 0;
+        return nullptr;  /* Caller treats NULL with *is_null/ *error; no static string lifetime */
     }
 #endif
 
@@ -452,8 +477,14 @@ char* myvector_display(UDF_INIT* initid,
     ostr << "]";
 
     result = (char*)initid->ptr;
-    strcpy(result, ostr.str().c_str());
-    *length = ostr.str().length();
+    size_t out_len = ostr.str().length();
+    size_t max_copy = MYVECTOR_DISPLAY_MAX_LEN - 1;
+    if (out_len > max_copy)
+        out_len = max_copy;
+    if (out_len > 0)
+        memcpy(result, ostr.str().c_str(), out_len);
+    result[out_len] = '\0';
+    *length = out_len;
 
     return result;
 }
@@ -529,9 +560,8 @@ bool myvector_construct_binaryvector_init(UDF_INIT* initid,
                "myvector_construct_binary_vector(vec_col_expr)");
         return true;  // error
     }
-    initid->max_length = MYVECTOR_CONSTRUCT_MAX_LEN; // Use general construct max len
-    initid->ptr = (char*)malloc(initid->max_length);
-    return false;
+    initid->max_length = MYVECTOR_CONSTRUCT_MAX_LEN;  // Use general construct max len
+    return myvector_alloc_init_ptr(initid, initid->max_length, message);
 }
 
 char* myvector_construct_binaryvector(UDF_INIT* initid,
@@ -540,15 +570,18 @@ char* myvector_construct_binaryvector(UDF_INIT* initid,
                                                     unsigned long* length,
                                                     unsigned char* is_null,
                                                     unsigned char* error) {
-    // This UDF can be considered a wrapper around myvector_construct with o=bv option
-    // For simplicity, directly call myvector_construct_bv here assuming default input type
+    if (!args->args[0]) {
+        *is_null = 1;
+        *error = 0;
+        return nullptr;
+    }
     char* ptr = (char*)args->args[0];
-    std::string srctype = "string"; // Default input type for simplicity, should be derived from context
-
+    std::string srctype = "string";  // Default input type for simplicity
+    unsigned long arg_len = args->lengths[0];
     return myvector_construct_bv(srctype,
                                  ptr,
                                  (char*)initid->ptr,
-                                 args->lengths[0],
+                                 arg_len,
                                  length,
                                  is_null,
                                  error);
@@ -654,7 +687,7 @@ public:
     }
 };
 
-static MyVectorUdfServiceImpl s_udf_service;
+MyVectorUdfServiceImpl s_udf_service;
 
 SERVICE_REGISTRATION(myvector_udf_service, &s_udf_service);
 

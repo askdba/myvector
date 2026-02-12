@@ -68,14 +68,16 @@ if(DEFINED BOOST_INCLUDE_DIR)
   list(APPEND MYVECTOR_INCLUDE_DIRS ${BOOST_INCLUDE_DIR})
 endif()
 
-# Source files for the MyVector component (exclude plugin entry)
+# Source files for the MyVector component (exclude plugin entry and plugin binlog).
+# The component has its own binlog implementation in myvector_binlog_service.cc;
+# including src/myvector_binlog.cc would cause ODR/linker errors (duplicate
+# parseTableMapEvent, parseRowsEvent, etc.).
 set(MYVECTOR_COMPONENT_SRCS
   src/component_src/myvector_component.cc
   src/component_src/myvector_query_rewrite_service.cc
   src/component_src/myvector_binlog_service.cc
   src/component_src/myvector_udf_service.cc
   src/myvector.cc
-  src/myvector_binlog.cc
   src/myvectorutils.cc
 )
 

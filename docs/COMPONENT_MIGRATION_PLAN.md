@@ -139,7 +139,7 @@ been completed. The `CMakeLists.txt` has also been updated to reflect the new co
 
 **Current Blocker (resolved for Step 4)**
 
-The build requires the MySQL **server** source tree (component headers are not in the client package). Step 4 is complete: `CMakeLists.txt` now requires `MYSQL_SOURCE_DIR` and finds `libmysqlclient`; the build should succeed when that variable is set to the server source root.
+The build requires the MySQL **server** source tree (component headers are not in the client package). Step 4 is complete: `CMakeLists.txt` now requires `MYSQL_SOURCE_DIR` and finds `libmysqlclient`; the build should succeed when that variable is set to the server source root. Header discovery is therefore resolved; Step 8 (testing) is no longer blocked by it—remaining work is to run and expand tests (e.g., CI test-component matrix for 8.0/8.4/9.0).
 
 **Next Steps**
 
@@ -154,4 +154,4 @@ Run the component build with `-DMYSQL_SOURCE_DIR=/path/to/mysql-server`, then ru
 5.  [completed] Implement the binlog monitoring service.
 6.  [completed] Implement the UDF registration.
 7.  [completed] Update the build system to compile the component.
-8.  [in_progress] Test the component. (Blocked by header discovery)
+8.  [in_progress] Test the component.

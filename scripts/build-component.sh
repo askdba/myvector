@@ -87,14 +87,15 @@ fi
 # Copy manifest next to library for packaging
 mkdir -p component
 if [ -f "libmyvector_component.so" ]; then
-  cp libmyvector_component.so component/ 2>/dev/null || true
-  cp "$REPO_ROOT/src/component_src/myvector.json" component/
+  cp libmyvector_component.so component/ || { echo "Error: failed to copy libmyvector_component.so to component/" >&2; exit 1; }
+  cp "$REPO_ROOT/src/component_src/myvector.json" component/ || { echo "Error: failed to copy myvector.json to component/" >&2; exit 1; }
   echo "Built: build/libmyvector_component.so, build/component/myvector.json"
 elif [ -f "libmyvector_component.dylib" ]; then
-  cp libmyvector_component.dylib component/ 2>/dev/null || true
-  cp "$REPO_ROOT/src/component_src/myvector.json" component/
+  cp libmyvector_component.dylib component/ || { echo "Error: failed to copy libmyvector_component.dylib to component/" >&2; exit 1; }
+  cp "$REPO_ROOT/src/component_src/myvector.json" component/ || { echo "Error: failed to copy myvector.json to component/" >&2; exit 1; }
   echo "Built: build/libmyvector_component.dylib, build/component/myvector.json"
 else
-  echo "Built (artifact location may vary):"
+  echo "Error: build did not produce libmyvector_component.so or libmyvector_component.dylib" >&2
   find . -name 'myvector_component*' -o -name 'myvector.json' 2>/dev/null || true
+  exit 1
 fi

@@ -65,18 +65,46 @@ public:
     }
     VectorIndexUpdateItem* dequeue() {
         std::unique_lock lk(m_);
-        cv_.wait(lk, [this] { return !items_.empty(); });
-
+        cv_.wait(lk, [this] { return !items_.empty() || shutting_down_; });
+        if (shutting_down_ && items_.empty())
+            return nullptr;  // shutdown signal for consumers
         VectorIndexUpdateItem* next = items_.front();
         items_.pop_front();
+        if (items_.empty())
+            cv_.notify_all();  // wake wait_until_empty()
         return next;  // consumer to call delete
     }
-    bool empty() const { return items_.empty(); }
+    /** Non-blocking dequeue: returns an item if available, nullptr if empty. */
+    VectorIndexUpdateItem* try_dequeue() {
+        std::lock_guard lk(m_);
+        if (items_.empty())
+            return nullptr;
+        VectorIndexUpdateItem* next = items_.front();
+        items_.pop_front();
+        if (items_.empty())
+            cv_.notify_all();  // wake wait_until_empty()
+        return next;
+    }
+    /** Block until the queue is empty (e.g. all items consumed by workers). */
+    void wait_until_empty() {
+        std::unique_lock lk(m_);
+        cv_.wait(lk, [this] { return items_.empty(); });
+    }
+    void request_shutdown() {
+        std::lock_guard lk(m_);
+        shutting_down_ = true;
+        cv_.notify_all();
+    }
+    bool empty() {
+        std::lock_guard lk(m_);
+        return items_.empty();
+    }
 
 private:
     std::mutex m_;
     std::condition_variable cv_;
     std::list<VectorIndexUpdateItem*> items_;
+    bool shutting_down_ = false;
 };
 
 static EventsQ gqueue_;
@@ -133,6 +161,27 @@ bool extract_json_string(const std::string& json,
     return true;
 }
 
+/* Escape MySQL identifier for use inside backticks: wrap in backticks and double internal backticks. */
+static size_t escape_identifier(char* out, size_t out_size, const char* id) {
+    if (!out || out_size == 0 || !id)
+        return 0;
+    size_t j = 0;
+    out[j++] = '`';
+    for (; *id && j < out_size - 2; id++) {
+        if (*id == '`') {
+            if (j + 2 > out_size - 1)
+                break;
+            out[j++] = '`';
+            out[j++] = '`';
+        } else {
+            out[j++] = *id;
+        }
+    }
+    out[j++] = '`';
+    out[j] = '\0';
+    return j;
+}
+
 bool extract_json_number(const std::string& json,
                          const char* key,
                          size_t* value) {
@@ -152,6 +201,46 @@ bool extract_json_number(const std::string& json,
     std::string number = json.substr(start, end - start);
     *value = static_cast<size_t>(std::stoull(number));
     return true;
+}
+
+std::string EscapeJsonString(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\b':
+                out += "\\b";
+                break;
+            case '\f':
+                out += "\\f";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
+            default:
+                if (c < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out += c;
+                }
+                break;
+        }
+    }
+    return out;
 }
 
 bool load_binlog_state(BinlogState* state) {
@@ -181,8 +270,8 @@ bool persist_binlog_state(const BinlogState& state) {
     if (!out.is_open())
         return false;
     out << "{"
-        << "\"server_uuid\":\"" << state.server_uuid << "\","
-        << "\"binlog_file\":\"" << state.binlog_file << "\","
+        << "\"server_uuid\":\"" << EscapeJsonString(state.server_uuid) << "\","
+        << "\"binlog_file\":\"" << EscapeJsonString(state.binlog_file) << "\","
         << "\"binlog_pos\":" << state.binlog_pos << "}";
     out.close();
     if (std::rename(tmp_path.c_str(), path.c_str()) != 0)
@@ -400,6 +489,9 @@ void parseRowsEvent(const unsigned char* event_buf,
             }  // switch
         }  // for columns
 
+        if (!vec || vecsz == 0) {
+            continue;  /* skip row: no vector data */
+        }
         VectorIndexUpdateItem* item = new VectorIndexUpdateItem();
         std::string key = tev.dbName + "." + tev.tableName;
         std::string columnName = g_OnlineVectorIndexes[key].vectorColumn;
@@ -492,37 +584,69 @@ void GetBaseTableColumnPositions(MYSQL* hnd,
         "and table_name='%s' and "
         "(column_name='%s' or column_name='%s');";
     char buff[MYVECTOR_BUFF_SIZE];
+    /* Escaped identifiers: max expansion 2*len+1; 256 suffices for 64-char identifiers. */
+    char esc_db[256], esc_table[256], esc_idcol[256], esc_veccol[256];
+    size_t len_db = db ? strlen(db) : 0;
+    size_t len_table = table ? strlen(table) : 0;
+    size_t len_idcol = idcol ? strlen(idcol) : 0;
+    size_t len_veccol = veccol ? strlen(veccol) : 0;
 
     idcolpos = veccolpos = 0;
 
-    snprintf(buff, sizeof(buff), q, db, table, idcol, veccol);
+    if (!hnd || !db || !table || !idcol || !veccol)
+        return;
+    if (len_db >= sizeof(esc_db) / 2 || len_table >= sizeof(esc_table) / 2 ||
+        len_idcol >= sizeof(esc_idcol) / 2 || len_veccol >= sizeof(esc_veccol) / 2)
+        return;
+
+    unsigned long elen_db = mysql_real_escape_string(hnd, esc_db, db, (unsigned long)len_db);
+    unsigned long elen_table = mysql_real_escape_string(hnd, esc_table, table, (unsigned long)len_table);
+    unsigned long elen_idcol = mysql_real_escape_string(hnd, esc_idcol, idcol, (unsigned long)len_idcol);
+    unsigned long elen_veccol = mysql_real_escape_string(hnd, esc_veccol, veccol, (unsigned long)len_veccol);
+    esc_db[elen_db] = '\0';
+    esc_table[elen_table] = '\0';
+    esc_idcol[elen_idcol] = '\0';
+    esc_veccol[elen_veccol] = '\0';
+
+    int n = snprintf(buff, sizeof(buff), q, esc_db, esc_table, esc_idcol, esc_veccol);
+    if (n < 0 || (size_t)n >= sizeof(buff))
+        return;
 
     if (mysql_real_query(hnd, buff, strlen(buff))) {
-        // TODO
+        fprintf(stderr, "GetBaseTableColumnPositions query failed: %s\n", mysql_error(hnd));
+        return;
     }
 
     MYSQL_RES* result = mysql_store_result(hnd);
     if (!result) {
-        // TODO
+        fprintf(stderr, "GetBaseTableColumnPositions store_result failed: %s\n", mysql_error(hnd));
+        return;
     }
 
     if (mysql_num_fields(result) != 2) {
-        // TODO
+        fprintf(stderr, "GetBaseTableColumnPositions expected 2 columns, got %u\n", mysql_num_fields(result));
+        mysql_free_result(result);
+        return;
     }
 
     MYSQL_ROW row;
     while ((row = mysql_fetch_row(result))) {
         unsigned long* lengths = mysql_fetch_lengths(result);
-        if (!lengths[0] || !lengths[1] || !row[0] || !row[1]) {
-            // TODO
+        if (!lengths || !row || !row[0] || !row[1]) {
+            continue;  /* skip malformed row */
         }
-
-        char* colname = row[0];
-        char* position = row[1];
-
-        if (!strcmp(colname, idcol))
+        if (lengths[0] == 0 || lengths[1] == 0) {
+            continue;
+        }
+        /* Safe to compare: we have non-null row[0], row[1] and lengths. */
+        const char* colname = row[0];
+        const char* position = row[1];
+        if (strlen(colname) != lengths[0] || strlen(position) != lengths[1]) {
+            continue;  /* skip if not null-terminated / inconsistent */
+        }
+        if (strcmp(colname, idcol) == 0)
             idcolpos = atoi(position);
-        if (!strcmp(colname, veccol))
+        else if (strcmp(colname, veccol) == 0)
             veccolpos = atoi(position);
     }  // while
 
@@ -542,14 +666,22 @@ void myvector_open_index_impl(char* vecid,
                               char* extra,
                               char* result);
 
+/* Schema where myvector_columns view is installed (see sql/myvectorplugin.sql).
+ * Default is "mysql"; override if the view is created in another database.
+ */
+static const char* kMyVectorColumnsSchema = "mysql";
+
 /* OpenAllOnlineVectorIndexes() - Query MYVECTOR_COLUMNS view and open/load
  * all vector indexes that have online=Y i.e updated online when DMLs are
  * done on the base table. This routine is called during plugin init.
  */
 void OpenAllOnlineVectorIndexes(MYSQL* hnd) {
-    static const char* q = "select db,tbl,col,info from test.myvector_columns";
+    char query_buf[256];
+    snprintf(query_buf, sizeof(query_buf),
+             "select db,tbl,col,info from %s.myvector_columns",
+             kMyVectorColumnsSchema);
 
-    if (mysql_real_query(hnd, q, strlen(q))) {
+    if (mysql_real_query(hnd, query_buf, strlen(query_buf))) {
         // TODO
         return;
     }
@@ -596,7 +728,7 @@ void OpenAllOnlineVectorIndexes(MYSQL* hnd) {
             continue;
 
         if (online == "y" || online == "Y") {
-            char empty[1024];
+            char empty[1024] = {0};
             char action[] = "load";
             char vecid[1024];
             snprintf(vecid, sizeof(vecid), "%s.%s.%s", dbname, tbl, col);
@@ -625,6 +757,16 @@ void BuildMyVectorIndexSQL(const char* db,
                            char* errorbuf) {
     strcpy(errorbuf, "SUCCESS");
     size_t nRows = 0;
+    MYSQL mysql;
+    MYSQL* conn = mysql_init(&mysql);
+    if (conn == nullptr) {
+        snprintf(errorbuf,
+                 MYVECTOR_BUFF_SIZE,
+                 "BuildMyVectorIndexSQL: mysql_init failed (out of memory).");
+        fprintf(stderr, "BuildMyVectorIndexSQL: mysql_init failed (out of memory).\n");
+        return;
+    }
+    MYSQL_RES* result = nullptr;
 
     fprintf(stderr,
             "BuildMyVectorIndexSQL %s %s %s %s %s %s.\n",
@@ -634,11 +776,6 @@ void BuildMyVectorIndexSQL(const char* db,
             veccol,
             action,
             trackingColumn);
-
-    MYSQL mysql;
-
-    /* Use a new connection for vector index */
-    mysql_init(&mysql);
 
     if (!mysql_real_connect(
             &mysql,
@@ -654,88 +791,101 @@ void BuildMyVectorIndexSQL(const char* db,
                  MYVECTOR_BUFF_SIZE,
                  "Error in new connection to build vector index : %s.",
                  mysql_error(&mysql));
-        return;
+        goto cleanup;
     }
 
     (void)mysql_autocommit(&mysql, false);
 
     char query[MYVECTOR_BUFF_SIZE];
+    char esc_db[256], esc_table[256], esc_idcol[256], esc_veccol[256], esc_tracking[256];
+    if (!db || !table || !idcol || !veccol) {
+        snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "BuildMyVectorIndexSQL: null identifier");
+        goto cleanup;
+    }
+    escape_identifier(esc_db, sizeof(esc_db), db);
+    escape_identifier(esc_table, sizeof(esc_table), table);
+    escape_identifier(esc_idcol, sizeof(esc_idcol), idcol);
+    escape_identifier(esc_veccol, sizeof(esc_veccol), veccol);
 
     snprintf(
         query, sizeof(query), "SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
     if (mysql_real_query(&mysql, query, strlen(query))) {
-        // TODO
-        return;
+        snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "SET isolation failed: %s", mysql_error(&mysql));
+        goto cleanup;
     }
 
-    snprintf(query,
-             sizeof(query),
-             "LOCK TABLES %s.%s READ",
-             db,
-             table);  // No DMLs during build.
-
+    int n = snprintf(query, sizeof(query), "LOCK TABLES %s.%s READ", esc_db, esc_table);
+    if (n < 0 || (size_t)n >= sizeof(query)) {
+        snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "LOCK TABLES query too long");
+        goto cleanup;
+    }
     if (mysql_real_query(&mysql, query, strlen(query))) {
-        // TODO
-        return;
+        snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "LOCK TABLES failed: %s", mysql_error(&mysql));
+        goto cleanup;
     }
 
-    snprintf(query,
-             sizeof(query),
-             "SELECT %s, %s FROM %s.%s",
-             idcol,
-             veccol,
-             db,
-             table);
+    n = snprintf(query, sizeof(query), "SELECT %s, %s FROM %s.%s",
+                 esc_idcol, esc_veccol, esc_db, esc_table);
+    if (n < 0 || (size_t)n >= sizeof(query)) {
+        snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "SELECT query too long");
+        goto cleanup;
+    }
 
-    /// table has been locked, now we perform the timestamp related stuff
     unsigned long current_ts = time(NULL);
 
-    if (!strcmp(action, "refresh") || strlen(trackingColumn)) {
-        char whereClause[1024];
-
+    if (!strcmp(action, "refresh") || (trackingColumn && trackingColumn[0] != '\0')) {
+        if (!trackingColumn) {
+            snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "BuildMyVectorIndexSQL: null trackingColumn");
+            goto cleanup;
+        }
+        escape_identifier(esc_tracking, sizeof(esc_tracking), trackingColumn);
         unsigned long previous_ts = vi->getUpdateTs();
-        snprintf(
-            whereClause,
-            sizeof(whereClause),
-            " WHERE unix_timestamp(%s) > %lu AND unix_timestamp(%s) <= %lu",
-            trackingColumn,
-            previous_ts,
-            trackingColumn,
-            current_ts);
-        strcat(query, whereClause);
+        char whereClause[1024];
+        n = snprintf(whereClause, sizeof(whereClause),
+                     " WHERE unix_timestamp(%s) > %lu AND unix_timestamp(%s) <= %lu",
+                     esc_tracking, previous_ts, esc_tracking, current_ts);
+        if (n < 0 || (size_t)n >= sizeof(whereClause)) {
+            snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "WHERE clause too long");
+            goto cleanup;
+        }
+        size_t qlen = strlen(query);
+        size_t rem = sizeof(query) - qlen - 1;
+        if (strlen(whereClause) >= rem) {
+            snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "Query buffer overflow");
+            goto cleanup;
+        }
+        strncat(query, whereClause, rem - 1);
+        query[sizeof(query) - 1] = '\0';
     }
 
     vi->setUpdateTs(current_ts);
 
-    // debug_print("Final Build Query : %s", query);
-    // TODO: Replace with component-specific logging
-
     if (mysql_real_query(&mysql, query, strlen(query))) {
-        // TODO
+        snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "Build query failed: %s", mysql_error(&mysql));
+        goto cleanup;
     }
 
-    MYSQL_RES* result = mysql_store_result(&mysql);
+    result = mysql_store_result(&mysql);
+    if (!result) {
+        snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "store_result failed: %s", mysql_error(&mysql));
+        goto cleanup;
+    }
 
     MYSQL_ROW row;
-
     while ((row = mysql_fetch_row(result))) {
-        unsigned long* lengths;
-        lengths = mysql_fetch_lengths(result);
-
+        unsigned long* lengths = mysql_fetch_lengths(result);
+        if (!lengths || !row)
+            continue;
         char* idval = row[0];
         char* vec = row[1];
-
-        if (!lengths[0] || !lengths[1] || !idval) {
-            // TODO
-        }
-
-        vi->insertVector(vec, 0, atol(idval));  /// dim is already known by vi
+        if (!lengths[0] || !lengths[1] || !idval || !vec)
+            continue;
+        vi->insertVector(vec, 0, atol(idval));
         nRows++;
     }
 
     mysql_free_result(result);
-
-    // Get binlog coordinates, set checkpoint id and flush
+    result = nullptr;
 
     {
         std::lock_guard<std::mutex> binlogMutex(binlog_stream_mutex_);
@@ -772,9 +922,11 @@ void BuildMyVectorIndexSQL(const char* db,
                      ret,
                      mysql_error(&mysql));
         }
+    }
 
-    }  // scope guard for binlog mutex lock
-
+cleanup:
+    if (result)
+        mysql_free_result(result);
     mysql_close(&mysql);
 }
 
@@ -789,18 +941,21 @@ void myvector_checkpoint_index(const std::string& dbtable,
  * by caller so that current binlog filename and position are locked.
  */
 void FlushOnlineVectorIndexes() {
-    /* first wait for the binlog event Q to drain out */
-    while (1) {
-        if (gqueue_.empty()) {
-            break;
-        }
-        usleep(500 * 1000);  // 1/2 second
+    std::string binlog_file;
+    size_t binlog_pos = 0;
+    std::map<std::string, VectorIndexColumnInfo> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
+        binlog_file = currentBinlogFile;
+        binlog_pos = currentBinlogPos;
+        snapshot = g_OnlineVectorIndexes;
     }
-    for (auto const& [key, val] : g_OnlineVectorIndexes) { // Use structured binding for map iteration
+    gqueue_.wait_until_empty();
+    for (auto const& [key, val] : snapshot) {
         myvector_checkpoint_index(key,
                                   val.vectorColumn,
-                                  currentBinlogFile,
-                                  currentBinlogPos);
+                                  binlog_file,
+                                  binlog_pos);
     }
 }
 
@@ -847,16 +1002,25 @@ public:
             return 0;
         }
         shutdown_binlog_thread_.store(true);
+        gqueue_.request_shutdown();  // unblock worker threads so they can exit
         binlog_thread_->join();
         delete binlog_thread_;
         binlog_thread_ = nullptr;
+        // Join workers here so we never leave them running (safety net if
+        // binlog_loop_fn exited early; otherwise they are already joined there).
+        for (auto& t : worker_threads_) {
+            if (t.joinable())
+                t.join();
+        }
+        worker_threads_.clear();
         {
             std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
             persist_state_snapshot(currentBinlogFile, currentBinlogPos);
         }
-        // Ensure any pending items in queue are cleaned up
-        while (!gqueue_.empty()) {
-            delete gqueue_.dequeue();
+        // Drain any remaining items using non-blocking try_dequeue (avoids TOCTOU)
+        VectorIndexUpdateItem* p;
+        while ((p = gqueue_.try_dequeue()) != nullptr) {
+            delete p;
         }
         return 0;
     }
@@ -864,6 +1028,7 @@ public:
 private:
     std::atomic<bool> shutdown_binlog_thread_;
     std::thread* binlog_thread_;
+    std::vector<std::thread> worker_threads_;
     MYSQL* binlog_mysql_conn_ = nullptr;
     std::string server_uuid_;
     std::string start_binlog_file_;
@@ -1009,13 +1174,12 @@ private:
             currentBinlogPos = rpl.start_position;
         }
 
-        // Start queue processing threads
+        // Start queue processing threads (do not detach; join on shutdown)
+        worker_threads_.clear();
+        worker_threads_.reserve(static_cast<size_t>(num_q_threads));
         for (int i = 0; i < num_q_threads; i++) {
-            std::thread([this, i]() {
+            worker_threads_.emplace_back([this]() {
                 VectorIndexUpdateItem* item = nullptr;
-                // info_print("vector_q thread started %d", i);
-                // TODO: Replace with component-specific logging
-
                 while (!this->shutdown_binlog_thread_.load()) {
                     item = gqueue_.dequeue();
                     if (item) {
@@ -1029,7 +1193,7 @@ private:
                         delete item;
                     }
                 }
-            }).detach();
+            });
         }
 
         TableMapEvent tev;
@@ -1087,7 +1251,10 @@ private:
                 }
                 continue;
             }
-            currentBinlogPos += event_len;
+            {
+                std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
+                currentBinlogPos += event_len;
+            }
             if (g_OnlineVectorIndexes.empty())
                 continue;  // optimization!
             if (type == kTableMapEvent) {
@@ -1113,13 +1280,16 @@ private:
                 }
             }
         }
-        // error_print("Exiting binlog func, error %s", mysql_error(&mysql));
-        // TODO: Replace with component-specific logging
+        for (auto& t : worker_threads_) {
+            if (t.joinable())
+                t.join();
+        }
+        worker_threads_.clear();
         close_binlog_mysql_conn();
     }
 };
 
-static MyVectorBinlogServiceImpl s_binlog_service;
+MyVectorBinlogServiceImpl s_binlog_service;
 
 SERVICE_REGISTRATION(myvector_binlog_service, &s_binlog_service);
 
