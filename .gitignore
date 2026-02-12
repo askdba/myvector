@@ -9,6 +9,7 @@
 *.a
 *.lib
 build/
+.cache/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt

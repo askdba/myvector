@@ -5,6 +5,7 @@
 #include <mysql/service_plugin_registry.h>
 
 #include <algorithm>
+#include <cctype>
 #include <iomanip>
 #include <list>
 #include <memory>
