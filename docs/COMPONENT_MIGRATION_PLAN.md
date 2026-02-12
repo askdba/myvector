@@ -66,8 +66,9 @@ Here is a step-by-step plan for the migration:
     *   In `myvector_component_deinit`, call `deregister_udfs` and `stop_binlog_monitoring`.
     *   Add all implemented services to the `mysql_declare_component` descriptor block.
 2.  **Refactor Configuration:**
-    *   Remove the `MYSQL_SYSVAR` declarations from `myvector_plugin.cc`.
-    *   The configuration file (`myvector.cnf`) loading logic will be explicitly called during the component's `init` phase. The loaded values will be passed to or stored within the services that need them, eliminating the need for global system variables.
+    *   Preserve `MYSQL_SYSVAR` declarations to keep configuration dynamic and compatible with `SET GLOBAL`.
+    *   The configuration file (`myvector.cnf`) loading logic will be explicitly called during the component's `init` phase, with sysvar defaults set from the file when available.
+    *   Services will read configuration through sysvars to avoid duplicated state.
 
 **Step 4: Update the Build System**
 
@@ -77,6 +78,24 @@ Here is a step-by-step plan for the migration:
     *   The source files for the library will include all new `src/component_src/*.cc` files plus the existing core logic files (`src/myvector.cc`, `src/myvectorutils.cc`, etc.). The old `src/myvector_plugin.cc` will be excluded.
     *   Add `install(TARGETS myvector_component ...)` to install the shared library to the correct MySQL directory (e.g., `lib/plugin`).
     *   Add `install(FILES src/component_src/myvector.json ...)` to install the manifest file.
+
+**Building the component (Step 4 complete)**
+
+Component headers live in the MySQL **server** source tree. Configure and build with:
+
+*   **Required:** `MYSQL_SOURCE_DIR` — path to MySQL server source root (must contain `include/mysql/components/component_implementation.h`).
+*   **Optional:** `MYSQL_BUILD_DIR` — server build dir for generated headers; `MYSQL_DIR` — MySQL install root to find `libmysqlclient`.
+
+Example:
+
+```bash
+mkdir build && cd build
+cmake -DMYSQL_SOURCE_DIR=/path/to/mysql-server ..
+make
+make install
+```
+
+**Script (clone or use existing source):** `scripts/build-component.sh [mysql-version] [mysql-source-dir]`. With no args it clones `mysql-8.4.8` into a temp dir and builds. Pass an existing path to use your own clone: `./scripts/build-component.sh mysql-8.4.8 /path/to/mysql-server`.
 
 **Step 5: Testing Strategy**
 
@@ -88,3 +107,51 @@ Here is a step-by-step plan for the migration:
     *   Test the query rewriting by running `CREATE TABLE` and `SELECT` statements with `MYVECTOR` annotations.
     *   Test the binlog service by creating a table with an `online=Y` index, performing DML, and querying the index to verify it was updated.
 5.  **Deactivation:** Run `UNINSTALL COMPONENT 'file://myvector'` and confirm that the component is cleanly unloaded and all UDFs are deregistered.
+
+**Manual Step 5 (local):** Build the component (e.g. `./scripts/build-component.sh mysql-8.4.8 /path/to/mysql-server`). Copy `build/component/libmyvector_component.so` to your MySQL `plugin_dir` as `myvector.so` (e.g. `cp build/component/libmyvector_component.so $(mysql -N -e "SELECT @@plugin_dir;")/myvector.so`). Then connect and run `INSTALL COMPONENT 'file://myvector';`, verify UDFs (e.g. `SELECT myvector_display(myvector_construct('[1,2,3]'));`), then `UNINSTALL COMPONENT 'file://myvector';`.
+
+### **Implementation Decisions**
+
+*   **Configuration:** Remains dynamic via system variables; config file sets defaults.
+*   **Binlog Positioning:** Persist and restore binlog position for correctness.
+*   **Query Rewriting:** Backwards-compatibility for comments/whitespace variations is not required.
+*   **Init Semantics:** Component `init` should fail if UDF registration or binlog startup fails to avoid partial activation.
+
+### **Binlog Position Persistence Design**
+
+*   **Storage Location:** Use a durable file under `myvector_index_dir` (e.g., `binlog_state.json`) to keep binlog file name, position, and server UUID.
+*   **Write Policy:** Update the persisted position after each successful batch apply; fsync or atomic rename on write to avoid corruption.
+*   **Recovery:** On start, validate the stored server UUID against the current server; if mismatched, refuse to start and log a clear error.
+*   **Fallback:** If no state exists, start from a configured bootstrap position (or current master position) and log the choice explicitly.
+
+### **Init Failure Handling**
+
+*   **Order:** Load config defaults, register UDFs, then start binlog monitoring.
+*   **Rollback:** If any step fails, undo previous steps (deregister UDFs, stop any started threads) and return a failing status from `init`.
+*   **Logging:** Emit a single error summary plus detailed failure logs for each step to simplify diagnosis.
+
+### **Overall Progress (2026-02-11)**
+
+**Completed Work**
+
+The initial scaffolding, creation of the core component file, and the implementation of the Query Rewriter, Binlog Monitoring, and UDF Registration services have
+been completed. The `CMakeLists.txt` has also been updated to reflect the new component build structure.
+
+**Current Blocker (resolved for Step 4)**
+
+The build requires the MySQL **server** source tree (component headers are not in the client package). Step 4 is complete: `CMakeLists.txt` now requires `MYSQL_SOURCE_DIR` and finds `libmysqlclient`; the build should succeed when that variable is set to the server source root. Header discovery is therefore resolved; Step 8 (testing) is no longer blocked by it—remaining work is to run and expand tests (e.g., CI test-component matrix for 8.0/8.4/9.0).
+
+**Next Steps**
+
+Run the component build with `-DMYSQL_SOURCE_DIR=/path/to/mysql-server`, then run Step 5 (below). CI runs `build-component` and `test-component` (install + UDF smoke test + uninstall).
+
+**Updated Todo List**
+
+1.  [completed] Create a new directory for the component source code.
+2.  [completed] Create the component manifest file.
+3.  [completed] Create the main component source file.
+4.  [completed] Implement the query rewriting service.
+5.  [completed] Implement the binlog monitoring service.
+6.  [completed] Implement the UDF registration.
+7.  [completed] Update the build system to compile the component.
+8.  [in_progress] Test the component.

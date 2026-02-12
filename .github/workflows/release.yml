@@ -1,5 +1,5 @@
 ---
-name: Release MyVector Plugin
+name: Release MyVector (Plugin + Component)
 
 on:
   push:
@@ -9,9 +9,11 @@ on:
 permissions: read-all
 
 jobs:
+  # Plugin build (in-tree). Requires a plugin CMakeLists.txt when copied into server tree.
   build-and-release:
-    name: Build and Release
+    name: Build Plugin (in-tree)
     runs-on: ${{ matrix.os }}
+    continue-on-error: true  # repo root CMakeLists is component-only; re-enable when plugin CMakeLists is restored
     strategy:
       matrix:
         include:
@@ -37,16 +39,81 @@ jobs:
           name: myvector-mysql${{ matrix.mysql-version }}-${{ runner.os }}-${{ runner.arch }}
           path: release/*.tar.gz
 
+  # Component build (out-of-tree, MYSQL_SOURCE_DIR). Mirrors plugin release flow.
+  build-and-release-component:
+    name: Build Component (out-of-tree)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - mysql-version: '8.0.35'
+            mysql-tag: 'mysql-8.0.35'
+          - mysql-version: '8.4.8'
+            mysql-tag: 'mysql-8.4.8'
+          - mysql-version: '9.0.0'
+            mysql-tag: 'mysql-9.0.0'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libmysqlclient-dev pkg-config
+
+      - name: Cache MySQL source
+        id: cache-mysql
+        uses: actions/cache@v4
+        with:
+          path: mysql-server
+          key: release-mysql-${{ matrix.mysql-tag }}-v1
+
+      - name: Clone MySQL source
+        if: steps.cache-mysql.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ matrix.mysql-tag }} \
+            https://github.com/mysql/mysql-server.git mysql-server
+
+      - name: Build component
+        run: ./scripts/build-component.sh "${{ matrix.mysql-tag }}" "$(pwd)/mysql-server"
+
+      - name: Package component artifact
+        run: |
+          mkdir -p release
+          case "$(uname -m)" in
+            x86_64) ARCH=amd64 ;;
+            aarch64) ARCH=arm64 ;;
+            *) ARCH=$(uname -m) ;;
+          esac
+          ARTIFACT_NAME="myvector-component-mysql${{ matrix.mysql-version }}-linux-${ARCH}"
+          PACK_DIR="release/${ARTIFACT_NAME}"
+          mkdir -p "$PACK_DIR"
+          cp build/component/libmyvector_component.so "$PACK_DIR/myvector.so"
+          cp build/component/myvector.json "$PACK_DIR/"
+          cp sql/myvectorplugin.sql "$PACK_DIR/" 2>/dev/null || true
+          tar -czf "release/${ARTIFACT_NAME}.tar.gz" -C release "$ARTIFACT_NAME"
+          echo "Created release/${ARTIFACT_NAME}.tar.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: myvector-component-mysql${{ matrix.mysql-version }}-${{ runner.os }}-${{ runner.arch }}
+          path: release/*.tar.gz
+
+  # Wait for both jobs; release uses component artifacts only. Plugin has continue-on-error
+  # so it does not block release when plugin build is disabled or failing.
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: build-and-release
+    needs: [build-and-release, build-and-release-component]
     permissions:
       contents: write
     steps:
-      - name: Download all artifacts
+      - name: Download component artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: 'myvector-component-*'
           path: artifacts
 
       - name: Generate checksums
@@ -57,7 +124,7 @@ jobs:
           done
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             artifacts/**/*.tar.gz
