@@ -101,7 +101,31 @@ jobs:
         test -f mysql-server/include/mysql/components/component_implementation.h || \
           { echo "Missing component headers"; exit 1; }
 
+    - name: Cache Boost
+      id: cache-boost-component
+      uses: actions/cache@v4
+      with:
+        path: boost_cache
+        key: boost-${{ matrix.mysql-tag }}-v2
+
+    - name: Configure MySQL (generate headers for component build)
+      run: |
+        cd mysql-server
+        mkdir -p bld && cd bld
+        cmake .. \
+          -DDOWNLOAD_BOOST=1 \
+          -DWITH_BOOST=../../boost_cache \
+          -DWITH_UNIT_TESTS=OFF \
+          -DWITH_ROUTER=OFF \
+          -DWITH_RAPID=OFF \
+          -DWITH_NDB=OFF \
+          -DWITH_NDBCLUSTER=OFF \
+          -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
+          -DCMAKE_BUILD_TYPE=Release
+
     - name: Build MyVector Component
+      env:
+        MYSQL_BUILD_DIR: ${{ github.workspace }}/mysql-server/bld
       run: |
         ./scripts/build-component.sh "${{ matrix.mysql-tag }}" "$(pwd)/mysql-server"
 
