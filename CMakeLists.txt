@@ -52,10 +52,11 @@ if(DEFINED MYSQL_DIR)
   set(MYSQL_DIR "${MYSQL_DIR}" CACHE PATH "MySQL install or client package root")
 endif()
 
-# Include directories: project include/ and server (and optionally build) includes
+# Include directories: project, server include/, server root (for sql/sql_plugin.h), and build (generated headers)
 set(MYVECTOR_INCLUDE_DIRS
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
   "${MYSQL_SOURCE_DIR}/include"
+  "${MYSQL_SOURCE_DIR}"
 )
 if(DEFINED MYSQL_BUILD_DIR AND EXISTS "${MYSQL_BUILD_DIR}/include")
   list(APPEND MYVECTOR_INCLUDE_DIRS "${MYSQL_BUILD_DIR}/include")
