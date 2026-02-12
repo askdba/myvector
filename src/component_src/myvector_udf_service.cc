@@ -519,30 +519,40 @@ double myvector_distance(UDF_INIT* initid,
         return 0.0;
     }
 
-    // Assume L2 distance for now, or get from args[2]
-    // For component, this logic needs to be enhanced with component configuration
-    // For now, directly compute L2 distance as in the original plugin.
-
     int dim1 = MyVectorDimFromStorageLength(l1);
     int dim2 = MyVectorDimFromStorageLength(l2);
 
     if (dim1 != dim2 || dim1 == 0) {
-        // UDF_ERROR_LOG("myvector_distance: dimensions mismatch or zero (%d vs %d)", dim1, dim2);
         *is_null = 1;
         return 0.0;
     }
 
-    // Remove metadata and checksum from raw vectors to get actual float arrays
     FP32* v1 = (FP32*)(v1_raw);
     FP32* v2 = (FP32*)(v2_raw);
 
 #if MYSQL_VERSION_ID < 90000
-    // Adjust pointers to skip metadata and checksum only if not using native VECTOR type
     v1 = (FP32*)(v1_raw);
     v2 = (FP32*)(v2_raw);
 #endif
 
-    double distance = computeL2Distance(v1, v2, dim1);
+    // Choose distance by optional third argument (default L2)
+    double (*distfn)(const FP32*, const FP32*, int) = computeL2Distance;
+    if (args->arg_count >= 3 && args->args[2] && args->lengths[2] > 0) {
+        std::string metric(args->args[2], args->lengths[2]);
+        std::transform(metric.begin(), metric.end(), metric.begin(), ::tolower);
+        if (metric == "l2" || metric == "euclidean")
+            distfn = computeL2Distance;
+        else if (metric == "cosine")
+            distfn = computeCosineDistance;
+        else if (metric == "ip")
+            distfn = computeIPDistance;
+        else {
+            *is_null = 1;
+            return 0.0;
+        }
+    }
+
+    double distance = distfn(v1, v2, dim1);
     return distance;
 }
 
@@ -617,16 +627,17 @@ double myvector_hamming_distance(UDF_INIT* initid,
         return 0.0;
     }
 
-    int dim1_bytes = MyVectorBVDimFromStorageLength(l1) / BITS_PER_BYTE;
-    int dim2_bytes = MyVectorBVDimFromStorageLength(l2) / BITS_PER_BYTE;
+    int dim1_bits = MyVectorBVDimFromStorageLength(l1);
+    int dim2_bits = MyVectorBVDimFromStorageLength(l2);
 
-    if (dim1_bytes != dim2_bytes || dim1_bytes == 0) {
-        // UDF_ERROR_LOG("myvector_hamming_distance: dimensions mismatch or zero (%d vs %d)", dim1_bytes, dim2_bytes);
+    if (dim1_bits != dim2_bits || dim1_bits == 0) {
         *is_null = 1;
         return 0.0;
     }
 
-    double distance = HammingDistanceFn(v1_raw, v2_raw, (void*)&dim1_bytes); // Pass dimension in bits, function expects bytes
+    // HammingDistanceFn expects qty in bits (it divides by sizeof(unsigned long)*8 for loop count)
+    size_t qty_bits = static_cast<size_t>(dim1_bits);
+    double distance = HammingDistanceFn(v1_raw, v2_raw, (void*)&qty_bits);
     return distance;
 }
 

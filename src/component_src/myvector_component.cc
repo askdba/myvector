@@ -38,7 +38,6 @@ static int myvector_component_init() {
         if (ret != 0 && udfs_registered) {
             myvector_component::s_udf_service.deregister_udfs(
                 h_udf_metadata_service->get_service());
-            udfs_registered = false;
         }
     }
 

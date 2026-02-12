@@ -2,10 +2,28 @@ cmake_minimum_required(VERSION 3.5)
 project(MyVectorComponent LANGUAGES CXX)
 
 # -----------------------------------------------------------------------------
-# Step 4: Component build system (see docs/COMPONENT_MIGRATION_PLAN.md).
-# Component headers (e.g. mysql/components/component_implementation.h) come
-# from the MySQL server source tree, not from the client package.
+# This CMakeLists supports two build modes:
+# 1) In-tree plugin build: when included from mysql-server (add_subdirectory),
+#    MYSQL_ADD_PLUGIN is available; we define the "myvector" plugin target
+#    so that "make myvector" works (used by CI plugin job).
+# 2) Standalone component build: when MYSQL_SOURCE_DIR is set, we build the
+#    myvector_component shared library (see docs/COMPONENT_MIGRATION_PLAN.md).
 # -----------------------------------------------------------------------------
+
+if(COMMAND MYSQL_ADD_PLUGIN)
+  # In-tree plugin build (e.g. CI copies this file to mysql-server/plugin/myvector)
+  set(MYVECTOR_PLUGIN_SRCS
+    myvector_plugin.cc
+    myvector_binlog.cc
+    myvector.cc
+    myvectorutils.cc
+  )
+  MYSQL_ADD_PLUGIN(myvector ${MYVECTOR_PLUGIN_SRCS})
+  return()
+endif()
+
+# -----------------------------------------------------------------------------
+# Standalone component build.
 # Required:
 #   MYSQL_SOURCE_DIR  - Path to MySQL server source root (must contain
 #                       include/mysql/components/component_implementation.h).
