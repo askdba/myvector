@@ -15,6 +15,7 @@
 #include "hnswlib.h"
 #include "myvectorutils.h"
 #include "visited_list_pool.h"
+#include <string>
 #ifdef WIN32
 #include <io.h>
 #else
@@ -88,6 +89,14 @@ namespace hnswlib {
         std::unordered_set<tableint>
             deleted_elements;  // contains internal ids of deleted elements
 
+#ifdef myvector_component_EXPORTS
+#ifndef debug_print
+#define debug_print(...) (void)0
+#define info_print(...) (void)0
+#define error_print(...) (void)0
+#define warning_print(...) (void)0
+#endif
+#endif
 #include "hnswdisk.i"
 
         HierarchicalDiskNSW(SpaceInterface<dist_t>* s) {}

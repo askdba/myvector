@@ -162,8 +162,31 @@ private:
 
 #define MYVECTOR_BUFF_SIZE 1024
 
+/** Bit packing for binary vectors (1 bit per dimension). */
+constexpr unsigned int BITS_PER_BYTE = 8;
+
+/** RAII shared-lock guard for AbstractVectorIndex. */
+class SharedLockGuard {
+public:
+    explicit SharedLockGuard(AbstractVectorIndex* h_index) : m_index(h_index) {}
+    ~SharedLockGuard() {
+        if (m_index)
+            m_index->unlockShared();
+    }
+    void clear() { m_index = nullptr; }
+
+private:
+    AbstractVectorIndex* m_index{nullptr};
+};
+
 extern long myvector_index_bg_threads;
 extern long myvector_feature_level;
 extern char* myvector_config_file;
+
+#ifdef myvector_component_EXPORTS
+#include <mysql/components/services/udf_metadata.h>
+/** Set by component init; used by myvector.cc UDF callbacks for result_set (charset). */
+extern SERVICE_TYPE(mysql_udf_metadata)* myvector_component_udf_metadata;
+#endif
 
 #endif  // PLUGIN_MYVECTOR_H

@@ -183,20 +183,20 @@
 
         char *p = strchr(buf1, '|');
         *p = 0;
-        string logr1(buf1);
+        std::string logr1(buf1);
 
         p = strchr(buf2, '|');
         *p = 0;
-        string logr2(buf2);
+        std::string logr2(buf2);
 
         MyVectorOptions vo1(logr1);
-        string status1 = vo1.getOption("status");
-        string ckptid1 = vo1.getOption("ckptid");
+        std::string status1 = vo1.getOption("status");
+        std::string ckptid1 = vo1.getOption("ckptid");
         CheckPointState cs1 = static_cast<CheckPointState>(atoi(status1.c_str()));
 
         MyVectorOptions vo2(logr2);
-        string status2 = vo2.getOption("status");
-        string ckptid2 = vo2.getOption("ckptid");
+        std::string status2 = vo2.getOption("status");
+        std::string ckptid2 = vo2.getOption("ckptid");
         CheckPointState cs2 = static_cast<CheckPointState>(atoi(status2.c_str()));
 
         if (cs1 == CKPT_CONSISTENT || cs2 != CKPT_CONSISTENT)
@@ -226,11 +226,11 @@
 
         char *p = strchr(buf1, '|');
         *p = 0;
-        string logr1(buf1);
+        std::string logr1(buf1);
         // split the status line into kv
         MyVectorOptions vo(logr1);
-        string status = vo.getOption("status");
-        string ckptid = vo.getOption("ckptid");
+        std::string status = vo.getOption("status");
+        std::string ckptid = vo.getOption("ckptid");
         debug_print("makeIndexConsistent %s, current checkpoint status : %s %s",
                     hnswFile.c_str(), status.c_str(), ckptid.c_str());
 

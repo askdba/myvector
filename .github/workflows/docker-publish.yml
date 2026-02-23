@@ -1,12 +1,11 @@
 name: Publish Docker Image
 
 on:
-  push:
-    tags: [ "v*" ]
+  workflow_run:
+    workflows: ["Release MyVector (Plugin + Component)"]
+    types: [completed]
   pull_request:
     branches: [ "main" ]
-  release:
-    types: [ "published" ]
 
 permissions:
   contents: read
@@ -14,6 +13,8 @@ permissions:
 
 jobs:
   build-and-publish:
+    # Only run when release workflow succeeded; always run on pull_request (for build/smoke test).
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -34,6 +35,8 @@ jobs:
     steps:
       - name: Checkout MyVector Code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Install Build Dependencies
         run: |
@@ -142,7 +145,7 @@ jobs:
           done
 
       - name: Login to GitHub Container Registry
-        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'workflow_run' || startsWith(github.ref, 'refs/tags/')
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -150,7 +153,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'workflow_run' || startsWith(github.ref, 'refs/tags/')
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -162,7 +165,7 @@ jobs:
             MYSQL_VERSION=${{ matrix.mysql-version }}
 
       - name: Tag and push latest
-        if: matrix.mysql-version == '8.0' && (github.event_name == 'release' || startsWith(github.ref, 'refs/tags/'))
+        if: matrix.mysql-version == '8.0' && (github.event_name == 'workflow_run' || startsWith(github.ref, 'refs/tags/'))
         uses: docker/build-push-action@v5
         with:
           context: .

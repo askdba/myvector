@@ -52,11 +52,12 @@ if(DEFINED MYSQL_DIR)
   set(MYSQL_DIR "${MYSQL_DIR}" CACHE PATH "MySQL install or client package root")
 endif()
 
-# Include directories: project, server include/, server root (for sql/sql_plugin.h), and build (generated headers)
+# Include directories: project, server include/, server root, libs (binlog_event.h), and build (generated headers)
 set(MYVECTOR_INCLUDE_DIRS
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
   "${MYSQL_SOURCE_DIR}/include"
   "${MYSQL_SOURCE_DIR}"
+  "${MYSQL_SOURCE_DIR}/libs"
 )
 if(DEFINED MYSQL_BUILD_DIR AND EXISTS "${MYSQL_BUILD_DIR}/include")
   list(APPEND MYVECTOR_INCLUDE_DIRS "${MYSQL_BUILD_DIR}/include")
@@ -91,6 +92,7 @@ endif()
 # query_rewrite service header exists in MySQL 9.0+ only; omit for 8.0/8.4.
 set(MYVECTOR_COMPONENT_SRCS
   src/component_src/myvector_component.cc
+  src/component_src/myvector_component_config.cc
   src/component_src/myvector_binlog_service.cc
   src/component_src/myvector_udf_service.cc
   src/myvector.cc
@@ -102,10 +104,23 @@ if(EXISTS "${MYSQL_SOURCE_DIR}/include/mysql/components/services/query_rewrite.h
   list(APPEND MYVECTOR_COMPONENT_DEFS MYVECTOR_HAS_QUERY_REWRITE_SERVICE)
 endif()
 
+# C++17 required for component and MySQL headers (shared_mutex, destroy_at, etc.)
+set(CMAKE_CXX_STANDARD 17)
+# On macOS, build for native arch (arm64 on Apple Silicon) when not already set
+if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
+  set(CMAKE_OSX_ARCHITECTURES "${CMAKE_SYSTEM_PROCESSOR}" CACHE STRING "" FORCE)
+endif()
+
+find_package(ZLIB QUIET)
 add_library(myvector_component SHARED ${MYVECTOR_COMPONENT_SRCS})
 target_include_directories(myvector_component PRIVATE ${MYVECTOR_INCLUDE_DIRS})
 target_compile_definitions(myvector_component PRIVATE ${MYVECTOR_COMPONENT_DEFS})
 target_link_libraries(myvector_component PRIVATE ${MYSQLCLIENT_LIBRARY})
+if(ZLIB_FOUND)
+  target_link_libraries(myvector_component PRIVATE ZLIB::ZLIB)
+else()
+  target_link_libraries(myvector_component PRIVATE z)
+endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   set_property(TARGET myvector_component APPEND_STRING PROPERTY LINK_FLAGS

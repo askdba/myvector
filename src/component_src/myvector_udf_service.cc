@@ -1,4 +1,5 @@
 #include "myvector_udf_service.h"
+#include <mysql/components/services/udf_registration.h>
 #include <mysql/udf_registration_types.h>
 #include <mysql/service_my_plugin_log.h>
 #include <mysql/service_mysql_alloc.h>
@@ -31,8 +32,8 @@ extern char* myvector_index_dir;
 extern long myvector_feature_level;
 
 extern const std::set<std::string> MYVECTOR_INDEX_TYPES;
-extern std::thread_local std::unordered_map<KeyTypeInteger, double> tls_distances_map;
-extern std::thread_local std::unordered_map<KeyTypeInteger, double>* tls_distances;
+extern thread_local std::unordered_map<KeyTypeInteger, double> tls_distances_map;
+extern thread_local std::unordered_map<KeyTypeInteger, double>* tls_distances;
 
 extern int MyVectorStorageLength(int dim);
 extern int MyVectorDimFromStorageLength(int length);
@@ -98,7 +99,7 @@ bool myvector_ann_set_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
     char* col = (char*)args->args[0];
     AbstractVectorIndex* vi = g_indexes.get(col);
     if (!vi) {
-        snprintf(message, MYSQL_ERRMSG_SIZE, ER_MYVECTOR_INDEX_NOT_FOUND, col);
+        snprintf(message, MYSQL_ERRMSG_SIZE, ER_MYVECTOR_INDEX_NOT_FOUND " (%s)", col);
         return true;  // error
     }
     SharedLockGuard l(vi);
@@ -649,58 +650,61 @@ void myvector_hamming_distance_deinit(UDF_INIT* initid) {
 
 class MyVectorUdfServiceImpl : public MyVectorUdfService {
 public:
-    int register_udfs(SERVICE_TYPE(mysql_udf_metadata)* udf_metadata_service) override {
+    int register_udfs(SERVICE_TYPE(udf_registration)* udf_registration_service) override {
         int ret = 0;
 
-        // Register myvector_ann_set
-        ret |= udf_metadata_service->register_udf(
-            "myvector_ann_set", (mysql_udf_init_fn)myvector_ann_set_init, (mysql_udf_fn)myvector_ann_set, (mysql_udf_deinit_fn)myvector_ann_set_deinit,
-            (int)UDF_RETURNS_STRING, (int)UDF_ARGS_STRING, 3, 4, 0, 0);
+        // udf_register(name, return_type, func, init_func, deinit_func); func is cast to Udf_func_any
+        ret |= udf_registration_service->udf_register(
+            "myvector_ann_set", STRING_RESULT,
+            reinterpret_cast<Udf_func_any>(myvector_ann_set),
+            myvector_ann_set_init, myvector_ann_set_deinit) ? 1 : 0;
 
-        // Register myvector_construct
-        ret |= udf_metadata_service->register_udf(
-            "myvector_construct", (mysql_udf_init_fn)myvector_construct_init, (mysql_udf_fn)myvector_construct, (mysql_udf_deinit_fn)myvector_construct_deinit,
-            (int)UDF_RETURNS_STRING, (int)UDF_ARGS_STRING, 1, 2, 0, 0);
+        ret |= udf_registration_service->udf_register(
+            "myvector_construct", STRING_RESULT,
+            reinterpret_cast<Udf_func_any>(myvector_construct),
+            myvector_construct_init, myvector_construct_deinit) ? 1 : 0;
 
-        // Register myvector_display
-        ret |= udf_metadata_service->register_udf(
-            "myvector_display", (mysql_udf_init_fn)myvector_display_init, (mysql_udf_fn)myvector_display, (mysql_udf_deinit_fn)myvector_display_deinit,
-            (int)UDF_RETURNS_STRING, (int)UDF_ARGS_STRING, 1, 2, 0, 0);
+        ret |= udf_registration_service->udf_register(
+            "myvector_display", STRING_RESULT,
+            reinterpret_cast<Udf_func_any>(myvector_display),
+            myvector_display_init, myvector_display_deinit) ? 1 : 0;
 
-        // Register myvector_distance
-        ret |= udf_metadata_service->register_udf(
-            "myvector_distance", (mysql_udf_init_fn)myvector_distance_init, (mysql_udf_fn)myvector_distance, (mysql_udf_deinit_fn)myvector_distance_deinit,
-            (int)UDF_RETURNS_REAL, (int)UDF_ARGS_STRING, 2, 3, 0, 0);
+        ret |= udf_registration_service->udf_register(
+            "myvector_distance", REAL_RESULT,
+            reinterpret_cast<Udf_func_any>(myvector_distance),
+            myvector_distance_init, myvector_distance_deinit) ? 1 : 0;
 
-        // Register myvector_construct_binaryvector
-        ret |= udf_metadata_service->register_udf(
-            "myvector_construct_binaryvector", (mysql_udf_init_fn)myvector_construct_binaryvector_init, (mysql_udf_fn)myvector_construct_binaryvector, (mysql_udf_deinit_fn)myvector_construct_binaryvector_deinit,
-            (int)UDF_RETURNS_STRING, (int)UDF_ARGS_STRING, 1, 1, 0, 0);
+        ret |= udf_registration_service->udf_register(
+            "myvector_construct_binaryvector", STRING_RESULT,
+            reinterpret_cast<Udf_func_any>(myvector_construct_binaryvector),
+            myvector_construct_binaryvector_init, myvector_construct_binaryvector_deinit) ? 1 : 0;
 
-        // Register myvector_hamming_distance
-        ret |= udf_metadata_service->register_udf(
-            "myvector_hamming_distance", (mysql_udf_init_fn)myvector_hamming_distance_init, (mysql_udf_fn)myvector_hamming_distance, (mysql_udf_deinit_fn)myvector_hamming_distance_deinit,
-            (int)UDF_RETURNS_REAL, (int)UDF_ARGS_STRING, 2, 2, 0, 0);
+        ret |= udf_registration_service->udf_register(
+            "myvector_hamming_distance", REAL_RESULT,
+            reinterpret_cast<Udf_func_any>(myvector_hamming_distance),
+            myvector_hamming_distance_init, myvector_hamming_distance_deinit) ? 1 : 0;
 
         return ret;
     }
 
-    int deregister_udfs(SERVICE_TYPE(mysql_udf_metadata)* udf_metadata_service) override {
+    int deregister_udfs(SERVICE_TYPE(udf_registration)* udf_registration_service) override {
         int ret = 0;
+        int was_present = 0;
 
-        ret |= udf_metadata_service->deregister_udf("myvector_ann_set");
-        ret |= udf_metadata_service->deregister_udf("myvector_construct");
-        ret |= udf_metadata_service->deregister_udf("myvector_display");
-        ret |= udf_metadata_service->deregister_udf("myvector_distance");
-        ret |= udf_metadata_service->deregister_udf("myvector_construct_binaryvector");
-        ret |= udf_metadata_service->deregister_udf("myvector_hamming_distance");
+        ret |= udf_registration_service->udf_unregister("myvector_ann_set", &was_present) ? 1 : 0;
+        ret |= udf_registration_service->udf_unregister("myvector_construct", &was_present) ? 1 : 0;
+        ret |= udf_registration_service->udf_unregister("myvector_display", &was_present) ? 1 : 0;
+        ret |= udf_registration_service->udf_unregister("myvector_distance", &was_present) ? 1 : 0;
+        ret |= udf_registration_service->udf_unregister("myvector_construct_binaryvector", &was_present) ? 1 : 0;
+        ret |= udf_registration_service->udf_unregister("myvector_hamming_distance", &was_present) ? 1 : 0;
 
         return ret;
     }
 };
 
-MyVectorUdfServiceImpl s_udf_service;
+MyVectorUdfServiceImpl s_udf_service_impl;
+MyVectorUdfService& s_udf_service = s_udf_service_impl;
 
-SERVICE_REGISTRATION(myvector_udf_service, &s_udf_service);
+SERVICE_REGISTRATION(myvector_udf_service, &s_udf_service_impl);
 
 } // namespace myvector_component

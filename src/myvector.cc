@@ -86,6 +86,12 @@ int gettimeofday(struct timeval* tv, struct timezone* tz) {
 
 extern MYSQL_PLUGIN gplugin;
 
+#ifdef myvector_component_EXPORTS
+#define debug_print(...) (void)0
+#define info_print(...) (void)0
+#define error_print(...) (void)0
+#define warning_print(...) (void)0
+#else
 #define debug_print(...)                                                       \
     my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, __VA_ARGS__)
 #define info_print(...)                                                        \
@@ -94,6 +100,7 @@ extern MYSQL_PLUGIN gplugin;
     my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, __VA_ARGS__)
 #define warning_print(...)                                                     \
     my_plugin_log_message(&gplugin, MY_WARNING_LEVEL, __VA_ARGS__)
+#endif
 
 // using namespace std; - Removed for code quality
 using std::atomic;
@@ -146,7 +153,12 @@ extern REQUIRES_SERVICE_PLACEHOLDER(mysql_string_factory);
         return (result);                                                       \
     }
 
+#ifdef myvector_component_EXPORTS
+#define MYVECTOR_UDF_METADATA() (myvector_component_udf_metadata)
+#else
 extern my_service<SERVICE_TYPE(mysql_udf_metadata)>* h_udf_metadata_service;
+#define MYVECTOR_UDF_METADATA() ((*h_udf_metadata_service))
+#endif
 
 class AbstractVectorIndex;
 
@@ -159,13 +171,29 @@ class AbstractVectorIndex;
  * Byte 4 - Unused
  */
 
+#ifdef myvector_component_EXPORTS
+extern const unsigned int MYVECTOR_VERSION_V1 = 0x01;
+#else
 static const unsigned int MYVECTOR_VERSION_V1 = 0x01;
+#endif
 
+#ifdef myvector_component_EXPORTS
+extern const unsigned int MYVECTOR_VECTOR_FP32 = 0x01;
+#else
 static const unsigned int MYVECTOR_VECTOR_FP32 = 0x01;
+#endif
 
+#ifdef myvector_component_EXPORTS
+extern const unsigned int MYVECTOR_VECTOR_FP16 = 0x02;
+#else
 static const unsigned int MYVECTOR_VECTOR_FP16 = 0x02;
+#endif
 
+#ifdef myvector_component_EXPORTS
+extern const unsigned int MYVECTOR_VECTOR_BV = 0x04;
+#else
 static const unsigned int MYVECTOR_VECTOR_BV = 0x04;
+#endif
 
 #define MYVECTOR_V1_FP32_METADATA                                              \
     ((MYVECTOR_VECTOR_FP32 << 8) | MYVECTOR_VERSION_V1)
@@ -175,31 +203,59 @@ static const unsigned int MYVECTOR_VECTOR_BV = 0x04;
 
 /* Maximum length of string that can be passed to myvector_construct(). */
 
+#ifdef myvector_component_EXPORTS
+extern const unsigned int MYVECTOR_CONSTRUCT_MAX_LEN = 128000;
+#else
 static const unsigned int MYVECTOR_CONSTRUCT_MAX_LEN = 128000;
+#endif
 
 /* Maximum buffer space for return value of myvector_display().
    e.g 3072 dimensions x 23 characters for each dimension = 70kb string
  */
+#ifdef myvector_component_EXPORTS
+extern const unsigned int MYVECTOR_DISPLAY_MAX_LEN = 128000;
+#else
 static const unsigned int MYVECTOR_DISPLAY_MAX_LEN = 128000;
+#endif
 
 /* Default precision for float output in myvector_display() */
+#ifdef myvector_component_EXPORTS
+extern const unsigned int MYVECTOR_DISPLAY_DEF_PREC = 7;
+#else
 static const unsigned int MYVECTOR_DISPLAY_DEF_PREC = 7;
+#endif
 
 /* Overhead per MYVECTOR column value - 4 bytes for checksum and
    4 bytes for metadata. Overhead disabled if we are using MySQL's VECTOR
  */
 #if MYSQL_VERSION_ID >= 90000
+#ifdef myvector_component_EXPORTS
+extern const unsigned int MYVECTOR_COLUMN_EXTRA_LEN = 0;
+#else
 static const unsigned int MYVECTOR_COLUMN_EXTRA_LEN = 0;
+#endif
+#else
+#ifdef myvector_component_EXPORTS
+extern const unsigned int MYVECTOR_COLUMN_EXTRA_LEN = 8;
 #else
 static const unsigned int MYVECTOR_COLUMN_EXTRA_LEN = 8;
 #endif
+#endif
 
 /* Default number of neighbours to return by myvector_ann_set() */
+#ifdef myvector_component_EXPORTS
+extern const unsigned int MYVECTOR_DEFAULT_ANN_RETURN_COUNT = 10;
+#else
 static const unsigned int MYVECTOR_DEFAULT_ANN_RETURN_COUNT = 10;
+#endif
 
 /* Max number of neighbours that can be retrieved in single myvector_ann_set()
  */
+#ifdef myvector_component_EXPORTS
+extern const unsigned int MYVECTOR_MAX_ANN_RETURN_COUNT = 10000;
+#else
 static const unsigned int MYVECTOR_MAX_ANN_RETURN_COUNT = 10000;
+#endif
 
 /* Basic check for validity of index last update timestamp > '01-01-2024' */
 static const unsigned long MYVECTOR_MIN_VALID_UPDATE_TS = 1704047400;
@@ -207,9 +263,6 @@ static const unsigned long MYVECTOR_MIN_VALID_UPDATE_TS = 1704047400;
 /* Parallel threads are started after 100K vectors + keys have been batch'ed up
  */
 static const unsigned int HNSW_PARALLEL_BUILD_UNIT_SIZE = 100000;
-
-/* Bit packing for Binary Vectors */
-static const unsigned int BITS_PER_BYTE = 8;
 
 extern char* myvector_index_dir;
 extern long myvector_feature_level;
@@ -223,27 +276,49 @@ const set<string> MYVECTOR_INDEX_TYPES{"KNN", "HNSW", "HNSW_BV"};
  * and prevents memory leaks. The map is automatically constructed
  * on first use per thread and destroyed when the thread exits.
  */
+#ifdef myvector_component_EXPORTS
+thread_local unordered_map<KeyTypeInteger, double> tls_distances_map;
+thread_local unordered_map<KeyTypeInteger, double>* tls_distances =
+    &tls_distances_map;
+#else
 static thread_local unordered_map<KeyTypeInteger, double> tls_distances_map;
 static thread_local unordered_map<KeyTypeInteger, double>* tls_distances =
     &tls_distances_map;
+#endif
 
 inline bool isValidIndexType(const string& indextype) {
     return (MYVECTOR_INDEX_TYPES.find(indextype) != MYVECTOR_INDEX_TYPES.end());
 }
 
+#ifdef myvector_component_EXPORTS
+int MyVectorStorageLength(int dim) {
+#else
 inline int MyVectorStorageLength(int dim) {
+#endif
     return (dim * sizeof(FP32)) + MYVECTOR_COLUMN_EXTRA_LEN;
 }
 
+#ifdef myvector_component_EXPORTS
+int MyVectorDimFromStorageLength(int length) {
+#else
 inline int MyVectorDimFromStorageLength(int length) {
+#endif
     return (length - MYVECTOR_COLUMN_EXTRA_LEN) / sizeof(FP32);
 }
 
+#ifdef myvector_component_EXPORTS
+int MyVectorBVStorageLength(int dim) {
+#else
 inline int MyVectorBVStorageLength(int dim) {
+#endif
     return (dim / BITS_PER_BYTE) + MYVECTOR_COLUMN_EXTRA_LEN;
 }
 
+#ifdef myvector_component_EXPORTS
+int MyVectorBVDimFromStorageLength(int length) {
+#else
 inline int MyVectorBVDimFromStorageLength(int length) {
+#endif
     return (length - MYVECTOR_COLUMN_EXTRA_LEN) * BITS_PER_BYTE;
 }
 
@@ -1111,19 +1186,6 @@ bool HNSWMemoryIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
     return true;
 }
 
-class SharedLockGuard {
-public:
-    SharedLockGuard(AbstractVectorIndex* h_index) : m_index(h_index) {}
-    ~SharedLockGuard() {
-        if (m_index)
-            m_index->unlockShared();
-    }
-    void clear() { m_index = nullptr; }
-
-private:
-    AbstractVectorIndex* m_index{nullptr};
-};
-
 AbstractVectorIndex* VectorIndexCollection::open(const string& name,
                                                  const string& options,
                                                  const string& useraction) {
@@ -1208,7 +1270,11 @@ string VectorIndexCollection::FindEarliestBinlogFile() {
     return ret;
 }
 
+#ifdef myvector_component_EXPORTS
+VectorIndexCollection g_indexes;
+#else
 static VectorIndexCollection g_indexes;
+#endif
 
 /* The MYVECTOR* Annotations supported by this plugin */
 const string MYVECTOR_COLUMN_A = "MYVECTOR(";
@@ -1534,7 +1600,7 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT* initid,
     AbstractVectorIndex* vi = g_indexes.get(col);
     SharedLockGuard l(vi);
     if (!vi) {
-        snprintf(message, MYSQL_ERRMSG_SIZE, ER_MYVECTOR_INDEX_NOT_FOUND, col);
+        snprintf(message, MYSQL_ERRMSG_SIZE, ER_MYVECTOR_INDEX_NOT_FOUND " (%s)", col);
         return true;  // error
     }
 
@@ -1543,7 +1609,7 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT* initid,
      */
     initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
     initid->ptr = (char*)malloc(initid->max_length);
-    (*h_udf_metadata_service)->result_set(initid, "charset", latin1);
+    MYVECTOR_UDF_METADATA()->result_set(initid, "charset", latin1);
 
     /* tls_distances is now a static thread_local object, no allocation needed
      */
@@ -1865,7 +1931,7 @@ PLUGIN_EXPORT bool myvector_display_init(UDF_INIT* initid,
     }
     initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
     initid->ptr = (char*)malloc(MYVECTOR_DISPLAY_MAX_LEN);
-    (*h_udf_metadata_service)->result_set(initid, "charset", latin1);
+    MYVECTOR_UDF_METADATA()->result_set(initid, "charset", latin1);
     return false;
 }
 

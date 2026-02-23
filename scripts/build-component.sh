@@ -17,6 +17,9 @@
 
 set -e
 
+# Status goes to stderr so it appears immediately (unbuffered)
+status() { echo "==> $*" >&2; }
+
 MYSQL_VERSION="${1:-mysql-8.4.8}"
 MYSQL_SOURCE_DIR_OVERRIDE="${2}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,20 +27,30 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ARCH="$(uname -m)"
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 
+# On Apple Silicon, if running under Rosetta (x86_64), re-exec natively once so the build
+# uses ARM Homebrew's libmysqlclient. Skip if we already re-exec'd (avoid infinite loop when
+# the child still reports x86_64, e.g. in some terminals).
+status "MyVector component build ($MYSQL_VERSION)"
+if [ "$OS" = "darwin" ] && [ "$ARCH" = "x86_64" ] && [ -z "${MYSQL_DIR:-}" ] && [ -z "${MYVECTOR_ALREADY_ARM64:-}" ]; then
+  status "Re-execing under arm64 (once)..."
+  export MYVECTOR_ALREADY_ARM64=1
+  exec arch -arm64 /bin/bash "$0" "$@"
+fi
+
 if [ -n "$MYSQL_SOURCE_DIR_OVERRIDE" ]; then
   MYSQL_SOURCE_DIR="$MYSQL_SOURCE_DIR_OVERRIDE"
   if [ ! -f "$MYSQL_SOURCE_DIR/include/mysql/components/component_implementation.h" ]; then
     echo "Error: $MYSQL_SOURCE_DIR does not contain include/mysql/components/component_implementation.h" >&2
     exit 1
   fi
-  echo "Using existing MySQL source: $MYSQL_SOURCE_DIR"
+  status "Using existing MySQL source: $MYSQL_SOURCE_DIR"
 else
   # Use workspace-local cache (sandbox-friendly, no .git). Reused across runs.
   # Override with MYVECTOR_BUILD_TEMP_DIR to use a different path (e.g. /tmp).
   SANITIZED_VERSION="${MYSQL_VERSION//\//-}"
   CACHE_DIR="${MYVECTOR_BUILD_TEMP_DIR:-$REPO_ROOT/.cache/mysql-server-$SANITIZED_VERSION}"
   if [ -f "$CACHE_DIR/include/mysql/components/component_implementation.h" ]; then
-    echo "Using cached MySQL source: $CACHE_DIR"
+    status "Using cached MySQL source: $CACHE_DIR"
     MYSQL_SOURCE_DIR="$CACHE_DIR"
   else
     PARENT="$(dirname "$CACHE_DIR")"
@@ -47,7 +60,7 @@ else
     for REF in "refs/tags/${MYSQL_VERSION}" "refs/heads/${MYSQL_VERSION}"; do
       TARBALL_URL="https://github.com/mysql/mysql-server/archive/${REF}.tar.gz"
       TARBALL="$PARENT/mysql-server-$SANITIZED_VERSION.tar.gz"
-      echo "Downloading MySQL $MYSQL_VERSION (quiet) to $CACHE_DIR ..."
+      status "Downloading MySQL $MYSQL_VERSION to $CACHE_DIR (may take a few minutes)..."
       if command -v curl >/dev/null 2>&1; then
         HTTP="$(curl -sL -o "$TARBALL" -w "%{http_code}" "$TARBALL_URL")"
       elif command -v wget >/dev/null 2>&1; then
@@ -73,8 +86,18 @@ else
   fi
 fi
 
+# MySQL source tarball does not include mysql_version.h (generated at MySQL build time).
+# Place our stub so server headers (e.g. plugin.h) that #include "mysql_version.h" find it.
+MYSQL_INCLUDE_MYSQL="${MYSQL_SOURCE_DIR}/include/mysql"
+if [ ! -f "$MYSQL_INCLUDE_MYSQL/mysql_version.h" ]; then
+  mkdir -p "$MYSQL_INCLUDE_MYSQL"
+  cp "$REPO_ROOT/include/mysql_version.h" "$MYSQL_INCLUDE_MYSQL/mysql_version.h"
+  status "Installed mysql_version.h stub into $MYSQL_INCLUDE_MYSQL"
+fi
+
 export MYSQL_SOURCE_DIR
 
+status "Checking build dependencies..."
 # Install build deps (optional; may already be present)
 if [ "$OS" = "linux" ]; then
   if command -v apt-get >/dev/null 2>&1; then
@@ -87,48 +110,94 @@ if [ "$OS" = "linux" ]; then
       >/dev/null 2>&1 || true
   fi
 elif [ "$OS" = "darwin" ]; then
+  # Use arch -arm64 brew so we hit ARM Homebrew (/opt/homebrew) even when this script runs under Rosetta
+  BREW_CMD="brew"
+  if [ "$ARCH" = "x86_64" ]; then
+    BREW_CMD="arch -arm64 brew"
+  fi
+  BREW_MYSQL_PREFIX=""
   if command -v brew >/dev/null 2>&1; then
-    brew list mysql-client >/dev/null 2>&1 || brew install mysql-client || true
+    BREW_MYSQL_PREFIX="$($BREW_CMD --prefix mysql-client 2>/dev/null)" || true
+    $BREW_CMD list mysql-client >/dev/null 2>&1 || $BREW_CMD install mysql-client || true
+    # Use Homebrew mysql-client only when building for arm64 (same arch as /opt/homebrew). Under Rosetta we build x86_64 and cannot use ARM libs.
+    if [ -z "${MYSQL_DIR:-}" ] && [ -n "$BREW_MYSQL_PREFIX" ] && [ "$ARCH" = "arm64" ]; then
+      MYSQL_DIR="$BREW_MYSQL_PREFIX"
+    fi
   fi
 fi
 
-# Configure and build from repo root
+status "Configuring and building..."
+# Configure and build from repo root; BUILD_DIR is always repo/build
 cd "$REPO_ROOT"
-rm -rf build
-mkdir -p build
-cd build
-
-CMAKE_EXTRA=()
-if [ -n "${MYSQL_DIR:-}" ]; then
-  CMAKE_EXTRA+=(-DMYSQL_DIR="$MYSQL_DIR")
+BUILD_DIR="$REPO_ROOT/build"
+REUSE_BUILD=false
+if [ -f build/CMakeCache.txt ] && [ -f build/.myvector_mysql_source_dir ]; then
+  PREV_SOURCE_DIR="$(cat build/.myvector_mysql_source_dir)"
+  PREV_ARCH=""
+  [ -f build/.myvector_build_arch ] && PREV_ARCH="$(cat build/.myvector_build_arch)"
+  if [ "$PREV_SOURCE_DIR" = "$MYSQL_SOURCE_DIR" ] && [ "$PREV_ARCH" = "$ARCH" ]; then
+    REUSE_BUILD=true
+  fi
 fi
-if [ -n "${MYSQL_BUILD_DIR:-}" ]; then
-  CMAKE_EXTRA+=(-DMYSQL_BUILD_DIR="$MYSQL_BUILD_DIR")
+
+if [ "$OS" = "darwin" ] && [ "$ARCH" = "x86_64" ] && [ -z "${MYSQL_DIR:-}" ]; then
+  echo "==> Component build on macOS needs libmysqlclient from ARM Homebrew." >&2
+  echo "==> You are running under Rosetta (x86_64). Run with an explicit arm64 shell:" >&2
+  echo "" >&2
+  echo "    arch -arm64 /bin/bash $REPO_ROOT/scripts/build-component.sh $MYSQL_VERSION" >&2
+  echo "" >&2
+  exit 1
 fi
 
-cmake -DCMAKE_BUILD_TYPE=Release \
-  -DMYSQL_SOURCE_DIR="$MYSQL_SOURCE_DIR" \
-  "${CMAKE_EXTRA[@]}" \
-  ..
-
-if [ "$OS" = "linux" ]; then
-  make -j"$(nproc)"
+if [ "$REUSE_BUILD" = true ]; then
+  status "Reusing existing build (same MYSQL_SOURCE_DIR)"
 else
-  make -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 1)"
+  status "Configuring with CMake..."
+  rm -rf build
+  mkdir -p build
+  CMAKE_EXTRA=()
+  if [ -n "${MYSQL_DIR:-}" ]; then
+    CMAKE_EXTRA+=(-DMYSQL_DIR="$MYSQL_DIR")
+  fi
+  if [ -n "${MYSQL_BUILD_DIR:-}" ]; then
+    CMAKE_EXTRA+=(-DMYSQL_BUILD_DIR="$MYSQL_BUILD_DIR")
+  fi
+  # On macOS, force arch so we match Homebrew's libmysqlclient (arm64 on Apple Silicon)
+  if [ "$OS" = "darwin" ] && [ -n "$ARCH" ]; then
+    CMAKE_EXTRA+=(-DCMAKE_OSX_ARCHITECTURES="$ARCH")
+  fi
+  # Use -B and -S so build dir is always repo/build regardless of cwd (e.g. after re-exec)
+  cmake -B "$REPO_ROOT/build" -S "$REPO_ROOT" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DMYSQL_SOURCE_DIR="$MYSQL_SOURCE_DIR" \
+    "${CMAKE_EXTRA[@]}"
+  printf '%s' "$MYSQL_SOURCE_DIR" > "$REPO_ROOT/build/.myvector_mysql_source_dir"
+  printf '%s' "$ARCH" > "$REPO_ROOT/build/.myvector_build_arch"
 fi
+
+BUILD_LOG="$BUILD_DIR/build.log"
+status "Building myvector_component (verbose; may take several minutes)..."
+status "Build log: $BUILD_LOG"
+if [ "$OS" = "linux" ]; then
+  make -C "$BUILD_DIR" VERBOSE=1 -j"$(nproc)" 2>&1 | tee "$BUILD_LOG"; MAKE_EXIT=${PIPESTATUS[0]}
+else
+  make -C "$BUILD_DIR" VERBOSE=1 -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 1)" 2>&1 | tee "$BUILD_LOG"; MAKE_EXIT=${PIPESTATUS[0]}
+fi
+status "Build finished."
+[ "$MAKE_EXIT" -ne 0 ] && exit "$MAKE_EXIT"
 
 # Copy manifest next to library for packaging
-mkdir -p component
-if [ -f "libmyvector_component.so" ]; then
-  cp libmyvector_component.so component/ || { echo "Error: failed to copy libmyvector_component.so to component/" >&2; exit 1; }
-  cp "$REPO_ROOT/src/component_src/myvector.json" component/ || { echo "Error: failed to copy myvector.json to component/" >&2; exit 1; }
+mkdir -p "$BUILD_DIR/component"
+if [ -f "$BUILD_DIR/libmyvector_component.so" ]; then
+  cp "$BUILD_DIR/libmyvector_component.so" "$BUILD_DIR/component/" || { echo "Error: failed to copy libmyvector_component.so to component/" >&2; exit 1; }
+  cp "$REPO_ROOT/src/component_src/myvector.json" "$BUILD_DIR/component/" || { echo "Error: failed to copy myvector.json to component/" >&2; exit 1; }
   echo "Built: build/libmyvector_component.so, build/component/myvector.json"
-elif [ -f "libmyvector_component.dylib" ]; then
-  cp libmyvector_component.dylib component/ || { echo "Error: failed to copy libmyvector_component.dylib to component/" >&2; exit 1; }
-  cp "$REPO_ROOT/src/component_src/myvector.json" component/ || { echo "Error: failed to copy myvector.json to component/" >&2; exit 1; }
+elif [ -f "$BUILD_DIR/libmyvector_component.dylib" ]; then
+  cp "$BUILD_DIR/libmyvector_component.dylib" "$BUILD_DIR/component/" || { echo "Error: failed to copy libmyvector_component.dylib to component/" >&2; exit 1; }
+  cp "$REPO_ROOT/src/component_src/myvector.json" "$BUILD_DIR/component/" || { echo "Error: failed to copy myvector.json to component/" >&2; exit 1; }
   echo "Built: build/libmyvector_component.dylib, build/component/myvector.json"
 else
   echo "Error: build did not produce libmyvector_component.so or libmyvector_component.dylib" >&2
-  find . -name 'myvector_component*' -o -name 'myvector.json' 2>/dev/null || true
+  find "$BUILD_DIR" -name 'myvector_component*' -o -name 'myvector.json' 2>/dev/null || true
   exit 1
 fi

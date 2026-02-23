@@ -20,10 +20,13 @@ public:
 
 protected:
     // Destructor is protected to ensure proper memory management through factory methods
-    ~MyVectorBinlogService() = default;
+    ~MyVectorBinlogService() noexcept override = default;
 };
 
 SERVICE_INTERFACE_VERSION(MyVectorBinlogService, 1);
+
+/** Reference to the singleton implementation (defined in myvector_binlog_service.cc). */
+extern MyVectorBinlogService& s_binlog_service;
 
 } // namespace myvector_component
 

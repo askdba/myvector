@@ -1,4 +1,5 @@
 #include "myvector_binlog_service.h"
+#include <mysql/mysql.h>
 #include <mysql/plugin.h>
 #include <mysql/service_my_plugin_log.h>
 #include <mysql/service_mysql_alloc.h>
@@ -20,11 +21,22 @@
 #include "my_thread.h"
 #include "myvector.h"
 #include "myvectorutils.h"
+#if MYSQL_VERSION_ID >= 80400
+#include "mysql/binlog/event/binlog_event.h"
+#endif
 
-// Temporarily keep extern declarations for functions and global variables from myvector_binlog.cc
-// These will eventually be refactored into component-specific utilities or class members.
-extern std::atomic<bool> shutdown_binlog_thread;
-extern MYSQL* binlog_mysql_conn;
+#if defined(__GNUC__) || defined(__clang__)
+#define MYVECTOR_DIAGNOSTIC_PUSH _Pragma("GCC diagnostic push")
+#define MYVECTOR_DIAGNOSTIC_POP _Pragma("GCC diagnostic pop")
+#define MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS                                \
+    _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#else
+#define MYVECTOR_DIAGNOSTIC_PUSH
+#define MYVECTOR_DIAGNOSTIC_POP
+#define MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS
+#endif
+
+// Configuration and paths: defined in myvector_plugin.cc (plugin build) or myvector_component_config.cc (component build).
 extern char* myvector_index_dir;
 extern char* myvector_config_file;
 extern long myvector_feature_level;
@@ -767,6 +779,10 @@ void BuildMyVectorIndexSQL(const char* db,
         return;
     }
     MYSQL_RES* result = nullptr;
+    char query[MYVECTOR_BUFF_SIZE];
+    char esc_db[256], esc_table[256], esc_idcol[256], esc_veccol[256], esc_tracking[256];
+    int n = 0;
+    unsigned long current_ts = 0;
 
     fprintf(stderr,
             "BuildMyVectorIndexSQL %s %s %s %s %s %s.\n",
@@ -796,8 +812,6 @@ void BuildMyVectorIndexSQL(const char* db,
 
     (void)mysql_autocommit(&mysql, false);
 
-    char query[MYVECTOR_BUFF_SIZE];
-    char esc_db[256], esc_table[256], esc_idcol[256], esc_veccol[256], esc_tracking[256];
     if (!db || !table || !idcol || !veccol) {
         snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "BuildMyVectorIndexSQL: null identifier");
         goto cleanup;
@@ -814,7 +828,7 @@ void BuildMyVectorIndexSQL(const char* db,
         goto cleanup;
     }
 
-    int n = snprintf(query, sizeof(query), "LOCK TABLES %s.%s READ", esc_db, esc_table);
+    n = snprintf(query, sizeof(query), "LOCK TABLES %s.%s READ", esc_db, esc_table);
     if (n < 0 || (size_t)n >= sizeof(query)) {
         snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "LOCK TABLES query too long");
         goto cleanup;
@@ -831,7 +845,7 @@ void BuildMyVectorIndexSQL(const char* db,
         goto cleanup;
     }
 
-    unsigned long current_ts = time(NULL);
+    current_ts = time(NULL);
 
     if (!strcmp(action, "refresh") || (trackingColumn && trackingColumn[0] != '\0')) {
         if (!trackingColumn) {
@@ -1216,10 +1230,8 @@ private:
             MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS
             using MyvectorLogEventType = binary_log::Log_event_type;
             constexpr MyvectorLogEventType kRotateEvent = binary_log::ROTATE_EVENT;
-            constexpr MyvectorLogEventType kTableMapEvent =
-                binary_log::TABLE_MAP_EVENT;
-            constexpr MyvectorLogEventType kWriteRowsEvent =
-                binary_log::WRITE_ROWS_EVENT;
+            constexpr MyvectorLogEventType kTableMapEvent = binary_log::TABLE_MAP_EVENT;
+            constexpr MyvectorLogEventType kWriteRowsEvent = binary_log::WRITE_ROWS_EVENT;
             MYVECTOR_DIAGNOSTIC_POP
 #else
             using MyvectorLogEventType = binary_log::Log_event_type;
@@ -1289,8 +1301,9 @@ private:
     }
 };
 
-MyVectorBinlogServiceImpl s_binlog_service;
+MyVectorBinlogServiceImpl s_binlog_service_impl;
+MyVectorBinlogService& s_binlog_service = s_binlog_service_impl;
 
-SERVICE_REGISTRATION(myvector_binlog_service, &s_binlog_service);
+SERVICE_REGISTRATION(myvector_binlog_service, &s_binlog_service_impl);
 
 } // namespace myvector_component
