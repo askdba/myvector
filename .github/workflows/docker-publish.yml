@@ -2,10 +2,8 @@ name: Publish Docker Image
 
 on:
   workflow_run:
-    workflows: ["Release MyVector (Plugin + Component)"]
+    workflows: ["Release MyVector (Plugin + Component)", "MyVector CI"]
     types: [completed]
-  pull_request:
-    branches: [ "main" ]
 
 permissions:
   contents: read
@@ -13,8 +11,8 @@ permissions:
 
 jobs:
   build-and-publish:
-    # Only run when release workflow succeeded; always run on pull_request (for build/smoke test).
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # Only run when the triggering workflow succeeded (Release or MyVector CI).
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -158,7 +156,7 @@ jobs:
           done
 
       - name: Login to GitHub Container Registry
-        if: github.event_name == 'workflow_run' || startsWith(github.ref, 'refs/tags/')
+        if: contains(github.event.workflow_run.path, 'release.yml')
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -166,7 +164,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        if: github.event_name == 'workflow_run' || startsWith(github.ref, 'refs/tags/')
+        if: contains(github.event.workflow_run.path, 'release.yml')
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -178,7 +176,7 @@ jobs:
             MYSQL_VERSION=${{ matrix.mysql-version }}
 
       - name: Tag and push latest
-        if: matrix.mysql-version == '8.0' && (github.event_name == 'workflow_run' || startsWith(github.ref, 'refs/tags/'))
+        if: matrix.mysql-version == '8.0' && contains(github.event.workflow_run.path, 'release.yml')
         uses: docker/build-push-action@v5
         with:
           context: .
