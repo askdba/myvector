@@ -30,6 +30,5 @@ jobs:
           VALIDATE_PERL: "false"
           VALIDATE_JSCPD: "false"
           VALIDATE_SQLFLUFF: "false"
-          VALIDATE_GITHUB_ACTIONS: "true"
+          # GITHUB_ACTIONS and MARKDOWN enabled via .github/.linter.yaml (omit here to avoid super-linter mix error)
           VALIDATE_NATURAL_LANGUAGE: "false"
-          VALIDATE_MARKDOWN: "true"

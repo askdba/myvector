@@ -20,9 +20,8 @@ VALIDATE_PERL: false
 # Ignore the include directory for JSCPD
 JSCPD_CONFIG_FILE: .jscpd.json
 
-# GitHub Actions (actionlint) and Markdown are enabled; use .markdownlint.yaml and
-# .github/actionlint.yaml for targeted rule exceptions if specific rules are noisy.
-VALIDATE_GITHUB_ACTIONS: true
-VALIDATE_MARKDOWN: true
+# GITHUB_ACTIONS and MARKDOWN use super-linter defaults (enabled). Targeted exceptions:
+# .markdownlint.yaml, .github/actionlint.yaml. Do not set VALIDATE_* true here when
+# others are false - super-linter rejects mixed opt-in/opt-out.
 # Disable linters that produce many false positives or require extensive doc reformatting
 VALIDATE_NATURAL_LANGUAGE: false
