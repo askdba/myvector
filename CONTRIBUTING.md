@@ -82,12 +82,19 @@ Update relevant documentation:
 
 ### 4. Check Tests
 
-```bash
-# Build the plugin
-cd mysql-server/bld/plugin/myvector
-make
+**Build:** The project uses CMake; the top-level `Makefile` is generated and is in `.gitignore`. Regenerate the build locally—do not commit the generated Makefile. From the repo root:
 
-# Run the demo tests
+```bash
+cmake -B build -S .
+make -C build
+```
+
+For the standalone component: `./scripts/build-component.sh <version>` (e.g. `mysql-8.0.40`, `mysql-8.4.8`, or `mysql-9.0.0`; see `scripts/build-component.sh` for supported version tags).
+
+If you have an existing clone that previously tracked the generated Makefile, remove it from version control: `git rm --cached Makefile`.
+
+```bash
+# Run the demo tests (run from the repository root, or adjust demo/stanford50d/ if running from a different directory)
 mysql -u root -p test < demo/stanford50d/create.sql
 mysql -u root -p test < demo/stanford50d/search.sql
 ```

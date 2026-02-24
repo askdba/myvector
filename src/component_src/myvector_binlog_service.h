@@ -25,8 +25,8 @@ protected:
 
 SERVICE_INTERFACE_VERSION(MyVectorBinlogService, 1);
 
-/** Reference to the singleton implementation (defined in myvector_binlog_service.cc). */
-extern MyVectorBinlogService& s_binlog_service;
+/** Accessor for the singleton implementation (Meyers' Singleton; defined in myvector_binlog_service.cc). */
+MyVectorBinlogService& get_binlog_service();
 
 } // namespace myvector_component
 

@@ -30,13 +30,15 @@ static int myvector_component_init() {
   } else {
     myvector_component::s_udf_service.deregister_udfs(
         mysql_service_udf_registration);
+    myvector_component_udf_metadata = nullptr;
   }
 
   if (ret == 0) {
-    ret = myvector_component::s_binlog_service.start_binlog_monitoring();
+    ret = myvector_component::get_binlog_service().start_binlog_monitoring();
     if (ret != 0 && udfs_registered) {
       myvector_component::s_udf_service.deregister_udfs(
           mysql_service_udf_registration);
+      myvector_component_udf_metadata = nullptr;
     }
   }
 
@@ -44,7 +46,7 @@ static int myvector_component_init() {
 }
 
 static int myvector_component_deinit() {
-  int ret = myvector_component::s_binlog_service.stop_binlog_monitoring();
+  int ret = myvector_component::get_binlog_service().stop_binlog_monitoring();
 
   if (mysql_service_udf_registration) {
     ret |= myvector_component::s_udf_service.deregister_udfs(

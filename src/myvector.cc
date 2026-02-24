@@ -1324,7 +1324,7 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         if (colinfo.length() > MYVECTOR_MAX_COLUMN_INFO_LEN) {
             my_plugin_log_message(&gplugin,
                                   MY_ERROR_LEVEL,
-                                  "MYVECTOR column info too long, length = %d.",
+                                  "MYVECTOR column info too long, length = %zu.",
                                   colinfo.length());
             error = true;
             break;
@@ -1598,11 +1598,11 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT* initid,
 
     char* col = args->args[0];
     AbstractVectorIndex* vi = g_indexes.get(col);
-    SharedLockGuard l(vi);
     if (!vi) {
         snprintf(message, MYSQL_ERRMSG_SIZE, ER_MYVECTOR_INDEX_NOT_FOUND " (%s)", col);
         return true;  // error
     }
+    SharedLockGuard l(vi);
 
     /* Users can possibly ask for 100s of neighbours. With buffer of 128000,
      * about 12800 PK ids can be filled in the return string
@@ -1973,7 +1973,10 @@ PLUGIN_EXPORT char* myvector_display(UDF_INIT* initid,
         0, (const unsigned char*)raw, args->lengths[0] - sizeof(ha_checksum));
     if (cksum1 != cksum2) {
         *error = 1;
-        return "<invalid vector>";
+        result = initid->ptr;
+        strcpy(result, "<invalid vector>");
+        *length = 16;
+        return result;
     }
 #endif
 
@@ -2199,7 +2202,7 @@ void myvector_open_index_impl(char* vecid,
         strcpy(result, s.c_str());
     } else if (!strcmp(action, "drop")) {
         vi->dropIndex(myvector_index_dir);
-        l.clear();
+        l.release();
         g_indexes.close(vi);
         vi = nullptr;
     }

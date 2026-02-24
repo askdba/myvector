@@ -28,10 +28,16 @@ ARCH="$(uname -m)"
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 
 # On Apple Silicon, if running under Rosetta (x86_64), re-exec natively once so the build
-# uses ARM Homebrew's libmysqlclient. Skip if we already re-exec'd (avoid infinite loop when
-# the child still reports x86_64, e.g. in some terminals).
+# uses ARM Homebrew's libmysqlclient. Only re-exec when arm64 is available (Apple Silicon);
+# on Intel Macs (x86_64 only) skip to avoid runtime failure. Skip if we already re-exec'd.
 status "MyVector component build ($MYSQL_VERSION)"
-if [ "$OS" = "darwin" ] && [ "$ARCH" = "x86_64" ] && [ -z "${MYSQL_DIR:-}" ] && [ -z "${MYVECTOR_ALREADY_ARM64:-}" ]; then
+CAN_ARM64=false
+if [ "$OS" = "darwin" ] && [ "$ARCH" = "x86_64" ] && [ -z "${MYVECTOR_ALREADY_ARM64:-}" ]; then
+  if arch -arm64 /bin/true 2>/dev/null; then
+    CAN_ARM64=true
+  fi
+fi
+if [ "$OS" = "darwin" ] && [ "$ARCH" = "x86_64" ] && [ -z "${MYSQL_DIR:-}" ] && [ "$CAN_ARM64" = true ]; then
   status "Re-execing under arm64 (once)..."
   export MYVECTOR_ALREADY_ARM64=1
   exec arch -arm64 /bin/bash "$0" "$@"
@@ -90,6 +96,10 @@ fi
 # Place our stub so server headers (e.g. plugin.h) that #include "mysql_version.h" find it.
 MYSQL_INCLUDE_MYSQL="${MYSQL_SOURCE_DIR}/include/mysql"
 if [ ! -f "$MYSQL_INCLUDE_MYSQL/mysql_version.h" ]; then
+  if [ ! -r "$REPO_ROOT/include/mysql_version.h" ]; then
+    echo "Error: $REPO_ROOT/include/mysql_version.h does not exist or is not readable" >&2
+    exit 1
+  fi
   mkdir -p "$MYSQL_INCLUDE_MYSQL"
   cp "$REPO_ROOT/include/mysql_version.h" "$MYSQL_INCLUDE_MYSQL/mysql_version.h"
   status "Installed mysql_version.h stub into $MYSQL_INCLUDE_MYSQL"

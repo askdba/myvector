@@ -1301,9 +1301,11 @@ private:
     }
 };
 
-MyVectorBinlogServiceImpl s_binlog_service_impl;
-MyVectorBinlogService& s_binlog_service = s_binlog_service_impl;
+MyVectorBinlogService& get_binlog_service() {
+  static MyVectorBinlogServiceImpl impl;
+  return impl;
+}
 
-SERVICE_REGISTRATION(myvector_binlog_service, &s_binlog_service_impl);
+SERVICE_REGISTRATION(myvector_binlog_service, &get_binlog_service());
 
 } // namespace myvector_component

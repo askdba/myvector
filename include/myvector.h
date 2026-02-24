@@ -168,12 +168,25 @@ constexpr unsigned int BITS_PER_BYTE = 8;
 /** RAII shared-lock guard for AbstractVectorIndex. */
 class SharedLockGuard {
 public:
-    explicit SharedLockGuard(AbstractVectorIndex* h_index) : m_index(h_index) {}
+    explicit SharedLockGuard(AbstractVectorIndex* h_index) : m_index(h_index) {
+        if (m_index)
+            m_index->lockShared();
+    }
     ~SharedLockGuard() {
         if (m_index)
             m_index->unlockShared();
     }
-    void clear() { m_index = nullptr; }
+    SharedLockGuard(const SharedLockGuard&) = delete;
+    SharedLockGuard& operator=(const SharedLockGuard&) = delete;
+    SharedLockGuard(SharedLockGuard&&) = delete;
+    SharedLockGuard& operator=(SharedLockGuard&&) = delete;
+    /** Release the shared lock and give up ownership. Idempotent after first call. */
+    void release() noexcept {
+        if (m_index) {
+            m_index->unlockShared();
+            m_index = nullptr;
+        }
+    }
 
 private:
     AbstractVectorIndex* m_index{nullptr};

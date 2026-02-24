@@ -131,7 +131,7 @@ If mismatch:
 
 Constraints:
 
-- Configurable maximum dimension (default: 16384)
+- Configurable maximum dimension (default: 4096)
 - Pre-allocation memory validation
 - Reject index creation exceeding server memory limits
 
@@ -290,10 +290,10 @@ Verification of RFC claims against the repository (as of 2026-02-18):
 | **HNSW internal locking** | **Verified.** `hnswalg.h` / `hnswdisk.h` use per-node/label mutexes; `hnswdisk.i` uses partitioned flush-list mutexes. |
 | **Error code for invalid vector** | **Partial.** RFC says "ER_VECTOR_INVALID"; code uses `ER_MYVECTOR_INVALID_VECTOR` ("Invalid vector format or checksum mismatch") in `include/myvector_errors.h`. Consider aligning names. |
 | **Zero vector rejection for cosine** | **Gap.** `computeCosineDistance` avoids division by zero (`if (t) dist = ...`) but does not reject insert; RFC requires explicit reject and ER_VECTOR_INVALID for `norm == 0`. |
-| **Max dimension default 16384** | **Mismatch.** Code defines `MYVECTOR_MAX_VECTOR_DIM = 4096` in `src/myvector.cc`; comment references MySQL VECTOR max 16383. RFC should say 4096 or document increase. |
+| **Max dimension default 4096** | **Verified.** RFC default aligned with code: `MYVECTOR_MAX_VECTOR_DIM = 4096` in `src/myvector.cc`. |
 | **Atomic persistence (write temp → fsync → rename)** | **Partial.** Component state file uses `std::rename(tmp_path, path)` after write (`myvector_binlog_service.cc`). Main HNSW index save in `hnswdisk.i` writes directly to target file with checkpoint/fsync; temp-file-then-rename for main .bin not present. |
 | **Crash recovery / checkpoint** | **Verified.** `hnswdisk.i` has `doCheckPoint`, `WriteCheckPointStatus`, `makeIndexConsistent`, and rollback on interrupted flush; corrupted/unsupported index throws in load. |
 | **DBUG fault injection** | **Not implemented.** No `DBUG_EXECUTE_IF` or `simulate_vector_crash` in repo; RFC describes desired testing approach. |
 | **myvector_rebuild_on_start** | **Not found.** No such sysvar in codebase; RFC describes desired config. |
 
-**Summary:** Core concurrency and recovery behavior matches the RFC. Gaps: explicit zero-vector rejection for cosine, max dimension value (4096 vs 16384), optional temp-file-then-rename for main index save, DBUG injection, and `myvector_rebuild_on_start` config are not yet implemented and can be tracked as follow-ups.
+**Summary:** Core concurrency and recovery behavior matches the RFC. Gaps: explicit zero-vector rejection for cosine, optional temp-file-then-rename for main index save, DBUG injection, and `myvector_rebuild_on_start` config are not yet implemented and can be tracked as follow-ups.
