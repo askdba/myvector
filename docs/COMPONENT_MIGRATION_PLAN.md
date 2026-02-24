@@ -108,7 +108,11 @@ make install
     *   Test the binlog service by creating a table with an `online=Y` index, performing DML, and querying the index to verify it was updated.
 5.  **Deactivation:** Run `UNINSTALL COMPONENT 'file://myvector'` and confirm that the component is cleanly unloaded and all UDFs are deregistered.
 
-**Manual Step 5 (local):** Build the component (e.g. `./scripts/build-component.sh mysql-8.4.8 /path/to/mysql-server`). Copy `build/component/libmyvector_component.so` to your MySQL `plugin_dir` as `myvector.so` (e.g. `cp build/component/libmyvector_component.so $(mysql -N -e "SELECT @@plugin_dir;")/myvector.so`). Then connect and run `INSTALL COMPONENT 'file://myvector';`, verify UDFs (e.g. `SELECT myvector_display(myvector_construct('[1,2,3]'));`), then `UNINSTALL COMPONENT 'file://myvector';`.
+**Manual Step 5 (local):** Build the component (e.g. `./scripts/build-component.sh mysql-8.4.8 /path/to/mysql-server`).
+Copy `build/component/libmyvector_component.so` to your MySQL `plugin_dir` as `myvector.so`
+(e.g. `cp build/component/libmyvector_component.so $(mysql -N -e "SELECT @@plugin_dir;")/myvector.so`).
+Then connect and run `INSTALL COMPONENT 'file://myvector';`, verify UDFs
+(e.g. `SELECT myvector_display(myvector_construct('[1,2,3]'));`), then `UNINSTALL COMPONENT 'file://myvector';`.
 
 ### **Implementation Decisions**
 
@@ -139,7 +143,11 @@ been completed. The `CMakeLists.txt` has also been updated to reflect the new co
 
 **Current Blocker (resolved for Step 4)**
 
-The build requires the MySQL **server** source tree (component headers are not in the client package). Step 4 is complete: `CMakeLists.txt` now requires `MYSQL_SOURCE_DIR` and finds `libmysqlclient`; the build should succeed when that variable is set to the server source root. Header discovery is therefore resolved; Step 8 (testing) is no longer blocked by it—remaining work is to run and expand tests (e.g., CI test-component matrix for 8.0/8.4/9.0).
+The build requires the MySQL **server** source tree (component headers are not in the client package).
+Step 4 is complete: `CMakeLists.txt` now requires `MYSQL_SOURCE_DIR` and finds `libmysqlclient`;
+the build should succeed when that variable is set to the server source root.
+Header discovery is therefore resolved; Step 8 (testing) is no longer blocked by it—remaining work is
+to run and expand tests (e.g., CI test-component matrix for 8.0/8.4/9.0).
 
 **Next Steps**
 
