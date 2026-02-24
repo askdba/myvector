@@ -201,7 +201,9 @@ jobs:
         $MYSQL_CMD -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'));"
 
         $MYSQL_CMD -e "UNINSTALL COMPONENT 'file://myvector';"
-        $MYSQL_CMD -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';" -s -N | grep -q . && { echo "Component still registered"; exit 1; } || true
+        if $MYSQL_CMD -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';" -s -N | grep -q .; then
+          echo "Component still registered"; exit 1
+        fi
         echo "=== Step 5 verification passed ==="
 
   # Fast build job - builds plugin only (in-tree)
