@@ -30,3 +30,6 @@ jobs:
           VALIDATE_PERL: "false"
           VALIDATE_JSCPD: "false"
           VALIDATE_SQLFLUFF: "false"
+          VALIDATE_GITHUB_ACTIONS: "true"
+          VALIDATE_NATURAL_LANGUAGE: "false"
+          VALIDATE_MARKDOWN: "true"

@@ -38,6 +38,12 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
+      - name: Cache Boost
+        uses: actions/cache@v4
+        with:
+          path: boost_cache
+          key: boost-${{ matrix.mysql-tag }}-v2
+
       - name: Install Build Dependencies
         run: |
           sudo apt-get update
@@ -97,6 +103,7 @@ jobs:
                 rm -rf ${build_dir}
                 git clone --depth 1 --branch ${{ matrix.mysql-tag }} \
                   https://github.com/mysql/mysql-server.git ${build_dir}
+                mkdir -p /work/boost_cache
                 mkdir -p ${build_dir}/plugin/myvector
                 cp src/*.cc ${build_dir}/plugin/myvector/
                 cp include/*.h ${build_dir}/plugin/myvector/
@@ -108,7 +115,7 @@ jobs:
                   -DCMAKE_C_COMPILER=gcc-${{ matrix.compiler }} \
                   -DCMAKE_CXX_COMPILER=g++-${{ matrix.compiler }} \
                   -DDOWNLOAD_BOOST=1 \
-                  -DWITH_BOOST=../../boost_cache \
+                  -DWITH_BOOST=/work/boost_cache \
                   -DWITH_UNIT_TESTS=OFF \
                   -DWITH_ROUTER=OFF \
                   -DWITH_RAPID=OFF \
@@ -121,6 +128,12 @@ jobs:
               "
           done
           cp sql/myvectorplugin.sql .
+
+      - name: Restore boost_cache ownership for cache action
+        run: |
+          if [ -d boost_cache ]; then
+            sudo chown -R "$(id -u):$(id -g)" boost_cache
+          fi
 
       - name: Smoke test image contents
         run: |
