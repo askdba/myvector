@@ -1,5 +1,7 @@
+---
 # Targeted markdownlint exceptions; VALIDATE_MARKDOWN is enabled in CI.
 # Add rule-specific overrides here rather than disabling the validator.
 default: true
 MD013: false   # Line length: allow long lines (e.g., URLs, code blocks)
 MD041: false   # First line heading: allow files without h1 on first line
+MD030: false   # List marker space: docs use 2-3 spaces; allow for consistency

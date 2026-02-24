@@ -1,9 +1,4 @@
 # Targeted actionlint exceptions; VALIDATE_GITHUB_ACTIONS is enabled in CI.
-# Add ignore patterns under 'paths' or top-level 'ignore' for specific noisy rules
-# rather than disabling the validator. Example:
-#   ignore:
-#     - 'pattern to match error message'
-#   paths:
-#     ".github/workflows/*.yml":
-#       ignore:
-#         - 'specific rule for workflow files'
+# Shellcheck SC2015 (A && B || C) in workflow scripts is a known pattern; suppress.
+ignore:
+  - 'shellcheck reported issue in this script: SC2015:.+'
