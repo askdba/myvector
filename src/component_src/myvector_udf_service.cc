@@ -1,7 +1,7 @@
 #include "myvector_udf_service.h"
 #include <mysql/components/services/udf_registration.h>
 #include <mysql/udf_registration_types.h>
-#include <mysql/mysql.h>
+#include <mysql/plugin.h>
 #include <mysql/service_my_plugin_log.h>
 #include <mysql/service_mysql_alloc.h>
 #include <mysql/service_plugin_registry.h>

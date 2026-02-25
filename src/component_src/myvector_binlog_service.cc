@@ -1,6 +1,9 @@
 #include "myvector_binlog_service.h"
 #include <mysql/mysql.h>
 #include <mysql/plugin.h>
+#if defined(__linux__) || defined(__APPLE__)
+#include <arpa/inet.h>
+#endif
 #include <mysql/service_my_plugin_log.h>
 #include <mysql/service_mysql_alloc.h>
 #include <mysql/service_plugin_registry.h>

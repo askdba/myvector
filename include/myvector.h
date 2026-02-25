@@ -30,6 +30,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 bool myvector_query_rewrite(const std::string& query,
                             std::string* rewritten_query);
