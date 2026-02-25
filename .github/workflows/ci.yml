@@ -189,7 +189,7 @@ jobs:
 
         $MYSQL_CMD -e "INSTALL COMPONENT 'file://myvector';"
 
-        $MYSQL_CMD -e "SELECT component_urn, component_status FROM mysql.component WHERE component_urn LIKE '%myvector%';"
+        $MYSQL_CMD -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';"
 
         echo "=== Testing myvector_construct UDF ==="
         $MYSQL_CMD -e "SELECT LENGTH(myvector_construct('[1.0, 2.0, 3.0]'));"
