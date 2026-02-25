@@ -52,13 +52,17 @@ if(DEFINED MYSQL_DIR)
   set(MYSQL_DIR "${MYSQL_DIR}" CACHE PATH "MySQL install or client package root")
 endif()
 
-# Include directories: project, server include/, server root, libs (binlog_event.h), and build (generated headers)
+# Include directories: project, server include/, server root, libs (binlog_event.h),
+# libbinlogevents (8.0), and build (generated headers)
 set(MYVECTOR_INCLUDE_DIRS
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
   "${MYSQL_SOURCE_DIR}/include"
   "${MYSQL_SOURCE_DIR}"
   "${MYSQL_SOURCE_DIR}/libs"
 )
+if(EXISTS "${MYSQL_SOURCE_DIR}/libbinlogevents/include")
+  list(APPEND MYVECTOR_INCLUDE_DIRS "${MYSQL_SOURCE_DIR}/libbinlogevents/include")
+endif()
 if(DEFINED MYSQL_BUILD_DIR AND EXISTS "${MYSQL_BUILD_DIR}/include")
   list(APPEND MYVECTOR_INCLUDE_DIRS "${MYSQL_BUILD_DIR}/include")
 endif()

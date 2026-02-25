@@ -93,17 +93,24 @@ else
 fi
 
 # MySQL source tarball does not include mysql_version.h (generated at MySQL build time).
-# Place our stub so server headers (e.g. plugin.h) that #include "mysql_version.h" find it.
+# Generate version-specific stub so component code picks correct code paths (e.g. binlog headers).
+# Parse MYSQL_VERSION (e.g. mysql-8.0.40) -> MYSQL_VERSION_ID = 80040 (major*10000 + minor*100 + patch)
 MYSQL_INCLUDE_MYSQL="${MYSQL_SOURCE_DIR}/include/mysql"
-if [ ! -f "$MYSQL_INCLUDE_MYSQL/mysql_version.h" ]; then
-	if [ ! -r "$REPO_ROOT/include/mysql_version.h" ]; then
-		echo "Error: $REPO_ROOT/include/mysql_version.h does not exist or is not readable" >&2
-		exit 1
-	fi
-	mkdir -p "$MYSQL_INCLUDE_MYSQL"
-	cp "$REPO_ROOT/include/mysql_version.h" "$MYSQL_INCLUDE_MYSQL/mysql_version.h"
-	status "Installed mysql_version.h stub into $MYSQL_INCLUDE_MYSQL"
-fi
+mkdir -p "$MYSQL_INCLUDE_MYSQL"
+VER_PART="${MYSQL_VERSION#mysql-}"
+MAJOR="${VER_PART%%.*}"; REST="${VER_PART#*.}"
+MINOR="${REST%%.*}"; PATCH="${REST#*.}"
+[ -z "$PATCH" ] && PATCH="${MINOR}" && MINOR=0
+MYSQL_VERSION_ID=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+cat > "$MYSQL_INCLUDE_MYSQL/mysql_version.h" << EOF
+/**
+ * Stub for standalone component build. Matches MySQL $MYSQL_VERSION.
+ */
+#ifndef MYSQL_VERSION_ID
+#define MYSQL_VERSION_ID $MYSQL_VERSION_ID
+#endif
+EOF
+status "Installed mysql_version.h (MYSQL_VERSION_ID=$MYSQL_VERSION_ID) into $MYSQL_INCLUDE_MYSQL"
 
 export MYSQL_SOURCE_DIR
 

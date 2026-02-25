@@ -23,6 +23,9 @@
 #include "myvectorutils.h"
 #if MYSQL_VERSION_ID >= 80400
 #include "mysql/binlog/event/binlog_event.h"
+namespace binary_log = mysql::binlog::event;
+#else
+#include "binlog_event.h"
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
