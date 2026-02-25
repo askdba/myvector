@@ -1214,6 +1214,7 @@ AbstractVectorIndex* VectorIndexCollection::open(const string& name,
     }
 
     m_indexes[name] = hnewindex;
+    hnewindex->lockShared(); /* acquire lock before returning, matching get() */
 
     return hnewindex;
 }

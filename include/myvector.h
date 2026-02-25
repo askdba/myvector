@@ -166,13 +166,13 @@ private:
 /** Bit packing for binary vectors (1 bit per dimension). */
 constexpr unsigned int BITS_PER_BYTE = 8;
 
-/** RAII shared-lock guard for AbstractVectorIndex. */
+/** RAII shared-lock guard for AbstractVectorIndex. Release-only: caller
+ * (get() or open()) must acquire lockShared() before returning the pointer.
+ * Constructor does not acquire to avoid double-lock when used with get().
+ */
 class SharedLockGuard {
 public:
-    explicit SharedLockGuard(AbstractVectorIndex* h_index) : m_index(h_index) {
-        if (m_index)
-            m_index->lockShared();
-    }
+    explicit SharedLockGuard(AbstractVectorIndex* h_index) : m_index(h_index) {}
     ~SharedLockGuard() {
         if (m_index)
             m_index->unlockShared();
@@ -181,13 +181,8 @@ public:
     SharedLockGuard& operator=(const SharedLockGuard&) = delete;
     SharedLockGuard(SharedLockGuard&&) = delete;
     SharedLockGuard& operator=(SharedLockGuard&&) = delete;
-    /** Release the shared lock and give up ownership. Idempotent after first call. */
-    void release() noexcept {
-        if (m_index) {
-            m_index->unlockShared();
-            m_index = nullptr;
-        }
-    }
+    /** Release without unlocking (give up ownership). Idempotent after first call. */
+    void release() noexcept { m_index = nullptr; }
 
 private:
     AbstractVectorIndex* m_index{nullptr};
