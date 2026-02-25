@@ -147,6 +147,7 @@ extern REQUIRES_SERVICE_PLACEHOLDER(mysql_string_factory);
     }
 
 extern my_service<SERVICE_TYPE(mysql_udf_metadata)>* h_udf_metadata_service;
+#define MYVECTOR_UDF_METADATA() ((*h_udf_metadata_service))
 
 class AbstractVectorIndex;
 
@@ -1528,7 +1529,7 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT* initid,
      */
     initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
     initid->ptr = (char*)malloc(initid->max_length);
-    (*h_udf_metadata_service)->result_set(initid, "charset", latin1);
+    MYVECTOR_UDF_METADATA()->result_set(initid, "charset", latin1);
 
     /* tls_distances is now a static thread_local object, no allocation needed
      */
@@ -1850,7 +1851,7 @@ PLUGIN_EXPORT bool myvector_display_init(UDF_INIT* initid,
     }
     initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
     initid->ptr = (char*)malloc(MYVECTOR_DISPLAY_MAX_LEN);
-    (*h_udf_metadata_service)->result_set(initid, "charset", latin1);
+    MYVECTOR_UDF_METADATA()->result_set(initid, "charset", latin1);
     return false;
 }
 
