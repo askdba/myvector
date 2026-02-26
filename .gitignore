@@ -33,6 +33,10 @@ Makefile
 # MySQL plugin output
 plugin_output_directory/
 
+# Cloned MySQL source (CI/ local build verification)
+mysql-server/
+mysql-server-test/
+
 # Test artifacts
 *.log
 *.err

@@ -23,7 +23,7 @@
 
 ## 1. SharedLockGuard – FIXED ✓
 
-**Reference:** https://github.com/askdba/myvector/pull/76#discussion_r2849765440
+**Reference:** <https://github.com/askdba/myvector/pull/76#discussion_r2849765440>
 
 **Current implementation:**
 
@@ -44,7 +44,7 @@ No double-lock and no lock leak. Concurrency fix from commit 9969db4 is correct.
 
 ## 2. Plugin build target – FIXED ✓
 
-**Reference:** https://github.com/askdba/myvector/pull/76#discussion_r2799580330
+**Reference:** <https://github.com/askdba/myvector/pull/76#discussion_r2799580330>
 
 **Current implementation (CMakeLists.txt:13–21):**
 ```cmake
@@ -61,7 +61,7 @@ In-tree plugin build defines the `myvector` target. The component build runs onl
 
 ## 3. mysql_version.h shadowing – FIXED ✓
 
-**Reference:** https://github.com/askdba/myvector/pull/76#discussion_r2852362980
+**Reference:** <https://github.com/askdba/myvector/pull/76#discussion_r2852362980>
 
 **Fix applied:** `build-component.sh` now writes the generated `mysql_version.h` to both `$MYSQL_SOURCE_DIR/include/mysql/` and `$REPO_ROOT/include/`. Since project `include/` is first in CMake’s include path, the version-specific stub in `include/` is used during component builds.
 
@@ -69,7 +69,7 @@ In-tree plugin build defines the `myvector` target. The component build runs onl
 
 ## 4. Docker publish `workflow_run.path` – FIXED ✓
 
-**Reference:** https://github.com/askdba/myvector/pull/76#discussion_r2852530600
+**Reference:** <https://github.com/askdba/myvector/pull/76#discussion_r2852530600>
 
 **Fix applied:** Replaced `contains(github.event.workflow_run.path, 'release.yml')` with `github.event.workflow_run.name == 'Release MyVector (Plugin + Component)'`. This uses a documented field and reliably restricts Docker push to the release workflow.
 
@@ -77,7 +77,7 @@ In-tree plugin build defines the `myvector` target. The component build runs onl
 
 ## 5a. myvector_hamming_distance – FIXED ✓
 
-**Reference:** https://github.com/askdba/myvector/pull/76#discussion_r2799580336
+**Reference:** <https://github.com/askdba/myvector/pull/76#discussion_r2799580336>
 
 **Current implementation (src/component_src/myvector_udf_service.cc:636–647):**
 ```cpp
@@ -98,7 +98,7 @@ return (length - MYVECTOR_COLUMN_EXTRA_LEN) * BITS_PER_BYTE;
 
 ## 5b. myvector_distance metric – FIXED ✓
 
-**Reference:** https://github.com/askdba/myvector/pull/76#discussion_r2799580340
+**Reference:** <https://github.com/askdba/myvector/pull/76#discussion_r2799580340>
 
 **Current implementation (src/component_src/myvector_udf_service.cc:545–561):**
 ```cpp
@@ -123,7 +123,7 @@ The optional third argument selects L2, cosine, or IP distance. Metric handling 
 
 ## 6. Charset metadata for component UDFs – OPEN ⚠️
 
-**Reference:** https://github.com/askdba/myvector/pull/76#discussion_r2852231960
+**Reference:** <https://github.com/askdba/myvector/pull/76#discussion_r2852231960>
 
 **Current state:**
 - Plugin (src/myvector.cc:1613, 1935): `MYVECTOR_UDF_METADATA()->result_set(initid, "charset", latin1)`.
@@ -137,7 +137,7 @@ The component has `myvector_component_udf_metadata` (include/myvector.h:197–19
 
 ## 7. build-component.sh version parsing – OPEN (low) ⚠️
 
-**Reference:** https://github.com/askdba/myvector/pull/76#discussion_r2852362984
+**Reference:** <https://github.com/askdba/myvector/pull/76#discussion_r2852362984>
 
 **Edge case:** For two-part versions like `mysql-8.4`:
 - `VER_PART=8.4`, `MAJOR=8`, `REST=4`, `MINOR=4`, `PATCH=""`.

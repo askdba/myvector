@@ -111,6 +111,7 @@ mysql_version_h_content="/**
 "
 echo "$mysql_version_h_content" > "$MYSQL_INCLUDE_MYSQL/mysql_version.h"
 # Also write to project include/ so component build finds it (project include/ is first in CMake path)
+mkdir -p "$REPO_ROOT/include"
 echo "$mysql_version_h_content" > "$REPO_ROOT/include/mysql_version.h"
 status "Installed mysql_version.h (MYSQL_VERSION_ID=$MYSQL_VERSION_ID) into $MYSQL_INCLUDE_MYSQL and $REPO_ROOT/include"
 
