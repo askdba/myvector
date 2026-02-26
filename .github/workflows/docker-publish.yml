@@ -156,7 +156,7 @@ jobs:
           done
 
       - name: Login to GitHub Container Registry
-        if: contains(github.event.workflow_run.path, 'release.yml')
+        if: github.event.workflow_run.name == 'Release MyVector (Plugin + Component)'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -164,7 +164,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        if: contains(github.event.workflow_run.path, 'release.yml')
+        if: github.event.workflow_run.name == 'Release MyVector (Plugin + Component)'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -176,7 +176,7 @@ jobs:
             MYSQL_VERSION=${{ matrix.mysql-version }}
 
       - name: Tag and push latest
-        if: matrix.mysql-version == '8.0' && contains(github.event.workflow_run.path, 'release.yml')
+        if: matrix.mysql-version == '8.0' && github.event.workflow_run.name == 'Release MyVector (Plugin + Component)'
         uses: docker/build-push-action@v5
         with:
           context: .

@@ -102,15 +102,17 @@ MAJOR="${VER_PART%%.*}"; REST="${VER_PART#*.}"
 MINOR="${REST%%.*}"; PATCH="${REST#*.}"
 [ -z "$PATCH" ] && PATCH="${MINOR}" && MINOR=0
 MYSQL_VERSION_ID=$((MAJOR * 10000 + MINOR * 100 + PATCH))
-cat > "$MYSQL_INCLUDE_MYSQL/mysql_version.h" << EOF
-/**
+mysql_version_h_content="/**
  * Stub for standalone component build. Matches MySQL $MYSQL_VERSION.
  */
 #ifndef MYSQL_VERSION_ID
 #define MYSQL_VERSION_ID $MYSQL_VERSION_ID
 #endif
-EOF
-status "Installed mysql_version.h (MYSQL_VERSION_ID=$MYSQL_VERSION_ID) into $MYSQL_INCLUDE_MYSQL"
+"
+echo "$mysql_version_h_content" > "$MYSQL_INCLUDE_MYSQL/mysql_version.h"
+# Also write to project include/ so component build finds it (project include/ is first in CMake path)
+echo "$mysql_version_h_content" > "$REPO_ROOT/include/mysql_version.h"
+status "Installed mysql_version.h (MYSQL_VERSION_ID=$MYSQL_VERSION_ID) into $MYSQL_INCLUDE_MYSQL and $REPO_ROOT/include"
 
 export MYSQL_SOURCE_DIR
 
