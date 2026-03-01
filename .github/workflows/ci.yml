@@ -239,9 +239,9 @@ jobs:
 
     - name: Start MySQL 9.6 container
       run: |
-        docker run -d --name myv96 -e MYSQL_ROOT_PASSWORD=root mysql:9.6
-        for i in $(seq 1 30); do
-          docker exec myv96 mysqladmin ping -uroot -proot --silent 2>/dev/null && break
+        docker run -d --name myv96 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_ROOT_HOST=% mysql:9.6
+        for i in $(seq 1 45); do
+          docker exec myv96 mysql -uroot -proot -e "SELECT 1" 2>/dev/null && break
           sleep 2
         done
 
