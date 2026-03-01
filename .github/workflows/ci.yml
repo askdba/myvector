@@ -204,7 +204,7 @@ jobs:
 
         echo "=== Testing Stanford 50d dataset (open source GloVe vectors) ==="
         $MYSQL_CMD -e "CREATE DATABASE IF NOT EXISTS test;"
-        $MYSQL_CMD test < examples/stanford50d/create.sql
+        $MYSQL_CMD test < examples/stanford50d/create-basic.sql
         gunzip -c examples/stanford50d/insert50d.sql.gz | head -n 5000 | $MYSQL_CMD test
         $MYSQL_CMD test -e "SELECT myvector_display(wordvec) AS vec FROM words50d WHERE word='the';"
         $MYSQL_CMD test -e "
@@ -258,7 +258,7 @@ jobs:
         docker exec myv96 mysql -uroot -proot -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'));"
 
         docker exec myv96 mysql -uroot -proot -e "CREATE DATABASE IF NOT EXISTS test;"
-        docker cp examples/stanford50d/create.sql myv96:/tmp/create.sql
+        docker cp examples/stanford50d/create-basic.sql myv96:/tmp/create.sql
         docker exec myv96 mysql -uroot -proot test -e "SOURCE /tmp/create.sql;"
         gunzip -c examples/stanford50d/insert50d.sql.gz | head -n 5000 | docker exec -i myv96 mysql -uroot -proot test
         docker exec myv96 mysql -uroot -proot test -e "
