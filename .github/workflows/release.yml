@@ -22,7 +22,7 @@ jobs:
           - os: ubuntu-latest
             mysql-version: '8.4.8'
           - os: ubuntu-latest
-            mysql-version: '9.0.0'
+            mysql-version: '9.6.0'
 
     steps:
       - name: Checkout code
@@ -50,8 +50,8 @@ jobs:
             mysql-tag: 'mysql-8.0.35'
           - mysql-version: '8.4.8'
             mysql-tag: 'mysql-8.4.8'
-          - mysql-version: '9.0.0'
-            mysql-tag: 'mysql-9.0.0'
+          - mysql-version: '9.6.0'
+            mysql-tag: 'mysql-9.6.0'
 
     steps:
       - name: Checkout code
@@ -119,9 +119,13 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          for dir in */; do
-            (cd "$dir" && sha256sum ./*.tar.gz >> ../checksums.txt)
-          done
+          # upload-artifact with path: release/*.tar.gz preserves release/ subdir
+          # in each artifact; use find to handle both flat and nested layouts
+          find . -type f -name '*.tar.gz' -exec sha256sum {} \; > checksums.txt
+          if [ ! -s checksums.txt ]; then
+            echo "No .tar.gz files found in artifacts"
+            exit 1
+          fi
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
