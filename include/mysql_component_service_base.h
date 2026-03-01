@@ -27,6 +27,6 @@ struct mysql_service_base {
 #define MYVECTOR_SVC_REG_CONCAT_(a, b) a##b
 #define MYVECTOR_SVC_REG_CONCAT(a, b) MYVECTOR_SVC_REG_CONCAT_(a, b)
 #define SERVICE_REGISTRATION(service_name, impl_ptr) \
-  static const bool MYVECTOR_SVC_REG_CONCAT(MYVECTOR_SVC_REG_, __COUNTER__) = true
+  static const bool MYVECTOR_SVC_REG_CONCAT(MYVECTOR_SVC_REG_, __COUNTER__) [[maybe_unused]] = true
 
 #endif /* MYVECTOR_MYSQL_COMPONENT_SERVICE_BASE_H */

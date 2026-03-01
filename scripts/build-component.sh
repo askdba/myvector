@@ -98,9 +98,14 @@ fi
 MYSQL_INCLUDE_MYSQL="${MYSQL_SOURCE_DIR}/include/mysql"
 mkdir -p "$MYSQL_INCLUDE_MYSQL"
 VER_PART="${MYSQL_VERSION#mysql-}"
-MAJOR="${VER_PART%%.*}"; REST="${VER_PART#*.}"
-MINOR="${REST%%.*}"; PATCH="${REST#*.}"
-[ -z "$PATCH" ] && PATCH="${MINOR}" && MINOR=0
+IFS='.' read -r -a parts <<< "$VER_PART"
+MAJOR="${parts[0]:-0}"
+MINOR="${parts[1]:-0}"
+PATCH="${parts[2]:-0}"
+# Validate numeric (basic check)
+for v in "$MAJOR" "$MINOR" "$PATCH"; do
+  case "$v" in ''|*[!0-9]*) MAJOR=0; MINOR=0; PATCH=0; break ;; esac
+done
 MYSQL_VERSION_ID=$((MAJOR * 10000 + MINOR * 100 + PATCH))
 mysql_version_h_content="/**
  * Stub for standalone component build. Matches MySQL $MYSQL_VERSION.
@@ -121,8 +126,12 @@ status "Checking build dependencies..."
 # Install build deps (optional; may already be present)
 if [ "$OS" = "linux" ]; then
 	if command -v apt-get >/dev/null 2>&1; then
-		sudo apt-get update -qq
-		sudo apt-get install -y -qq \
+		APT_CMD="apt-get"
+		if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+			APT_CMD="sudo apt-get"
+		fi
+		$APT_CMD update -qq 2>/dev/null || true
+		$APT_CMD install -y -qq \
 			build-essential \
 			cmake \
 			libmysqlclient-dev \

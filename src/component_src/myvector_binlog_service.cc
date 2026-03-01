@@ -10,6 +10,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <list>
@@ -73,6 +74,13 @@ typedef struct {
     int idColumnPosition;
     int vecColumnPosition;
 } VectorIndexColumnInfo;
+
+/* Table ID in binlog is 6 bytes little-endian; use uint64_t for safe storage. */
+static uint64_t read_table_id_6(const unsigned char* buf) {
+    uint64_t id = 0;
+    memcpy(&id, buf, 6);
+    return id;
+}
 
 class EventsQ {
 public:
@@ -172,10 +180,35 @@ bool extract_json_string(const std::string& json,
     size_t first_quote = json.find('"', colon + 1);
     if (first_quote == std::string::npos)
         return false;
-    size_t second_quote = json.find('"', first_quote + 1);
-    if (second_quote == std::string::npos)
+    std::string out;
+    out.reserve(64);
+    bool found_close = false;
+    for (size_t i = first_quote + 1; i < json.size(); i++) {
+        char c = json[i];
+        if (c == '"') {
+            found_close = true;
+            break;
+        }
+        if (c == '\\' && i + 1 < json.size()) {
+            switch (json[i + 1]) {
+                case '"': out += '"'; break;
+                case '\\': out += '\\'; break;
+                case '/': out += '/'; break;
+                case 'b': out += '\b'; break;
+                case 'f': out += '\f'; break;
+                case 'n': out += '\n'; break;
+                case 'r': out += '\r'; break;
+                case 't': out += '\t'; break;
+                default: out += json[i + 1]; break;
+            }
+            i++;
+            continue;
+        }
+        out += c;
+    }
+    if (!found_close)
         return false;
-    *value = json.substr(first_quote + 1, second_quote - first_quote - 1);
+    *value = out;
     return true;
 }
 
@@ -183,6 +216,8 @@ bool extract_json_string(const std::string& json,
 static size_t escape_identifier(char* out, size_t out_size, const char* id) {
     if (!out || out_size == 0 || !id)
         return 0;
+    if (out_size < 3)
+        return 0;  /* need space for `, `, and NUL */
     size_t j = 0;
     out[j++] = '`';
     for (; *id && j < out_size - 2; id++) {
@@ -217,8 +252,14 @@ bool extract_json_number(const std::string& json,
         return false;
     size_t end = json.find_first_not_of("0123456789", start);
     std::string number = json.substr(start, end - start);
-    *value = static_cast<size_t>(std::stoull(number));
-    return true;
+    if (number.empty())
+        return false;
+    try {
+        *value = static_cast<size_t>(std::stoull(number));
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
 }
 
 std::string EscapeJsonString(const std::string& s) {
@@ -321,7 +362,7 @@ bool fetch_server_uuid(MYSQL* mysql, std::string* server_uuid) {
 #define EVENT_HEADER_LENGTH 19
 
 typedef struct {
-    unsigned long tableId;
+    uint64_t tableId;
     std::string dbName;
     std::string tableName;
     unsigned int nColumns;
@@ -335,23 +376,32 @@ typedef struct {
 void parseTableMapEvent(const unsigned char* event_buf,
                         unsigned int event_len,
                         TableMapEvent& tev) {
-    (void)event_len;
     tev = TableMapEvent();
 
     unsigned int index = EVENT_HEADER_LENGTH;
 
-    memcpy(&tev.tableId, &event_buf[index], 6);
+    if (index + 6 > event_len)
+        return;
+    tev.tableId = read_table_id_6(&event_buf[index]);
     index += 6;
 
     index += 2;  // flags
 
+    if (index + 1 > event_len)
+        return;
     int dbNameLen = (int)event_buf[index];  // single byte
     index++;
+    if (index + dbNameLen + 1 > event_len)
+        return;
     tev.dbName = std::string((const char*)&event_buf[index], dbNameLen);
-
     index += (dbNameLen + 1);               // null
+
+    if (index + 1 > event_len)
+        return;
     int tbNameLen = (int)event_buf[index];  // single byte
     index++;
+    if (index + tbNameLen + 1 > event_len)
+        return;
     tev.tableName = std::string((const char*)&event_buf[index], tbNameLen);
     index += (tbNameLen + 1);
 
@@ -359,14 +409,20 @@ void parseTableMapEvent(const unsigned char* event_buf,
     if (g_OnlineVectorIndexes.find(key) == g_OnlineVectorIndexes.end())
         return;  /// we don't need to parse rest of the metadata
 
+    if (index + 1 > event_len)
+        return;
     tev.nColumns = (unsigned int)
         event_buf[index];  // TODO - we support only <= 255 columns
     index++;
 
+    if (index + tev.nColumns > event_len)
+        return;
     tev.columnTypes.insert(tev.columnTypes.end(),
                            &event_buf[index],
                            &event_buf[index + tev.nColumns]);
     index += tev.nColumns;
+    if (index + 1 > event_len)
+        return;
     unsigned int metadatalen = (unsigned int)event_buf[index];
     (void)metadatalen;
     index++;
@@ -382,24 +438,32 @@ void parseTableMapEvent(const unsigned char* event_buf,
 #if MYSQL_VERSION_ID >= 90000
             case MYSQL_TYPE_VECTOR:
 #endif
+                if (index + 1 > event_len)
+                    return;
                 md = (unsigned int)event_buf[index];
                 index++;
                 break;
             case MYSQL_TYPE_BIT:
             case MYSQL_TYPE_VARCHAR:
             case MYSQL_TYPE_NEWDECIMAL:
+                if (index + 2 > event_len)
+                    return;
                 memcpy(&md, &event_buf[index], 2);
                 index += 2;
                 break;
             case MYSQL_TYPE_SET:
             case MYSQL_TYPE_ENUM:
             case MYSQL_TYPE_STRING:
+                if (index + 2 > event_len)
+                    return;
                 memcpy(&md, &event_buf[index], 2);
                 index += 2;
                 break;
             case MYSQL_TYPE_TIME2:
             case MYSQL_TYPE_DATETIME2:
             case MYSQL_TYPE_TIMESTAMP2:
+                if (index + 1 > event_len)
+                    return;
                 md = (unsigned int)event_buf[index];
                 index++;
                 break;
@@ -420,16 +484,16 @@ void parseRowsEvent(const unsigned char* event_buf,
                     TableMapEvent& tev,
                     unsigned int pos1,
                     unsigned int pos2,
+                    const std::string& binlog_file,
+                    size_t binlog_pos,
                     std::vector<VectorIndexUpdateItem*>& updates) {
     unsigned int index = EVENT_HEADER_LENGTH;
-
-    unsigned long tableId = 0;
 
     event_len -= 4;  // checksum at the end.
 
     updates.clear();
 
-    memcpy(&tableId, &event_buf[index], 6);
+    (void)read_table_id_6(&event_buf[index]);  // tableId for row/table map matching
     index += 6;
     index += 2;
 
@@ -446,6 +510,8 @@ void parseRowsEvent(const unsigned char* event_buf,
     (void)incbitmap;
     index++;
     while (true) {
+        if (index + 1 > event_len)
+            break;
         unsigned int nullbitmap = (unsigned int)event_buf[index];
         (void)nullbitmap;
         index++;
@@ -455,26 +521,48 @@ void parseRowsEvent(const unsigned char* event_buf,
 
         unsigned int idVal = 0, vecsz = 0;
         const unsigned char* vec = nullptr;
-        for (unsigned int i = 0; i < ncols; i++) {
+        bool row_overflow = false;
+        for (unsigned int i = 0; i < ncols && !row_overflow; i++) {
+            size_t remaining = event_len - index;
             switch (tev.columnTypes[i]) {
                 case MYSQL_TYPE_LONG:
+                    if (remaining < 4) {
+                        row_overflow = true;
+                        break;
+                    }
                     memcpy(&lval, &event_buf[index], 4);
                     index += 4;
                     if (i == pos1)
                         idVal = lval;
                     break;
                 case MYSQL_TYPE_LONGLONG:
+                    if (remaining < 8) {
+                        row_overflow = true;
+                        break;
+                    }
                     memcpy(&llval, &event_buf[index], 8);
                     index += 8;
                     break;
                 case MYSQL_TYPE_VARCHAR: {
                     unsigned int clen = 0;
                     if (tev.columnMetadata[i] < 256) {
+                        if (remaining < 1) {
+                            row_overflow = true;
+                            break;
+                        }
                         clen = (unsigned int)event_buf[index];
                         index++;
                     } else {
+                        if (remaining < 2) {
+                            row_overflow = true;
+                            break;
+                        }
                         memcpy(&clen, &event_buf[index], 2);
                         index += 2;
+                    }
+                    if (remaining < clen) {
+                        row_overflow = true;
+                        break;
                     }
                     if (i == pos2) {  // found vector column
                         vec = &event_buf[index];
@@ -486,8 +574,19 @@ void parseRowsEvent(const unsigned char* event_buf,
 #if MYSQL_VERSION_ID >= 90000
                 case MYSQL_TYPE_VECTOR: {
                     unsigned int clen = 0;
-                    memcpy(&clen, &event_buf[index], tev.columnMetadata[i]);
-                    index += tev.columnMetadata[i];
+                    unsigned int md_len = (i < tev.columnMetadata.size()) ? tev.columnMetadata[i] : 2;
+                    if (md_len > 2)
+                        md_len = 2;
+                    if (remaining < (size_t)md_len) {
+                        row_overflow = true;
+                        break;
+                    }
+                    memcpy(&clen, &event_buf[index], md_len);
+                    index += md_len;
+                    if (remaining < (size_t)md_len + clen) {
+                        row_overflow = true;
+                        break;
+                    }
                     if (i == pos2) {  // found vector column
                         vec = &event_buf[index];
                         vecsz = clen;
@@ -497,6 +596,10 @@ void parseRowsEvent(const unsigned char* event_buf,
                 }
 #endif
                 case MYSQL_TYPE_TIMESTAMP2:
+                    if (remaining < 4) {
+                        row_overflow = true;
+                        break;
+                    }
                     index += 4;
                     break;
                 default:
@@ -507,6 +610,9 @@ void parseRowsEvent(const unsigned char* event_buf,
             }  // switch
         }  // for columns
 
+        if (row_overflow) {
+            break;  /* abort row parse on buffer overflow */
+        }
         if (!vec || vecsz == 0) {
             continue;  /* skip row: no vector data */
         }
@@ -518,8 +624,8 @@ void parseRowsEvent(const unsigned char* event_buf,
         item->columnName_ = columnName;
         item->vec_.assign(vec, vec + vecsz);
         item->pkid_ = idVal;
-        item->binlogFile_ = currentBinlogFile;
-        item->binlogPos_ = currentBinlogPos;
+        item->binlogFile_ = binlog_file;
+        item->binlogPos_ = binlog_pos;
         updates.push_back(item);
         // index += 4;
         if (index >= event_len)
@@ -789,6 +895,11 @@ void BuildMyVectorIndexSQL(const char* db,
     char esc_db[256], esc_table[256], esc_idcol[256], esc_veccol[256], esc_tracking[256];
     int n = 0;
     unsigned long current_ts = 0;
+    std::string key;
+    bool supportsIncr = false;
+    VectorIndexColumnInfo vc{"", 0, 0};
+    std::string savedBinlogFile;
+    size_t savedBinlogPos = 0;
 
     fprintf(stderr,
             "BuildMyVectorIndexSQL %s %s %s %s %s %s.\n",
@@ -907,33 +1018,34 @@ void BuildMyVectorIndexSQL(const char* db,
     mysql_free_result(result);
     result = nullptr;
 
+    key = std::string(db) + "." + std::string(table);
     {
         std::lock_guard<std::mutex> binlogMutex(binlog_stream_mutex_);
-
         vi->setLastUpdateCoordinates(currentBinlogFile, currentBinlogPos);
-
+        savedBinlogFile = currentBinlogFile;
+        savedBinlogPos = currentBinlogPos;
+        supportsIncr = vi->supportsIncrUpdates();
+        if (supportsIncr) {
+            int idcolpos = 0, veccolpos = 0;
+            GetBaseTableColumnPositions(
+                &mysql, db, table, idcol, veccol, idcolpos, veccolpos);
+            vc = VectorIndexColumnInfo{veccol, idcolpos, veccolpos};
+        }
+    }
+    vi->saveIndex(myvector_index_dir, "build");
+    {
+        std::lock_guard<std::mutex> binlogMutex(binlog_stream_mutex_);
         snprintf(errorbuf,
                  MYVECTOR_BUFF_SIZE,
                  "SUCCESS: Index created & saved at (%s %lu)"
                  ", rows : %lu.",
-                 currentBinlogFile.c_str(),
-                 currentBinlogPos,
+                 savedBinlogFile.c_str(),
+                 (unsigned long)savedBinlogPos,
                  nRows);
-
-        vi->saveIndex(myvector_index_dir, "build");
-
-        std::string key = std::string(db) + "." + std::string(table);
-
-        if (vi->supportsIncrUpdates()) {
-            int idcolpos = 0, veccolpos = 0;
-            GetBaseTableColumnPositions(
-                &mysql, db, table, idcol, veccol, idcolpos, veccolpos);
-            VectorIndexColumnInfo vc{veccol, idcolpos, veccolpos};
+        if (supportsIncr) {
             g_OnlineVectorIndexes[key] = vc;
         }
-
         snprintf(query, sizeof(query), "UNLOCK TABLES");
-
         int ret = 0;
         if ((ret = mysql_real_query(&mysql, query, strlen(query)))) {
             snprintf(errorbuf,
@@ -1056,7 +1168,9 @@ private:
 
     bool preflight_binlog_state() {
         MYSQL mysql;
-        mysql_init(&mysql);
+        if (!mysql_init(&mysql)) {
+            return false;
+        }
         MYSQL* mysql_ptr = &mysql;
         if (!mysql_real_connect(
                 mysql_ptr,
@@ -1121,7 +1235,10 @@ private:
 
         // Connect to MySQL
         while (!shutdown_binlog_thread_.load()) {
-            mysql_init(&mysql);
+            if (!mysql_init(&mysql)) {
+                close_binlog_mysql_conn();
+                return;
+            }
             binlog_mysql_conn_ = &mysql;
             unsigned int read_timeout_sec = 1;
             mysql_options(&mysql, MYSQL_OPT_READ_TIMEOUT, &read_timeout_sec);
@@ -1171,7 +1288,10 @@ private:
         std::string initQuery =
             "SET @master_binlog_checksum = 'NONE', @source_binlog_checksum = "
             "'NONE',@net_read_timeout = 3000, @replica_net_timeout = 3000;";
-        mysql_real_query(&mysql, initQuery.c_str(), initQuery.length());
+        if (mysql_real_query(&mysql, initQuery.c_str(), initQuery.length())) {
+            close_binlog_mysql_conn();
+            return;
+        }
 
         OpenAllOnlineVectorIndexes(&mysql);
 
@@ -1186,7 +1306,10 @@ private:
             rpl.file_name = startbinlog.c_str();
         rpl.start_position = start_binlog_pos_ ? start_binlog_pos_ : 4;
         rpl.server_id = 1;
-        mysql_binlog_open(&mysql, &rpl);
+        if (mysql_binlog_open(&mysql, &rpl)) {
+            close_binlog_mysql_conn();
+            return;
+        }
 
         {
             std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
@@ -1248,6 +1371,9 @@ private:
                 binary_log::WRITE_ROWS_EVENT;
 #endif
 
+            if (rpl.size == 0 || !rpl.buffer) {
+                continue;
+            }
             MyvectorLogEventType type = static_cast<MyvectorLogEventType>(
                 rpl.buffer[1 + EVENT_TYPE_OFFSET]);
             unsigned long event_len = rpl.size - 1;
@@ -1273,28 +1399,34 @@ private:
                 std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
                 currentBinlogPos += event_len;
             }
-            if (g_OnlineVectorIndexes.empty())
-                continue;  // optimization!
-            if (type == kTableMapEvent) {
-                parseTableMapEvent(event_buf, event_len, tev);
-            } else if (type == kWriteRowsEvent) {
-                std::string key = tev.dbName + "." + tev.tableName;
-                if (g_OnlineVectorIndexes.find(key) ==
-                    g_OnlineVectorIndexes.end()) {
-                    continue;
-                }
-                int idcolpos = g_OnlineVectorIndexes[key].idColumnPosition;
-                int veccolpos = g_OnlineVectorIndexes[key].vecColumnPosition;
-                std::vector<VectorIndexUpdateItem*> updates;
-                parseRowsEvent(event_buf,
-                               event_len,
-                               tev,
-                               idcolpos - 1,
-                               veccolpos - 1,
-                               updates);
-                // nrows += updates.size(); // Original line, not needed in service
-                for (auto item : updates) {
-                    gqueue_.enqueue(item);
+            {
+                std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
+                if (g_OnlineVectorIndexes.empty())
+                    continue;  // optimization!
+                if (type == kTableMapEvent) {
+                    parseTableMapEvent(event_buf, event_len, tev);
+                } else if (type == kWriteRowsEvent) {
+                    std::string key = tev.dbName + "." + tev.tableName;
+                    if (g_OnlineVectorIndexes.find(key) ==
+                        g_OnlineVectorIndexes.end()) {
+                        continue;
+                    }
+                    int idcolpos = g_OnlineVectorIndexes[key].idColumnPosition;
+                    int veccolpos = g_OnlineVectorIndexes[key].vecColumnPosition;
+                    std::string binlog_file = currentBinlogFile;
+                    size_t binlog_pos = currentBinlogPos;
+                    std::vector<VectorIndexUpdateItem*> updates;
+                    parseRowsEvent(event_buf,
+                                   event_len,
+                                   tev,
+                                   idcolpos - 1,
+                                   veccolpos - 1,
+                                   binlog_file,
+                                   binlog_pos,
+                                   updates);
+                    for (auto item : updates) {
+                        gqueue_.enqueue(item);
+                    }
                 }
             }
         }

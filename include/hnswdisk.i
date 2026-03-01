@@ -3,6 +3,20 @@
  * class HierarchicalDiskNSW. The code in this file implements HNSW
  * incremental disk persistence and crash recovery for MyVector.
  */
+#include <cstdio>
+
+#ifndef debug_print
+#define debug_print(...) (void)0
+#endif
+#ifndef info_print
+#define info_print(...) (void)0
+#endif
+#ifndef error_print
+#define error_print(...) do { fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } while(0)
+#endif
+#ifndef warning_print
+#define warning_print(...) (void)0
+#endif
 
 /* Flush list is partitioned/sharded to avoid mutex contention during
  * high volume, parallel insert.
@@ -182,10 +196,16 @@
         Close(stfd, statusFileName);
 
         char *p = strchr(buf1, '|');
+        if (!p) {
+            throw std::runtime_error("MoveBackCheckPointStatus: missing delimiter in status file");
+        }
         *p = 0;
         std::string logr1(buf1);
 
         p = strchr(buf2, '|');
+        if (!p) {
+            throw std::runtime_error("MoveBackCheckPointStatus: missing delimiter in status file");
+        }
         *p = 0;
         std::string logr2(buf2);
 
@@ -225,6 +245,9 @@
         Close(stfd, statusFileName);
 
         char *p = strchr(buf1, '|');
+        if (!p) {
+            throw std::runtime_error("makeIndexConsistent: missing delimiter in status file");
+        }
         *p = 0;
         std::string logr1(buf1);
         // split the status line into kv

@@ -17,7 +17,7 @@
 | 5a | myvector_hamming_distance bits vs bytes | P1 | **FIXED** | Correctly passes bits |
 | 5b | myvector_distance ignores metric | P2 | **FIXED** | Metric argument honored |
 | 6 | Missing charset metadata for component UDFs | Medium | **OPEN** | `result_set` charset commented out |
-| 7 | build-component.sh version parsing (mysql-8.4) | Low | **OPEN** | Two-part version edge case |
+| 7 | build-component.sh version parsing (mysql-8.4) | Low | **FIXED** ✓ | Two-part version edge case |
 
 ---
 
@@ -135,7 +135,7 @@ The component has `myvector_component_udf_metadata` (include/myvector.h:197–19
 
 ---
 
-## 7. build-component.sh version parsing – OPEN (low) ⚠️
+## 7. build-component.sh version parsing – FIXED ✓
 
 **Reference:** <https://github.com/askdba/myvector/pull/76#discussion_r2852362984>
 
@@ -146,13 +146,7 @@ The component has `myvector_component_udf_metadata` (include/myvector.h:197–19
 
 For three-part versions (e.g. `mysql-8.4.8`), parsing is correct.
 
-**Recommendation:** Explicitly handle two-part versions so `8.4` maps to 80400, e.g.:
-
-```bash
-[ -z "$PATCH" ] && PATCH=0 && :  # 8.4 -> 80400, not 80004
-```
-
-(or equivalent logic to keep MINOR=4 and PATCH=0 for `8.4`).
+**Fix applied:** `scripts/build-component.sh` uses `IFS='.' read -r -a parts` to split `VER_PART`, with `MAJOR=${parts[0]:-0}`, `MINOR=${parts[1]:-0}`, `PATCH=${parts[2]:-0}` so `8.4` → MAJOR=8, MINOR=4, PATCH=0 → 80400.
 
 ---
 
@@ -161,4 +155,4 @@ For three-part versions (e.g. `mysql-8.4.8`), parsing is correct.
 1. ~~**High:** Resolve `mysql_version.h` shadowing~~ ✓ Done.
 2. ~~**High:** Switch Docker publish gating from `workflow_run.path`~~ ✓ Done.
 3. **Medium:** Implement charset metadata for component UDFs (finding #6).
-4. **Low:** Improve two-part version parsing in `build-component.sh` (finding #7).
+4. ~~**Low:** Improve two-part version parsing in `build-component.sh` (finding #7)~~ ✓ Done.

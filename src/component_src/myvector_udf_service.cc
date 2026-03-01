@@ -101,6 +101,10 @@ bool myvector_ann_set_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
         return true;  // error
     }
 
+    if (!args->args[0]) {
+        snprintf(message, MYSQL_ERRMSG_SIZE, "Index column not provided");
+        return true;
+    }
     char* col = (char*)args->args[0];
     AbstractVectorIndex* vi = g_indexes.get(col);
     if (!vi) {
@@ -160,10 +164,14 @@ char* myvector_ann_set(UDF_INIT* initid,
     }
 
     AbstractVectorIndex* vi = g_indexes.get(col);
+    if (!vi) {
+        *error = 1;
+        *is_null = 1;
+        return initid->ptr;
+    }
     SharedLockGuard l(vi);
-
     std::stringstream ss;
-    if (vi && searchvec) {
+    if (searchvec) {
         std::vector<KeyTypeInteger> result_keys;
         if (ef_search)
             vi->setSearchEffort(ef_search);
@@ -179,7 +187,6 @@ char* myvector_ann_set(UDF_INIT* initid,
     } else {
         *is_null = 1;
         *error = 1;
-        ss << "[NULL]";
     }
 
     size_t out_len = ss.str().size();
@@ -196,7 +203,8 @@ char* myvector_ann_set(UDF_INIT* initid,
 
 // UDF: myvector_construct_bv
 int SQFloatVectorToBinaryVector(FP32* fvec, unsigned long* ivec, int dim) {
-    memset(ivec, 0, (dim / BITS_PER_BYTE));  // 3rd param is bytes
+    size_t byte_len = (dim + BITS_PER_BYTE - 1) / BITS_PER_BYTE;
+    memset(ivec, 0, byte_len);
 
     unsigned long elem = 0;
     unsigned long idx = 0;
@@ -213,8 +221,11 @@ int SQFloatVectorToBinaryVector(FP32* fvec, unsigned long* ivec, int dim) {
             idx++;
         }
     }
-    /// TODO : if dim is not a mulitple of 64
-    return (idx * sizeof(unsigned long));  // number of bytes
+    if ((dim % 64) != 0) {
+        ivec[idx] = elem;
+        idx++;
+    }
+    return static_cast<int>(idx * sizeof(unsigned long));
 }
 
 char* myvector_construct_bv(const std::string& srctype,
@@ -257,7 +268,7 @@ char* myvector_construct_bv(const std::string& srctype,
             while (*ptr && (*ptr == ' ' || *ptr == ','))
                 ptr++;
             char* p1 = ptr;
-            while (*ptr != ' ' && *ptr != ',' && *ptr != endch)
+            while (*ptr && *ptr != ' ' && *ptr != ',' && *ptr != endch)
                 ptr++;
             char buff[64];
             size_t len = (size_t)(ptr - p1);
@@ -360,7 +371,7 @@ char* myvector_construct(UDF_INIT* initid,
         while (*ptr && (*ptr == ' ' || *ptr == ','))
             ptr++;
         char* p1 = ptr;
-        while (*ptr != ' ' && *ptr != ',' && *ptr != endch)
+        while (*ptr && *ptr != ' ' && *ptr != ',' && *ptr != endch)
             ptr++;
         char buff[64];
         size_t len = (size_t)(ptr - p1);
@@ -370,6 +381,10 @@ char* myvector_construct(UDF_INIT* initid,
         buff[len] = '\0';
 
         FP32 fval = atof(buff);
+        if (retlen + sizeof(FP32) > MYVECTOR_CONSTRUCT_MAX_LEN - 16) {  /* leave room for metadata+checksum */
+            *error = 1;
+            return retvec;
+        }
         memcpy(&retvec[retlen], &fval, sizeof(FP32));
 
         retlen += sizeof(FP32);
@@ -411,8 +426,8 @@ char* myvector_display(UDF_INIT* initid,
                                      UDF_ARGS* args,
                                      char* result,
                                      unsigned long* length,
-                                     char* is_null,
-                                     char* error) {
+                                     unsigned char* is_null,
+                                     unsigned char* error) {
     unsigned char* bvec = (unsigned char*)args->args[0];
     FP32* fvec = (FP32*)args->args[0];
     if (!bvec || !args->lengths[0]) {
@@ -514,8 +529,8 @@ bool myvector_distance_init(UDF_INIT* initid,
 
 double myvector_distance(UDF_INIT* initid,
                                         UDF_ARGS* args,
-                                        char* is_null,
-                                        char* error) {
+                                        unsigned char* is_null,
+                                        unsigned char* error) {
     unsigned char* v1_raw = (unsigned char*)args->args[0];
     unsigned long l1 = args->lengths[0];
     unsigned char* v2_raw = (unsigned char*)args->args[1];
@@ -574,7 +589,7 @@ bool myvector_construct_binaryvector_init(UDF_INIT* initid,
     if (args->arg_count != 1) {
         strcpy(message,
                "Incorrect arguments, usage : "
-               "myvector_construct_binary_vector(vec_col_expr)");
+               "myvector_construct_binaryvector(vec_col_expr)");
         return true;  // error
     }
     initid->max_length = MYVECTOR_CONSTRUCT_MAX_LEN;  // Use general construct max len
@@ -622,8 +637,8 @@ bool myvector_hamming_distance_init(UDF_INIT* initid,
 
 double myvector_hamming_distance(UDF_INIT* initid,
                                                UDF_ARGS* args,
-                                               char* is_null,
-                                               char* error) {
+                                               unsigned char* is_null,
+                                               unsigned char* error) {
     unsigned char* v1_raw = (unsigned char*)args->args[0];
     unsigned long l1 = args->lengths[0];
     unsigned char* v2_raw = (unsigned char*)args->args[1];

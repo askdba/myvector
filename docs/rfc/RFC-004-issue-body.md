@@ -21,6 +21,8 @@ The goal is to formally describe:
 
 This RFC establishes MyVector's reliability model and operational guarantees.
 
+This document is **prescriptive** (target behavior); implementation status may lag and is tracked in the "Implementation Status" section.
+
 ---
 
 ## 2. Design Principles
@@ -107,9 +109,11 @@ Recommended tooling:
 
 Behavior:
 
-- Return ER_VECTOR_INVALID
+- Return ER_MYVECTOR_INVALID_VECTOR (or ER_VECTOR_INVALID when aligned)
 - Do not insert into index
-- Transaction continues normally unless strict mode enabled
+- **Strict mode (default):** ER_VECTOR_INVALID causes the INSERT statement to fail (abort the statement/transaction); the row is not inserted.
+- **Non-strict mode:** Emits a warning, inserts the row into the table, but omits it from the vector index.
+- "Transaction continues normally" means: in non-strict mode the transaction commits; in strict mode the statement is rolled back.
 
 **For L2 distance:**
 
@@ -160,6 +164,8 @@ Two supported models:
 
 - **Model A (Post-Commit Hook):** INSERT row → InnoDB commit durable → Post-commit hook triggers HNSW insert
 - **Model B (Deferred Batch Sync):** INSERT row → Commit → Buffered index update → Periodic checkpoint flush
+
+**Implemented model:** Model B (Deferred Batch Sync). "Buffered" means buffered committed rows only. A commit-aware binlog listener (or transaction-visible flush boundary) filters out uncommitted transactions. The checkpoint/flush policy guarantees eventual index convergence while maintaining the invariant below.
 
 Under no condition may an uncommitted row enter the index.
 
@@ -227,7 +233,7 @@ Manual recovery: `ALTER TABLE t DROP VECTOR INDEX idx;` then `ALTER TABLE t ADD 
 
 The following invariants must always hold:
 
-1. No uncommitted row exists in index
+1. No uncommitted row exists in index; committed rows may be temporarily absent from index until next checkpoint (Model B only)
 2. No corrupted .bin file is loaded silently
 3. Index can always be rebuilt from table data
 4. Concurrency does not produce graph corruption
@@ -276,6 +282,17 @@ MyVector's reliability model is based on a critical architectural decision: **th
 - Recoverability is guaranteed via deterministic rebuild.
 
 This model aligns with MySQL's secondary index philosophy and enables production-safe ANN inside the database engine.
+
+---
+
+## Implementation Status / Open Work Items
+
+| Item | Current Status | Proposed Action | Issue/Ticket |
+|------|----------------|-----------------|--------------|
+| Zero-vector rejection for cosine (ER_MYVECTOR_INVALID_VECTOR, computeCosineDistance) | Missing | Reject norm==0, return error; implement strict/non-strict mode | TBD |
+| Temp-file-then-rename for main .bin (myvector_binlog_service.cc, hnswdisk.i) | Partial (component state file only) | Add write→temp→fsync→rename for main HNSW index save | TBD |
+| DBUG fault injection (DBUG_EXECUTE_IF, simulate_vector_crash) | Not implemented | Add DBUG_EXECUTE_IF for crash simulation tests | TBD |
+| myvector_rebuild_on_start sysvar | Not found | Add sysvar to trigger rebuild on invalid index load | TBD |
 
 ---
 

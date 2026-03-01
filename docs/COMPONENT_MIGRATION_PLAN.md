@@ -79,7 +79,7 @@ Here is a step-by-step plan for the migration:
     *   Add `install(TARGETS myvector_component ...)` to install the shared library to the correct MySQL directory (e.g., `lib/plugin`).
     *   Add `install(FILES src/component_src/myvector.json ...)` to install the manifest file.
 
-**Building the component (Step 4 complete)**
+**Build Requirements and Instructions**
 
 Component headers live in the MySQL **server** source tree. Configure and build with:
 
@@ -109,8 +109,10 @@ make install
 5.  **Deactivation:** Run `UNINSTALL COMPONENT 'file://myvector'` and confirm that the component is cleanly unloaded and all UDFs are deregistered.
 
 **Manual Step 5 (local):** Build the component (e.g. `./scripts/build-component.sh mysql-8.4.8 /path/to/mysql-server`).
-Copy `build/component/libmyvector_component.so` to your MySQL `plugin_dir` as `myvector.so`
-(e.g. `cp build/component/libmyvector_component.so $(mysql -N -e "SELECT @@plugin_dir;")/myvector.so`).
+Copy both the shared library and manifest to the MySQL plugin directory:
+`PLUGIN_DIR=$(mysql -N -e "SELECT @@plugin_dir;")`
+`cp build/component/libmyvector_component.so "$PLUGIN_DIR/myvector.so"`
+`cp build/component/myvector.json "$PLUGIN_DIR/myvector.json"` (or copy myvector.json to `$(mysql -N -e "SELECT @@component_dir;")/` if your MySQL version uses a separate component_dir).
 Then connect and run `INSTALL COMPONENT 'file://myvector';`, verify UDFs
 (e.g. `SELECT myvector_display(myvector_construct('[1,2,3]'));`), then `UNINSTALL COMPONENT 'file://myvector';`.
 
@@ -141,7 +143,7 @@ Then connect and run `INSTALL COMPONENT 'file://myvector';`, verify UDFs
 The initial scaffolding, creation of the core component file, and the implementation of the Query Rewriter, Binlog Monitoring, and UDF Registration services have
 been completed. The `CMakeLists.txt` has also been updated to reflect the new component build structure.
 
-**Current Blocker (resolved for Step 4)**
+**Previous Blocker (Resolved)**
 
 The build requires the MySQL **server** source tree (component headers are not in the client package).
 Step 4 is complete: `CMakeLists.txt` now requires `MYSQL_SOURCE_DIR` and finds `libmysqlclient`;

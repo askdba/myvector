@@ -9,9 +9,7 @@
 REQUIRES_SERVICE_PLACEHOLDER(udf_registration);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_udf_metadata);
 
-#ifdef myvector_component_EXPORTS
 SERVICE_TYPE(mysql_udf_metadata)* myvector_component_udf_metadata = nullptr;
-#endif
 
 static int myvector_component_init() {
   int ret = 0;

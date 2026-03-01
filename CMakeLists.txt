@@ -110,21 +110,18 @@ endif()
 
 # C++17 required for component and MySQL headers (shared_mutex, destroy_at, etc.)
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 # On macOS, build for native arch (arm64 on Apple Silicon) when not already set
 if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
   set(CMAKE_OSX_ARCHITECTURES "${CMAKE_SYSTEM_PROCESSOR}" CACHE STRING "" FORCE)
 endif()
 
-find_package(ZLIB QUIET)
+find_package(ZLIB REQUIRED)
 add_library(myvector_component SHARED ${MYVECTOR_COMPONENT_SRCS})
 target_include_directories(myvector_component PRIVATE ${MYVECTOR_INCLUDE_DIRS})
 target_compile_definitions(myvector_component PRIVATE ${MYVECTOR_COMPONENT_DEFS})
-target_link_libraries(myvector_component PRIVATE ${MYSQLCLIENT_LIBRARY})
-if(ZLIB_FOUND)
-  target_link_libraries(myvector_component PRIVATE ZLIB::ZLIB)
-else()
-  target_link_libraries(myvector_component PRIVATE z)
-endif()
+target_link_libraries(myvector_component PRIVATE ${MYSQLCLIENT_LIBRARY} ZLIB::ZLIB)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   set_property(TARGET myvector_component APPEND_STRING PROPERTY LINK_FLAGS

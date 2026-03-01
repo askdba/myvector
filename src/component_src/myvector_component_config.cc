@@ -27,7 +27,7 @@ int my_plugin_log_message(MYSQL_PLUGIN* plugin,
 static char g_myvector_index_dir[512] = "";
 static char g_myvector_config_file[512] = "myvector.cnf";
 
-long myvector_feature_level = 3;   /* 2|1: bit 0 = disable binlog monitoring (no config needed for basic UDF tests) */
+long myvector_feature_level = 3;   /* Bit flags: bit 0 = disable binlog monitoring (no config needed for basic UDF tests), bit 1 = enable X. Value 3 (binary 11) = both bits set. */
 long myvector_index_bg_threads = 2;
 char* myvector_index_dir = g_myvector_index_dir;
 char* myvector_config_file = g_myvector_config_file;

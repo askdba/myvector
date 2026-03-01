@@ -6,6 +6,7 @@ on:
     branches: ["main", "feature/*"]
   pull_request:
     branches: ["main"]
+  workflow_dispatch:
 
 permissions: read-all
 
@@ -225,7 +226,7 @@ jobs:
         echo "=== Testing Stanford 50d dataset (open source GloVe vectors) ==="
         $MYSQL_CMD -e "CREATE DATABASE IF NOT EXISTS test;"
         $MYSQL_CMD test < examples/stanford50d/create-basic.sql
-        gunzip -c examples/stanford50d/insert50d.sql.gz | head -n 5000 | $MYSQL_CMD test
+        gunzip -c examples/stanford50d/insert50d.sql.gz | awk 'BEGIN{RS=";"} NR<=5000{printf "%s;", $0} NR==5000{exit}' | $MYSQL_CMD test
         $MYSQL_CMD test -e "SELECT myvector_display(wordvec) AS vec FROM words50d WHERE word='the';"
         $MYSQL_CMD test -e "
           SELECT word, myvector_distance(wordvec, (SELECT wordvec FROM words50d WHERE word='the')) AS dist
@@ -280,7 +281,7 @@ jobs:
         docker exec myv96 mysql -uroot -proot -e "CREATE DATABASE IF NOT EXISTS test;"
         docker cp examples/stanford50d/create-basic.sql myv96:/tmp/create.sql
         docker exec myv96 mysql -uroot -proot test -e "SOURCE /tmp/create.sql;"
-        gunzip -c examples/stanford50d/insert50d.sql.gz | head -n 5000 | docker exec -i myv96 mysql -uroot -proot test
+        gunzip -c examples/stanford50d/insert50d.sql.gz | awk 'BEGIN{RS=";"} NR<=5000{printf "%s;", $0} NR==5000{exit}' | docker exec -i myv96 mysql -uroot -proot test
         docker exec myv96 mysql -uroot -proot test -e "
           SELECT word, myvector_distance(wordvec, (SELECT wordvec FROM words50d WHERE word='the')) AS dist
           FROM words50d ORDER BY dist LIMIT 5;
