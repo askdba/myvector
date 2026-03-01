@@ -1,22 +1,37 @@
 #!/usr/bin/env bash
-# Build MyVector component for MySQL 9.6 inside mysql:9.6 container.
-# Links against the container's libmysqlclient for ABI compatibility with mysql:9.6 runtime.
+# Build MyVector component for MySQL 9.6.
+# Uses oraclelinux:9 for build tools; copies libmysqlclient from mysql:9.6
+# to guarantee ABI compatibility with mysql:9.6 runtime.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MYSQL_TAG="${1:-mysql-9.6.0}"
 
-echo "==> Building MyVector component for $MYSQL_TAG inside mysql:9.6 container"
+echo "==> Building MyVector component for $MYSQL_TAG"
+
+# Extract MySQL 9.6 libs from the official image for ABI compatibility
+echo "==> Extracting libmysqlclient from mysql:9.6..."
+docker create --name myv96libs mysql:9.6
+trap 'docker rm -f myv96libs 2>/dev/null || true' EXIT
+rm -rf /tmp/mysql-libs-9.6
+mkdir -p /tmp/mysql-libs-9.6/lib64
+# Oracle Linux MySQL image: libs in /usr/lib64/mysql/ or /usr/lib/mysql/
+docker cp myv96libs:/usr/lib64/mysql/. /tmp/mysql-libs-9.6/lib64/ 2>/dev/null || \
+  docker cp myv96libs:/usr/lib/mysql/. /tmp/mysql-libs-9.6/lib64/ 2>/dev/null || \
+  { echo "Could not find libmysqlclient in mysql:9.6"; exit 1; }
+docker rm -f myv96libs
+trap - EXIT
 
 docker run --rm \
   -v "$REPO_ROOT:/workspace:rw" \
+  -v "/tmp/mysql-libs-9.6:/mysql-libs:ro" \
   -w /workspace \
   -e MYSQL_TAG="$MYSQL_TAG" \
-  mysql:9.6 \
+  oraclelinux:9 \
   bash -c '
     set -e
-    echo "==> Installing build dependencies (Oracle Linux)..."
+    echo "==> Installing build dependencies..."
     dnf install -y --nodocs \
       gcc gcc-c++ cmake make git \
       bison pkg-config \
@@ -46,7 +61,7 @@ docker run --rm \
       -DCMAKE_BUILD_TYPE=Release \
       >/dev/null 2>&1
 
-    echo "==> Building MyVector component (MYSQL_DIR=/usr for container libs)..."
+    echo "==> Building MyVector component (MYSQL_DIR=/mysql-libs for extracted libs)..."
     cd /workspace
     rm -rf build
     mkdir -p build
@@ -54,7 +69,7 @@ docker run --rm \
       -DCMAKE_BUILD_TYPE=Release \
       -DMYSQL_SOURCE_DIR="$MYSQL_SRC" \
       -DMYSQL_BUILD_DIR="$MYSQL_SRC/bld" \
-      -DMYSQL_DIR=/usr
+      -DMYSQL_DIR=/mysql-libs
     make -C build -j$(nproc) VERBOSE=1
 
     echo "==> Packaging artifact..."
@@ -63,3 +78,5 @@ docker run --rm \
     cp src/component_src/myvector.json build/component/
     echo "==> Built: build/component/libmyvector_component.so"
   '
+
+rm -rf /tmp/mysql-libs-9.6
