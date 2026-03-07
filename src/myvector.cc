@@ -375,6 +375,15 @@ double computeCosineDistance(const FP32* __restrict v1,
     return (1 - dist);
 }
 
+/* Return true if vector has zero norm (sum of squares == 0). Used to reject
+ * zero vectors for cosine similarity per RFC-004 §4.1. */
+static bool isZeroVector(const FP32* v, int dim) {
+    double normSq = 0.0;
+    for (int i = 0; i < dim; i++)
+        normSq += static_cast<double>(v[i]) * v[i];
+    return (normSq <= 0.0);
+}
+
 float computeCosineDistanceFn(const void* __restrict v1,
                               const void* __restrict v2,
                               const void* __restrict qty_ptr) {
@@ -602,6 +611,10 @@ bool KNNIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
     std::unique_lock lock(search_insert_mutex_);
 
     FP32* fvec = static_cast<FP32*>(vec);
+    int useDim = (dim > 0) ? dim : m_dim;
+    if (m_optionsMap.getOption("dist") == "Cosine" && isZeroVector(fvec, useDim))
+        return false;  /* RFC-004 §4.1: reject zero vector for cosine; omit from index */
+
     vector<FP32> row(fvec, fvec + m_dim);
     m_vectors.push_back({row, id});  /// simple index - multithread safe
 
@@ -1168,6 +1181,11 @@ bool HNSWMemoryIndex::flushBatchParallel() {
 
 bool HNSWMemoryIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
     FP32* fvec = static_cast<FP32*>(vec);
+    int useDim = (dim > 0) ? dim : m_dim;
+    if ((m_dist == "Cosine" || m_dist == "CosineNorm" || m_dist == "Angular") &&
+        isZeroVector(fvec, useDim))
+        return false;  /* RFC-004 §4.1: reject zero vector for cosine; omit from index */
+
     if (m_isParallelBuild) {
         // m_batch.insert(m_batch.end(), fvec, fvec + m_dim);
         m_batch.insert(

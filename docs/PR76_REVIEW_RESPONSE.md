@@ -13,10 +13,10 @@ This document maps reviewer suggestions to current implementation and actionable
 
 ### Current state
 - `docs/COMPONENT_MIGRATION_PLAN.md` describes architecture; `docs/PR76_REVIEW_VERIFICATION.md` verifies specific findings.
-- No explicit "Plugin vs Component Parity" checklist exists.
+- `docs/BUILD_MODES.md` documents plugin vs component parity, differences (init timing, UDF registration, EventsQ/reinstall), and the going-forward plan.
 
 ### Action
-- [ ] Add a short **Plugin vs Component Parity** section to `docs/COMPONENT_MIGRATION_PLAN.md` or a new `docs/BUILD_MODES.md`:
+- [x] Add a short **Plugin vs Component Parity** section to `docs/COMPONENT_MIGRATION_PLAN.md` or a new `docs/BUILD_MODES.md`:
   - **Identical:** UDF names/signatures, default config, persistence behavior (binlog state, index dir).
   - **Differences (if any):** Init timing (component services vs plugin hooks), load/unload semantics.
   - Explicitly note: plugin uses `LOAD PLUGIN`; component uses `INSTALL COMPONENT 'file://myvector'`; both share core logic in `src/myvector.cc`, `src/myvectorutils.cc`, etc.
@@ -49,10 +49,12 @@ This document maps reviewer suggestions to current implementation and actionable
 ### Current state
 - **SharedLockGuard:** Verified in `docs/PR76_REVIEW_VERIFICATION.md` – release-only; `get()`/`open()` acquire; no double-lock, no leak.
 - **Binlog stop:** `stop_binlog_monitoring()` sets `shutdown_binlog_thread_`, joins thread; `EventsQ::request_shutdown()` wakes consumers; worker threads drain queue.
+- **Binlog start (reinstall):** `start_binlog_monitoring()` calls `gqueue_.clear_shutdown()` to reset the queue before spawning the new binlog thread. This is required for component reinstall (UNINSTALL then INSTALL), since `stop` sets `shutting_down_` and never clears it; without this, worker threads would immediately exit.
 - **Init order:** Load config → register UDFs → start binlog monitoring; on failure, rollback (deregister UDFs, stop binlog).
+- **Lifecycle note:** Component deinit calls `stop_binlog_monitoring()` before service deregistration; binlog thread is joined before any shared resources (e.g., indexes) are torn down.
 
 ### Action
-- [ ] Add a short lifecycle note in docs: component deinit calls `stop_binlog_monitoring()` before service deregistration; binlog thread is joined before any shared resources (e.g., indexes) are torn down.
+- [x] Add a short lifecycle note in docs: component deinit calls `stop_binlog_monitoring()` before service deregistration; binlog thread is joined before any shared resources (e.g., indexes) are torn down.
 - [ ] If lock ordering concerns arise in future: document a consistent lock order (e.g., index lock before binlog service lock) in `include/myvector.h` or a design doc.
 
 ---
@@ -62,7 +64,9 @@ This document maps reviewer suggestions to current implementation and actionable
 **Suggestion:** Ensure CI validates install → UDFs → minimal query path → uninstall → verify cleanup. Add manifest path assertion/logging.
 
 ### Current state
-- **test-component** (`.github/workflows/ci.yml`): installs component, verifies `mysql.component`, runs UDFs (`myvector_construct`, `myvector_display`, `myvector_distance`), uninstalls, verifies cleanup (no component in `mysql.component`).
+- **test-component** (`.github/workflows/ci.yml`): installs component, verifies `mysql.component`, runs UDFs, uninstalls, verifies cleanup, then **reinstalls** (INSTALL → UNINSTALL → INSTALL) and verifies UDFs work. Same for `test-component-9-6`.
+- **test** (plugin): installs plugin, registers UDFs, runs tests, then **reinstalls** (UNINSTALL PLUGIN → INSTALL PLUGIN → re-register UDFs) and verifies UDFs work.
+- **Plugin vs component divergence:** See `docs/BUILD_MODES.md` for parity checklist and going-forward plan.
 - **Manifest:** Component is installed via `file://myvector`; `myvector.json` must be in the server’s component manifest search path. CI copies `.so` to `plugin_dir` only; manifest path depends on MySQL’s built-in component discovery.
 
 ### Action
@@ -101,7 +105,7 @@ This document maps reviewer suggestions to current implementation and actionable
 - **include/mysql_version.h:** Contains comment: "Stub for standalone component build when MYSQL_BUILD_DIR is not set."
 
 ### Action
-- [ ] Add a concise **docs/BUILD_MODES.md** (or expand README) with:
+- [x] ~~Add a concise **docs/BUILD_MODES.md**~~ **Created.** `docs/BUILD_MODES.md` exists and documents plugin vs component parity. Remaining (if any):
   - **Building as plugin (in-tree):** Copy sources into `mysql-server/plugin/myvector`, build as part of server.
   - **Building as component (out-of-tree):** `./scripts/build-component.sh` or `cmake -DMYSQL_SOURCE_DIR=...`; install `.so` + `myvector.json`.
   - **Installing/uninstalling component:** copy to `plugin_dir`, place `myvector.json` in component manifest path; `INSTALL/UNINSTALL COMPONENT 'file://myvector'`.

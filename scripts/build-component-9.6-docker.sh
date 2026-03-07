@@ -8,22 +8,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MYSQL_TAG="${1:-mysql-9.6.0}"
 MYSQL_LIBS_TMP="/tmp/mysql-libs-${MYSQL_TAG}"
+# Unique container name per run to avoid concurrency conflicts
+CONTAINER_NAME="myv96libs-$$-$(date +%s)"
 
 echo "==> Building MyVector component for $MYSQL_TAG"
 
 # Cleanup: container and temp dir. Install trap immediately so early failures are cleaned up.
-trap 'docker rm -f myv96libs 2>/dev/null || true; rm -rf "$MYSQL_LIBS_TMP"' EXIT
+trap 'docker rm -f "$CONTAINER_NAME" 2>/dev/null || true; rm -rf "$MYSQL_LIBS_TMP"' EXIT
 
-# Extract MySQL 9.6 libs from the official image for ABI compatibility
-echo "==> Extracting libmysqlclient from mysql:9.6..."
-docker create --name myv96libs mysql:9.6
+# Map MYSQL_TAG (e.g. mysql-9.6.0) to Docker image (e.g. mysql:9.6.0)
+MYSQL_IMAGE_TAG="${MYSQL_TAG#mysql-}"
+MYSQL_IMAGE="mysql:${MYSQL_IMAGE_TAG:-9.6}"
+
+# Extract MySQL libs from the official image for ABI compatibility
+echo "==> Extracting libmysqlclient from $MYSQL_IMAGE..."
+docker create --name "$CONTAINER_NAME" "$MYSQL_IMAGE"
 rm -rf "$MYSQL_LIBS_TMP"
 mkdir -p "$MYSQL_LIBS_TMP/lib64"
 # Oracle Linux MySQL image: libs in /usr/lib64/mysql/ or /usr/lib/mysql/
-docker cp myv96libs:/usr/lib64/mysql/. "$MYSQL_LIBS_TMP/lib64/" 2>/dev/null || \
-  docker cp myv96libs:/usr/lib/mysql/. "$MYSQL_LIBS_TMP/lib64/" 2>/dev/null || \
-  { echo "Could not find libmysqlclient in mysql:9.6"; exit 1; }
-docker rm -f myv96libs
+docker cp "$CONTAINER_NAME":/usr/lib64/mysql/. "$MYSQL_LIBS_TMP/lib64/" 2>/dev/null || \
+  docker cp "$CONTAINER_NAME":/usr/lib/mysql/. "$MYSQL_LIBS_TMP/lib64/" 2>/dev/null || \
+  { echo "Could not find libmysqlclient in $MYSQL_IMAGE"; exit 1; }
+docker rm -f "$CONTAINER_NAME"
 
 docker run --rm \
   -v "$REPO_ROOT:/workspace:rw" \

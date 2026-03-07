@@ -11,7 +11,9 @@
 #endif
 
 #include <algorithm>
+#include <cerrno>
 #include <cctype>
+#include <cstdlib>
 #include <iomanip>
 #include <list>
 #include <memory>
@@ -222,6 +224,8 @@ int SQFloatVectorToBinaryVector(FP32* fvec, unsigned long* ivec, int dim) {
         }
     }
     if ((dim % 64) != 0) {
+        unsigned int shift = 64 - (dim % 64);
+        elem = elem << shift;
         ivec[idx] = elem;
         idx++;
     }
@@ -232,12 +236,26 @@ char* myvector_construct_bv(const std::string& srctype,
                             char* src,
                             char* dst,
                             unsigned long srclen,
+                            unsigned long dst_len,
                             unsigned long* length,
                             unsigned char* is_null,
                             unsigned char* error) {
     int retlen = 0;
 
+#if MYSQL_VERSION_ID < 90000
+    const unsigned long trailer_size =
+        sizeof(unsigned int) + sizeof(ha_checksum);
+#else
+    const unsigned long trailer_size = 0;
+#endif
+    const unsigned long max_vector_len =
+        (dst_len > trailer_size) ? (dst_len - trailer_size) : 0;
+
     if (srctype == "bv") {
+        if (srclen > max_vector_len) {
+            *error = 1;
+            return nullptr;
+        }
         memcpy(
             dst, src, srclen);  // src is bytes representing the binary vector
         retlen = srclen;
@@ -245,6 +263,10 @@ char* myvector_construct_bv(const std::string& srctype,
         int dim = MyVectorDimFromStorageLength(srclen);
         retlen =
             SQFloatVectorToBinaryVector((FP32*)src, (unsigned long*)dst, dim);
+        if ((unsigned long)retlen > max_vector_len) {
+            *error = 1;
+            return nullptr;
+        }
     } else if (srctype == "string") {
         char *start = nullptr, *ptr = nullptr;
         char endch;
@@ -277,13 +299,28 @@ char* myvector_construct_bv(const std::string& srctype,
             memcpy(buff, p1, len);
             buff[len] = '\0';
 
-            dst[retlen] = (unsigned char)(atoi(buff));
-
+            if (retlen >= max_vector_len) {
+                *error = 1;
+                break;
+            }
+            char* endptr = nullptr;
+            errno = 0;
+            long val = strtol(buff, &endptr, 10);
+            if (endptr == buff || *endptr != '\0' || errno == ERANGE ||
+                val < 0 || val > 255) {
+                *error = 1;
+                break;
+            }
+            dst[retlen] = (unsigned char)val;
             retlen += sizeof(unsigned char);
         }  // while
     }  // else
 
 #if MYSQL_VERSION_ID < 90000
+    if (retlen + trailer_size > dst_len) {
+        *error = 1;
+        return nullptr;
+    }
     unsigned int metadata = MYVECTOR_V1_BV_METADATA;
     memcpy(&dst[retlen], &metadata, sizeof(metadata));
     retlen += sizeof(metadata);
@@ -336,6 +373,7 @@ char* myvector_construct(UDF_INIT* initid,
                                          ptr,
                                          (char*)initid->ptr,
                                          args->lengths[0],
+                                         initid->max_length,
                                          length,
                                          is_null,
                                          error);
@@ -614,6 +652,7 @@ char* myvector_construct_binaryvector(UDF_INIT* initid,
                                  ptr,
                                  (char*)initid->ptr,
                                  arg_len,
+                                 initid->max_length,
                                  length,
                                  is_null,
                                  error);

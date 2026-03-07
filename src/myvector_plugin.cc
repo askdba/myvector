@@ -91,6 +91,7 @@ long myvector_feature_level;
 long myvector_index_bg_threads;
 char* myvector_index_dir;
 char* myvector_config_file;
+bool myvector_rebuild_on_start = false;
 
 static MYSQL_SYSVAR_LONG(feature_level,
                          myvector_feature_level,
@@ -130,10 +131,19 @@ static MYSQL_SYSVAR_STR(config_file,
                         nullptr,
                         "myvector.cnf");
 
+static MYSQL_SYSVAR_BOOL(rebuild_on_start,
+                         myvector_rebuild_on_start,
+                         PLUGIN_VAR_RQCMDARG,
+                         "When ON, automatically rebuild vector indexes on startup if .bin load fails (corrupt or invalid). Default OFF.",
+                         nullptr,
+                         nullptr,
+                         0);
+
 static SYS_VAR* myvector_system_variables[] = {MYSQL_SYSVAR(feature_level),
                                                MYSQL_SYSVAR(index_bg_threads),
                                                MYSQL_SYSVAR(index_dir),
                                                MYSQL_SYSVAR(config_file),
+                                               MYSQL_SYSVAR(rebuild_on_start),
                                                nullptr};
 
 static int myvector_sql_preparse(MYSQL_THD,

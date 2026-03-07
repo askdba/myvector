@@ -4,6 +4,7 @@
  * incremental disk persistence and crash recovery for MyVector.
  */
 #include <cstdio>
+#include <cerrno>
 
 #ifndef debug_print
 #define debug_print(...) (void)0
@@ -831,13 +832,14 @@
 
     void saveIndex(const std::string &hnswFileName) {
         WriteCheckPointStatus(hnswFileName, CKPT_BEGIN_FULL_WRITE);
-        int hnswFile = Open(hnswFileName.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        /* Atomic write: write to temp file, fsync, then rename to final path. */
+        std::string tmpHnsw = hnswFileName + ".tmp";
+        int hnswFile = Open(tmpHnsw.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
 
-        saveIndexHeader(hnswFile, hnswFileName);
+        saveIndexHeader(hnswFile, tmpHnsw);
 
         // This write() could do GBs of data write. All vectors & all level0
         // links are written to disk by this single Write() call.
-        size_t xx = cur_element_count;
         size_t wrc = 0, wc = (cur_element_count * size_data_per_element_);
         while (1) {
           ssize_t ret = write(hnswFile, &data_level0_memory_[wrc], wc);
@@ -849,33 +851,76 @@
           if (!wc) break;
         }
 
-        Fsync(hnswFile, hnswFileName);
-        Close(hnswFile, hnswFileName);
+        Fsync(hnswFile, tmpHnsw);
+        Close(hnswFile, tmpHnsw);
+#ifndef WIN32
+        {
+          size_t lastSlash = hnswFileName.find_last_of('/');
+          std::string dirPath = (lastSlash != std::string::npos) ? hnswFileName.substr(0, lastSlash) : ".";
+          if (dirPath.empty()) dirPath = "/";
+          int dirFd = open(dirPath.c_str(), O_RDONLY);
+          if (dirFd >= 0) {
+            fsync(dirFd);
+            close(dirFd);
+          }
+        }
+#endif
+        if (std::rename(tmpHnsw.c_str(), hnswFileName.c_str()) != 0) {
+          std::stringstream ss;
+          ss << "Error renaming " << tmpHnsw << " to " << hnswFileName << ", errno=" << errno;
+          throw std::runtime_error(ss.str());
+        }
 
         std::string linksLocation = hnswFileName + ".links";
-        int gt0LinksF = Open(linksLocation.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
         std::string linksDataLocation = hnswFileName + ".links.data";
-        int gt0LinksDataF = Open(linksDataLocation.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        std::string tmpLinks = linksLocation + ".tmp";
+        std::string tmpLinksData = linksDataLocation + ".tmp";
+        int gt0LinksF = Open(tmpLinks.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        int gt0LinksDataF = Open(tmpLinksData.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
 
         for (size_t i = 0; i < cur_element_count; i++) {
-            unsigned int linkListSize = element_levels_[i] > 0 ? 
+            unsigned int linkListSize = element_levels_[i] > 0 ?
               (size_links_per_element_ * element_levels_[i]) : 0;
             if (linkListSize)
               debug_print("Writing links of size %u for node %lu.", linkListSize, i);
             if (linkListSize) {
               unsigned int nodeID = i;
-              Write(gt0LinksF, &nodeID, sizeof(nodeID), linksLocation, __LINE__);
-              Write(gt0LinksF, &linkListSize, sizeof(linkListSize), linksLocation, __LINE__);
+              Write(gt0LinksF, &nodeID, sizeof(nodeID), tmpLinks, __LINE__);
+              Write(gt0LinksF, &linkListSize, sizeof(linkListSize), tmpLinks, __LINE__);
 
-              Write(gt0LinksDataF, linkLists_[i], linkListSize, linksDataLocation, __LINE__);
+              Write(gt0LinksDataF, linkLists_[i], linkListSize, tmpLinksData, __LINE__);
             }
         }
-        Fsync(gt0LinksF, linksLocation);
-        Close(gt0LinksF, linksLocation);
+        Fsync(gt0LinksF, tmpLinks);
+        Close(gt0LinksF, tmpLinks);
+        Fsync(gt0LinksDataF, tmpLinksData);
+        Close(gt0LinksDataF, tmpLinksData);
+#ifndef WIN32
+        {
+          size_t lastSlash = linksLocation.find_last_of('/');
+          std::string dirPath = (lastSlash != std::string::npos) ? linksLocation.substr(0, lastSlash) : ".";
+          if (dirPath.empty()) dirPath = "/";
+          int dirFd = open(dirPath.c_str(), O_RDONLY);
+          if (dirFd >= 0) {
+            fsync(dirFd);
+            close(dirFd);
+          }
+        }
+#endif
+        /* Rename data first, then metadata: .links references .links.data, so if the
+         * second rename fails we avoid leaving .links pointing at new data while
+         * .links.data is still old. */
+        if (std::rename(tmpLinksData.c_str(), linksDataLocation.c_str()) != 0) {
+          std::stringstream ss;
+          ss << "Error renaming " << tmpLinksData << " to " << linksDataLocation << ", errno=" << errno;
+          throw std::runtime_error(ss.str());
+        }
+        if (std::rename(tmpLinks.c_str(), linksLocation.c_str()) != 0) {
+          std::stringstream ss;
+          ss << "Error renaming " << tmpLinks << " to " << linksLocation << ", errno=" << errno;
+          throw std::runtime_error(ss.str());
+        }
 
-        Fsync(gt0LinksDataF, linksDataLocation);
-        Close(gt0LinksDataF, linksDataLocation);
-        
         WriteCheckPointStatus(hnswFileName, CKPT_END_FULL_WRITE);
 
         setCheckPointComplete(hnswFileName);

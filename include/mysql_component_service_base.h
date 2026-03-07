@@ -26,7 +26,10 @@ struct mysql_service_base {
 /* No-op at namespace scope: internal services are used by component init/deinit, not exposed to registry */
 #define MYVECTOR_SVC_REG_CONCAT_(a, b) a##b
 #define MYVECTOR_SVC_REG_CONCAT(a, b) MYVECTOR_SVC_REG_CONCAT_(a, b)
+/* service_name: documentation/label only (unused in expansion).
+ * impl_ptr: validated at compile time via (void) cast. */
 #define SERVICE_REGISTRATION(service_name, impl_ptr) \
-  static const bool MYVECTOR_SVC_REG_CONCAT(MYVECTOR_SVC_REG_, __COUNTER__) [[maybe_unused]] = true
+  static const bool MYVECTOR_SVC_REG_CONCAT(MYVECTOR_SVC_REG_, __COUNTER__) [[maybe_unused]] = \
+    ((void)(impl_ptr), true)
 
 #endif /* MYVECTOR_MYSQL_COMPONENT_SERVICE_BASE_H */

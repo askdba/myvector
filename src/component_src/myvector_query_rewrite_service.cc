@@ -28,7 +28,8 @@ public:
             return -1;  // Invalid input
         }
         const char* orig = request->original_query.str;
-        std::string original(orig ? orig : "");
+        size_t len = orig ? request->original_query.length : 0;
+        std::string original(orig ? orig : "", len);
         std::string rewritten_query_str;
         if (myvector_query_rewrite(original, &rewritten_query_str)) {
             response->rewritten_query = rewritten_query_str;

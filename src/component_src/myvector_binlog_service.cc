@@ -4,6 +4,16 @@
 #if defined(__linux__) || defined(__APPLE__)
 #include <arpa/inet.h>
 #endif
+#if defined(_WIN32)
+#include <io.h>
+#include <windows.h>
+#endif
+#if defined(__linux__) || defined(__APPLE__)
+#include <strings.h>
+#endif
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 #include <mysql/service_my_plugin_log.h>
 #include <mysql/service_mysql_alloc.h>
 #include <mysql/service_plugin_registry.h>
@@ -12,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <fcntl.h>
 #include <fstream>
 #include <list>
 #include <map>
@@ -121,6 +132,11 @@ public:
         shutting_down_ = true;
         cv_.notify_all();
     }
+    /** Reset shutdown flag for restart (e.g. component reinstall). */
+    void clear_shutdown() {
+        std::lock_guard lk(m_);
+        shutting_down_ = false;
+    }
     bool empty() {
         std::lock_guard lk(m_);
         return items_.empty();
@@ -140,13 +156,51 @@ std::map<std::string, VectorIndexColumnInfo> g_OnlineVectorIndexes;
 std::string currentBinlogFile = "";
 size_t currentBinlogPos = 0;
 
-std::string myvector_conn_user_id;
-std::string myvector_conn_password;
-std::string myvector_conn_socket;
-std::string myvector_conn_host;
-std::string myvector_conn_port;
-
+/* Connection config: stored in restricted scope, used only at connection time.
+ * Consider loading from a secrets manager or environment variables with minimal
+ * lifetime for production deployments. */
 namespace {
+struct ConnConfig {
+    std::string user_id;
+    std::string password;
+    std::string socket;
+    std::string host;
+    std::string port;
+};
+static ConnConfig g_conn_config;
+/** Configurable binlog server_id for mysql_binlog_open; avoids collision with MySQL server/replica IDs. */
+static uint32_t g_binlog_server_id = 0;
+
+/** Compute a deterministic binlog server_id from hostname + PID when not configured. */
+static uint32_t compute_binlog_server_id_fallback() {
+    uint32_t seed;
+#if defined(_WIN32)
+    seed = static_cast<uint32_t>(GetCurrentProcessId()) * 1103515245u + 12345u;
+#else
+    char hostname[256] = {0};
+    if (gethostname(hostname, sizeof(hostname) - 1) != 0)
+        hostname[0] = '\0';
+    std::string seed_str = std::string(hostname) + std::to_string(static_cast<long>(getpid()));
+    seed = static_cast<uint32_t>(std::hash<std::string>{}(seed_str) & 0x7FFFFFFFu);
+#endif
+    return (seed == 0) ? 1u : seed;
+}
+
+/** Zero a string's contents to avoid leaving credentials in memory.
+ * Uses platform-safe APIs so the compiler cannot optimize away the clear. */
+static void secure_zero_string(std::string& s) {
+    if (s.empty())
+        return;
+#if defined(_WIN32)
+    SecureZeroMemory(&s[0], s.size());
+#elif defined(__linux__) || defined(__APPLE__)
+    explicit_bzero(&s[0], s.size());
+#else
+    volatile char* p = const_cast<char*>(s.data());
+    for (size_t i = 0; i < s.size(); i++)
+        p[i] = '\0';
+#endif
+}
 
 struct BinlogState {
     std::string server_uuid;
@@ -247,15 +301,22 @@ bool extract_json_number(const std::string& json,
     size_t colon = json.find(':', key_pos + needle.size());
     if (colon == std::string::npos)
         return false;
-    size_t start = json.find_first_of("0123456789", colon + 1);
+    size_t start = json.find_first_of("-0123456789", colon + 1);
     if (start == std::string::npos)
         return false;
-    size_t end = json.find_first_not_of("0123456789", start);
+    bool has_minus = (json[start] == '-');
+    size_t digit_start = start + (has_minus ? 1 : 0);
+    if (digit_start >= json.size())
+        return false;
+    size_t end = json.find_first_not_of("0123456789", digit_start);
     std::string number = json.substr(start, end - start);
-    if (number.empty())
+    if (number.empty() || (has_minus && number.size() == 1))
         return false;
     try {
-        *value = static_cast<size_t>(std::stoull(number));
+        long long parsed = std::stoll(number);
+        if (parsed < 0)
+            return false;
+        *value = static_cast<size_t>(parsed);
         return true;
     } catch (const std::exception&) {
         return false;
@@ -332,7 +393,34 @@ bool persist_binlog_state(const BinlogState& state) {
         << "\"server_uuid\":\"" << EscapeJsonString(state.server_uuid) << "\","
         << "\"binlog_file\":\"" << EscapeJsonString(state.binlog_file) << "\","
         << "\"binlog_pos\":" << state.binlog_pos << "}";
+    out.flush();
+    if (!out || out.fail()) {
+        out.close();
+        std::remove(tmp_path.c_str());
+        return false;
+    }
     out.close();
+    if (out.fail()) {
+        std::remove(tmp_path.c_str());
+        return false;
+    }
+#if defined(_WIN32)
+    {
+        int fd = _open(tmp_path.c_str(), _O_RDONLY);
+        if (fd >= 0) {
+            _commit(fd);
+            _close(fd);
+        }
+    }
+#else
+    {
+        int fd = open(tmp_path.c_str(), O_RDONLY);
+        if (fd >= 0) {
+            fsync(fd);
+            close(fd);
+        }
+    }
+#endif
     if (std::rename(tmp_path.c_str(), path.c_str()) != 0)
         return false;
     return true;
@@ -487,11 +575,17 @@ void parseRowsEvent(const unsigned char* event_buf,
                     const std::string& binlog_file,
                     size_t binlog_pos,
                     std::vector<VectorIndexUpdateItem*>& updates) {
-    unsigned int index = EVENT_HEADER_LENGTH;
-
-    event_len -= 4;  // checksum at the end.
-
     updates.clear();
+
+    if (event_len < 4)
+        return;  // need at least 4-byte checksum
+    event_len -= 4;  // checksum at the end
+
+    const unsigned int min_payload = EVENT_HEADER_LENGTH + 6 + 2;
+    if (event_len < min_payload)
+        return;
+
+    unsigned int index = EVENT_HEADER_LENGTH;
 
     (void)read_table_id_6(&event_buf[index]);  // tableId for row/table map matching
     index += 6;
@@ -675,11 +769,16 @@ void readConfigFile(const char* config_file) {
 
     MyVectorOptions vo(info);
 
-    myvector_conn_user_id = vo.getOption("myvector_user_id");
-    myvector_conn_password = vo.getOption("myvector_user_password");
-    myvector_conn_socket = vo.getOption("myvector_socket");
-    myvector_conn_host = vo.getOption("myvector_host");
-    myvector_conn_port = vo.getOption("myvector_port");
+    g_conn_config.user_id = vo.getOption("myvector_user_id");
+    g_conn_config.password = vo.getOption("myvector_user_password");
+    g_conn_config.socket = vo.getOption("myvector_socket");
+    g_conn_config.host = vo.getOption("myvector_host");
+    g_conn_config.port = vo.getOption("myvector_port");
+
+    bool valid = false;
+    int configured = vo.getIntOption("myvector_binlog_server_id", 0, &valid);
+    g_binlog_server_id = (valid && configured > 0) ? static_cast<uint32_t>(configured)
+                                                      : compute_binlog_server_id_fallback();
 }
 
 /* GetBaseTableColumnPositions() - Get the column ordinal positions of the
@@ -880,6 +979,7 @@ void BuildMyVectorIndexSQL(const char* db,
                            AbstractVectorIndex* vi,
                            char* errorbuf) {
     strcpy(errorbuf, "SUCCESS");
+    readConfigFile(myvector_config_file);
     size_t nRows = 0;
     MYSQL mysql;
     MYSQL* conn = mysql_init(&mysql);
@@ -910,21 +1010,29 @@ void BuildMyVectorIndexSQL(const char* db,
             action,
             trackingColumn);
 
-    if (!mysql_real_connect(
-            &mysql,
-            myvector_conn_host.c_str(),
-            myvector_conn_user_id.c_str(),
-            myvector_conn_password.c_str(),
-            NULL,
-            (myvector_conn_port.length() ? atoi(myvector_conn_port.c_str())
-                                         : 0),
-            myvector_conn_socket.c_str(),
-            CLIENT_IGNORE_SIGPIPE)) {
-        snprintf(errorbuf,
-                 MYVECTOR_BUFF_SIZE,
-                 "Error in new connection to build vector index : %s.",
-                 mysql_error(&mysql));
-        goto cleanup;
+    {
+        std::string conn_host = g_conn_config.host;
+        std::string conn_user = g_conn_config.user_id;
+        std::string conn_password = g_conn_config.password;
+        std::string conn_socket = g_conn_config.socket;
+        std::string conn_port = g_conn_config.port;
+        if (!mysql_real_connect(
+                &mysql,
+                conn_host.c_str(),
+                conn_user.c_str(),
+                conn_password.c_str(),
+                NULL,
+                (conn_port.length() ? atoi(conn_port.c_str()) : 0),
+                conn_socket.c_str(),
+                CLIENT_IGNORE_SIGPIPE)) {
+            snprintf(errorbuf,
+                     MYVECTOR_BUFF_SIZE,
+                     "Error in new connection to build vector index : %s.",
+                     mysql_error(&mysql));
+            secure_zero_string(conn_password);
+            goto cleanup;
+        }
+        secure_zero_string(conn_password);
     }
 
     (void)mysql_autocommit(&mysql, false);
@@ -1057,6 +1165,7 @@ void BuildMyVectorIndexSQL(const char* db,
     }
 
 cleanup:
+    secure_zero_string(g_conn_config.password);
     if (result)
         mysql_free_result(result);
     mysql_close(&mysql);
@@ -1125,6 +1234,7 @@ public:
         }
 
         shutdown_binlog_thread_.store(false);
+        gqueue_.clear_shutdown();  // reset for restart (stop sets it, never clears)
         binlog_thread_ = new std::thread(&MyVectorBinlogServiceImpl::binlog_loop_fn, this, myvector_index_bg_threads);
         return 0;
     }
@@ -1172,19 +1282,27 @@ private:
             return false;
         }
         MYSQL* mysql_ptr = &mysql;
+        std::string conn_host = g_conn_config.host;
+        std::string conn_user = g_conn_config.user_id;
+        std::string conn_password = g_conn_config.password;
+        std::string conn_socket = g_conn_config.socket;
+        std::string conn_port = g_conn_config.port;
         if (!mysql_real_connect(
                 mysql_ptr,
-                myvector_conn_host.c_str(),
-                myvector_conn_user_id.c_str(),
-                myvector_conn_password.c_str(),
+                conn_host.c_str(),
+                conn_user.c_str(),
+                conn_password.c_str(),
                 NULL,
-                (myvector_conn_port.length() ? atoi(myvector_conn_port.c_str())
-                                             : 0),
-                myvector_conn_socket.c_str(),
+                (conn_port.length() ? atoi(conn_port.c_str()) : 0),
+                conn_socket.c_str(),
                 CLIENT_IGNORE_SIGPIPE)) {
+            secure_zero_string(conn_password);
+            secure_zero_string(g_conn_config.password);
             mysql_close(mysql_ptr);
             return false;
         }
+        secure_zero_string(conn_password);
+        /* Do not clear g_conn_config.password here; binlog_loop_fn needs it next. */
 
         if (!fetch_server_uuid(mysql_ptr, &server_uuid_)) {
             mysql_close(mysql_ptr);
@@ -1235,6 +1353,10 @@ private:
 
         // Connect to MySQL
         while (!shutdown_binlog_thread_.load()) {
+            if (connect_attempts > 0) {
+                mysql_close(&mysql);
+                binlog_mysql_conn_ = nullptr;
+            }
             if (!mysql_init(&mysql)) {
                 close_binlog_mysql_conn();
                 return;
@@ -1243,20 +1365,26 @@ private:
             unsigned int read_timeout_sec = 1;
             mysql_options(&mysql, MYSQL_OPT_READ_TIMEOUT, &read_timeout_sec);
 
+            std::string conn_host = g_conn_config.host;
+            std::string conn_user = g_conn_config.user_id;
+            std::string conn_password = g_conn_config.password;
+            std::string conn_socket = g_conn_config.socket;
+            std::string conn_port = g_conn_config.port;
             if (!mysql_real_connect(
                     &mysql,
-                    myvector_conn_host.c_str(),
-                    myvector_conn_user_id.c_str(),
-                    myvector_conn_password.c_str(),
+                    conn_host.c_str(),
+                    conn_user.c_str(),
+                    conn_password.c_str(),
                     NULL,
-                    (myvector_conn_port.length() ? atoi(myvector_conn_port.c_str())
-                                                 : 0),
-                    myvector_conn_socket.c_str(),
+                    (conn_port.length() ? atoi(conn_port.c_str()) : 0),
+                    conn_socket.c_str(),
                     CLIENT_IGNORE_SIGPIPE)) {
+                secure_zero_string(conn_password);
                 std::this_thread::sleep_for(std::chrono::seconds(1));
                 if (shutdown_binlog_thread_.load()) {
                     // error_print("Binlog thread shutting down during connect retry.");
                     // TODO: Replace with component-specific logging
+                    secure_zero_string(g_conn_config.password);
                     close_binlog_mysql_conn();
                     return;
                 }
@@ -1264,11 +1392,14 @@ private:
                 if (connect_attempts > 600) {
                     // error_print("MyVector binlog thread failed to connect (%s)", mysql_error(&mysql));
                     // TODO: Replace with component-specific logging
+                    secure_zero_string(g_conn_config.password);
                     close_binlog_mysql_conn();
                     return;
                 }
                 continue;
             }
+            secure_zero_string(conn_password);
+            secure_zero_string(g_conn_config.password);
             break;  /// connected
         }
 
@@ -1305,7 +1436,7 @@ private:
         if (startbinlog.length())
             rpl.file_name = startbinlog.c_str();
         rpl.start_position = start_binlog_pos_ ? start_binlog_pos_ : 4;
-        rpl.server_id = 1;
+        rpl.server_id = g_binlog_server_id;
         if (mysql_binlog_open(&mysql, &rpl)) {
             close_binlog_mysql_conn();
             return;

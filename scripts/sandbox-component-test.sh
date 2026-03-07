@@ -29,6 +29,7 @@ apt-get update -qq && apt-get install -y -qq \
 MYSQL_TAG=mysql-8.4.8
 MS_DIR=/cache/mysql-server-8.4.8
 BOOST_CACHE=/cache/boost_cache
+# Build and test both use 8.4 to avoid header/runtime ABI mismatch
 
 if [ ! -f "$MS_DIR/include/mysql/components/component_implementation.h" ]; then
   echo "Cloning MySQL $MYSQL_TAG (one-time, ~2 min)..."
@@ -57,10 +58,10 @@ cp build/component/libmyvector_component.so build/component/myvector.json /out/
 '
 
 echo ""
-echo "=== Phase 2: Test with mysql:8.0 ==="
-# Use 8.0 to match libmysqlclient ABI from Ubuntu build (libmysqlclient-dev)
+echo "=== Phase 2: Test with mysql:8.4 ==="
+# Use 8.4 to match MS_DIR build (mysql-8.4.8); avoids header/runtime ABI mismatch
 # MYSQL_ROOT_HOST=% allows root from any host (needed for docker exec)
-CID=$(docker run -d -e MYSQL_ROOT_PASSWORD=root -e MYSQL_ROOT_HOST=% mysql:8.0)
+CID=$(docker run -d -e MYSQL_ROOT_PASSWORD=root -e MYSQL_ROOT_HOST=% mysql:8.4)
 trap 'docker rm -f "$CID" 2>/dev/null; rm -rf "$BUILD_DIR"' EXIT
 
 echo "Waiting for MySQL..."
