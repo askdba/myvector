@@ -276,7 +276,7 @@ static size_t escape_identifier(char* out, size_t out_size, const char* id) {
     out[j++] = '`';
     for (; *id && j < out_size - 2; id++) {
         if (*id == '`') {
-            if (j + 2 > out_size - 1)
+            if (j + 2 > out_size - 2)  /* need room for `` + closing ` + NUL */
                 break;
             out[j++] = '`';
             out[j++] = '`';
@@ -1380,20 +1380,16 @@ private:
                     conn_socket.c_str(),
                     CLIENT_IGNORE_SIGPIPE)) {
                 secure_zero_string(conn_password);
+                mysql_close(&mysql);
+                binlog_mysql_conn_ = nullptr;
                 std::this_thread::sleep_for(std::chrono::seconds(1));
                 if (shutdown_binlog_thread_.load()) {
-                    // error_print("Binlog thread shutting down during connect retry.");
-                    // TODO: Replace with component-specific logging
                     secure_zero_string(g_conn_config.password);
-                    close_binlog_mysql_conn();
                     return;
                 }
                 connect_attempts++;
                 if (connect_attempts > 600) {
-                    // error_print("MyVector binlog thread failed to connect (%s)", mysql_error(&mysql));
-                    // TODO: Replace with component-specific logging
                     secure_zero_string(g_conn_config.password);
-                    close_binlog_mysql_conn();
                     return;
                 }
                 continue;
@@ -1481,8 +1477,8 @@ private:
                 if (err.find("timed out") != std::string::npos) {
                     continue;
                 }
-                // error_print("Binlog fetch failed: %s", err.c_str());
-                // TODO: Replace with component-specific logging
+                // Non-timeout error: signal workers to exit before join
+                gqueue_.request_shutdown();
                 break;
             }
 #if MYSQL_VERSION_ID >= 80400
@@ -1561,6 +1557,7 @@ private:
                 }
             }
         }
+        gqueue_.request_shutdown();  /* ensure workers unblock if we exited loop by break */
         for (auto& t : worker_threads_) {
             if (t.joinable())
                 t.join();

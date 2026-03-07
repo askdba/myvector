@@ -130,6 +130,13 @@ Then connect and run `INSTALL COMPONENT 'file://myvector';`, verify UDFs
 *   **Recovery:** On start, validate the stored server UUID against the current server; if mismatched, refuse to start and log a clear error.
 *   **Fallback:** If no state exists, start from a configured bootstrap position (or current master position) and log the choice explicitly.
 
+**Failure modes**
+
+*   **Corrupt/unreadable state file:** Treated as "no state"; fall back to earliest binlog (already implemented in `load_binlog_state()`).
+*   **RESET MASTER / binlog rotation:** The binlog reader uses position; if the referenced file is gone, `mysql_binlog_open` / `mysql_binlog_fetch` behavior applies. The component will reconnect and seek from the earliest available binlog when the stored file is missing.
+*   **GTID enabled/disabled:** Current behavior is position-based; no GTID-specific logic. The component does not use GTID for positioning.
+*   **server_uuid change (cloned datadir):** Component refuses to start and logs a clear error when the stored `server_uuid` does not match the current server (implemented in `preflight_binlog_state()`).
+
 ### **Init Failure Handling**
 
 *   **Order:** Load config defaults, register UDFs, then start binlog monitoring.

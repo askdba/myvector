@@ -118,7 +118,8 @@ bool myvector_ann_set_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
     initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
     if (myvector_alloc_init_ptr(initid, initid->max_length, message))
         return true;
-    // (*h_udf_metadata_service)->result_set(initid, "charset", latin1); // This requires h_udf_metadata_service
+    if (myvector_component_udf_metadata)
+        myvector_component_udf_metadata->result_set(initid, "charset", latin1);
 
     tls_distances->clear();
 
@@ -350,6 +351,10 @@ char* myvector_construct(UDF_INIT* initid,
                                        unsigned char* is_null,
                                        unsigned char* error) {
     char* ptr = (char*)args->args[0];
+    if (!ptr) {
+        *is_null = 1;
+        return (char*)initid->ptr;
+    }
     const char* opt = nullptr;
     if (args->arg_count == 2)
         opt = (char*)args->args[1];
@@ -457,6 +462,8 @@ bool myvector_display_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
     initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
     if (myvector_alloc_init_ptr(initid, MYVECTOR_DISPLAY_MAX_LEN, message))
         return true;
+    if (myvector_component_udf_metadata)
+        myvector_component_udf_metadata->result_set(initid, "charset", latin1);
     return false;
 }
 

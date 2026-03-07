@@ -76,7 +76,12 @@ jobs:
             https://github.com/mysql/mysql-server.git mysql-server
 
       - name: Build component
-        run: ./scripts/build-component.sh "${{ matrix.mysql-tag }}" "$(pwd)/mysql-server"
+        run: |
+          if [ "${{ matrix.mysql-version }}" = "9.6.0" ]; then
+            ./scripts/build-component-9.6-docker.sh mysql-9.6.0
+          else
+            ./scripts/build-component.sh "${{ matrix.mysql-tag }}" "$(pwd)/mysql-server"
+          fi
 
       - name: Package component artifact
         run: |
