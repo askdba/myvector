@@ -9,6 +9,8 @@
 *.a
 *.lib
 build/
+.cache/
+.sandbox-out/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
@@ -31,6 +33,11 @@ Makefile
 
 # MySQL plugin output
 plugin_output_directory/
+
+# Cloned MySQL source (CI/ local build verification)
+mysql-server/
+mysql-server-9.6/
+mysql-server-test/
 
 # Test artifacts
 *.log

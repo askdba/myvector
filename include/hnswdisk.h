@@ -15,6 +15,7 @@
 #include "hnswlib.h"
 #include "myvectorutils.h"
 #include "visited_list_pool.h"
+#include <string>
 #ifdef WIN32
 #include <io.h>
 #else

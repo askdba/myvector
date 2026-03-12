@@ -1,0 +1,9 @@
+SELECT myvector_debug_construct_calls() AS reset_ignore;
+reset_ignore
+10
+SELECT COUNT(*) FROM (SELECT myvector_distance(v, myvector_construct('[1,2,3]'), 'L2') AS d FROM t79) sub;
+COUNT(*)
+10
+SELECT myvector_debug_construct_calls() AS construct_calls;
+construct_calls
+10
