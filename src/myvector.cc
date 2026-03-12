@@ -21,6 +21,7 @@
 */
 
 #include <algorithm>
+#include <atomic>
 #include <iomanip>
 #include <list>
 #include <memory>
@@ -1828,12 +1829,16 @@ PLUGIN_EXPORT bool myvector_construct_init(UDF_INIT* initid,
  *             If input string is NULL, then NULL is returned.
  */
 
+/* Debug counter: number of times myvector_construct() was invoked (for issue #79) */
+static std::atomic<uint64_t> g_myvector_construct_call_count{0};
+
 PLUGIN_EXPORT char* myvector_construct(UDF_INIT* initid,
                                        UDF_ARGS* args,
                                        char* result,
                                        unsigned long* length,
                                        unsigned char* is_null,
                                        unsigned char* error) {
+    (void)g_myvector_construct_call_count.fetch_add(1);
     char* ptr = args->args[0];
     const char* opt = nullptr;
     if (args->arg_count == 2)
@@ -1940,6 +1945,29 @@ PLUGIN_EXPORT void myvector_construct_deinit(UDF_INIT* initid) {
     if (initid && initid->ptr)
         free(initid->ptr);
 }
+
+/* Debug UDF: returns myvector_construct() call count and resets it (for issue #79) */
+PLUGIN_EXPORT bool myvector_debug_construct_calls_init(UDF_INIT* initid,
+                                                       UDF_ARGS* args,
+                                                       char* message) {
+    (void)args;
+    (void)message;
+    initid->maybe_null = 0;
+    return false;
+}
+
+PLUGIN_EXPORT long long myvector_debug_construct_calls(UDF_INIT* initid,
+                                                       UDF_ARGS* args,
+                                                       unsigned char* is_null,
+                                                       unsigned char* error) {
+    (void)initid;
+    (void)args;
+    (void)error;
+    *is_null = 0;
+    return static_cast<long long>(g_myvector_construct_call_count.exchange(0));
+}
+
+PLUGIN_EXPORT void myvector_debug_construct_calls_deinit(UDF_INIT*) {}
 
 PLUGIN_EXPORT bool myvector_display_init(UDF_INIT* initid,
                                          UDF_ARGS* args,
