@@ -6,7 +6,7 @@ Copy the block below and paste as a comment on https://github.com/askdba/myvecto
 
 **Documentation added.**
 
-Created [docs/ONLINE_INDEX_UPDATES.md](docs/ONLINE_INDEX_UPDATES.md) with:
+Created [docs/ONLINE_INDEX_UPDATES.md](https://github.com/askdba/myvector/blob/main/docs/ONLINE_INDEX_UPDATES.md) with:
 
 - **Overview** of online updates (real-time index sync via MySQL binlogs)
 - **Prerequisites:** row-based binlog format, `REPLICATION CLIENT` (or `REPLICATION SLAVE`) privileges, config file for binlog connection
@@ -14,4 +14,4 @@ Created [docs/ONLINE_INDEX_UPDATES.md](docs/ONLINE_INDEX_UPDATES.md) with:
 - **Complete example** from table creation through DML and search
 - **Troubleshooting** table for common issues
 
-The doc is linked from the main [README](README.md) Documentation section.
+The doc is linked from the main [README](https://github.com/askdba/myvector/blob/main/README.md) Documentation section.
