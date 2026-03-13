@@ -1,0 +1,93 @@
+# Custom Docker build + benchmark for fix/issue-79 branch.
+# Builds image with the fix, runs benchmark, compares nested vs literal.
+# Does NOT run on main.
+name: Issue #79 Benchmark
+
+on:
+  push:
+    branches: [fix/issue-79]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-benchmark:
+    if: github.ref == 'refs/heads/fix/issue-79' || github.head_ref == 'fix/issue-79'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake gcc-10 g++-10 git \
+            libssl-dev libncurses5-dev pkg-config bison \
+            libtirpc-dev libldap2-dev libsasl2-dev libudev-dev \
+            libre2-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
+
+      - name: Cache Boost
+        id: cache-boost
+        uses: actions/cache@v4
+        with:
+          path: boost_cache
+          key: boost-mysql-8.4.8-v1
+
+      - name: Build MyVector plugin (amd64)
+        run: |
+          set -euo pipefail
+          build_dir="mysql-server"
+          rm -rf ${build_dir}
+          git clone --depth 1 --branch mysql-8.4.8 \
+            https://github.com/mysql/mysql-server.git ${build_dir}
+          mkdir -p ${build_dir}/plugin/myvector
+          cp src/*.cc ${build_dir}/plugin/myvector/
+          cp include/*.h ${build_dir}/plugin/myvector/
+          cp include/*.i ${build_dir}/plugin/myvector/ 2>/dev/null || true
+          cp CMakeLists.txt ${build_dir}/plugin/myvector/
+          cd ${build_dir}
+          mkdir -p bld && cd bld
+          cmake .. \
+            -DCMAKE_C_COMPILER=gcc-10 -DCMAKE_CXX_COMPILER=g++-10 \
+            -DDOWNLOAD_BOOST=1 -DWITH_BOOST=../../boost_cache \
+            -DWITH_UNIT_TESTS=OFF -DWITH_ROUTER=OFF -DWITH_RAPID=OFF \
+            -DWITH_NDB=OFF -DWITH_NDBCLUSTER=OFF \
+            -DWITH_EXAMPLE_STORAGE_ENGINE=OFF -DCMAKE_BUILD_TYPE=Release
+          make myvector -j$(nproc)
+          cp plugin_output_directory/myvector.so ../../myvector-amd64.so
+
+      - name: Prepare Docker build context
+        run: |
+          cp myvector-amd64.so .
+          cp sql/myvectorplugin.sql .
+          ls -la myvector-amd64.so myvectorplugin.sql
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg MYSQL_VERSION=8.4 \
+            --build-arg TARGETARCH=amd64 \
+            -t ghcr.io/${{ github.repository }}:mysql8.4-fix-issue79 \
+            -f Dockerfile.oraclelinux9 \
+            .
+
+      - name: Run benchmark
+        run: |
+          BENCH_ROWS=500 BENCH_DIM=768 BENCH_RUNS=3 \
+          MYVECTOR_IMAGE=ghcr.io/${{ github.repository }}:mysql8.4-fix-issue79 \
+          ./scripts/benchmark-issue79.sh 2>&1 | tee benchmark-results.txt
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-issue79-results
+          path: benchmark-results.txt
+
+      - name: Push image (branch only)
+        if: github.ref == 'refs/heads/fix/issue-79' && github.event_name == 'push'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker push ghcr.io/${{ github.repository }}:mysql8.4-fix-issue79
