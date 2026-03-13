@@ -62,7 +62,6 @@ jobs:
 
       - name: Prepare Docker build context
         run: |
-          cp myvector-amd64.so .
           cp sql/myvectorplugin.sql .
           ls -la myvector-amd64.so myvectorplugin.sql
 

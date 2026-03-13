@@ -1824,8 +1824,13 @@ PLUGIN_EXPORT bool myvector_construct_init(UDF_INIT* initid,
     }
     *(size_t*)buf = 0;  // 0 = no cache
 
-    /* Issue #79: when first arg is constant, convert once and cache */
-    if (args->args[0] != nullptr && args->lengths[0] > 0) {
+    /* Issue #79: cache only when ALL args are constant. If arg_count >= 2 and
+     * args[1] is non-constant (NULL in init), we must not cache, else we would
+     * ignore per-row options and return incorrect results. */
+    bool can_cache = (args->args[0] != nullptr && args->lengths[0] > 0);
+    if (args->arg_count >= 2 && args->args[1] == nullptr)
+        can_cache = false;  // options vary per row
+    if (can_cache) {
         const char* opt =
             (args->arg_count >= 2 && args->args[1]) ? args->args[1] : nullptr;
         unsigned long optlen =
