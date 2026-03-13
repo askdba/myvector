@@ -1652,6 +1652,15 @@ int SQFloatVectorToBinaryVector(FP32* fvec, unsigned long* ivec, int dim) {
     return (idx * sizeof(unsigned long));  // number of bytes
 }
 
+/* Forward declaration for o=bv path */
+char* myvector_construct_bv(const std::string& srctype,
+                            char* src,
+                            char* dst,
+                            unsigned long srclen,
+                            unsigned long* length,
+                            unsigned char* is_null,
+                            unsigned char* error);
+
 /* Helper: perform myvector_construct conversion. Used for both constant-arg
  * caching (in init) and per-row conversion. Returns true on success.
  */
