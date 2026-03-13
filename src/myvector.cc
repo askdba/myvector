@@ -1652,6 +1652,87 @@ int SQFloatVectorToBinaryVector(FP32* fvec, unsigned long* ivec, int dim) {
     return (idx * sizeof(unsigned long));  // number of bytes
 }
 
+/* Helper: perform myvector_construct conversion. Used for both constant-arg
+ * caching (in init) and per-row conversion. Returns true on success.
+ */
+static bool myvector_construct_do_convert(char* ptr,
+                                          unsigned long ptrlen,
+                                          const char* opt,
+                                          unsigned long optlen,
+                                          char* retvec,
+                                          unsigned long* retlen,
+                                          unsigned char* is_null,
+                                          unsigned char* error) {
+    bool skipConvert = false;
+    if (!opt || !optlen)
+        opt = "i=string,o=float";
+    else {
+        MyVectorOptions vo(string(opt, optlen));
+        if (vo.getOption("i") == "float" && vo.getOption("o") == "float")
+            skipConvert = true;
+        if (vo.getOption("o") == "bv") {
+            myvector_construct_bv(vo.getOption("i"),
+                                 ptr,
+                                 retvec,
+                                 ptrlen,
+                                 retlen,
+                                 is_null,
+                                 error);
+            return (*error == 0);
+        }
+    }
+
+    int len = 0;
+    if (skipConvert) {
+        if ((ptrlen % sizeof(FP32)) != 0) {
+            *error = 1;
+            return false;
+        }
+        memcpy(retvec, ptr, ptrlen);
+        len = ptrlen;
+    } else {
+        char* start = nullptr;
+        char endch;
+        if ((start = strchr(ptr, '[')))
+            endch = ']';
+        else if ((start = strchr(ptr, '{')))
+            endch = '}';
+        else if ((start = strchr(ptr, '(')))
+            endch = ')';
+        else {
+            start = ptr;
+            endch = '\0';
+        }
+        if (endch)
+            start++;
+        char* p = start;
+        while (*p && *p != endch) {
+            while (*p && (*p == ' ' || *p == ','))
+                p++;
+            char* p1 = p;
+            while (*p != ' ' && *p != ',' && *p != endch)
+                p++;
+            char buff[64];
+            strncpy(buff, p1, (p - p1));
+            buff[(int)(p - p1)] = 0;
+            FP32 fval = atof(buff);
+            memcpy(&retvec[len], &fval, sizeof(FP32));
+            len += sizeof(FP32);
+        }
+    }
+
+#if MYSQL_VERSION_ID < 90000
+    unsigned int metadata = MYVECTOR_V1_FP32_METADATA;
+    memcpy(&retvec[len], &metadata, sizeof(metadata));
+    len += sizeof(metadata);
+    ha_checksum cksum = my_checksum(0, (const unsigned char*)retvec, len);
+    memcpy(&retvec[len], &cksum, sizeof(cksum));
+    len += sizeof(cksum);
+#endif
+    *retlen = len;
+    return true;
+}
+
 char* myvector_construct_bv(const std::string& srctype,
                             char* src,
                             char* dst,
@@ -1726,7 +1807,35 @@ PLUGIN_EXPORT bool myvector_construct_init(UDF_INIT* initid,
         return true;  // error
     }
     initid->max_length = MYVECTOR_CONSTRUCT_MAX_LEN;
-    initid->ptr = (char*)malloc(MYVECTOR_CONSTRUCT_MAX_LEN);
+    size_t alloc_size = sizeof(size_t) + MYVECTOR_CONSTRUCT_MAX_LEN;
+    char* buf = (char*)malloc(alloc_size);
+    if (!buf) {
+        strcpy(message, "myvector_construct: malloc failed");
+        return true;
+    }
+    *(size_t*)buf = 0;  // 0 = no cache
+
+    /* Issue #79: when first arg is constant, convert once and cache */
+    if (args->args[0] != nullptr && args->lengths[0] > 0) {
+        const char* opt =
+            (args->arg_count >= 2 && args->args[1]) ? args->args[1] : nullptr;
+        unsigned long optlen =
+            (args->arg_count >= 2 && args->args[1]) ? args->lengths[1] : 0;
+        unsigned char is_null = 0, err = 0;
+        unsigned long result_len = 0;
+        if (myvector_construct_do_convert(args->args[0],
+                                          args->lengths[0],
+                                          opt,
+                                          optlen,
+                                          buf + sizeof(size_t),
+                                          &result_len,
+                                          &is_null,
+                                          &err) &&
+            !err) {
+            *(size_t*)buf = result_len;
+        }
+    }
+    initid->ptr = buf;
     return false;
 }
 
@@ -1749,106 +1858,48 @@ PLUGIN_EXPORT char* myvector_construct(UDF_INIT* initid,
                                        unsigned long* length,
                                        unsigned char* is_null,
                                        unsigned char* error) {
+    size_t* cache_len = (size_t*)initid->ptr;
+    if (*cache_len > 0) {
+        *length = *cache_len;
+        return initid->ptr + sizeof(size_t);
+    }
+
     char* ptr = args->args[0];
-    const char* opt = nullptr;
-    if (args->arg_count == 2)
-        opt = args->args[1];
+    if (!ptr) {
+        *is_null = 1;
+        return initid->ptr + sizeof(size_t);
+    }
 
-    char* start = nullptr;
-    char endch;
-    char* retvec = initid->ptr;
-    int retlen = 0;
-    bool skipConvert = false;
+    const char* opt = (args->arg_count >= 2 && args->args[1]) ? args->args[1] : nullptr;
+    unsigned long optlen =
+        (args->arg_count >= 2 && args->args[1]) ? args->lengths[1] : 0;
 
-    if (!opt || !args->lengths[1])
-        opt = "i=string,o=float";  // i=string,o=float
-    else {
-        MyVectorOptions vo(opt);
-
-        /*
-         * i = float, o = float : App already has the vector in floats, just
-                                  need to add MyVector metadata and checksum
-         * i = bv,    o = bv    : App is sending bytes of a Binary Vector
-                                  (e.g Cohere model). Add metadata + checksum
-         * i = string, o = bv   : Convert series of 1-byte int's to  Binary
-                                  Vector
-         * i = column, o = bv   : App wants to implement SQ compression. Convert
-                                  MyVector float column to BV
-         */
-        if (vo.getOption("i") == "float" && vo.getOption("o") == "float")
-            skipConvert = true;
-
-        /* For Binary Vectors, we will branch out to a separate routine */
+    /* o=bv branches to myvector_construct_bv - not handled by helper */
+    if (opt && optlen) {
+        MyVectorOptions vo(string(opt, optlen));
         if (vo.getOption("o") == "bv")
             return myvector_construct_bv(vo.getOption("i"),
                                          ptr,
-                                         initid->ptr,
+                                         initid->ptr + sizeof(size_t),
                                          args->lengths[0],
                                          length,
                                          is_null,
                                          error);
-    }  // else opt
-
-    if (skipConvert) {
-        // User is passing floats directly in bind variable or using "0x"
-        // literal
-        if ((args->lengths[0] % sizeof(FP32)) != 0)
-            SET_UDF_ERROR_AND_RETURN(
-                "Input vector is malformed, length not a "
-                "multiple of sizeof(float) %lu.",
-                args->lengths[0]);
-        memcpy(retvec, ptr, args->lengths[0]);
-        retlen = args->lengths[0];
-        goto addChecksum;
     }
 
-    /* Below code implements conversion from string "[0.134511 -0.082219 ...]"
-     * to floats followed by metadata & checksum.
-     */
-    if ((start = strchr(ptr, '[')))
-        endch = ']';
-    else if ((start = strchr(ptr, '{')))
-        endch = '}';
-    else if ((start = strchr(ptr, '(')))
-        endch = ')';
-    else {
-        start = ptr;
-        endch = '\0';
-    }
-    if (endch)
-        start++;
+    unsigned long retlen = 0;
+    if (!myvector_construct_do_convert(ptr,
+                                        args->lengths[0],
+                                        opt,
+                                        optlen,
+                                        initid->ptr + sizeof(size_t),
+                                        &retlen,
+                                        is_null,
+                                        error))
+        return initid->ptr + sizeof(size_t);
 
-    ptr = start;
-
-    while (*ptr && *ptr != endch) {
-        while (*ptr && (*ptr == ' ' || *ptr == ','))
-            ptr++;
-        char* p1 = ptr;
-        while (*ptr != ' ' && *ptr != ',' && *ptr != endch)
-            ptr++;
-        char buff[64];
-        strncpy(buff, p1, (ptr - p1));
-
-        // TODO - atof() returns 0 if not a valid float
-        FP32 fval = atof(buff);  // change these 2 lines for FP16, INT8 etc
-        memcpy(&retvec[retlen], &fval, sizeof(FP32));
-
-        retlen += sizeof(FP32);
-    }  // while
-
-addChecksum:
-#if MYSQL_VERSION_ID < 90000
-    unsigned int metadata = MYVECTOR_V1_FP32_METADATA;
-    memcpy(&retvec[retlen], &metadata, sizeof(metadata));
-    retlen += sizeof(metadata);
-
-    ha_checksum cksum = my_checksum(0, (const unsigned char*)retvec, retlen);
-    memcpy(&retvec[retlen], &cksum, sizeof(cksum));
-    retlen += sizeof(cksum);
-#endif
     *length = retlen;
-
-    return retvec;
+    return initid->ptr + sizeof(size_t);
 }
 
 PLUGIN_EXPORT void myvector_construct_deinit(UDF_INIT* initid) {
