@@ -2,6 +2,9 @@
 /scripts/build-fast.sh
 /src/myvector.cc.tmp
 # Build artifacts
+.cache/
+mysql-server/
+mysql-server-test/
 *.o
 *.so
 *.dylib
