@@ -191,6 +191,24 @@ If you omit `online=Y`:
 | Index not found after restart | Index not saved; ensure `myvector_index_save` or automatic save runs; check `myvector_index_dir` |
 | Wrong database for myvector_columns | The `myvector_columns` view is created in `mysql` by the installation script; ensure it exists and the plugin can query it |
 
+## Testing with Docker
+
+A test script validates the online updates flow:
+
+```bash
+./scripts/test-online-updates.sh                    # Use prebuilt ghcr.io image
+./scripts/test-online-updates.sh myvector:local     # Use locally built image
+```
+
+To build the Docker image locally (required if the prebuilt image has config issues):
+
+```bash
+./scripts/build-docker-local.sh 8.4   # ~15–30 min first run
+./scripts/test-online-updates.sh myvector:mysql8.4-local
+```
+
+For Docker, ensure `myvector.cnf` has `myvector_host=127.0.0.1` and `myvector_port=3306` so the index build connection works. See [DOCKER_IMAGES.md](DOCKER_IMAGES.md).
+
 ## Related Documentation
 
 - [DEMO.md](DEMO.md) — Full demo with embeddings
