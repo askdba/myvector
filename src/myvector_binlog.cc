@@ -74,6 +74,7 @@
 static void usleep(int usec) { ::Sleep(usec / 1000); }
 
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -421,9 +422,48 @@ void parseRotateEvent(const unsigned char* event_buf,
     binlogfile = filename;
 }
 
+#ifndef WIN32
+/**
+ * Check that the config file has secure permissions to avoid credential exposure.
+ * Requires: mode 0600 or 0400 (owner-only), and file owned by the process user.
+ * Returns true if ok to read, false otherwise.
+ */
+static bool checkConfigFilePermissions(const char* config_file) {
+    struct stat st;
+    if (stat(config_file, &st) != 0)
+        return true;  /* File missing: caller will get empty config */
+
+    /* Reject if group or world have any access (read/write/execute) */
+    if ((st.st_mode & 0077) != 0) {
+        error_print(
+            "MyVector: config file %s has insecure permissions (group or "
+            "world readable). Set to 0600 or 0400. Refusing to load.",
+            config_file);
+        return false;
+    }
+
+    /* Reject if not owned by the process user (e.g. mysql). Skip when running
+       as root (e.g. in Docker), since root can read any file. */
+    if (geteuid() != 0 && st.st_uid != geteuid()) {
+        error_print(
+            "MyVector: config file %s is not owned by the MySQL process user. "
+            "Refusing to load.",
+            config_file);
+        return false;
+    }
+
+    return true;
+}
+#endif
+
 void readConfigFile(const char* config_file) {
     if (!config_file || !strlen(config_file))
         return;
+
+#ifndef WIN32
+    if (!checkConfigFilePermissions(config_file))
+        return;
+#endif
 
     std::ifstream file(config_file);
     std::string line, info;

@@ -30,6 +30,7 @@ myvector_user_password=$MYSQL_PWD
 myvector_host=127.0.0.1
 myvector_port=3306
 EOF
+chmod 600 "$CONFIG_DIR/myvector.cnf"
 
 MYSQL_CONF_DIR=$(mktemp -d)
 trap "rm -rf $CONFIG_DIR $MYSQL_CONF_DIR" EXIT

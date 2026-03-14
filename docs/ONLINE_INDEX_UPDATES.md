@@ -58,6 +58,8 @@ FLUSH PRIVILEGES;
 
 The binlog thread uses a config file for connection parameters. Set the path via the `myvector_config_file` system variable (default: `myvector.cnf`).
 
+> **Security:** The config file contains credentials. On Unix, it must be mode `0600` or `0400` and owned by the MySQL process user. The plugin refuses to load files with insecure permissions. See [CONFIGURATION.md](CONFIGURATION.md) for full details.
+
 Create a config file (e.g. `/etc/myvector.cnf` or `myvector.cnf` in the data directory) with connection options in key=value format:
 
 ```

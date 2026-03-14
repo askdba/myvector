@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Runtime config file permission checks: refuse to load `myvector_config_file`
+  if it has insecure permissions (group/world readable) or wrong ownership on
+  Unix (#36).
+- `docs/CONFIGURATION.md`: Configuration file reference with options,
+  defaults, validation rules, security requirements, and examples (#36).
 - `docs/ONLINE_INDEX_UPDATES.md`: Documentation for creating and configuring
   online (real-time) index updates via MySQL binlogs (#81).
 
