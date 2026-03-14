@@ -74,6 +74,7 @@
 static void usleep(int usec) { ::Sleep(usec / 1000); }
 
 #else
+#include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -430,8 +431,12 @@ void parseRotateEvent(const unsigned char* event_buf,
  */
 static bool checkConfigFilePermissions(const char* config_file) {
     struct stat st;
-    if (stat(config_file, &st) != 0)
-        return true;  /* File missing: caller will get empty config */
+    if (stat(config_file, &st) != 0) {
+        error_print(
+            "MyVector: cannot stat config file %s (errno %d). Refusing to load.",
+            config_file, errno);
+        return false;
+    }
 
     /* Reject if group or world have any access (read/write/execute) */
     if ((st.st_mode & 0077) != 0) {
