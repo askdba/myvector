@@ -46,3 +46,6 @@ demo/stanford50d/insert50d.sql
 
 # Config files with credentials
 myvector.cnf
+
+# Issue close comment helpers (used once, then discarded)
+docs/ISSUE_*_CLOSE_COMMENT.md
