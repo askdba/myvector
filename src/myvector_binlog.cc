@@ -74,6 +74,8 @@
 static void usleep(int usec) { ::Sleep(usec / 1000); }
 
 #else
+#include <errno.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -421,9 +423,58 @@ void parseRotateEvent(const unsigned char* event_buf,
     binlogfile = filename;
 }
 
-void readConfigFile(const char* config_file) {
+#ifndef WIN32
+/**
+ * Check that the config file has secure permissions to avoid credential exposure.
+ * Requires: mode 0600 or 0400 (owner-only), and file owned by the process user.
+ * Returns true if ok to read, false otherwise.
+ */
+static bool checkConfigFilePermissions(const char* config_file) {
+    struct stat st;
+    if (stat(config_file, &st) != 0) {
+        error_print(
+            "MyVector: cannot stat config file %s (errno %d). Refusing to load.",
+            config_file, errno);
+        return false;
+    }
+
+    /* Reject if group or world have any access (read/write/execute) */
+    if ((st.st_mode & 0077) != 0) {
+        error_print(
+            "MyVector: config file %s has insecure permissions (group or "
+            "world readable). Set to 0600 or 0400. Refusing to load.",
+            config_file);
+        return false;
+    }
+
+    /* Reject if not owned by the process user (e.g. mysql). Skip when running
+       as root (e.g. in Docker), since root can read any file. */
+    if (geteuid() != 0 && st.st_uid != geteuid()) {
+        error_print(
+            "MyVector: config file %s is not owned by the MySQL process user. "
+            "Refusing to load.",
+            config_file);
+        return false;
+    }
+
+    return true;
+}
+#endif
+
+/**
+ * Load config file for binlog connection. Returns false if config was rejected
+ * (permission check failed); caller should exit immediately. Returns true if
+ * config loaded or path was empty (caller proceeds; empty credentials will
+ * fail to connect).
+ */
+static bool readConfigFile(const char* config_file) {
     if (!config_file || !strlen(config_file))
-        return;
+        return true;
+
+#ifndef WIN32
+    if (!checkConfigFilePermissions(config_file))
+        return false;
+#endif
 
     std::ifstream file(config_file);
     std::string line, info;
@@ -444,6 +495,7 @@ void readConfigFile(const char* config_file) {
     myvector_conn_socket = vo.getOption("myvector_socket");
     myvector_conn_host = vo.getOption("myvector_host");
     myvector_conn_port = vo.getOption("myvector_port");
+    return true;
 }
 
 /* GetBaseTableColumnPositions() - Get the column ordinal positions of the
@@ -795,7 +847,11 @@ void myvector_binlog_loop(int id) {
 
     int connect_attempts = 0;
 
-    readConfigFile(myvector_config_file);
+    if (!readConfigFile(myvector_config_file)) {
+        error_print(
+            "MyVector: binlog thread exiting due to config file rejection.");
+        return;
+    }
 
     if (myvector_feature_level & 1) {
         info_print("Binlog event thread is disabled!");
