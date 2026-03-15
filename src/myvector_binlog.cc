@@ -461,13 +461,19 @@ static bool checkConfigFilePermissions(const char* config_file) {
 }
 #endif
 
-void readConfigFile(const char* config_file) {
+/**
+ * Load config file for binlog connection. Returns false if config was rejected
+ * (permission check failed); caller should exit immediately. Returns true if
+ * config loaded or path was empty (caller proceeds; empty credentials will
+ * fail to connect).
+ */
+static bool readConfigFile(const char* config_file) {
     if (!config_file || !strlen(config_file))
-        return;
+        return true;
 
 #ifndef WIN32
     if (!checkConfigFilePermissions(config_file))
-        return;
+        return false;
 #endif
 
     std::ifstream file(config_file);
@@ -489,6 +495,7 @@ void readConfigFile(const char* config_file) {
     myvector_conn_socket = vo.getOption("myvector_socket");
     myvector_conn_host = vo.getOption("myvector_host");
     myvector_conn_port = vo.getOption("myvector_port");
+    return true;
 }
 
 /* GetBaseTableColumnPositions() - Get the column ordinal positions of the
@@ -840,7 +847,11 @@ void myvector_binlog_loop(int id) {
 
     int connect_attempts = 0;
 
-    readConfigFile(myvector_config_file);
+    if (!readConfigFile(myvector_config_file)) {
+        error_print(
+            "MyVector: binlog thread exiting due to config file rejection.");
+        return;
+    }
 
     if (myvector_feature_level & 1) {
         info_print("Binlog event thread is disabled!");
