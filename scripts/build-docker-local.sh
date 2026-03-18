@@ -22,8 +22,8 @@ ARCH=$(uname -m)
 HOST_ARM64=0
 [ "$ARCH" = "arm64" ] && HOST_ARM64=1
 # Detect Apple Silicon even under Rosetta (uname can report x86_64 there)
-[ "$HOST_ARM64" -eq 0 ] && [ "$(uname -s)" = "Darwin" ] && \
-  [ "$(sysctl -in hw.optional.arm64 2>/dev/null || echo 0)" = "1" ] && HOST_ARM64=1
+[ "$HOST_ARM64" -eq 0 ] && [ "$(uname -s)" = "Darwin" ] &&
+	[ "$(sysctl -in hw.optional.arm64 2>/dev/null || echo 0)" = "1" ] && HOST_ARM64=1
 TARGET_ARCH="${MYVECTOR_ARCH:-}"
 [ -z "$TARGET_ARCH" ] && { [ "$HOST_ARM64" -eq 1 ] && TARGET_ARCH="arm64" || TARGET_ARCH="amd64"; }
 PLATFORM="linux/${TARGET_ARCH}"
@@ -43,8 +43,8 @@ echo ""
 CC="${MYVECTOR_CC:-gcc-10}"
 CXX="${MYVECTOR_CXX:-g++-10}"
 CMAKE_EXTRA=""
-[ "$HOST_ARM64" -eq 1 ] && [ -z "${MYVECTOR_CC:-}" ] && [ -z "${MYVECTOR_CXX:-}" ] && \
-  CC=clang CXX=clang++ CMAKE_EXTRA=""
+[ "$HOST_ARM64" -eq 1 ] && [ -z "${MYVECTOR_CC:-}" ] && [ -z "${MYVECTOR_CXX:-}" ] &&
+	CC=clang CXX=clang++ CMAKE_EXTRA=""
 echo "Compiler: CC=$CC CXX=$CXX"
 
 # Build plugin inside Docker for target arch.
@@ -52,10 +52,10 @@ echo "Compiler: CC=$CC CXX=$CXX"
 # Clone to /tmp (container-local) to avoid bind-mount issues on macOS (git pack failures).
 # --privileged: Docker on macOS may restrict timer syscalls; needed for MySQL CMake timer detection
 docker run --rm --privileged --platform "$PLATFORM" \
-  -e MAKEFLAGS="-j${MAKE_JOBS}" \
-  -e MYVECTOR_VERBOSE="${MYVECTOR_VERBOSE:-}" \
-  -v "$REPO_ROOT:/work" -w /work \
-  ubuntu:22.04 bash -c "
+	-e MAKEFLAGS="-j${MAKE_JOBS}" \
+	-e MYVECTOR_VERBOSE="${MYVECTOR_VERBOSE:-}" \
+	-v "$REPO_ROOT:/work" -w /work \
+	ubuntu:22.04 bash -c "
     set -e
     apt-get update -qq
     apt-get install -y -qq cmake clang g++-10 gcc-10 git libssl-dev libncurses5-dev \
@@ -82,9 +82,9 @@ cp sql/myvectorplugin.sql .
 
 echo "Building Docker image ($PLATFORM)..."
 docker build -f Dockerfile.oraclelinux9 \
-  --platform "$PLATFORM" \
-  --build-arg MYSQL_VERSION="$MYSQL_VERSION" \
-  -t "myvector:mysql${MYSQL_VERSION}-local" .
+	--platform "$PLATFORM" \
+	--build-arg MYSQL_VERSION="$MYSQL_VERSION" \
+	-t "myvector:mysql${MYSQL_VERSION}-local" .
 
 echo ""
 echo "Done. Run: ./scripts/test-online-updates.sh myvector:mysql${MYSQL_VERSION}-local"
