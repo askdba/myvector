@@ -197,6 +197,7 @@ string myvector_conn_password;
 string myvector_conn_socket;
 string myvector_conn_host;
 string myvector_conn_port;
+mutex myvector_conn_config_mutex;
 
 #define EVENT_HEADER_LENGTH 19
 
@@ -429,6 +430,63 @@ void parseRotateEvent(const unsigned char* event_buf,
  * config loaded, path was empty, or file is missing (caller proceeds; empty
  * credentials will fail to connect).
  */
+struct MyVectorConnConfig {
+    string user_id;
+    string password;
+    string socket;
+    string host;
+    string port;
+};
+
+static void trimInPlace(string& s) {
+    while (s.length() && (s.back() == ' ' || s.back() == '\t'))
+        s.pop_back();
+    while (s.length() && (s.front() == ' ' || s.front() == '\t'))
+        s.erase(0, 1);
+}
+
+static map<string, string> parseConfigOptionsFromText(const string& content) {
+    map<string, string> opts;
+    std::istringstream iss(content);
+    string line;
+    while (std::getline(iss, line)) {
+        if (line.length() && line[0] == '#')
+            continue;
+        size_t eq = line.find('=');
+        if (eq == string::npos)
+            continue;
+        string k = line.substr(0, eq);
+        string v = line.substr(eq + 1);
+        trimInPlace(k);
+        trimInPlace(v);
+        if (k.length())
+            opts[k] = v;  // allow empty values
+    }
+    return opts;
+}
+
+static void applyConfigOptions(const map<string, string>& opts) {
+    auto get = [&opts](const char* key) {
+        auto it = opts.find(key);
+        return it != opts.end() ? it->second : string();
+    };
+    lock_guard<mutex> lk(myvector_conn_config_mutex);
+    myvector_conn_user_id = get("myvector_user_id");
+    myvector_conn_password = get("myvector_user_password");
+    myvector_conn_socket = get("myvector_socket");
+    myvector_conn_host = get("myvector_host");
+    myvector_conn_port = get("myvector_port");
+}
+
+static MyVectorConnConfig getConfigSnapshot() {
+    lock_guard<mutex> lk(myvector_conn_config_mutex);
+    return MyVectorConnConfig{myvector_conn_user_id,
+                              myvector_conn_password,
+                              myvector_conn_socket,
+                              myvector_conn_host,
+                              myvector_conn_port};
+}
+
 static bool readConfigFile(const char* config_file) {
     if (!config_file || !strlen(config_file))
         return true;
@@ -439,6 +497,7 @@ static bool readConfigFile(const char* config_file) {
     if (fd < 0) {
         if (errno == ENOENT) {
             /* Missing file is non-fatal: proceed with empty credentials. */
+            applyConfigOptions(map<string, string>{});
             return true;
         }
         error_print(
@@ -495,72 +554,15 @@ static bool readConfigFile(const char* config_file) {
     close(fd);
     content.resize(n > 0 ? (size_t)n : 0);
 
-    /* Parse key=value lines; allow empty values (e.g. myvector_user_password=) */
-    std::map<std::string, std::string> opts;
-    std::istringstream iss(content);
-    std::string line;
-    while (std::getline(iss, line)) {
-        if (line.length() && line[0] == '#')
-            continue;
-        size_t eq = line.find('=');
-        if (eq == std::string::npos)
-            continue;
-        std::string k = line.substr(0, eq);
-        std::string v = line.substr(eq + 1);
-        while (k.length() && (k.back() == ' ' || k.back() == '\t'))
-            k.pop_back();
-        while (k.length() && (k.front() == ' ' || k.front() == '\t'))
-            k.erase(0, 1);
-        while (v.length() && (v.back() == ' ' || v.back() == '\t'))
-            v.pop_back();
-        while (v.length() && (v.front() == ' ' || v.front() == '\t'))
-            v.erase(0, 1);
-        if (k.length())
-            opts[k] = v;
-    }
-    auto get = [&opts](const char* key) {
-        auto it = opts.find(key);
-        return it != opts.end() ? it->second : std::string();
-    };
-    myvector_conn_user_id = get("myvector_user_id");
-    myvector_conn_password = get("myvector_user_password");
-    myvector_conn_socket = get("myvector_socket");
-    myvector_conn_host = get("myvector_host");
-    myvector_conn_port = get("myvector_port");
+    map<string, string> opts = parseConfigOptionsFromText(content);
+    applyConfigOptions(opts);
     return true;
 #else
-    std::ifstream file(config_file);
-    std::map<std::string, std::string> opts;
-    std::string line;
-
-    while (std::getline(file, line)) {
-        if (line.length() && line[0] == '#')
-            continue;
-        size_t eq = line.find('=');
-        if (eq == std::string::npos)
-            continue;
-        std::string k = line.substr(0, eq);
-        std::string v = line.substr(eq + 1);
-        while (k.length() && (k.back() == ' ' || k.back() == '\t'))
-            k.pop_back();
-        while (k.length() && (k.front() == ' ' || k.front() == '\t'))
-            k.erase(0, 1);
-        while (v.length() && (v.back() == ' ' || v.back() == '\t'))
-            v.pop_back();
-        while (v.length() && (v.front() == ' ' || v.front() == '\t'))
-            v.erase(0, 1);
-        if (k.length())
-            opts[k] = v;
-    }
-    auto get = [&opts](const char* key) {
-        auto it = opts.find(key);
-        return it != opts.end() ? it->second : std::string();
-    };
-    myvector_conn_user_id = get("myvector_user_id");
-    myvector_conn_password = get("myvector_user_password");
-    myvector_conn_socket = get("myvector_socket");
-    myvector_conn_host = get("myvector_host");
-    myvector_conn_port = get("myvector_port");
+    ifstream file(config_file);
+    std::stringstream buf;
+    buf << file.rdbuf();
+    map<string, string> opts = parseConfigOptionsFromText(buf.str());
+    applyConfigOptions(opts);
     return true;
 #endif
 }
@@ -731,6 +733,7 @@ void BuildMyVectorIndexSQL(const char* db,
                  "Error loading config file for index build.");
         return;
     }
+    MyVectorConnConfig conn_cfg = getConfigSnapshot();
 
     fprintf(stderr,
             "BuildMyVectorIndexSQL %s %s %s %s %s %s.\n",
@@ -748,13 +751,12 @@ void BuildMyVectorIndexSQL(const char* db,
 
     if (!mysql_real_connect(
             &mysql,
-            myvector_conn_host.c_str(),
-            myvector_conn_user_id.c_str(),
-            myvector_conn_password.c_str(),
+            conn_cfg.host.c_str(),
+            conn_cfg.user_id.c_str(),
+            conn_cfg.password.c_str(),
             NULL,
-            (myvector_conn_port.length() ? atoi(myvector_conn_port.c_str())
-                                         : 0),
-            myvector_conn_socket.c_str(),
+            (conn_cfg.port.length() ? atoi(conn_cfg.port.c_str()) : 0),
+            conn_cfg.socket.c_str(),
             CLIENT_IGNORE_SIGPIPE)) {
         snprintf(errorbuf,
                  MYVECTOR_BUFF_SIZE,
@@ -928,6 +930,7 @@ void myvector_binlog_loop(int id) {
             "MyVector: binlog thread exiting due to config file rejection.");
         return;
     }
+    MyVectorConnConfig conn_cfg = getConfigSnapshot();
 
     if (myvector_feature_level & 1) {
         info_print("Binlog event thread is disabled!");
@@ -945,13 +948,12 @@ void myvector_binlog_loop(int id) {
 
         if (!mysql_real_connect(
                 &mysql,
-                myvector_conn_host.c_str(),
-                myvector_conn_user_id.c_str(),
-                myvector_conn_password.c_str(),
+                conn_cfg.host.c_str(),
+                conn_cfg.user_id.c_str(),
+                conn_cfg.password.c_str(),
                 NULL,
-                (myvector_conn_port.length() ? atoi(myvector_conn_port.c_str())
-                                             : 0),
-                myvector_conn_socket.c_str(),
+                (conn_cfg.port.length() ? atoi(conn_cfg.port.c_str()) : 0),
+                conn_cfg.socket.c_str(),
                 CLIENT_IGNORE_SIGPIPE)) {
             /// fprintf(stderr, "real connect failed %s\n",
             /// mysql_error(&mysql));
