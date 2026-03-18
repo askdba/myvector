@@ -76,7 +76,7 @@ All options use `key=value` format, one per line. Lines starting with `#` are co
 
 ### Local socket connection
 
-```
+```ini
 myvector_user_id=myvector_binlog
 myvector_user_password=your_password
 myvector_socket=/tmp/mysql.sock
@@ -84,7 +84,7 @@ myvector_socket=/tmp/mysql.sock
 
 ### Local TCP connection
 
-```
+```ini
 myvector_user_id=myvector_binlog
 myvector_user_password=your_password
 myvector_host=127.0.0.1
@@ -93,7 +93,7 @@ myvector_port=3306
 
 ### Docker (typical)
 
-```
+```ini
 myvector_user_id=root
 myvector_user_password=myvector
 myvector_host=127.0.0.1
@@ -102,7 +102,7 @@ myvector_port=3306
 
 ## TLS/SSL
 
-TLS/SSL options for the binlog connection are not currently configurable via the config file. The connection uses MySQL's default behavior. For encrypted connections, use a socket or ensure MySQL is configured for TLS on the server side.
+TLS/SSL options for the binlog connection are not currently configurable via the config file. The connection uses MySQL's default behavior. For encrypted connections, use a socket or ensure MySQL is configured for TLS on the server-side.
 
 ## Related
 

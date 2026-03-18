@@ -62,7 +62,7 @@ The binlog thread uses a config file for connection parameters. Set the path via
 
 Create a config file (e.g. `/etc/myvector.cnf` or `myvector.cnf` in the data directory) with connection options in key=value format:
 
-```
+```ini
 myvector_user_id=myvector_binlog
 myvector_user_password=your_password
 myvector_host=127.0.0.1
@@ -72,7 +72,7 @@ myvector_socket=/tmp/mysql.sock
 
 For local socket connection, you can use:
 
-```
+```ini
 myvector_user_id=myvector_binlog
 myvector_user_password=your_password
 myvector_socket=/tmp/mysql.sock

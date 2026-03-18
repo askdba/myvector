@@ -17,7 +17,7 @@ Nested is ~28% slower. With more rows (e.g. 54k as in the original issue), the g
 
 ## Raw Output
 
-```
+```text
 === Issue #79 Benchmark (rows=500, dim=768, runs=3) ===
 --- Nested myvector_construct (issue #79 pattern) ---
   Run 1: 99694 µs

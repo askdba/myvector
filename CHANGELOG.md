@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Added (1.0.2)
 
 - Runtime config file permission checks: refuse to load `myvector_config_file`
   if it has insecure permissions (group/world readable) or wrong ownership on

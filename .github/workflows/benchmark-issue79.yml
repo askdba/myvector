@@ -9,6 +9,8 @@ on:
   pull_request:
     branches: [main]
 
+permissions: read-all
+
 jobs:
   build-and-benchmark:
     if: github.ref == 'refs/heads/fix/issue-79' || github.head_ref == 'fix/issue-79'
@@ -41,15 +43,15 @@ jobs:
         run: |
           set -euo pipefail
           build_dir="mysql-server"
-          rm -rf ${build_dir}
+          rm -rf "${build_dir}"
           git clone --depth 1 --branch mysql-8.4.8 \
-            https://github.com/mysql/mysql-server.git ${build_dir}
-          mkdir -p ${build_dir}/plugin/myvector
-          cp src/*.cc ${build_dir}/plugin/myvector/
-          cp include/*.h ${build_dir}/plugin/myvector/
-          cp include/*.i ${build_dir}/plugin/myvector/ 2>/dev/null || true
-          cp CMakeLists.txt ${build_dir}/plugin/myvector/
-          cd ${build_dir}
+            https://github.com/mysql/mysql-server.git "${build_dir}"
+          mkdir -p "${build_dir}/plugin/myvector"
+          cp src/*.cc "${build_dir}/plugin/myvector/"
+          cp include/*.h "${build_dir}/plugin/myvector/"
+          cp include/*.i "${build_dir}/plugin/myvector/" 2>/dev/null || true
+          cp CMakeLists.txt "${build_dir}/plugin/myvector/"
+          cd "${build_dir}"
           mkdir -p bld && cd bld
           cmake .. \
             -DCMAKE_C_COMPILER=gcc-10 -DCMAKE_CXX_COMPILER=g++-10 \
@@ -57,7 +59,7 @@ jobs:
             -DWITH_UNIT_TESTS=OFF -DWITH_ROUTER=OFF -DWITH_RAPID=OFF \
             -DWITH_NDB=OFF -DWITH_NDBCLUSTER=OFF \
             -DWITH_EXAMPLE_STORAGE_ENGINE=OFF -DCMAKE_BUILD_TYPE=Release
-          make myvector -j$(nproc)
+          make myvector -j"$(nproc)"
           cp plugin_output_directory/myvector.so ../../myvector-amd64.so
 
       - name: Prepare Docker build context

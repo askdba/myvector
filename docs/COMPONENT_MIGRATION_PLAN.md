@@ -1,3 +1,7 @@
+# Component Migration Plan
+
+<!-- markdownlint-disable MD030 -->
+
 ### **Objective**
 
 To migrate the existing `myvector` MySQL plugin to the MySQL Component Infrastructure. This will improve modularity, align with modern MySQL architecture, and ensure future compatibility, as the traditional plugin infrastructure is being deprecated.
@@ -10,7 +14,7 @@ The current implementation is a multi-purpose audit plugin with the following ke
 *   **User-Defined Functions (UDFs):** It registers several UDFs, whose logic resides in `myvector.cc`. These include `myvector_construct`, `myvector_display`, `myvector_distance`, and `myvector_ann_set`, which are the primary user interface for vector operations.
 *   **Background Binlog Processing:** It starts a background thread (`myvector_binlog_loop` in `myvector_binlog.cc`) to monitor the binary log. This enables "online" vector indexes to be updated automatically in response to DML operations on base tables.
 *   **Configuration:** It uses global system variables (e.g., `myvector_index_dir`, `myvector_config_file`) declared with `MYSQL_SYSVAR` for configuration.
-*   **Build System:** It uses the `MYSQL_ADD_PLUGIN` macro in `CMakeLists.txt` for compilation and linking.
+*   **Build Tool:** It uses the `MYSQL_ADD_PLUGIN` macro in `CMakeLists.txt` for compilation and linking.
 
 ### **2. Proposed Component Architecture**
 
