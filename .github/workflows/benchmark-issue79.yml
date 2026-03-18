@@ -87,8 +87,14 @@ jobs:
           name: benchmark-issue79-results
           path: benchmark-results.txt
 
+      - name: Login to GitHub Container Registry (branch push only)
+        if: github.ref == 'refs/heads/fix/issue-79' && github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Push image (branch only)
         if: github.ref == 'refs/heads/fix/issue-79' && github.event_name == 'push'
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-          docker push ghcr.io/${{ github.repository }}:mysql8.4-fix-issue79
+        run: docker push ghcr.io/${{ github.repository }}:mysql8.4-fix-issue79

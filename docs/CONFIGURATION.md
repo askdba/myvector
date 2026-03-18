@@ -43,7 +43,7 @@ sudo chmod 600 /etc/myvector.cnf
 sudo -u mysql nano /etc/myvector.cnf
 ```
 
-On Windows, permission checks are not enforced; ensure the file is stored in a secure location.
+**Windows:** The plugin rejects config files that have no DACL (full access to everyone) or that grant the Everyone (world) SID read access. It also checks that the file can be opened and read; if the file is missing, it proceeds with empty credentials (same as Unix). Store the file in a secure location and restrict ACLs to the MySQL process account.
 
 ## Configuration Options
 
