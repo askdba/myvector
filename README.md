@@ -239,6 +239,7 @@ For more detailed information, please see the `docs` directory:
   (options, defaults, validation, security).
 - [**ANN_BENCHMARKS.md**](docs/ANN_BENCHMARKS.md): Performance benchmarks.
 - [**DOCKER_IMAGES.md**](docs/DOCKER_IMAGES.md): More on using our Docker images.
+- [**BUILDING_MACOS.md**](docs/BUILDING_MACOS.md): Building MySQL on macOS (Apple Silicon).
 - [**CONTRIBUTING.md**](CONTRIBUTING.md): Our contribution guidelines.
 
 ---

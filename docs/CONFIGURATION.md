@@ -30,6 +30,8 @@ myvector_config_file=/path/to/myvector.cnf
 
 If the file has insecure permissions or wrong ownership, the plugin **refuses to load** it and logs an error. The binlog thread will not start with credentials from that file.
 
+**Missing file:** If the config file does not exist, the plugin proceeds with empty credentials (same as before the security checks). Deployments that do not use online updates do not need to create the file.
+
 **Example:**
 
 ```bash

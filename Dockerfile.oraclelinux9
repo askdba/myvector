@@ -1,14 +1,41 @@
 ARG MYSQL_VERSION=8.0
+
+# Provide libstdc++ compatible with plugin (built with gcc-10). Use Ubuntu (lighter than Oracle Linux + gcc-toolset).
+FROM ubuntu:22.04 AS libstdcxx
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends libstdc++6 && \
+    mkdir -p /opt/libstdcxx && \
+    libstdcxx_file="$(find /usr -name 'libstdc++.so.6.*' -type f ! -name '*gdb*' | sort | tail -n1)" && \
+    [ -n "$libstdcxx_file" ] || { echo "libstdc++ not found" >&2; exit 1; } && \
+    cp -a "$libstdcxx_file" /opt/libstdcxx/ && \
+    ln -sf "$(basename "$libstdcxx_file")" /opt/libstdcxx/libstdc++.so.6 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 FROM mysql:${MYSQL_VERSION}
 ARG TARGETARCH
 
 # Copy the MyVector plugin and installation script
-# MySQL images use /usr/lib64/mysql/plugin on some distros.
 COPY myvector-${TARGETARCH}.so /usr/lib/mysql/plugin/myvector.so
-RUN if [ -d /usr/lib64/mysql/plugin ]; then \
-      cp /usr/lib/mysql/plugin/myvector.so /usr/lib64/mysql/plugin/; \
-    fi
+RUN mkdir -p /usr/lib64/mysql/plugin && \
+    cp /usr/lib/mysql/plugin/myvector.so /usr/lib64/mysql/plugin/
 COPY myvectorplugin.sql /docker-entrypoint-initdb.d/
+
+# Plugin needs newer libstdc++ (built with gcc-10)
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6 /usr/lib64/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6.* /usr/lib64/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6 /usr/lib/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6.* /usr/lib/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6 /lib64/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6.* /lib64/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6 /lib/
+COPY --from=libstdcxx /opt/libstdcxx/libstdc++.so.6.* /lib/
+RUN libstdcxx_real="$(ls /lib64/libstdc++.so.6.* 2>/dev/null | grep -v gdb | head -n1)" && \
+    [ -n "$libstdcxx_real" ] && ln -sf "$(basename "$libstdcxx_real")" /lib64/libstdc++.so.6 && \
+    ln -sf "$(basename "$libstdcxx_real")" /usr/lib64/libstdc++.so.6 && \
+    ln -sf "$(basename "$libstdcxx_real")" /usr/lib/libstdc++.so.6 && \
+    ln -sf "$(basename "$libstdcxx_real")" /lib/libstdc++.so.6 && \
+    rm -f /lib64/libstdc++.so.6.*gdb* /lib/libstdc++.so.6.*gdb* \
+      /usr/lib64/libstdc++.so.6.*gdb* /usr/lib/libstdc++.so.6.*gdb* 2>/dev/null; \
+    ldconfig
 
 # checkov:skip=CKV_DOCKER_3:MySQL entrypoint needs root for initialization
 HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD \

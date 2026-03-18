@@ -423,18 +423,36 @@ void parseRotateEvent(const unsigned char* event_buf,
     binlogfile = filename;
 }
 
-#ifndef WIN32
 /**
- * Check that the config file has secure permissions to avoid credential exposure.
- * Requires: mode 0600 or 0400 (owner-only), and file owned by the process user.
- * Returns true if ok to read, false otherwise.
+ * Load config file for binlog connection. Returns false if config was rejected
+ * (permission check failed); caller should exit immediately. Returns true if
+ * config loaded, path was empty, or file is missing (caller proceeds; empty
+ * credentials will fail to connect).
  */
-static bool checkConfigFilePermissions(const char* config_file) {
-    struct stat st;
-    if (stat(config_file, &st) != 0) {
+static bool readConfigFile(const char* config_file) {
+    if (!config_file || !strlen(config_file))
+        return true;
+
+#ifndef WIN32
+    /* Open first, then fstat on fd to avoid TOCTOU race (symlink swap). */
+    int fd = open(config_file, O_RDONLY);
+    if (fd < 0) {
+        if (errno == ENOENT) {
+            /* Missing file is non-fatal: proceed with empty credentials. */
+            return true;
+        }
         error_print(
-            "MyVector: cannot stat config file %s (errno %d). Refusing to load.",
+            "MyVector: cannot open config file %s (errno %d). Refusing to load.",
             config_file, errno);
+        return false;
+    }
+
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        error_print(
+            "MyVector: cannot fstat config file %s (errno %d). Refusing to load.",
+            config_file, errno);
+        close(fd);
         return false;
     }
 
@@ -444,6 +462,7 @@ static bool checkConfigFilePermissions(const char* config_file) {
             "MyVector: config file %s has insecure permissions (group or "
             "world readable). Set to 0600 or 0400. Refusing to load.",
             config_file);
+        close(fd);
         return false;
     }
 
@@ -454,48 +473,96 @@ static bool checkConfigFilePermissions(const char* config_file) {
             "MyVector: config file %s is not owned by the MySQL process user. "
             "Refusing to load.",
             config_file);
+        close(fd);
         return false;
     }
 
-    return true;
-}
-#endif
-
-/**
- * Load config file for binlog connection. Returns false if config was rejected
- * (permission check failed); caller should exit immediately. Returns true if
- * config loaded or path was empty (caller proceeds; empty credentials will
- * fail to connect).
- */
-static bool readConfigFile(const char* config_file) {
-    if (!config_file || !strlen(config_file))
-        return true;
-
-#ifndef WIN32
-    if (!checkConfigFilePermissions(config_file))
+    /* Read file content (max 64KB for config) */
+    const size_t max_size = 65536;
+    size_t to_read = (st.st_size > 0 && (size_t)st.st_size < max_size)
+                         ? (size_t)st.st_size
+                         : (st.st_size > 0 ? max_size : 4096);
+    std::string content(to_read + 1, '\0');
+    ssize_t n = read(fd, &content[0], to_read);
+    if (n < 0) {
+        int saved_errno = errno;
+        close(fd);
+        error_print(
+            "MyVector: cannot read config file %s (errno %d). Refusing to load.",
+            config_file, saved_errno);
         return false;
-#endif
+    }
+    close(fd);
+    content.resize(n > 0 ? (size_t)n : 0);
 
+    /* Parse key=value lines; allow empty values (e.g. myvector_user_password=) */
+    std::map<std::string, std::string> opts;
+    std::istringstream iss(content);
+    std::string line;
+    while (std::getline(iss, line)) {
+        if (line.length() && line[0] == '#')
+            continue;
+        size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        std::string k = line.substr(0, eq);
+        std::string v = line.substr(eq + 1);
+        while (k.length() && (k.back() == ' ' || k.back() == '\t'))
+            k.pop_back();
+        while (k.length() && (k.front() == ' ' || k.front() == '\t'))
+            k.erase(0, 1);
+        while (v.length() && (v.back() == ' ' || v.back() == '\t'))
+            v.pop_back();
+        while (v.length() && (v.front() == ' ' || v.front() == '\t'))
+            v.erase(0, 1);
+        if (k.length())
+            opts[k] = v;
+    }
+    auto get = [&opts](const char* key) {
+        auto it = opts.find(key);
+        return it != opts.end() ? it->second : std::string();
+    };
+    myvector_conn_user_id = get("myvector_user_id");
+    myvector_conn_password = get("myvector_user_password");
+    myvector_conn_socket = get("myvector_socket");
+    myvector_conn_host = get("myvector_host");
+    myvector_conn_port = get("myvector_port");
+    return true;
+#else
     std::ifstream file(config_file);
-    std::string line, info;
+    std::map<std::string, std::string> opts;
+    std::string line;
 
     while (std::getline(file, line)) {
         if (line.length() && line[0] == '#')
             continue;
-
-        if (info.length())
-            info += ",";
-        info += line;
+        size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        std::string k = line.substr(0, eq);
+        std::string v = line.substr(eq + 1);
+        while (k.length() && (k.back() == ' ' || k.back() == '\t'))
+            k.pop_back();
+        while (k.length() && (k.front() == ' ' || k.front() == '\t'))
+            k.erase(0, 1);
+        while (v.length() && (v.back() == ' ' || v.back() == '\t'))
+            v.pop_back();
+        while (v.length() && (v.front() == ' ' || v.front() == '\t'))
+            v.erase(0, 1);
+        if (k.length())
+            opts[k] = v;
     }
-
-    MyVectorOptions vo(info);
-
-    myvector_conn_user_id = vo.getOption("myvector_user_id");
-    myvector_conn_password = vo.getOption("myvector_user_password");
-    myvector_conn_socket = vo.getOption("myvector_socket");
-    myvector_conn_host = vo.getOption("myvector_host");
-    myvector_conn_port = vo.getOption("myvector_port");
+    auto get = [&opts](const char* key) {
+        auto it = opts.find(key);
+        return it != opts.end() ? it->second : std::string();
+    };
+    myvector_conn_user_id = get("myvector_user_id");
+    myvector_conn_password = get("myvector_user_password");
+    myvector_conn_socket = get("myvector_socket");
+    myvector_conn_host = get("myvector_host");
+    myvector_conn_port = get("myvector_port");
     return true;
+#endif
 }
 
 /* GetBaseTableColumnPositions() - Get the column ordinal positions of the
@@ -655,6 +722,15 @@ void BuildMyVectorIndexSQL(const char* db,
                            char* errorbuf) {
     strcpy(errorbuf, "SUCCESS");
     size_t nRows = 0;
+
+    // Reload config at build time to avoid startup-order races where the
+    // binlog thread initializes before config/init scripts are ready.
+    if (!readConfigFile(myvector_config_file)) {
+        snprintf(errorbuf,
+                 MYVECTOR_BUFF_SIZE,
+                 "Error loading config file for index build.");
+        return;
+    }
 
     fprintf(stderr,
             "BuildMyVectorIndexSQL %s %s %s %s %s %s.\n",

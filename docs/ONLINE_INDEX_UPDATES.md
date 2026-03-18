@@ -209,6 +209,16 @@ To build the Docker image locally (required if the prebuilt image has config iss
 ./scripts/test-online-updates.sh myvector:mysql8.4-local
 ```
 
+**Index build shows "socket ''" with prebuilt image?** The published image may not yet include the config parsing fix. The test still validates binlog/online updates. Use a locally built image for full validation: `./scripts/build-docker-local.sh 8.4` then `./scripts/test-online-updates.sh myvector:mysql8.4-local`.
+
+**CMake "No mysys timer support detected"?** Docker on macOS can restrict timer syscalls. The script uses `--privileged` to work around this. If it still fails, try Colima or a Linux host.
+
+**Build fails?** On arm64 (Apple Silicon), the script uses Clang and `-j1`. If it still fails:
+- **Debug:** Run with `MYVECTOR_VERBOSE=1 ./scripts/build-docker-local.sh 8.4` to see the failing command.
+- **Fallback:** Force amd64 (slower, runs under QEMU): `MYVECTOR_ARCH=amd64 ./scripts/build-docker-local.sh 8.4`
+- **Prebuilt:** Use `./scripts/test-online-updates.sh` (no args) with the prebuilt image.
+- **Native builds:** See [BUILDING_MACOS.md](BUILDING_MACOS.md) for MySQL/LLVM compatibility on macOS.
+
 For Docker, ensure `myvector.cnf` has `myvector_host=127.0.0.1` and `myvector_port=3306` so the index build connection works. See [DOCKER_IMAGES.md](DOCKER_IMAGES.md).
 
 ## Related Documentation
