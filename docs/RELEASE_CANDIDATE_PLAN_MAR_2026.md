@@ -8,7 +8,7 @@ minor release.
 - Release type: minor version release.
 - Scope baseline: include all merged changes since the last released tag.
 - Exclusion rule: no Component PRs are allowed in this RC.
-- Post-cut policy: only blocker bug fixes are allowed after RC1 cut.
+- Post-cut policy: only blocker bugfixes are allowed after RC1 cut.
 
 ## Working assumptions
 

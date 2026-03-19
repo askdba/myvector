@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.26.3] - 2026-03-19
 
-### Added
+### Added (1.26.3)
 
 - Runtime config file permission checks: refuse to load `myvector_config_file`
   if it has insecure permissions (group/world readable) or wrong ownership on
@@ -23,14 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Expanded licensing documentation and compatibility notes.
 - MySQL 9.x setup example and updated macOS build/testing observations.
 
-### Changed
+### Changed (1.26.3)
 
 - Minor release includes accumulated merged changes since `v1.26.1`.
 - Binlog config loading made thread-safe and deduplicated.
 - Local Docker smoke workflow stabilized for release validation.
 - Documentation expanded across Docker images, configuration, and testing flows.
 
-### Fixed
+### Fixed (1.26.3)
 
 - Fail-fast behavior for binlog config rejection paths.
 - Lint violations across scripts, docs, and workflow files.
@@ -51,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.2] - 2026-01-29
 
-### Added
+### Added (1.0.2)
 
 - `NOTICE` file documenting third-party attributions (HNSWlib, Boost).
 - `licenses/` directory with full license texts (Apache-2.0, Boost-1.0) and
@@ -62,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Preparation for 1.0.2 (was RC3)
 - Update `README.md` with licensing information.
 
-### Fixed
+### Fixed (1.0.2)
 
 - Re-added `mysql_close(binlog_conn)` in `myvector_index_build` just before
   `myvector::log_index_build_request` to ensure a fresh connection for binary
@@ -81,7 +81,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Addressed compilation errors related to `String::c_ptr_safe()` by updating
   code to follow modern MySQL string handling practices.
 
-### Changed
+### Changed (1.0.2 docs)
 
 - Improved `README.md` documentation for installation and configuration.
 
