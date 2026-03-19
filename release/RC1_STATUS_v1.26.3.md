@@ -12,7 +12,7 @@
 ## 2) Candidate commit and branch
 
 - Release branch: `release/v1.26.3-rc1`
-- Working branch now: `fix/issue-36-config-security`
+- Working branch now: `release/v1.26.3-rc1`
 - Candidate commit SHA: `d6ef430`
 - Scope range: `v1.26.1..HEAD-at-cut`
 - Component PRs included: `No` (policy)
