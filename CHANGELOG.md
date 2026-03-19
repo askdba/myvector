@@ -47,7 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation updates
 
-- Updated `README.md`, `docs/CONFIGURATION.md`, `docs/DOCKER_IMAGES.md`,
+- Updated `README.md` (supported platforms; Windows not supported at this time),
+  `docs/CONFIGURATION.md`, `docs/DOCKER_IMAGES.md`,
   `docs/ONLINE_INDEX_UPDATES.md`, and `docs/BUILDING_MACOS.md`.
 - Added/updated licensing docs under `licenses/`.
 - Added benchmark baseline documentation for issue #79.

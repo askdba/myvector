@@ -42,6 +42,8 @@ coverage for setup, testing, and operations.
 
 ## Documentation updates
 
+- Updated `README.md` with supported platforms (Linux/macOS; Windows unsupported
+  at this time).
 - Updated `docs/CONFIGURATION.md` with security-oriented guidance.
 - Updated `docs/ONLINE_INDEX_UPDATES.md` and `docs/DOCKER_IMAGES.md`.
 - Updated `docs/BUILDING_MACOS.md` and MySQL 9.x setup references.
