@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pull each published MyVector image from GHCR and run scripts/smoke-readme.sh.
 #
-# Usage (from repo root):
+# Usage (from repository root):
 #   ./scripts/smoke-published-images.sh
 #   REGISTRY_IMAGE=ghcr.io/org/other ./scripts/smoke-published-images.sh
 #

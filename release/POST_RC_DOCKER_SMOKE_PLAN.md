@@ -38,7 +38,7 @@ MySQL 8.0 build also receives `ghcr.io/askdba/myvector:latest`.
 
 ## 3) Automated smoke (recommended)
 
-From the repo root, after images are pushed:
+From the repository root, after images are pushed:
 
 ```bash
 ./scripts/smoke-published-images.sh
