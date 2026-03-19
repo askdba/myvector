@@ -24,6 +24,14 @@ coverage for setup, testing, and operations.
 - Local Docker smoke workflow updated for more stable validation behavior.
 - Documentation expanded across configuration, Docker images, and online updates.
 - Minor improvements to changelog and repository hygiene files.
+- **Platform:** Microsoft Windows is **not a supported build target at this
+  time.** The plugin is maintained for **Unix-like systems** (Linux and macOS)
+  only; Win32-specific code paths have been removed from the sources.
+
+## Removed
+
+- Windows-only (`WIN32`) plugin implementation (e.g. Windows config and export
+  shims). Windows may be revisited as a supported platform in a future release.
 
 ## Fixed
 
@@ -44,6 +52,8 @@ coverage for setup, testing, and operations.
 - No schema migration required for this release.
 - Review configuration and file-permission expectations before rollout.
 - For Apple Silicon local testing, prefer documented prebuilt images/workflows.
+- **Windows builds are unsupported at this time** — use published Linux
+  container images or a Linux/macOS build environment.
 
 ## Known issues
 

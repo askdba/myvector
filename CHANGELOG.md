@@ -29,6 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Binlog config loading made thread-safe and deduplicated.
 - Local Docker smoke workflow stabilized for release validation.
 - Documentation expanded across Docker images, configuration, and testing flows.
+- **Platform:** Microsoft Windows is **not a supported build target at this time**
+  (Unix-like systems only: Linux and macOS).
+
+### Removed (1.26.3)
+
+- Win32-specific plugin code paths (Windows config handling, export macros, and
+  related shims). Builds and releases target Linux/macOS only until Windows
+  support is explicitly restored.
 
 ### Fixed (1.26.3)
 
@@ -48,6 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - No schema migration required.
 - Component PRs are excluded from this release scope by RC policy.
+- If you previously built the plugin on Windows, that workflow is unsupported
+  at this time; use Linux (including Docker images) or macOS.
 
 ## [1.0.2] - 2026-01-29
 
