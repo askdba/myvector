@@ -102,7 +102,7 @@ Use this runbook to generate the scope inventory and draft release notes.
 
 ```bash
 # Last stable released tag (ignore RC tags such as -rc1)
-LAST_TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*')"
+LAST_TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-rc*')"
 echo "Last tag: ${LAST_TAG}"
 ```
 
