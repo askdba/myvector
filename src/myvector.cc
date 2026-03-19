@@ -39,42 +39,10 @@
 #pragma GCC diagnostic ignored "-Wsuggest-override"
 #endif
 
-#ifdef WIN32
-#define PLUGIN_EXPORT extern "C" __declspec(dllexport)
-#else
 #define PLUGIN_EXPORT extern "C"
-#endif
 
-#ifdef WIN32
-#include <fcntl.h>
-#include <io.h>
-#include <sys\stat.h>
-#include <sys\types.h>
-#include <time.h>
-#include <windows.h>
-#include <winsock2.h>
-
-int fsync(int fd) { return _commit(fd); }
-
-static void usleep(int usec) { ::Sleep(usec / 1000); }
-int strcasecmp(const char* s1, const char* s2) { return _stricmp(s1, s2); }
-void asctime_r(const struct tm* timeptr, char* dst) {
-    const char* poi = asctime(timeptr);
-    strcpy(dst, poi);
-}
-int gettimeofday(struct timeval* tv, struct timezone* tz) {
-    tv->tv_sec = time(0);
-    tv->tv_usec = 0;
-    return 0;
-}
-
-#define O_WRONLY _O_WRONLY
-#define O_CREAT _O_CREAT
-#define O_TRUNC _O_TRUNC
-#define O_RDWR _O_RDWR
-#else
+#include <strings.h>
 #include <unistd.h>
-#endif
 
 #include "mysql.h"
 #include "mysql/plugin.h"
@@ -351,14 +319,7 @@ float HammingDistanceFn(const void* __restrict pVect1,
         a++;
         b++;
 
-#ifdef WIN32
-        while (res > 0) {
-            ldist += (res & 1);
-            res >>= 1;
-        }
-#else
         ldist += __builtin_popcountll(res);
-#endif
     }
     dist = ldist;
     return dist;

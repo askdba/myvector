@@ -67,18 +67,9 @@
 #include "sql_string.h"
 #include "typelib.h"
 
-#ifdef WIN32
-#include <io.h>
-#include <windows.h>
-#include <aclapi.h>
-
-static void usleep(int usec) { ::Sleep(usec / 1000); }
-
-#else
 #include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#endif
 
 #include "mysql/plugin.h"
 #include "mysql/service_my_plugin_log.h"
@@ -120,68 +111,6 @@ extern MYSQL* binlog_mysql_conn;
 #define warning_print(...)                                                     \
     my_plugin_log_message(&gplugin, MY_WARNING_LEVEL, __VA_ARGS__)
 #include "myvectorutils.h"
-
-#ifdef WIN32
-/* Returns false if the file's DACL is missing or grants Everyone read (insecure).
- * Caller must pass the CreateFile handle used for reads (handle-based ACL check;
- * avoids path TOCTOU vs GetNamedSecurityInfo on a path). */
-static bool isConfigFileSecureWindowsHandle(HANDLE hFile) {
-    PSECURITY_DESCRIPTOR pSD = nullptr;
-    PACL pDacl = nullptr;
-    DWORD err = GetSecurityInfo(
-        hFile,
-        SE_FILE_OBJECT,
-        DACL_SECURITY_INFORMATION,
-        nullptr, nullptr, &pDacl, nullptr, &pSD);
-    if (err != ERROR_SUCCESS || !pSD) {
-        if (pSD) LocalFree(pSD);
-        /* Unsupported FS or other failure: allow to avoid breaking legacy setups */
-        return true;
-    }
-    bool secure = true;
-    if (!pDacl) {
-        /* NULL DACL = full access to everyone */
-        secure = false;
-    } else {
-        ACL_SIZE_INFORMATION aclSize = {};
-        if (!GetAclInformation(pDacl, &aclSize, sizeof(aclSize),
-                               AclSizeInformation)) {
-            secure = false;
-            warning_print(
-                "MyVector: GetAclInformation failed for config file DACL; "
-                "treating as not secure.");
-        } else {
-            PSID pEveryoneSid = nullptr;
-            DWORD sidLen = 0;
-            CreateWellKnownSid(WinWorldSid, nullptr, nullptr, &sidLen);
-            if (sidLen) {
-                pEveryoneSid = LocalAlloc(LPTR, sidLen);
-                if (pEveryoneSid &&
-                    CreateWellKnownSid(WinWorldSid, nullptr, pEveryoneSid,
-                                       &sidLen)) {
-                    for (DWORD i = 0; i < aclSize.AceCount; ++i) {
-                        LPVOID pAce = nullptr;
-                        if (GetAce(pDacl, i, &pAce)) {
-                            const auto* ace =
-                                static_cast<const ACCESS_ALLOWED_ACE*>(pAce);
-                            if (ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE &&
-                                EqualSid(&ace->SidStart, pEveryoneSid) &&
-                                (ace->Mask & (FILE_READ_DATA | FILE_READ_EA |
-                                              FILE_READ_ATTRIBUTES))) {
-                                secure = false;
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (pEveryoneSid) LocalFree(pEveryoneSid);
-            }
-        }
-    }
-    LocalFree(pSD);
-    return secure;
-}
-#endif /* WIN32 */
 
 extern char* myvector_index_dir;
 
@@ -552,7 +481,6 @@ static bool readConfigFile(const char* config_file) {
     if (!config_file || !strlen(config_file))
         return true;
 
-#ifndef WIN32
     /* Open first, then fstat on fd to avoid TOCTOU race (symlink swap). */
     int fd = open(config_file, O_RDONLY);
     if (fd < 0) {
@@ -618,77 +546,6 @@ static bool readConfigFile(const char* config_file) {
     map<string, string> opts = parseConfigOptionsFromText(content);
     applyConfigOptions(opts);
     return true;
-#else
-    /* Open with CreateFile first; capture GetLastError immediately on failure
-       (before any other Win32 call). ACL check uses the same handle (no path TOCTOU). */
-    HANDLE hFile = CreateFileA(
-        config_file,
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr);
-    if (hFile == INVALID_HANDLE_VALUE) {
-        const DWORD win_err_open = GetLastError();
-        if (win_err_open == ERROR_FILE_NOT_FOUND ||
-            win_err_open == ERROR_PATH_NOT_FOUND) {
-            applyConfigOptions(map<string, string>{});
-            return true;
-        }
-        error_print(
-            "MyVector: cannot open config file %s (Windows error %lu). "
-            "Refusing to load.",
-            config_file, static_cast<unsigned long>(win_err_open));
-        return false;
-    }
-    if (!isConfigFileSecureWindowsHandle(hFile)) {
-        CloseHandle(hFile);
-        error_print(
-            "MyVector: config file %s has insecure ACLs (missing DACL or "
-            "world-readable). Refusing to load.",
-            config_file);
-        return false;
-    }
-    LARGE_INTEGER liSize;
-    if (!GetFileSizeEx(hFile, &liSize)) {
-        const DWORD win_err = GetLastError();
-        CloseHandle(hFile);
-        error_print(
-            "MyVector: cannot stat config file %s (Windows error %lu). "
-            "Refusing to load.",
-            config_file, static_cast<unsigned long>(win_err));
-        return false;
-    }
-    const size_t max_size = 65536;
-    LONGLONG sz = liSize.QuadPart;
-    size_t to_read;
-    if (sz <= 0)
-        to_read = 4096;
-    else if (static_cast<size_t>(sz) >= max_size)
-        to_read = max_size;
-    else
-        to_read = static_cast<size_t>(sz);
-
-    std::string content(to_read, '\0');
-    DWORD bytesRead = 0;
-    if (!ReadFile(hFile, &content[0], static_cast<DWORD>(to_read), &bytesRead,
-                  nullptr)) {
-        const DWORD win_err = GetLastError();
-        CloseHandle(hFile);
-        error_print(
-            "MyVector: cannot read config file %s (Windows error %lu). "
-            "Refusing to load.",
-            config_file, static_cast<unsigned long>(win_err));
-        return false;
-    }
-    CloseHandle(hFile);
-    content.resize(bytesRead);
-
-    map<string, string> opts = parseConfigOptionsFromText(content);
-    applyConfigOptions(opts);
-    return true;
-#endif
 }
 
 /* GetBaseTableColumnPositions() - Get the column ordinal positions of the

@@ -21,7 +21,7 @@ myvector_config_file=/path/to/myvector.cnf
 
 ## Security: File Permissions
 
-**The config file contains database credentials.** MyVector enforces the following at load time (Unix/Linux/macOS only):
+**The config file contains database credentials.** MyVector enforces the following at load time on **Unix-like systems** (Linux and macOS). **Microsoft Windows is not a supported build target** for this plugin.
 
 | Requirement | Description |
 |-------------|-------------|
@@ -42,8 +42,6 @@ sudo chmod 600 /etc/myvector.cnf
 # Edit as mysql user
 sudo -u mysql nano /etc/myvector.cnf
 ```
-
-**Windows:** The plugin rejects config files that have no DACL (full access to everyone) or that grant the Everyone (world) SID read access. It also checks that the file can be opened and read; if the file is missing, it proceeds with empty credentials (same as Unix). Store the file in a secure location and restrict ACLs to the MySQL process account.
 
 ## Configuration Options
 
