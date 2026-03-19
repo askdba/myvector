@@ -70,10 +70,62 @@
 
 #ifdef WIN32
 #include <io.h>
+#include <windows.h>
+#include <aclapi.h>
 
 static void usleep(int usec) { ::Sleep(usec / 1000); }
 
+/* Returns false if the file's DACL is missing or grants Everyone read (insecure). */
+static bool isConfigFileSecureWindows(const char* path) {
+    PSECURITY_DESCRIPTOR pSD = nullptr;
+    PACL pDacl = nullptr;
+    DWORD err = GetNamedSecurityInfoA(
+        path, SE_FILE_OBJECT,
+        DACL_SECURITY_INFORMATION,
+        nullptr, nullptr, &pDacl, nullptr, &pSD);
+    if (err != ERROR_SUCCESS || !pSD) {
+        if (pSD) LocalFree(pSD);
+        /* Unsupported FS or other failure: allow to avoid breaking legacy setups */
+        return true;
+    }
+    bool secure = true;
+    if (!pDacl) {
+        /* NULL DACL = full access to everyone */
+        secure = false;
+    } else {
+        ACL_SIZE_INFORMATION aclSize = {};
+        if (GetAclInformation(pDacl, &aclSize, sizeof(aclSize), AclSizeInformation)) {
+            PSID pEveryoneSid = nullptr;
+            DWORD sidLen = 0;
+            CreateWellKnownSid(WinWorldSid, nullptr, nullptr, &sidLen);
+            if (sidLen) {
+                pEveryoneSid = LocalAlloc(LPTR, sidLen);
+                if (pEveryoneSid &&
+                    CreateWellKnownSid(WinWorldSid, nullptr, pEveryoneSid, &sidLen)) {
+                    for (DWORD i = 0; i < aclSize.AceCount; ++i) {
+                        LPVOID pAce = nullptr;
+                        if (GetAce(pDacl, i, &pAce)) {
+                            const auto* ace = static_cast<const ACCESS_ALLOWED_ACE*>(pAce);
+                            if (ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE &&
+                                EqualSid(&ace->SidStart, pEveryoneSid) &&
+                                (ace->Mask & (FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES))) {
+                                secure = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (pEveryoneSid) LocalFree(pEveryoneSid);
+            }
+        }
+    }
+    LocalFree(pSD);
+    return secure;
+}
+
 #else
+#include <errno.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -195,6 +247,7 @@ string myvector_conn_password;
 string myvector_conn_socket;
 string myvector_conn_host;
 string myvector_conn_port;
+mutex myvector_conn_config_mutex;
 
 #define EVENT_HEADER_LENGTH 19
 
@@ -421,29 +474,184 @@ void parseRotateEvent(const unsigned char* event_buf,
     binlogfile = filename;
 }
 
-void readConfigFile(const char* config_file) {
-    if (!config_file || !strlen(config_file))
-        return;
+/**
+ * Load config file for binlog connection. Returns false if config was rejected
+ * (permission check failed); caller should exit immediately. Returns true if
+ * config loaded, path was empty, or file is missing (caller proceeds; empty
+ * credentials will fail to connect).
+ */
+struct MyVectorConnConfig {
+    string user_id;
+    string password;
+    string socket;
+    string host;
+    string port;
+};
 
-    std::ifstream file(config_file);
-    std::string line, info;
+static void trimInPlace(string& s) {
+    while (s.length() && (s.back() == ' ' || s.back() == '\t'))
+        s.pop_back();
+    while (s.length() && (s.front() == ' ' || s.front() == '\t'))
+        s.erase(0, 1);
+}
 
-    while (std::getline(file, line)) {
+static map<string, string> parseConfigOptionsFromText(const string& content) {
+    map<string, string> opts;
+    std::istringstream iss(content);
+    string line;
+    while (std::getline(iss, line)) {
         if (line.length() && line[0] == '#')
             continue;
+        size_t eq = line.find('=');
+        if (eq == string::npos)
+            continue;
+        string k = line.substr(0, eq);
+        string v = line.substr(eq + 1);
+        trimInPlace(k);
+        trimInPlace(v);
+        if (k.length())
+            opts[k] = v;  // allow empty values
+    }
+    return opts;
+}
 
-        if (info.length())
-            info += ",";
-        info += line;
+static void applyConfigOptions(const map<string, string>& opts) {
+    auto get = [&opts](const char* key) {
+        auto it = opts.find(key);
+        return it != opts.end() ? it->second : string();
+    };
+    lock_guard<mutex> lk(myvector_conn_config_mutex);
+    myvector_conn_user_id = get("myvector_user_id");
+    myvector_conn_password = get("myvector_user_password");
+    myvector_conn_socket = get("myvector_socket");
+    myvector_conn_host = get("myvector_host");
+    myvector_conn_port = get("myvector_port");
+}
+
+static MyVectorConnConfig getConfigSnapshot() {
+    lock_guard<mutex> lk(myvector_conn_config_mutex);
+    return MyVectorConnConfig{myvector_conn_user_id,
+                              myvector_conn_password,
+                              myvector_conn_socket,
+                              myvector_conn_host,
+                              myvector_conn_port};
+}
+
+static bool readConfigFile(const char* config_file) {
+    if (!config_file || !strlen(config_file))
+        return true;
+
+#ifndef WIN32
+    /* Open first, then fstat on fd to avoid TOCTOU race (symlink swap). */
+    int fd = open(config_file, O_RDONLY);
+    if (fd < 0) {
+        if (errno == ENOENT) {
+            /* Missing file is non-fatal: proceed with empty credentials. */
+            applyConfigOptions(map<string, string>{});
+            return true;
+        }
+        error_print(
+            "MyVector: cannot open config file %s (errno %d). Refusing to load.",
+            config_file, errno);
+        return false;
     }
 
-    MyVectorOptions vo(info);
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        error_print(
+            "MyVector: cannot fstat config file %s (errno %d). Refusing to load.",
+            config_file, errno);
+        close(fd);
+        return false;
+    }
 
-    myvector_conn_user_id = vo.getOption("myvector_user_id");
-    myvector_conn_password = vo.getOption("myvector_user_password");
-    myvector_conn_socket = vo.getOption("myvector_socket");
-    myvector_conn_host = vo.getOption("myvector_host");
-    myvector_conn_port = vo.getOption("myvector_port");
+    /* Reject if group or world have any access (read/write/execute) */
+    if ((st.st_mode & 0077) != 0) {
+        error_print(
+            "MyVector: config file %s has insecure permissions (group or "
+            "world readable). Set to 0600 or 0400. Refusing to load.",
+            config_file);
+        close(fd);
+        return false;
+    }
+
+    /* Reject if not owned by the process user (e.g. mysql). Skip when running
+       as root (e.g. in Docker), since root can read any file. */
+    if (geteuid() != 0 && st.st_uid != geteuid()) {
+        error_print(
+            "MyVector: config file %s is not owned by the MySQL process user. "
+            "Refusing to load.",
+            config_file);
+        close(fd);
+        return false;
+    }
+
+    /* Read file content (max 64KB for config) */
+    const size_t max_size = 65536;
+    size_t to_read = (st.st_size > 0 && (size_t)st.st_size < max_size)
+                         ? (size_t)st.st_size
+                         : (st.st_size > 0 ? max_size : 4096);
+    std::string content(to_read + 1, '\0');
+    ssize_t n = read(fd, &content[0], to_read);
+    if (n < 0) {
+        int saved_errno = errno;
+        close(fd);
+        error_print(
+            "MyVector: cannot read config file %s (errno %d). Refusing to load.",
+            config_file, saved_errno);
+        return false;
+    }
+    close(fd);
+    content.resize(n > 0 ? (size_t)n : 0);
+
+    map<string, string> opts = parseConfigOptionsFromText(content);
+    applyConfigOptions(opts);
+    return true;
+#else
+    ifstream file(config_file);
+    if (!file.is_open()) {
+        /* Detect "file not found" reliably; C++ ifstream does not set GetLastError. */
+        const DWORD attrs = GetFileAttributesA(config_file);
+        if (attrs == INVALID_FILE_ATTRIBUTES) {
+            const DWORD win_err = GetLastError();
+            if (win_err == ERROR_FILE_NOT_FOUND ||
+                win_err == ERROR_PATH_NOT_FOUND) {
+                applyConfigOptions(map<string, string>{});
+                return true;
+            }
+            error_print(
+                "MyVector: cannot open config file %s (Windows error %lu). "
+                "Refusing to load.",
+                config_file, static_cast<unsigned long>(win_err));
+            return false;
+        }
+        /* File exists but open failed (e.g. sharing, permissions). */
+        const DWORD win_err = GetLastError();
+        error_print(
+            "MyVector: cannot open config file %s (Windows error %lu). Refusing "
+            "to load.",
+            config_file, static_cast<unsigned long>(win_err));
+        return false;
+    }
+    if (!isConfigFileSecureWindows(config_file)) {
+        error_print(
+            "MyVector: config file %s has insecure ACLs (missing DACL or "
+            "world-readable). Refusing to load.",
+            config_file);
+        return false;
+    }
+    std::stringstream buf;
+    buf << file.rdbuf();
+    if (file.fail()) {
+        error_print(
+            "MyVector: cannot read config file %s. Refusing to load.",
+            config_file);
+        return false;
+    }
+    map<string, string> opts = parseConfigOptionsFromText(buf.str());
+    applyConfigOptions(opts);
+    return true;
+#endif
 }
 
 /* GetBaseTableColumnPositions() - Get the column ordinal positions of the
@@ -604,6 +812,16 @@ void BuildMyVectorIndexSQL(const char* db,
     strcpy(errorbuf, "SUCCESS");
     size_t nRows = 0;
 
+    // Reload config at build time to avoid startup-order races where the
+    // binlog thread initializes before config/init scripts are ready.
+    if (!readConfigFile(myvector_config_file)) {
+        snprintf(errorbuf,
+                 MYVECTOR_BUFF_SIZE,
+                 "Error loading config file for index build.");
+        return;
+    }
+    MyVectorConnConfig conn_cfg = getConfigSnapshot();
+
     fprintf(stderr,
             "BuildMyVectorIndexSQL %s %s %s %s %s %s.\n",
             db,
@@ -620,13 +838,12 @@ void BuildMyVectorIndexSQL(const char* db,
 
     if (!mysql_real_connect(
             &mysql,
-            myvector_conn_host.c_str(),
-            myvector_conn_user_id.c_str(),
-            myvector_conn_password.c_str(),
+            conn_cfg.host.c_str(),
+            conn_cfg.user_id.c_str(),
+            conn_cfg.password.c_str(),
             NULL,
-            (myvector_conn_port.length() ? atoi(myvector_conn_port.c_str())
-                                         : 0),
-            myvector_conn_socket.c_str(),
+            (conn_cfg.port.length() ? atoi(conn_cfg.port.c_str()) : 0),
+            conn_cfg.socket.c_str(),
             CLIENT_IGNORE_SIGPIPE)) {
         snprintf(errorbuf,
                  MYVECTOR_BUFF_SIZE,
@@ -795,7 +1012,12 @@ void myvector_binlog_loop(int id) {
 
     int connect_attempts = 0;
 
-    readConfigFile(myvector_config_file);
+    if (!readConfigFile(myvector_config_file)) {
+        error_print(
+            "MyVector: binlog thread exiting due to config file rejection.");
+        return;
+    }
+    MyVectorConnConfig conn_cfg = getConfigSnapshot();
 
     if (myvector_feature_level & 1) {
         info_print("Binlog event thread is disabled!");
@@ -813,13 +1035,12 @@ void myvector_binlog_loop(int id) {
 
         if (!mysql_real_connect(
                 &mysql,
-                myvector_conn_host.c_str(),
-                myvector_conn_user_id.c_str(),
-                myvector_conn_password.c_str(),
+                conn_cfg.host.c_str(),
+                conn_cfg.user_id.c_str(),
+                conn_cfg.password.c_str(),
                 NULL,
-                (myvector_conn_port.length() ? atoi(myvector_conn_port.c_str())
-                                             : 0),
-                myvector_conn_socket.c_str(),
+                (conn_cfg.port.length() ? atoi(conn_cfg.port.c_str()) : 0),
+                conn_cfg.socket.c_str(),
                 CLIENT_IGNORE_SIGPIPE)) {
             /// fprintf(stderr, "real connect failed %s\n",
             /// mysql_error(&mysql));

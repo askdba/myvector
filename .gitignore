@@ -36,6 +36,7 @@ Makefile
 plugin_output_directory/
 
 # Test artifacts
+.myvector-test-init/
 *.log
 *.err
 core
@@ -46,3 +47,6 @@ demo/stanford50d/insert50d.sql
 
 # Config files with credentials
 myvector.cnf
+
+# Issue close comment helpers (used once, then discarded)
+docs/ISSUE_*_CLOSE_COMMENT.md

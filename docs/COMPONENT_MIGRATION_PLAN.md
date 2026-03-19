@@ -1,8 +1,12 @@
-### **Objective**
+# Component Migration Plan
+
+<!-- markdownlint-disable MD030 -->
+
+## Objective
 
 To migrate the existing `myvector` MySQL plugin to the MySQL Component Infrastructure. This will improve modularity, align with modern MySQL architecture, and ensure future compatibility, as the traditional plugin infrastructure is being deprecated.
 
-### **1. Analysis of the Existing Plugin Architecture**
+## 1. Analysis of the Existing Plugin Architecture
 
 The current implementation is a multi-purpose audit plugin with the following key functionalities:
 
@@ -10,9 +14,9 @@ The current implementation is a multi-purpose audit plugin with the following ke
 *   **User-Defined Functions (UDFs):** It registers several UDFs, whose logic resides in `myvector.cc`. These include `myvector_construct`, `myvector_display`, `myvector_distance`, and `myvector_ann_set`, which are the primary user interface for vector operations.
 *   **Background Binlog Processing:** It starts a background thread (`myvector_binlog_loop` in `myvector_binlog.cc`) to monitor the binary log. This enables "online" vector indexes to be updated automatically in response to DML operations on base tables.
 *   **Configuration:** It uses global system variables (e.g., `myvector_index_dir`, `myvector_config_file`) declared with `MYSQL_SYSVAR` for configuration.
-*   **Build System:** It uses the `MYSQL_ADD_PLUGIN` macro in `CMakeLists.txt` for compilation and linking.
+*   **Build Tool:** It uses the `MYSQL_ADD_PLUGIN` macro in `CMakeLists.txt` for compilation and linking.
 
-### **2. Proposed Component Architecture**
+## 2. Proposed Component Architecture
 
 The monolithic plugin will be decomposed into a single component that provides several distinct services. This modular approach is the core benefit of the component infrastructure.
 
@@ -22,7 +26,7 @@ The monolithic plugin will be decomposed into a single component that provides s
 *   **Binlog Monitoring Service:** A background service that encapsulates the binlog monitoring thread. Its lifecycle (start/stop) will be managed by the main component. All state (MySQL connection, binlog position, etc.) will be contained within this service.
 *   **UDF Service:** A service responsible for registering and deregistering all `myvector` UDFs using the `mysql_udf_metadata` service provided by the server.
 
-### **3. Detailed Implementation Plan**
+## 3. Detailed Implementation Plan
 
 Here is a step-by-step plan for the migration:
 
@@ -69,7 +73,7 @@ Here is a step-by-step plan for the migration:
     *   Remove the `MYSQL_SYSVAR` declarations from `myvector_plugin.cc`.
     *   The configuration file (`myvector.cnf`) loading logic will be explicitly called during the component's `init` phase. The loaded values will be passed to or stored within the services that need them, eliminating the need for global system variables.
 
-**Step 4: Update the Build System**
+**Step 4: Update the Build Tool**
 
 1.  **Modify `CMakeLists.txt`:**
     *   Remove the `MYSQL_ADD_PLUGIN(...)` block.

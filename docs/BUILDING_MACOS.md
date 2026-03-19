@@ -29,3 +29,20 @@ on macOS Apple Silicon. It is intended as a reference while building.
 
 - The LLVM failures are pre-existing issues except the new 8.4.8 regression
   involving bug #119246.
+
+## MyVector releases vs local builds
+
+**Releases are built on GitHub Actions** (ubuntu-22.04, x86_64 Linux), not on
+your Mac. When you push a tag (e.g. `v1.0.3`), CI builds amd64 and arm64 images
+and publishes to ghcr.io. You do not need to build locally for releases.
+
+**For local testing on Apple Silicon:** Use the prebuilt image:
+
+```bash
+./scripts/test-online-updates.sh   # Uses ghcr.io/askdba/myvector:mysql8.4
+```
+
+**If you must build locally:** `./scripts/build-docker-local.sh 8.4` builds
+inside Linux containers. Docker on macOS (especially Apple Silicon) can hit
+compiler/timer issues that CI does not. See
+[ONLINE_INDEX_UPDATES.md](ONLINE_INDEX_UPDATES.md#testing-with-docker).
