@@ -61,3 +61,12 @@ Policy: minor release, include merged changes since `v1.26.1`, no Component PRs
 - [ ] Restrict merges to blocker fixes only.
 - [ ] Prepare `v1.26.3-rc2` cut date and validation window.
 
+## 9) After CI green and images on GHCR (local smoke)
+
+PR CI builds images but **does not push** to GHCR until a `v*` tag or release triggers publish. After publish completes:
+
+- [ ] Follow `release/POST_RC_DOCKER_SMOKE_PLAN.md`.
+- [ ] Run `./scripts/smoke-published-images.sh` (optionally `MYVECTOR_SMOKE_STANFORD=1`).
+- [ ] Optionally run `./scripts/test-online-updates.sh` against `mysql8.4` (see plan).
+- [ ] Record tags tested and results in `release/RC1_STATUS_v1.26.3.md`.
+
