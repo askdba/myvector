@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added (1.0.2)
+## [1.26.3] - 2026-03-19
+
+### Added
 
 - Runtime config file permission checks: refuse to load `myvector_config_file`
   if it has insecure permissions (group/world readable) or wrong ownership on
@@ -16,6 +18,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defaults, validation rules, security requirements, and examples (#36).
 - `docs/ONLINE_INDEX_UPDATES.md`: Documentation for creating and configuring
   online (real-time) index updates via MySQL binlogs (#81).
+- Docker test scripts and online index update assertion guidance.
+- Benchmark workflow and baseline documentation for issue #79.
+- Expanded licensing documentation and compatibility notes.
+- MySQL 9.x setup example and updated macOS build/testing observations.
+
+### Changed
+
+- Minor release includes accumulated merged changes since `v1.26.1`.
+- Binlog config loading made thread-safe and deduplicated.
+- Local Docker smoke workflow stabilized for release validation.
+- Documentation expanded across Docker images, configuration, and testing flows.
+
+### Fixed
+
+- Fail-fast behavior for binlog config rejection paths.
+- Lint violations across scripts, docs, and workflow files.
+- `myvector_construct` caching optimization when first argument is constant.
+- Forward declaration issue for `myvector_construct_bv`.
+
+### Documentation updates
+
+- Updated `README.md`, `docs/CONFIGURATION.md`, `docs/DOCKER_IMAGES.md`,
+  `docs/ONLINE_INDEX_UPDATES.md`, and `docs/BUILDING_MACOS.md`.
+- Added/updated licensing docs under `licenses/`.
+- Added benchmark baseline documentation for issue #79.
+
+### Upgrade / migration notes
+
+- No schema migration required.
+- Component PRs are excluded from this release scope by RC policy.
 
 ## [1.0.2] - 2026-01-29
 
@@ -113,6 +145,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | 0.0.1   | 2025-06-21 | Initial proof of concept |
 
 [1.0.2]: https://github.com/askdba/myvector/compare/v1.0.1...v1.0.2
+[1.26.3]: https://github.com/askdba/myvector/compare/v1.26.1...v1.26.3
 [1.0.1]: https://github.com/askdba/myvector/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/askdba/myvector/compare/v0.0.1...v1.0.0
 [0.0.1]: https://github.com/askdba/myvector/releases/tag/v0.0.1
