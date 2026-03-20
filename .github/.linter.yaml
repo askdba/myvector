@@ -1,4 +1,6 @@
 ---
+# Legacy reference for optional local super-linter runs. CI uses actionlint only
+# (see .github/workflows/linter.yml), not this file.
 # .github/.linter.yaml
 # Configuration for super-linter
 
