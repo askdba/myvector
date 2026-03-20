@@ -11,7 +11,7 @@ Newest entries first.
 
 | Date | Area | Pattern | Rule to apply |
 | :--- | :--- | :--- | :--- |
-| YYYY-MM-DD | e.g. lint | e.g. use `repository` not `repo` for textlint | Run terminology check on new docs |
+| YYYY-MM-DD | e.g. lint | e.g. prefer full word `repository` in docs | Run terminology check on new docs |
 
 ---
 

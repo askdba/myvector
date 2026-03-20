@@ -17,5 +17,8 @@ CPP_FILE_EXTENSIONS: ".cc,.cpp,.h"
 # Perl configuration
 VALIDATE_PERL: false
 
+# textlint: enable after adding .github/.textlintrc.json with project rules
+VALIDATE_NATURAL_LANGUAGE: false
+
 # Ignore the include directory for JSCPD
 JSCPD_CONFIG_FILE: .jscpd.json
