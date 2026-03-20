@@ -1,5 +1,7 @@
-# zizmor (super-linter GITHUB_ACTIONS_ZIZMOR)
+# zizmor — optional local/supply-chain checks (CI runs actionlint only; see linter.yml)
 # Super-linter loads config from LINTER_RULES_PATH (default: .github/linters).
+# Example: docker run --rm -v "$PWD":/repo ghcr.io/woodruffw/zizmor:latest \
+#   --config /repo/.github/linters/zizmor.yaml /repo/.github/workflows/
 # - Allow tag/branch pins for actions (not only SHA).
 # - Suppress broad-permissions / checkout credential warnings for these workflows
 #   (GHCR publish, read-all, super-linter checkout needs full history).
