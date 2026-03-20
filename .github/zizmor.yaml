@@ -1,0 +1,24 @@
+# zizmor (super-linter GITHUB_ACTIONS_ZIZMOR)
+# - Allow tag/branch pins for actions (not only SHA).
+# - Suppress broad-permissions / checkout credential warnings for these workflows
+#   (GHCR publish, read-all, super-linter checkout needs full history).
+# https://docs.zizmor.sh/configuration/
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": ref-pin
+  excessive-permissions:
+    ignore:
+      - benchmark-issue79.yml
+      - ci.yml
+      - docker-publish.yml
+      - linter.yml
+      - release.yml
+  artipacked:
+    ignore:
+      - benchmark-issue79.yml
+      - ci.yml
+      - docker-publish.yml
+      - linter.yml
+      - release.yml
