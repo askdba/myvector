@@ -7,7 +7,8 @@
 DEFAULT_BRANCH: main
 VALIDATE_ALL_CODEBASE: true
 DISABLE_ERRORS: false
-LINTER_RULES_PATH: .github
+# Must match super-linter default (and linter.yml) so zizmor.yaml is found.
+LINTER_RULES_PATH: .github/linters
 
 # C++ configuration
 VALIDATE_CPP: false

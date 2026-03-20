@@ -23,6 +23,8 @@ jobs:
       - name: Lint Code Base
         uses: github/super-linter@v6
         env:
+          # Default is .github/linters; set explicitly so zizmor.yaml is resolved.
+          LINTER_RULES_PATH: .github/linters
           DEFAULT_BRANCH: "main"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VALIDATE_CPP: "false"
