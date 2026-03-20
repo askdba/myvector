@@ -6,6 +6,8 @@ name: Lint Code Base
 on:
   pull_request:
     branches: [ "main" ]
+  # Run lint only from Actions → Lint Code Base → Run workflow (no other CI workflows).
+  workflow_dispatch:
 
 permissions:
   contents: read
