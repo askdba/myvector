@@ -6,54 +6,54 @@ Policy: minor release, include merged changes since `v1.26.1`, no Component PRs
 
 ## 1) RC1 scope lock
 
-- [ ] Confirm release scope is `v1.26.1..HEAD`.
-- [ ] Confirm no Component PRs are included in RC1 scope.
-- [ ] Confirm hard freeze is active (only blocker fixes allowed).
-- [ ] Confirm owners assigned for all must-ship items.
+- [x] Confirm release scope is `v1.26.1..HEAD`.
+- [x] Confirm no Component PRs are included in RC1 scope.
+- [x] Confirm hard freeze is active (only blocker fixes allowed). → **Released for RC1 merge (2026-03-20).**
+- [x] Confirm owners assigned for all must-ship items.
 
 ## 2) Branch and tag prep
 
-- [ ] Create release branch:
+- [x] Create release branch:
   - `git checkout -b release/v1.26.3-rc1`
-- [ ] Verify clean state:
+- [x] Verify clean state:
   - `git status`
-- [ ] Record commit SHA for candidate build.
+- [x] Record commit SHA for candidate build. → See `release/RC1_STATUS_v1.26.3.md` (baseline `5a5ce7f` for validation).
 
 ## 3) Build and CI gates
 
-- [ ] CI is green for release branch.
-- [ ] Build succeeds from clean checkout.
-- [ ] Required test suites pass.
-- [ ] No release-blocking lint/test failures.
+- [x] CI is green for release branch.
+- [x] Build succeeds from clean checkout.
+- [x] Required test suites pass.
+- [x] No release-blocking lint/test failures.
 
 ## 4) Functional validation
 
-- [ ] Install/load workflow verified.
-- [ ] Core vector create/query flow verified.
-- [ ] Update/delete behavior verified.
-- [ ] Online index update flow verified (if in scope).
-- [ ] Regression checks for touched modules completed.
+- [x] Install/load workflow verified. → GHCR smoke (`smoke-published-images.sh`).
+- [x] Core vector create/query flow verified. → `smoke-readme.sh` per tag.
+- [ ] Update/delete behavior verified. → **Deferred:** CI + scope; optional before GA.
+- [ ] Online index update flow verified (if in scope). → **Optional** for RC1; see `test-online-updates.sh` for GA if needed.
+- [x] Regression checks for touched modules completed. → CI on branch.
 
 ## 5) Performance smoke
 
-- [ ] Startup sanity check.
-- [ ] Representative query latency sanity check.
-- [ ] Memory sanity under repeated operations.
+- [x] Startup sanity check. → Smoke script / container health.
+- [x] Representative query latency sanity check. → Light (README smoke only).
+- [ ] Memory sanity under repeated operations. → **Not run** for RC1.
 
 ## 6) Documentation and release notes gates
 
-- [ ] `release/RELEASE_NOTES_DRAFT.md` reviewed for RC1.
-- [ ] `CHANGELOG.md` entry for `1.26.3` reviewed.
-- [ ] User-facing docs updated for behavior/config changes.
-- [ ] Upgrade/migration notes validated (or "none required" confirmed).
+- [x] `release/RELEASE_NOTES_DRAFT.md` reviewed for RC1.
+- [x] `CHANGELOG.md` entry for `1.26.3` reviewed.
+- [x] User-facing docs updated for behavior/config changes.
+- [x] Upgrade/migration notes validated (or "none required" confirmed).
 
 ## 7) RC1 decision
 
-- [ ] Blocker bug count = 0, OR blockers explicitly tracked for RC2.
-- [ ] Go/No-Go review completed.
-- [ ] RC1 tag created:
+- [x] Blocker bug count = 0, OR blockers explicitly tracked for RC2.
+- [x] Go/No-Go review completed. → **Go** (2026-03-20).
+- [x] RC1 tag created:
   - `git tag -a v1.26.3-rc1 -m "Release candidate 1 for v1.26.3"`
-- [ ] RC1 handoff note posted (scope, risks, known issues).
+- [x] RC1 handoff note posted (scope, risks, known issues). → This checklist + `RC1_STATUS_v1.26.3.md`.
 
 ## 8) If RC2 is required
 
@@ -67,10 +67,9 @@ Policy: minor release, include merged changes since `v1.26.1`, no Component PRs
 
 PR CI builds images in the runner but **does not push** to GHCR until a **`v*`** tag or release triggers publish.
 
-- [ ] All required GitHub Actions checks completed successfully on the release line.
-- [ ] **Publish Docker Image** workflow succeeded for the tag that ships images (verify `mysql8.0`, `mysql8.4`, `mysql9.6` on GHCR).
-- [ ] Follow `release/POST_RC_DOCKER_SMOKE_PLAN.md` (next-step sequence at top).
-- [ ] Run `./scripts/smoke-published-images.sh` (optionally `MYVECTOR_SMOKE_STANFORD=1`).
-- [ ] Optionally run `./scripts/test-online-updates.sh` against `mysql8.4` (see plan).
-- [ ] Record tags tested and results in `release/RC1_STATUS_v1.26.3.md`.
-
+- [x] All required GitHub Actions checks completed successfully on the release line.
+- [x] **Publish Docker Image** workflow succeeded for the tag that ships images (verify `mysql8.0`, `mysql8.4`, `mysql9.6` on GHCR).
+- [x] Follow `release/POST_RC_DOCKER_SMOKE_PLAN.md` (next-step sequence at top).
+- [x] Run `./scripts/smoke-published-images.sh` (optionally `MYVECTOR_SMOKE_STANFORD=1`).
+- [ ] Optionally run `./scripts/test-online-updates.sh` against `mysql8.4` (see plan). → **Not run** for RC1.
+- [x] Record tags tested and results in `release/RC1_STATUS_v1.26.3.md`.
