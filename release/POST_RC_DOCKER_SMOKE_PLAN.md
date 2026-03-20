@@ -1,6 +1,27 @@
 # Post-RC: pull published images and run smoke tests
 
-Use this after CI is green **and** images exist in GitHub Container Registry (GHCR).
+## Next step after CI checks complete
+
+Use this sequence so published images are validated the same way you expect in production.
+
+1. **Wait** until all required GitHub Actions checks on the release PR/branch are **green** (including **Lint Code Base** and **MyVector CI**).
+2. **Confirm images exist on GHCR** — PR workflows **build** in CI but **do not push** images. To smoke-test **pulled** images from the registry, a **`v*`** tag (or release) must have run **Publish Docker Image** successfully. Check that workflow is green and tags appear under the [GHCR package](https://github.com/askdba/myvector/pkgs/container/myvector).
+3. **Log in to GHCR** if needed (`docker login ghcr.io`).
+4. **Pull and smoke each published tag** from the repository root:
+
+   ```bash
+   ./scripts/smoke-published-images.sh
+   ```
+
+   Optional heavier check: `MYVECTOR_SMOKE_STANFORD=1 ./scripts/smoke-published-images.sh`
+
+5. **Record** results in `release/RC1_STATUS_v1.26.3.md` (or your release tracker).
+
+If you only need to confirm **CI’s in-workflow** Docker build (no pull from GHCR), rely on the **Publish Docker Image** job logs — that is not a substitute for step 4 on real registry artifacts.
+
+---
+
+Use the sections below for details, tags, and optional **online updates** tests.
 
 ## 1) When images are available on GHCR
 

@@ -34,6 +34,9 @@ and `tasks/lessons.md`.
 
 ## 4. Verification before done
 
+- After CI is green on a release line: **pull each published Docker image from GHCR**
+  and run `./scripts/smoke-published-images.sh` per `release/POST_RC_DOCKER_SMOKE_PLAN.md`
+  (registry images require a successful **Publish Docker Image** run for a `v*` tag).
 - Never mark a task complete without **proving** it works.
 - Diff behavior between main and your changes when relevant.
 - Ask: *Would a staff engineer approve this?*
