@@ -50,3 +50,6 @@ myvector.cnf
 
 # Issue close comment helpers (used once, then discarded)
 docs/ISSUE_*_CLOSE_COMMENT.md
+
+# actionlint binary (official download script may drop this in repo root)
+/actionlint

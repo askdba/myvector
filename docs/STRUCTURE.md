@@ -9,6 +9,7 @@ and modern C++ projects.
 - **`include/`**: Header files (`.h` files) defining interfaces and data structures.
 - **`sql/`**: SQL scripts for installation, testing, and schema definitions.
 - **`docs/`**: Documentation files, including benchmark results and guides.
+- **`tasks/`**: Agent planning defaults (`PLANNING.md`), active `todo.md`, and `lessons.md`.
 - **`examples/`**: Example datasets and demo scripts (e.g., `stanford50d`).
 - **`cmake/`**: (Optional) Additional CMake modules.
 - **`build/`**: (Generated) Build artifacts.

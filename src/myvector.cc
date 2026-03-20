@@ -39,41 +39,25 @@
 #pragma GCC diagnostic ignored "-Wsuggest-override"
 #endif
 
-#ifdef WIN32
+#ifdef _WIN32
 #define PLUGIN_EXPORT extern "C" __declspec(dllexport)
 #else
 #define PLUGIN_EXPORT extern "C"
 #endif
 
-#ifdef WIN32
-#include <fcntl.h>
+#include <ctime>
+
+#ifdef _WIN32
 #include <io.h>
-#include <sys\stat.h>
-#include <sys\types.h>
-#include <time.h>
-#include <windows.h>
-#include <winsock2.h>
-
-int fsync(int fd) { return _commit(fd); }
-
-static void usleep(int usec) { ::Sleep(usec / 1000); }
-int strcasecmp(const char* s1, const char* s2) { return _stricmp(s1, s2); }
-void asctime_r(const struct tm* timeptr, char* dst) {
-    const char* poi = asctime(timeptr);
-    strcpy(dst, poi);
-}
-int gettimeofday(struct timeval* tv, struct timezone* tz) {
-    tv->tv_sec = time(0);
-    tv->tv_usec = 0;
-    return 0;
-}
-
-#define O_WRONLY _O_WRONLY
-#define O_CREAT _O_CREAT
-#define O_TRUNC _O_TRUNC
-#define O_RDWR _O_RDWR
+#include <string.h>
+#define myvector_unlink(path) _unlink(path)
+#define myvector_strcasecmp(s1, s2) _stricmp((s1), (s2))
 #else
+#include <strings.h>
+#include <time.h>
 #include <unistd.h>
+#define myvector_unlink(path) unlink(path)
+#define myvector_strcasecmp(s1, s2) strcasecmp((s1), (s2))
 #endif
 
 #include "mysql.h"
@@ -351,14 +335,7 @@ float HammingDistanceFn(const void* __restrict pVect1,
         a++;
         b++;
 
-#ifdef WIN32
-        while (res > 0) {
-            ldist += (res & 1);
-            res >>= 1;
-        }
-#else
         ldist += __builtin_popcountll(res);
-#endif
     }
     dist = ldist;
     return dist;
@@ -892,13 +869,13 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
 bool HNSWMemoryIndex::dropIndex(const string& path) {
     /* Force drop index - delete files and free memory */
     string indexfile = path + "/" + m_name + ".hnsw.index";
-    unlink(indexfile.c_str());
+    myvector_unlink(indexfile.c_str());
     string linksfile = path + "/" + m_name + ".hnsw.index.links";
-    unlink(linksfile.c_str());
+    myvector_unlink(linksfile.c_str());
     string linksdatafile = path + "/" + m_name + ".hnsw.index.links.data";
-    unlink(linksdatafile.c_str());
+    myvector_unlink(linksdatafile.c_str());
     string statusfile = path + "/" + m_name + ".hnsw.index.status";
-    unlink(statusfile.c_str());
+    myvector_unlink(statusfile.c_str());
 
     if (m_alg_hnsw)
         delete m_alg_hnsw;
@@ -2105,11 +2082,12 @@ PLUGIN_EXPORT double myvector_distance(UDF_INIT*,
         return 0.0;
     }
 
-    if (!strcasecmp(disttype, "L2") || !strcasecmp(disttype, "EUCLIDEAN"))
+    if (!myvector_strcasecmp(disttype, "L2")
+        || !myvector_strcasecmp(disttype, "EUCLIDEAN"))
         distfn = computeL2Distance;
-    else if (!strcasecmp(disttype, "Cosine"))
+    else if (!myvector_strcasecmp(disttype, "Cosine"))
         distfn = computeCosineDistance;
-    else if (!strcasecmp(disttype, "IP"))
+    else if (!myvector_strcasecmp(disttype, "IP"))
         distfn = computeIPDistance;
     else {
         *error = 1;  // Incorrect distance measure
@@ -2241,7 +2219,17 @@ void myvector_open_index_impl(char* vecid,
             unsigned long lastts = vi->getUpdateTs();
             char timebuf[64];
             strcat(result, ", Vector Index refreshed at : ");
+#ifdef _WIN32
+            time_t t = (time_t)lastts;
+            struct tm tm_buf;
+            gmtime_s(&tm_buf, &t);
+            strftime(timebuf,
+                     sizeof(timebuf),
+                     "%a %b %d %H:%M:%S %Y\n",
+                     &tm_buf);
+#else
             asctime_r(gmtime((time_t*)&lastts), timebuf);
+#endif
             strcat(result, timebuf);
         }
 

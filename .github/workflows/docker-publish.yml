@@ -12,112 +12,140 @@ permissions:
   contents: read
   packages: write
 
+# Build each plugin arch on a native runner. Building inside `docker run --platform
+# linux/arm64` on x86 uses QEMU; apt/dpkg in that path can segfault (exit 100).
 jobs:
-  build-and-publish:
-    runs-on: ubuntu-22.04
+  build-plugin:
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - mysql-tag: 'mysql-8.0.45'
             mysql-version: '8.0'
-            dockerfile: Dockerfile.oraclelinux8
             compiler: 10
+            arch: amd64
+            runner: ubuntu-22.04
+          - mysql-tag: 'mysql-8.0.45'
+            mysql-version: '8.0'
+            compiler: 10
+            arch: arm64
+            runner: ubuntu-24.04-arm
           - mysql-tag: 'mysql-8.4.8'
             mysql-version: '8.4'
-            dockerfile: Dockerfile.oraclelinux9
             compiler: 10
+            arch: amd64
+            runner: ubuntu-22.04
+          - mysql-tag: 'mysql-8.4.8'
+            mysql-version: '8.4'
+            compiler: 10
+            arch: arm64
+            runner: ubuntu-24.04-arm
           - mysql-tag: 'mysql-9.6.0'
             mysql-version: '9.6'
-            dockerfile: Dockerfile.oraclelinux9
             compiler: 11
+            arch: amd64
+            runner: ubuntu-22.04
+          - mysql-tag: 'mysql-9.6.0'
+            mysql-version: '9.6'
+            compiler: 11
+            arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout MyVector Code
         uses: actions/checkout@v4
 
-      - name: Install Build Dependencies
+      - name: Build MyVector plugin (${{ matrix.arch }})
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            cmake \
-            gcc-10 \
-            g++-10 \
-            gcc-11 \
-            g++-11 \
-            libssl-dev \
-            libncurses5-dev \
-            pkg-config \
-            bison \
-            libtirpc-dev \
-            libldap2-dev \
-            libsasl2-dev \
-            libudev-dev \
-            libre2-dev \
-            libcurl4-openssl-dev \
-            libprotobuf-dev \
-            protobuf-compiler
+          set -euo pipefail
+          arch="${{ matrix.arch }}"
+          build_dir="mysql-server-${arch}"
+          docker run --rm --platform "linux/${arch}" \
+            -v "$PWD":/work -w /work ubuntu:22.04 bash -lc "
+              set -euo pipefail
+              apt-get update
+              apt-get install -y \
+                build-essential \
+                cmake \
+                gcc-${{ matrix.compiler }} \
+                g++-${{ matrix.compiler }} \
+                git \
+                libssl-dev \
+                libncurses5-dev \
+                pkg-config \
+                bison \
+                libtirpc-dev \
+                libldap2-dev \
+                libsasl2-dev \
+                libudev-dev \
+                libre2-dev \
+                libcurl4-openssl-dev \
+                libprotobuf-dev \
+                protobuf-compiler
+              rm -rf ${build_dir}
+              git clone --depth 1 --branch ${{ matrix.mysql-tag }} \
+                https://github.com/mysql/mysql-server.git ${build_dir}
+              mkdir -p ${build_dir}/plugin/myvector
+              cp src/*.cc ${build_dir}/plugin/myvector/
+              cp include/*.h ${build_dir}/plugin/myvector/
+              cp include/*.i ${build_dir}/plugin/myvector/ 2>/dev/null || true
+              cp CMakeLists.txt ${build_dir}/plugin/myvector/
+              cd ${build_dir}
+              mkdir -p bld && cd bld
+              cmake .. \
+                -DCMAKE_C_COMPILER=gcc-${{ matrix.compiler }} \
+                -DCMAKE_CXX_COMPILER=g++-${{ matrix.compiler }} \
+                -DDOWNLOAD_BOOST=1 \
+                -DWITH_BOOST=../../boost_cache \
+                -DWITH_UNIT_TESTS=OFF \
+                -DWITH_ROUTER=OFF \
+                -DWITH_RAPID=OFF \
+                -DWITH_NDB=OFF \
+                -DWITH_NDBCLUSTER=OFF \
+                -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
+                -DCMAKE_BUILD_TYPE=Release
+              make myvector -j\$(nproc)
+              cp plugin_output_directory/myvector.so /work/myvector-${arch}.so
+            "
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-${{ matrix.mysql-version }}-${{ matrix.arch }}
+          path: myvector-${{ matrix.arch }}.so
+
+  build-and-publish:
+    needs: build-plugin
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mysql-version: '8.0'
+            dockerfile: Dockerfile.oraclelinux8
+          - mysql-version: '8.4'
+            dockerfile: Dockerfile.oraclelinux9
+          - mysql-version: '9.6'
+            dockerfile: Dockerfile.oraclelinux9
+    steps:
+      - name: Checkout MyVector Code
+        uses: actions/checkout@v4
+
+      - name: Download plugin artifacts (amd64 + arm64)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: plugin-${{ matrix.mysql-version }}-*
+          path: .
+          merge-multiple: true
+
+      - name: Prepare Docker build context
+        run: cp sql/myvectorplugin.sql .
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Build MyVector plugin (amd64/arm64)
-        run: |
-          set -euo pipefail
-          for arch in amd64 arm64; do
-            build_dir="mysql-server-${arch}"
-            docker run --rm --platform "linux/${arch}" \
-              -v "$PWD":/work -w /work ubuntu:22.04 bash -lc "
-                set -euo pipefail
-                apt-get update
-                apt-get install -y \
-                  build-essential \
-                  cmake \
-                  gcc-${{ matrix.compiler }} \
-                  g++-${{ matrix.compiler }} \
-                  git \
-                  libssl-dev \
-                  libncurses5-dev \
-                  pkg-config \
-                  bison \
-                  libtirpc-dev \
-                  libldap2-dev \
-                  libsasl2-dev \
-                  libudev-dev \
-                  libre2-dev \
-                  libcurl4-openssl-dev \
-                  libprotobuf-dev \
-                  protobuf-compiler
-                rm -rf ${build_dir}
-                git clone --depth 1 --branch ${{ matrix.mysql-tag }} \
-                  https://github.com/mysql/mysql-server.git ${build_dir}
-                mkdir -p ${build_dir}/plugin/myvector
-                cp src/*.cc ${build_dir}/plugin/myvector/
-                cp include/*.h ${build_dir}/plugin/myvector/
-                cp include/*.i ${build_dir}/plugin/myvector/ 2>/dev/null || true
-                cp CMakeLists.txt ${build_dir}/plugin/myvector/
-                cd ${build_dir}
-                mkdir -p bld && cd bld
-                cmake .. \
-                  -DCMAKE_C_COMPILER=gcc-${{ matrix.compiler }} \
-                  -DCMAKE_CXX_COMPILER=g++-${{ matrix.compiler }} \
-                  -DDOWNLOAD_BOOST=1 \
-                  -DWITH_BOOST=../../boost_cache \
-                  -DWITH_UNIT_TESTS=OFF \
-                  -DWITH_ROUTER=OFF \
-                  -DWITH_RAPID=OFF \
-                  -DWITH_NDB=OFF \
-                  -DWITH_NDBCLUSTER=OFF \
-                  -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
-                  -DCMAKE_BUILD_TYPE=Release
-                make myvector -j\$(nproc)
-                cp plugin_output_directory/myvector.so /work/myvector-${arch}.so
-              "
-          done
-          cp sql/myvectorplugin.sql .
 
       - name: Smoke test image contents
         run: |

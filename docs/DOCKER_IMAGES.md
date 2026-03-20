@@ -4,10 +4,8 @@
 
 <https://github.com/askdba/myvector/pkgs/container/myvector>
 
-We have our own dedicated image repository!
-
-The MyVector docker images are built on top of community MySQL docker images
-from -
+The MyVector Docker images are published to the GitHub Container Registry (see
+the link above). They are built on top of community MySQL Docker images from:
 
 <https://hub.docker.com/r/mysql/mysql-server/>
 

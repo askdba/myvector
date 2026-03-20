@@ -364,7 +364,7 @@
     * 0. CreateOrOpenFile(m_name.hnsw.ckpt);
     * 1. Write(ckptString_Step1) to file
     * 2. fsync(file);
-    * 3. CreateFile(m_name,hnsw.ckpt.state);
+    * 3. open() checkpoint state file;
     * 4. Write all updatedNodes and all updatedLinksNodes to file - 10MB
     * 5. fsync(file)
     * 6. Write(ckptString_Step1_Complete) to ckpt file

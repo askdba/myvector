@@ -30,7 +30,6 @@
 
 #include <algorithm>
 #include <condition_variable>
-#include <fstream>
 #include <map>
 #include <regex>
 #include <sstream>
@@ -68,66 +67,9 @@
 #include "sql_string.h"
 #include "typelib.h"
 
-#ifdef WIN32
-#include <io.h>
-#include <windows.h>
-#include <aclapi.h>
-
-static void usleep(int usec) { ::Sleep(usec / 1000); }
-
-/* Returns false if the file's DACL is missing or grants Everyone read (insecure). */
-static bool isConfigFileSecureWindows(const char* path) {
-    PSECURITY_DESCRIPTOR pSD = nullptr;
-    PACL pDacl = nullptr;
-    DWORD err = GetNamedSecurityInfoA(
-        path, SE_FILE_OBJECT,
-        DACL_SECURITY_INFORMATION,
-        nullptr, nullptr, &pDacl, nullptr, &pSD);
-    if (err != ERROR_SUCCESS || !pSD) {
-        if (pSD) LocalFree(pSD);
-        /* Unsupported FS or other failure: allow to avoid breaking legacy setups */
-        return true;
-    }
-    bool secure = true;
-    if (!pDacl) {
-        /* NULL DACL = full access to everyone */
-        secure = false;
-    } else {
-        ACL_SIZE_INFORMATION aclSize = {};
-        if (GetAclInformation(pDacl, &aclSize, sizeof(aclSize), AclSizeInformation)) {
-            PSID pEveryoneSid = nullptr;
-            DWORD sidLen = 0;
-            CreateWellKnownSid(WinWorldSid, nullptr, nullptr, &sidLen);
-            if (sidLen) {
-                pEveryoneSid = LocalAlloc(LPTR, sidLen);
-                if (pEveryoneSid &&
-                    CreateWellKnownSid(WinWorldSid, nullptr, pEveryoneSid, &sidLen)) {
-                    for (DWORD i = 0; i < aclSize.AceCount; ++i) {
-                        LPVOID pAce = nullptr;
-                        if (GetAce(pDacl, i, &pAce)) {
-                            const auto* ace = static_cast<const ACCESS_ALLOWED_ACE*>(pAce);
-                            if (ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE &&
-                                EqualSid(&ace->SidStart, pEveryoneSid) &&
-                                (ace->Mask & (FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES))) {
-                                secure = false;
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (pEveryoneSid) LocalFree(pEveryoneSid);
-            }
-        }
-    }
-    LocalFree(pSD);
-    return secure;
-}
-
-#else
 #include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#endif
 
 #include "mysql/plugin.h"
 #include "mysql/service_my_plugin_log.h"
@@ -136,13 +78,11 @@ static bool isConfigFileSecureWindows(const char* path) {
 // using namespace std; - Removed for code quality
 using std::condition_variable;
 using std::getline;
-using std::ifstream;
 using std::list;
 using std::lock_guard;
 using std::map;
 using std::mutex;
 using std::string;
-using std::stringstream;
 using std::thread;
 using std::unique_lock;
 using std::vector;
@@ -541,7 +481,6 @@ static bool readConfigFile(const char* config_file) {
     if (!config_file || !strlen(config_file))
         return true;
 
-#ifndef WIN32
     /* Open first, then fstat on fd to avoid TOCTOU race (symlink swap). */
     int fd = open(config_file, O_RDONLY);
     if (fd < 0) {
@@ -607,51 +546,6 @@ static bool readConfigFile(const char* config_file) {
     map<string, string> opts = parseConfigOptionsFromText(content);
     applyConfigOptions(opts);
     return true;
-#else
-    ifstream file(config_file);
-    if (!file.is_open()) {
-        /* Detect "file not found" reliably; C++ ifstream does not set GetLastError. */
-        const DWORD attrs = GetFileAttributesA(config_file);
-        if (attrs == INVALID_FILE_ATTRIBUTES) {
-            const DWORD win_err = GetLastError();
-            if (win_err == ERROR_FILE_NOT_FOUND ||
-                win_err == ERROR_PATH_NOT_FOUND) {
-                applyConfigOptions(map<string, string>{});
-                return true;
-            }
-            error_print(
-                "MyVector: cannot open config file %s (Windows error %lu). "
-                "Refusing to load.",
-                config_file, static_cast<unsigned long>(win_err));
-            return false;
-        }
-        /* File exists but open failed (e.g. sharing, permissions). */
-        const DWORD win_err = GetLastError();
-        error_print(
-            "MyVector: cannot open config file %s (Windows error %lu). Refusing "
-            "to load.",
-            config_file, static_cast<unsigned long>(win_err));
-        return false;
-    }
-    if (!isConfigFileSecureWindows(config_file)) {
-        error_print(
-            "MyVector: config file %s has insecure ACLs (missing DACL or "
-            "world-readable). Refusing to load.",
-            config_file);
-        return false;
-    }
-    std::stringstream buf;
-    buf << file.rdbuf();
-    if (file.fail()) {
-        error_print(
-            "MyVector: cannot read config file %s. Refusing to load.",
-            config_file);
-        return false;
-    }
-    map<string, string> opts = parseConfigOptionsFromText(buf.str());
-    applyConfigOptions(opts);
-    return true;
-#endif
 }
 
 /* GetBaseTableColumnPositions() - Get the column ordinal positions of the

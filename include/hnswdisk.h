@@ -15,13 +15,9 @@
 #include "hnswlib.h"
 #include "myvectorutils.h"
 #include "visited_list_pool.h"
-#ifdef WIN32
-#include <io.h>
-#else
 #include <fcntl.h>
 #include <sys/time.h>
 #include <unistd.h>
-#endif
 
 namespace hnswlib {
     typedef unsigned int tableint;

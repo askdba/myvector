@@ -11,6 +11,7 @@
 [![GHCR Package](https://img.shields.io/badge/ghcr.io-myvector-2496ed?style=flat-square&logo=github)](https://github.com/askdba/myvector/pkgs/container/myvector)
 
 [Why MyVector?](#-why-myvector) •
+[Supported platforms](#-supported-platforms) •
 [Quick Start](#-quick-start) •
 [Features](#-features) •
 [Usage](#-usage-examples) •
@@ -27,6 +28,16 @@ engines, and AI-powered applications without the need for external services.
 
 It's fast, scalable, and designed for real-world use cases, from simple word
 embeddings to complex image and audio analysis.
+
+---
+
+## 💻 Supported platforms
+
+**Linux** (including the official Docker images on GHCR) and **macOS** are
+supported for building and running MyVector. **Microsoft Windows is not a
+supported build target at this time** — use Linux containers or a Unix-like
+host for production builds and deployments. See `docs/BUILDING_MACOS.md` for
+macOS notes.
 
 ---
 
