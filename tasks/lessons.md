@@ -17,6 +17,6 @@ Newest entries first.
 
 ## Log
 
-| 2026-03-20 | Super-linter / CI | `github/super-linter@v6` runs **actionlint** + **zizmor** (+ many other linters); zizmor/config drift caused repeated CI failures vs local `actionlint`. | **PR lint workflow** uses **docker `actionlint` only** on `.github/workflows/*.yml`. Optional: run **zizmor** locally with `.github/linters/zizmor.yaml`. **Do not push** until `docker run … actionlint …` exits 0 locally. |
+| 2026-03-20 | Super-linter / CI | `github/super-linter@v6` runs **actionlint** + **zizmor** (+ many other linters); zizmor/config drift caused repeated CI failures vs local `actionlint`. | **PR lint** uses the **official actionlint download script** + `./actionlint -color` (no Docker). `actionlint -shellcheck` alone is invalid in v1.7+ (needs a path). Optional: **zizmor** with `.github/linters/zizmor.yaml`. Verify locally before push. |
 
 <!-- Add rows above this line -->

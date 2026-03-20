@@ -1,12 +1,11 @@
-# Deterministic PR lint: Super-Linter bundled many tools (incl. zizmor) and caused
-# repeated CI-only failures. We lint workflows with actionlint only (fast, reproducible).
-# Optional local checks: zizmor --config .github/linters/zizmor.yaml .github/workflows/
+# Deterministic PR lint: actionlint only (no Super-Linter bundle).
+# Uses the official download script — no Docker (avoids Hub rate limits / daemon issues).
+# Optional: zizmor --config .github/linters/zizmor.yaml .github/workflows/
 name: Lint Code Base
 
 on:
   pull_request:
     branches: [ "main" ]
-  # Run lint only from Actions → Lint Code Base → Run workflow (no other CI workflows).
   workflow_dispatch:
 
 permissions:
@@ -16,12 +15,21 @@ jobs:
   lint:
     name: Lint Code Base
     runs-on: ubuntu-latest
+    env:
+      # Quieter checkout on Node 24+ runners (see GitHub Node 20 deprecation changelog).
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # Ref: https://github.com/rhysd/actionlint/blob/main/docs/usage.md#use-actionlint-on-github-actions
+      - name: Install actionlint
+        shell: bash
+        run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+
       - name: Lint GitHub Actions workflows (actionlint)
+        shell: bash
         run: |
           set -euo pipefail
-          docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:latest \
-            -color -shellcheck .github/workflows/*.yml
+          # -shellcheck requires a path in v1.7+; omit to use default shellcheck on PATH (Ubuntu runners).
+          ./actionlint -color
