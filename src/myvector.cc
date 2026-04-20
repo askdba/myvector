@@ -1537,6 +1537,7 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT* initid,
     if (!col || !idcol || !searchvec) {
         *error = 1;
         *is_null = 1;
+        *length = 0;
         return initid->ptr;
     }
 
@@ -1562,6 +1563,7 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT* initid,
     if (!vi) {
         *error = 1;
         *is_null = 1;
+        *length = 0;
         return initid->ptr;
     }
     SharedLockGuard l(vi);

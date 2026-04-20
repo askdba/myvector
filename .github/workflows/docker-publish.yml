@@ -2,7 +2,7 @@ name: Publish Docker Image
 
 on:
   workflow_run:
-    workflows: ["Release MyVector (Plugin + Component)", "MyVector CI"]
+    workflows: ["Release MyVector (Plugin + Component)"]
     types: [completed]
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-and-publish:
-    # Only run when the triggering workflow succeeded (Release or MyVector CI).
+    # Only run when the Release workflow succeeded.
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-22.04
     strategy:
