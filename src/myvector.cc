@@ -1088,19 +1088,6 @@ bool HNSWMemoryIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
     return true;
 }
 
-class SharedLockGuard {
-public:
-    SharedLockGuard(AbstractVectorIndex* h_index) : m_index(h_index) {}
-    ~SharedLockGuard() {
-        if (m_index)
-            m_index->unlockShared();
-    }
-    void clear() { m_index = nullptr; }
-
-private:
-    AbstractVectorIndex* m_index{nullptr};
-};
-
 AbstractVectorIndex* VectorIndexCollection::open(const string& name,
                                                  const string& options,
                                                  const string& useraction) {
@@ -1129,6 +1116,7 @@ AbstractVectorIndex* VectorIndexCollection::open(const string& name,
     }
 
     m_indexes[name] = hnewindex;
+    hnewindex->lockShared(); /* acquire lock before returning, matching get() */
 
     return hnewindex;
 }
@@ -1235,7 +1223,7 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         if (colinfo.length() > MYVECTOR_MAX_COLUMN_INFO_LEN) {
             my_plugin_log_message(&gplugin,
                                   MY_ERROR_LEVEL,
-                                  "MYVECTOR column info too long, length = %d.",
+                                  "MYVECTOR column info too long, length = %zu.",
                                   colinfo.length());
             error = true;
             break;
@@ -1509,11 +1497,11 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT* initid,
 
     char* col = args->args[0];
     AbstractVectorIndex* vi = g_indexes.get(col);
-    SharedLockGuard l(vi);
     if (!vi) {
-        snprintf(message, MYSQL_ERRMSG_SIZE, ER_MYVECTOR_INDEX_NOT_FOUND, col);
+        snprintf(message, MYSQL_ERRMSG_SIZE, ER_MYVECTOR_INDEX_NOT_FOUND " (%s)", col);
         return true;  // error
     }
+    SharedLockGuard l(vi);
 
     /* Users can possibly ask for 100s of neighbours. With buffer of 128000,
      * about 12800 PK ids can be filled in the return string
@@ -2176,7 +2164,7 @@ void myvector_open_index_impl(char* vecid,
         strcpy(result, s.c_str());
     } else if (!strcmp(action, "drop")) {
         vi->dropIndex(myvector_index_dir);
-        l.clear();
+        l.release();
         g_indexes.close(vi);
         vi = nullptr;
     }
@@ -2228,7 +2216,10 @@ void myvector_open_index_impl(char* vecid,
                      "%a %b %d %H:%M:%S %Y\n",
                      &tm_buf);
 #else
-            asctime_r(gmtime((time_t*)&lastts), timebuf);
+            time_t t = (time_t)lastts;
+            struct tm tm_buf;
+            gmtime_r(&t, &tm_buf);
+            strftime(timebuf, sizeof(timebuf), "%a %b %d %H:%M:%S %Y\n", &tm_buf);
 #endif
             strcat(result, timebuf);
         }
