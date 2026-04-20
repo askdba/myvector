@@ -30,6 +30,7 @@
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 bool myvector_query_rewrite(const std::string& query,
                             std::string* rewritten_query);
@@ -161,6 +162,31 @@ private:
 };
 
 #define MYVECTOR_BUFF_SIZE 1024
+
+/** Bit packing for binary vectors (1 bit per dimension). */
+constexpr unsigned int BITS_PER_BYTE = 8;
+
+/** RAII shared-lock guard for AbstractVectorIndex. Release-only: caller
+ * (get() or open()) must acquire lockShared() before returning the pointer.
+ * Constructor does not acquire to avoid double-lock when used with get().
+ */
+class SharedLockGuard {
+public:
+    explicit SharedLockGuard(AbstractVectorIndex* h_index) : m_index(h_index) {}
+    ~SharedLockGuard() {
+        if (m_index)
+            m_index->unlockShared();
+    }
+    SharedLockGuard(const SharedLockGuard&) = delete;
+    SharedLockGuard& operator=(const SharedLockGuard&) = delete;
+    SharedLockGuard(SharedLockGuard&&) = delete;
+    SharedLockGuard& operator=(SharedLockGuard&&) = delete;
+    /** Release without unlocking (give up ownership). Idempotent after first call. */
+    void release() noexcept { m_index = nullptr; }
+
+private:
+    AbstractVectorIndex* m_index{nullptr};
+};
 
 extern long myvector_index_bg_threads;
 extern long myvector_feature_level;
