@@ -1,5 +1,5 @@
 ---
-name: Release MyVector Plugin
+name: Release MyVector (Plugin + Component)
 
 on:
   push:
