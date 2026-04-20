@@ -192,9 +192,6 @@ static const unsigned long MYVECTOR_MIN_VALID_UPDATE_TS = 1704047400;
  */
 static const unsigned int HNSW_PARALLEL_BUILD_UNIT_SIZE = 100000;
 
-/* Bit packing for Binary Vectors */
-static const unsigned int BITS_PER_BYTE = 8;
-
 extern char* myvector_index_dir;
 extern long myvector_feature_level;
 
@@ -1562,10 +1559,15 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT* initid,
     }
 
     AbstractVectorIndex* vi = g_indexes.get(col);
+    if (!vi) {
+        *error = 1;
+        *is_null = 1;
+        return initid->ptr;
+    }
     SharedLockGuard l(vi);
 
     stringstream ss;
-    if (vi && searchvec) {
+    if (searchvec) {
         vector<KeyTypeInteger> result;
         if (ef_search)
             vi->setSearchEffort(ef_search);
