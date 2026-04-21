@@ -52,35 +52,51 @@ extern char* myvector_index_dir;
 extern long myvector_feature_level;
 
 extern const std::set<std::string> MYVECTOR_INDEX_TYPES;
-// tls_distances_map is static thread_local in myvector.cc (internal linkage);
-// define a separate copy here for the component TU.
+// tls_distances_map/tls_distances: static thread_local in myvector.cc (internal
+// linkage) — define a separate copy for this TU.
 static thread_local std::unordered_map<KeyTypeInteger, double> tls_distances_map;
 static thread_local std::unordered_map<KeyTypeInteger, double>* tls_distances = &tls_distances_map;
 
-extern int MyVectorStorageLength(int dim);
-extern int MyVectorDimFromStorageLength(int length);
-extern int MyVectorBVStorageLength(int dim);
-extern int MyVectorBVDimFromStorageLength(int length);
+// MYVECTOR_* constants are static const in myvector.cc (internal linkage) and
+// cannot be extern'd.  Define them locally with the same values.
+static const unsigned int MYVECTOR_VERSION_V1 = 0x01;
+static const unsigned int MYVECTOR_VECTOR_FP32 = 0x01;
+static const unsigned int MYVECTOR_VECTOR_FP16 = 0x02;
+static const unsigned int MYVECTOR_VECTOR_BV   = 0x04;
+#define MYVECTOR_V1_FP32_METADATA ((MYVECTOR_VECTOR_FP32 << 8) | MYVECTOR_VERSION_V1)
+#define MYVECTOR_V1_BV_METADATA   ((MYVECTOR_VECTOR_BV   << 8) | MYVECTOR_VERSION_V1)
+
+static const unsigned int MYVECTOR_CONSTRUCT_MAX_LEN        = 128000;
+static const unsigned int MYVECTOR_DISPLAY_MAX_LEN          = 128000;
+static const unsigned int MYVECTOR_DISPLAY_DEF_PREC         = 7;
+#if MYSQL_VERSION_ID >= 90000
+static const unsigned int MYVECTOR_COLUMN_EXTRA_LEN         = 0;
+#else
+static const unsigned int MYVECTOR_COLUMN_EXTRA_LEN         = 8;
+#endif
+static const unsigned int MYVECTOR_DEFAULT_ANN_RETURN_COUNT = 10;
+static const unsigned int MYVECTOR_MAX_ANN_RETURN_COUNT     = 10000;
+
+// Helper functions mirror inline definitions in myvector.cc; defined here
+// because inline functions also have internal linkage and cannot be extern'd.
+static inline int MyVectorStorageLength(int dim) {
+    return (dim * static_cast<int>(sizeof(FP32))) + static_cast<int>(MYVECTOR_COLUMN_EXTRA_LEN);
+}
+static inline int MyVectorDimFromStorageLength(int length) {
+    return (length - static_cast<int>(MYVECTOR_COLUMN_EXTRA_LEN)) / static_cast<int>(sizeof(FP32));
+}
+static inline int MyVectorBVStorageLength(int dim) {
+    return (dim / 8) + static_cast<int>(MYVECTOR_COLUMN_EXTRA_LEN);
+}
+static inline int MyVectorBVDimFromStorageLength(int length) {
+    return (length - static_cast<int>(MYVECTOR_COLUMN_EXTRA_LEN)) * 8;
+}
 
 extern double computeL2Distance(const FP32* __restrict v1, const FP32* __restrict v2, int dim);
 extern double computeIPDistance(const FP32* __restrict v1, const FP32* __restrict v2, int dim);
 extern double computeCosineDistance(const FP32* __restrict v1, const FP32* __restrict v2, int dim);
 extern float computeCosineDistanceFn(const void* __restrict v1, const void* __restrict v2, const void* __restrict qty_ptr);
 extern float HammingDistanceFn(const void* __restrict pVect1, const void* __restrict pVect2, const void* __restrict qty_ptr);
-
-extern const unsigned int MYVECTOR_VERSION_V1;
-extern const unsigned int MYVECTOR_VECTOR_FP32;
-extern const unsigned int MYVECTOR_VECTOR_FP16;
-extern const unsigned int MYVECTOR_VECTOR_BV;
-#define MYVECTOR_V1_FP32_METADATA ((MYVECTOR_VECTOR_FP32 << 8) | MYVECTOR_VERSION_V1)
-#define MYVECTOR_V1_BV_METADATA ((MYVECTOR_VECTOR_BV << 8) | MYVECTOR_VERSION_V1)
-
-extern const unsigned int MYVECTOR_CONSTRUCT_MAX_LEN;
-extern const unsigned int MYVECTOR_DISPLAY_MAX_LEN;
-extern const unsigned int MYVECTOR_DISPLAY_DEF_PREC;
-extern const unsigned int MYVECTOR_COLUMN_EXTRA_LEN;
-extern const unsigned int MYVECTOR_DEFAULT_ANN_RETURN_COUNT;
-extern const unsigned int MYVECTOR_MAX_ANN_RETURN_COUNT;
 
 extern char* latin1;
 
