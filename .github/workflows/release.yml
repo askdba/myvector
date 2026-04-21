@@ -46,8 +46,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - mysql-version: '8.0.35'
-            mysql-tag: 'mysql-8.0.35'
           - mysql-version: '8.4.8'
             mysql-tag: 'mysql-8.4.8'
           - mysql-version: '9.6.0'
