@@ -22,7 +22,7 @@ jobs:
           - os: ubuntu-latest
             mysql-version: '8.4.8'
           - os: ubuntu-latest
-            mysql-version: '9.6.0'
+            mysql-version: '9.0.0'
 
     steps:
       - name: Checkout code
