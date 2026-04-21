@@ -147,7 +147,7 @@ jobs:
   # MySQL 9.6: build inside mysql:9.6 container for libmysqlclient ABI compatibility
   build-component-9-6:
     runs-on: ubuntu-latest
-    continue-on-error: true  # dnf install in oraclelinux:9 can be flaky; 8.0/8.4/9.0 component builds validate
+    continue-on-error: true  # dnf install in oraclelinux:9 can be flaky; 8.4 component build also validates this path
     steps:
     - name: Checkout
       uses: actions/checkout@v4

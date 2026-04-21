@@ -13,7 +13,7 @@ jobs:
   build-and-release:
     name: Build Plugin (in-tree)
     runs-on: ${{ matrix.os }}
-    continue-on-error: true  # repo root CMakeLists is component-only; re-enable when plugin CMakeLists is restored
+    continue-on-error: true  # in-tree build uses MYSQL_ADD_PLUGIN path; keep non-blocking until CI validates
     strategy:
       matrix:
         include:
