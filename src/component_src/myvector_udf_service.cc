@@ -614,6 +614,7 @@ double myvector_distance(UDF_INIT* initid,
 
     if (!v1_raw || !l1 || !v2_raw || !l2) {
         *is_null = 1;
+        *error = 1;
         return 0.0;
     }
 
@@ -622,6 +623,7 @@ double myvector_distance(UDF_INIT* initid,
 
     if (dim1 != dim2 || dim1 == 0) {
         *is_null = 1;
+        *error = 1;
         return 0.0;
     }
 
@@ -637,7 +639,8 @@ double myvector_distance(UDF_INIT* initid,
     double (*distfn)(const FP32*, const FP32*, int) = computeL2Distance;
     if (args->arg_count >= 3 && args->args[2] && args->lengths[2] > 0) {
         std::string metric(args->args[2], args->lengths[2]);
-        std::transform(metric.begin(), metric.end(), metric.begin(), ::tolower);
+        std::transform(metric.begin(), metric.end(), metric.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (metric == "l2" || metric == "euclidean")
             distfn = computeL2Distance;
         else if (metric == "cosine")
@@ -646,6 +649,7 @@ double myvector_distance(UDF_INIT* initid,
             distfn = computeIPDistance;
         else {
             *is_null = 1;
+            *error = 1;
             return 0.0;
         }
     }

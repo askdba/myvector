@@ -107,9 +107,8 @@ public:
             return nullptr;  // shutdown signal for consumers
         VectorIndexUpdateItem* next = items_.front();
         items_.pop_front();
-        if (items_.empty())
-            cv_.notify_all();  // wake wait_until_empty()
-        return next;  // consumer to call delete
+        in_flight_++;  // track item in-flight until mark_processed()
+        return next;
     }
     /** Non-blocking dequeue: returns an item if available, nullptr if empty. */
     VectorIndexUpdateItem* try_dequeue() {
@@ -118,14 +117,19 @@ public:
             return nullptr;
         VectorIndexUpdateItem* next = items_.front();
         items_.pop_front();
-        if (items_.empty())
-            cv_.notify_all();  // wake wait_until_empty()
+        in_flight_++;
         return next;
     }
-    /** Block until the queue is empty (e.g. all items consumed by workers). */
+    /** Call after an item returned by dequeue/try_dequeue has been processed. */
+    void mark_processed() {
+        std::lock_guard lk(m_);
+        if (--in_flight_ == 0 && items_.empty())
+            cv_.notify_all();  // wake wait_until_empty()
+    }
+    /** Block until the queue is empty AND all dequeued items are processed. */
     void wait_until_empty() {
         std::unique_lock lk(m_);
-        cv_.wait(lk, [this] { return items_.empty(); });
+        cv_.wait(lk, [this] { return items_.empty() && in_flight_ == 0; });
     }
     void request_shutdown() {
         std::lock_guard lk(m_);
@@ -146,6 +150,7 @@ private:
     std::mutex m_;
     std::condition_variable cv_;
     std::list<VectorIndexUpdateItem*> items_;
+    int in_flight_ = 0;
     bool shutting_down_ = false;
 };
 
@@ -1228,6 +1233,7 @@ public:
         if (myvector_feature_level & 1) {
             // info_print("Binlog event thread is disabled!");
             // TODO: Replace with component-specific logging
+            secure_zero_string(g_conn_config.password);
             return 0;
         }
 
@@ -1236,6 +1242,7 @@ public:
             // failing INSTALL COMPONENT. Component init succeeds; binlog
             // monitoring stays off until config is provided and component
             // is reinstalled.
+            secure_zero_string(g_conn_config.password);
             return 0;
         }
 
@@ -1269,6 +1276,7 @@ public:
         VectorIndexUpdateItem* p;
         while ((p = gqueue_.try_dequeue()) != nullptr) {
             delete p;
+            gqueue_.mark_processed();
         }
         return 0;
     }
@@ -1467,6 +1475,7 @@ private:
                                       item->binlogFile_,
                                       item->binlogPos_);
                     delete item;
+                    gqueue_.mark_processed();
                 }
             });
         }

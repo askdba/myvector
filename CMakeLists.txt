@@ -1,5 +1,11 @@
-cmake_minimum_required(VERSION 3.5)
-project(MyVectorComponent LANGUAGES CXX)
+# Guard cmake_minimum_required/project so they are only set for standalone
+# component builds.  In-tree plugin builds are a subdirectory of mysql-server;
+# calling cmake_minimum_required/project() there resets CMake policies and
+# project variables for the parent, which breaks the superbuild.
+if(NOT COMMAND MYSQL_ADD_PLUGIN)
+  cmake_minimum_required(VERSION 3.5)
+  project(MyVectorComponent LANGUAGES CXX)
+endif()
 
 # -----------------------------------------------------------------------------
 # This CMakeLists supports two build modes:
