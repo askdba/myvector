@@ -646,6 +646,7 @@ void parseRowsEvent(const unsigned char* event_buf,
                         }
                         clen = (unsigned int)event_buf[index];
                         index++;
+                        remaining -= 1;
                     } else {
                         if (remaining < 2) {
                             row_overflow = true;
@@ -653,6 +654,7 @@ void parseRowsEvent(const unsigned char* event_buf,
                         }
                         memcpy(&clen, &event_buf[index], 2);
                         index += 2;
+                        remaining -= 2;
                     }
                     if (remaining < clen) {
                         row_overflow = true;
@@ -1452,16 +1454,15 @@ private:
                 VectorIndexUpdateItem* item = nullptr;
                 while (!this->shutdown_binlog_thread_.load()) {
                     item = gqueue_.dequeue();
-                    if (item) {
-                        myvector_table_op(item->dbName_,
-                                          item->tableName_,
-                                          item->columnName_,
-                                          item->pkid_,
-                                          item->vec_,
-                                          item->binlogFile_,
-                                          item->binlogPos_);
-                        delete item;
-                    }
+                    if (!item) break;  // queue shutdown; exit worker
+                    myvector_table_op(item->dbName_,
+                                      item->tableName_,
+                                      item->columnName_,
+                                      item->pkid_,
+                                      item->vec_,
+                                      item->binlogFile_,
+                                      item->binlogPos_);
+                    delete item;
                 }
             });
         }

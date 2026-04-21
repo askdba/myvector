@@ -27,7 +27,7 @@ int my_plugin_log_message(MYSQL_PLUGIN* plugin,
 static char g_myvector_index_dir[512] = "";
 static char g_myvector_config_file[512] = "myvector.cnf";
 
-long myvector_feature_level = 3;   /* Bit flags: bit 0 = enable binlog monitoring (0=disabled for basic UDF tests), bit 1 = reserved. Value 3 (binary 11) = both bits set. */
+long myvector_feature_level = 2;   /* Matches plugin default (2). Bit 0 set = binlog disabled; bit 0 clear = binlog enabled. Value 2 (bit 0 clear) enables binlog monitoring. */
 long myvector_index_bg_threads = 2;
 bool myvector_rebuild_on_start = false;  /* When true, rebuild indexes on startup if .bin load fails (plugin uses sysvar; component uses this default). */
 char* myvector_index_dir = g_myvector_index_dir;
