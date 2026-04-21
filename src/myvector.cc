@@ -1170,7 +1170,7 @@ string VectorIndexCollection::FindEarliestBinlogFile() {
     return ret;
 }
 
-static VectorIndexCollection g_indexes;
+VectorIndexCollection g_indexes;
 
 /* The MYVECTOR* Annotations supported by this plugin */
 const string MYVECTOR_COLUMN_A = "MYVECTOR(";
