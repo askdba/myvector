@@ -27,6 +27,17 @@
 #include <unordered_map>
 #include <vector>
 
+// hnswdisk.i uses unqualified 'string' and logging macros; provide them here
+// before the include so it compiles in the component context.
+using std::string;
+#ifndef debug_print
+#include <cstdio>
+#define debug_print(fmt, ...) fprintf(stderr, "[MYVEC DBG] " fmt "\n", ##__VA_ARGS__)
+#define info_print(fmt, ...)  fprintf(stderr, "[MYVEC INF] " fmt "\n", ##__VA_ARGS__)
+#define error_print(fmt, ...) fprintf(stderr, "[MYVEC ERR] " fmt "\n", ##__VA_ARGS__)
+#define warning_print(fmt, ...) fprintf(stderr, "[MYVEC WRN] " fmt "\n", ##__VA_ARGS__)
+#endif
+
 #include "hnswdisk.h"
 #include "hnswlib.h"
 #include "my_checksum.h"
@@ -35,6 +46,7 @@
 #include "myvectorutils.h"
 
 // Forward declarations for functions/variables used by UDFs
+extern SERVICE_TYPE(mysql_udf_metadata)* myvector_component_udf_metadata;
 extern char* myvector_index_dir;
 extern long myvector_feature_level;
 
