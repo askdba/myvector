@@ -204,6 +204,20 @@ that easy!
 
 We provide official Docker images for various MySQL versions.
 
+### Manual Plugin Installation
+
+If you are running your own MySQL instance (not using the Docker images), install the plugin manually:
+
+```bash
+mysql -u root -p -e "INSTALL PLUGIN myvector SONAME 'myvector.so';"
+mysql -u root -p < sql/install_functions.sql
+```
+
+> **Installation paths:**
+> The **plugin** (`INSTALL PLUGIN`) is the current stable path and supports MySQL 8.0, 8.4, and 9.0.
+> The **component** (`INSTALL COMPONENT`) is the forward path for MySQL 8.4 and 9.6 (LTS).
+> MySQL 8.0 plugin support will be maintained through MySQL 8.0 EOL; no component build is planned for 8.0.
+
 | Tag | MySQL Version |
 | :--- | :--- |
 | `ghcr.io/askdba/myvector:mysql-8.0` | 8.0.x |
