@@ -126,7 +126,7 @@ endif()
 find_package(ZLIB REQUIRED)
 add_library(myvector_component SHARED ${MYVECTOR_COMPONENT_SRCS})
 target_include_directories(myvector_component PRIVATE ${MYVECTOR_INCLUDE_DIRS})
-target_compile_definitions(myvector_component PRIVATE ${MYVECTOR_COMPONENT_DEFS})
+target_compile_definitions(myvector_component PRIVATE ${MYVECTOR_COMPONENT_DEFS} MYVECTOR_COMPONENT_BUILD)
 target_link_libraries(myvector_component PRIVATE ${MYSQLCLIENT_LIBRARY} ZLIB::ZLIB)
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

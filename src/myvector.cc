@@ -62,12 +62,13 @@
 
 #include "mysql.h"
 #include "mysql/plugin.h"
-#include "mysql/service_my_plugin_log.h"
 #include "mysql/udf_registration_types.h"
 #include "mysql_version.h"
 #include "myvector.h"
 #include "myvector_errors.h"
 
+#ifndef MYVECTOR_COMPONENT_BUILD
+#include "mysql/service_my_plugin_log.h"
 extern MYSQL_PLUGIN gplugin;
 
 #define debug_print(...)                                                       \
@@ -78,6 +79,17 @@ extern MYSQL_PLUGIN gplugin;
     my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, __VA_ARGS__)
 #define warning_print(...)                                                     \
     my_plugin_log_message(&gplugin, MY_WARNING_LEVEL, __VA_ARGS__)
+#else
+// Component build: redirect all logging to stderr; gplugin is unused.
+#include <cstdio>
+[[maybe_unused]] static void* gplugin = nullptr;
+// Redirect direct my_plugin_log_message() calls scattered throughout this TU
+#define my_plugin_log_message(plugin, level, ...) fprintf(stderr, "[MYVEC] " __VA_ARGS__)
+#define debug_print(fmt, ...) fprintf(stderr, "[MYVEC DBG] " fmt "\n", ##__VA_ARGS__)
+#define info_print(fmt, ...)  fprintf(stderr, "[MYVEC INF] " fmt "\n", ##__VA_ARGS__)
+#define error_print(fmt, ...) fprintf(stderr, "[MYVEC ERR] " fmt "\n", ##__VA_ARGS__)
+#define warning_print(fmt, ...) fprintf(stderr, "[MYVEC WRN] " fmt "\n", ##__VA_ARGS__)
+#endif
 
 // using namespace std; - Removed for code quality
 using std::atomic;
@@ -117,6 +129,7 @@ using std::vector;
 #include "my_checksum.h"
 #include "myvectorutils.h"
 
+#ifndef MYVECTOR_COMPONENT_BUILD
 extern REQUIRES_SERVICE_PLACEHOLDER(mysql_udf_metadata);
 extern REQUIRES_SERVICE_PLACEHOLDER(mysql_string_converter);
 extern REQUIRES_SERVICE_PLACEHOLDER(mysql_string_factory);
@@ -131,6 +144,14 @@ extern REQUIRES_SERVICE_PLACEHOLDER(mysql_string_factory);
     }
 
 extern my_service<SERVICE_TYPE(mysql_udf_metadata)>* h_udf_metadata_service;
+#else
+#define SET_UDF_ERROR_AND_RETURN(...)                                          \
+    {                                                                          \
+        error_print(__VA_ARGS__);                                              \
+        *error = 1;                                                            \
+        return (result);                                                       \
+    }
+#endif
 
 class AbstractVectorIndex;
 
@@ -1505,7 +1526,9 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT* initid,
      */
     initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
     initid->ptr = (char*)malloc(initid->max_length);
+#ifndef MYVECTOR_COMPONENT_BUILD
     (*h_udf_metadata_service)->result_set(initid, "charset", latin1);
+#endif
 
     /* tls_distances is now a static thread_local object, no allocation needed
      */
@@ -1899,7 +1922,9 @@ PLUGIN_EXPORT bool myvector_display_init(UDF_INIT* initid,
     }
     initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
     initid->ptr = (char*)malloc(MYVECTOR_DISPLAY_MAX_LEN);
+#ifndef MYVECTOR_COMPONENT_BUILD
     (*h_udf_metadata_service)->result_set(initid, "charset", latin1);
+#endif
     return false;
 }
 
