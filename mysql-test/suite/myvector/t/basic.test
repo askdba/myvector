@@ -14,6 +14,7 @@ myvector_user_id=root
 myvector_user_password=
 myvector_socket=@MYSQLTEST_VARDIR/tmp/mysqld.1.sock
 EOF
+--chmod 0600 $MYVECTOR_CONFIG
 
 --enable_query_log
 

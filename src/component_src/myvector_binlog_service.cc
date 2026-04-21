@@ -1232,7 +1232,11 @@ public:
         }
 
         if (!preflight_binlog_state()) {
-            return 1;
+            // No credentials/config — treat as binlog disabled rather than
+            // failing INSTALL COMPONENT. Component init succeeds; binlog
+            // monitoring stays off until config is provided and component
+            // is reinstalled.
+            return 0;
         }
 
         shutdown_binlog_thread_.store(false);

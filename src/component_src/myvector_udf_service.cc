@@ -52,8 +52,10 @@ extern char* myvector_index_dir;
 extern long myvector_feature_level;
 
 extern const std::set<std::string> MYVECTOR_INDEX_TYPES;
-extern thread_local std::unordered_map<KeyTypeInteger, double> tls_distances_map;
-extern thread_local std::unordered_map<KeyTypeInteger, double>* tls_distances;
+// tls_distances_map is static thread_local in myvector.cc (internal linkage);
+// define a separate copy here for the component TU.
+static thread_local std::unordered_map<KeyTypeInteger, double> tls_distances_map;
+static thread_local std::unordered_map<KeyTypeInteger, double>* tls_distances = &tls_distances_map;
 
 extern int MyVectorStorageLength(int dim);
 extern int MyVectorDimFromStorageLength(int length);
