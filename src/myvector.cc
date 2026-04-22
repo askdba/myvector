@@ -67,29 +67,7 @@
 #include "myvector.h"
 #include "myvector_errors.h"
 
-#ifndef MYVECTOR_COMPONENT_BUILD
-#include "mysql/service_my_plugin_log.h"
-extern MYSQL_PLUGIN gplugin;
-
-#define debug_print(...)                                                       \
-    my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, __VA_ARGS__)
-#define info_print(...)                                                        \
-    my_plugin_log_message(&gplugin, MY_INFORMATION_LEVEL, __VA_ARGS__)
-#define error_print(...)                                                       \
-    my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, __VA_ARGS__)
-#define warning_print(...)                                                     \
-    my_plugin_log_message(&gplugin, MY_WARNING_LEVEL, __VA_ARGS__)
-#else
-// Component build: redirect all logging to stderr; gplugin is unused.
-#include <cstdio>
-[[maybe_unused]] static void* gplugin = nullptr;
-// Redirect direct my_plugin_log_message() calls scattered throughout this TU
-#define my_plugin_log_message(plugin, level, ...) fprintf(stderr, "[MYVEC] " __VA_ARGS__)
-#define debug_print(fmt, ...) fprintf(stderr, "[MYVEC DBG] " fmt "\n", ##__VA_ARGS__)
-#define info_print(fmt, ...)  fprintf(stderr, "[MYVEC INF] " fmt "\n", ##__VA_ARGS__)
-#define error_print(fmt, ...) fprintf(stderr, "[MYVEC ERR] " fmt "\n", ##__VA_ARGS__)
-#define warning_print(fmt, ...) fprintf(stderr, "[MYVEC WRN] " fmt "\n", ##__VA_ARGS__)
-#endif
+#include "myvector_log.h"
 
 // using namespace std; - Removed for code quality
 using std::atomic;
@@ -136,22 +114,15 @@ extern REQUIRES_SERVICE_PLACEHOLDER(mysql_string_factory);
 
 #include <mysql/service_plugin_registry.h>
 
-#define SET_UDF_ERROR_AND_RETURN(...)                                          \
-    {                                                                          \
-        my_plugin_log_message(&gplugin, MY_ERROR_LEVEL, __VA_ARGS__);          \
-        *error = 1;                                                            \
-        return (result);                                                       \
-    }
-
 extern my_service<SERVICE_TYPE(mysql_udf_metadata)>* h_udf_metadata_service;
-#else
+#endif
+
 #define SET_UDF_ERROR_AND_RETURN(...)                                          \
     {                                                                          \
-        error_print(__VA_ARGS__);                                              \
+        MYVEC_LOG_ERROR(__VA_ARGS__);                                          \
         *error = 1;                                                            \
         return (result);                                                       \
     }
-#endif
 
 class AbstractVectorIndex;
 
