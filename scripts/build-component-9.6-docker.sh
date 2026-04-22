@@ -31,10 +31,15 @@ docker cp "$CONTAINER_NAME":/usr/lib64/mysql/. "$MYSQL_LIBS_TMP/lib64/" 2>/dev/n
   { echo "Could not find libmysqlclient in $MYSQL_IMAGE"; exit 1; }
 docker rm -f "$CONTAINER_NAME"
 
+echo "==> Extracted libs from $MYSQL_IMAGE:"
+ls -la "$MYSQL_LIBS_TMP/lib64/" 2>/dev/null || echo "(lib64 empty or missing)"
+ls -la "$MYSQL_LIBS_TMP/" 2>/dev/null
+
 # cmake find_library needs the unversioned .so symlink (only in mysql-devel, not the server image).
 # Create it from the versioned lib if missing.
 (cd "$MYSQL_LIBS_TMP/lib64" && for f in libmysqlclient.so.[0-9]*; do
   [ -f "$f" ] || continue
+  echo "==> Creating symlink: libmysqlclient.so -> $f"
   [ -L libmysqlclient.so ] || ln -sf "$f" libmysqlclient.so
 done)
 
