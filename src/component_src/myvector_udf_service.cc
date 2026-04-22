@@ -31,13 +31,7 @@
 // hnswdisk.i uses unqualified 'string' and logging macros; provide them here
 // before the include so it compiles in the component context.
 using std::string;
-#ifndef debug_print
-#include <cstdio>
-#define debug_print(fmt, ...) fprintf(stderr, "[MYVEC DBG] " fmt "\n", ##__VA_ARGS__)
-#define info_print(fmt, ...)  fprintf(stderr, "[MYVEC INF] " fmt "\n", ##__VA_ARGS__)
-#define error_print(fmt, ...) fprintf(stderr, "[MYVEC ERR] " fmt "\n", ##__VA_ARGS__)
-#define warning_print(fmt, ...) fprintf(stderr, "[MYVEC WRN] " fmt "\n", ##__VA_ARGS__)
-#endif
+#include "myvector_log.h"
 
 #include "hnswdisk.h"
 #include "hnswlib.h"
