@@ -71,14 +71,14 @@ docker run --rm \
     mkdir -p "$MYSQL_SRC/bld" && cd "$MYSQL_SRC/bld"
     cmake .. \
       -DDOWNLOAD_BOOST=1 \
+      -DWITH_BOOST=/tmp/boost_mysql96 \
       -DWITH_UNIT_TESTS=OFF \
       -DWITH_ROUTER=OFF \
       -DWITH_RAPID=OFF \
       -DWITH_NDB=OFF \
       -DWITH_NDBCLUSTER=OFF \
       -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
-      -DCMAKE_BUILD_TYPE=Release \
-      >/dev/null 2>&1
+      -DCMAKE_BUILD_TYPE=Release
 
     echo "==> Building MyVector component (MYSQL_DIR=/mysql-libs for extracted libs)..."
     cd /workspace
