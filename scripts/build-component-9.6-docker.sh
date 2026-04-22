@@ -49,6 +49,9 @@ docker run --rm \
       libtirpc-devel openldap-devel cyrus-sasl-devel \
       libcurl-devel protobuf-devel protobuf-compiler \
       zlib-devel openssl-devel ncurses-devel \
+      gcc-toolset-14-gcc gcc-toolset-14-gcc-c++ \
+      gcc-toolset-14-binutils \
+      gcc-toolset-14-annobin-annocheck gcc-toolset-14-annobin-plugin-gcc \
       >/dev/null 2>&1
 
     echo "==> Cloning MySQL source ($MYSQL_TAG)..."
@@ -70,6 +73,8 @@ docker run --rm \
     echo "==> Configuring MySQL (generate headers)..."
     mkdir -p "$MYSQL_SRC/bld" && cd "$MYSQL_SRC/bld"
     cmake .. \
+      -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc \
+      -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++ \
       -DDOWNLOAD_BOOST=1 \
       -DWITH_BOOST=/tmp/boost_mysql96 \
       -DWITH_UNIT_TESTS=OFF \
@@ -85,6 +90,8 @@ docker run --rm \
     rm -rf build
     mkdir -p build
     cmake -B build -S . \
+      -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc \
+      -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++ \
       -DCMAKE_BUILD_TYPE=Release \
       -DMYSQL_SOURCE_DIR="$MYSQL_SRC" \
       -DMYSQL_BUILD_DIR="$MYSQL_SRC/bld" \
