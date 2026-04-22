@@ -126,8 +126,6 @@ extern my_service<SERVICE_TYPE(mysql_udf_metadata)>* h_udf_metadata_service;
 
 class AbstractVectorIndex;
 
-#include "myvector.h"
-
 /* Each serialized vector has 4 bytes of metadata.
  * Byte 1 - MyVector vector format version
  * Byte 2 - Native datatype of vector elements. e.g FP32, FP16 etc
