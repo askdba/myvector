@@ -52,6 +52,7 @@ docker run --rm \
       gcc-toolset-14-gcc gcc-toolset-14-gcc-c++ \
       gcc-toolset-14-binutils \
       gcc-toolset-14-annobin-annocheck gcc-toolset-14-annobin-plugin-gcc \
+      rpcgen \
       >/dev/null 2>&1
 
     echo "==> Cloning MySQL source ($MYSQL_TAG)..."
@@ -82,6 +83,7 @@ docker run --rm \
       -DWITH_RAPID=OFF \
       -DWITH_NDB=OFF \
       -DWITH_NDBCLUSTER=OFF \
+      -DWITH_GROUP_REPLICATION=OFF \
       -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
       -DCMAKE_BUILD_TYPE=Release
 
