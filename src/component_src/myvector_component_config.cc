@@ -6,23 +6,6 @@
  * and runs. Values can be overridden at runtime if the component later
  * supports a config API or manifest options.
  */
-#include <mysql/plugin.h>
-#include <mysql/service_my_plugin_log.h>
-#include <cstdarg>
-#include <cstdio>
-
-/** Dummy plugin handle when built as standalone component (not used). */
-MYSQL_PLUGIN gplugin = nullptr;
-
-/** Stub for plugin log when built as standalone component (no server error log). */
-int my_plugin_log_message(MYSQL_PLUGIN* plugin,
-                          enum plugin_log_level level,
-                          const char* format, ...) {
-  (void)plugin;
-  (void)level;
-  (void)format;
-  return 0;
-}
 
 static char g_myvector_index_dir[512] = "";
 static char g_myvector_config_file[512] = "myvector.cnf";
