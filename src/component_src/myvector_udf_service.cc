@@ -3,7 +3,6 @@
 #include <mysql/components/services/udf_registration.h>
 #include <mysql/udf_registration_types.h>
 #include <mysql/plugin.h>
-#include <mysql/service_my_plugin_log.h>
 #include <mysql/service_mysql_alloc.h>
 #include <mysql/service_plugin_registry.h>
 
@@ -97,12 +96,9 @@ extern char* latin1;
 // AbstractVectorIndex, VectorIndexCollection and related globals
 extern VectorIndexCollection g_indexes;
 
-// Placeholder for error logging - to be replaced by component-specific logging
-#define UDF_ERROR_LOG(...) do { /* fprintf(stderr, __VA_ARGS__); */ } while(0)
-
 #define SET_UDF_ERROR_AND_RETURN(...) \
     do { \
-        UDF_ERROR_LOG(__VA_ARGS__); \
+        MYVEC_LOG_ERROR(__VA_ARGS__); \
         *error = 1; \
         return (result); \
     } while (0)
