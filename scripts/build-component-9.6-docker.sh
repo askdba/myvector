@@ -22,21 +22,29 @@ MYSQL_IMAGE="mysql:${MYSQL_IMAGE_TAG:-9.6}"
 
 # Extract MySQL libs from the official image for ABI compatibility
 echo "==> Extracting libmysqlclient from $MYSQL_IMAGE..."
-docker create --name "$CONTAINER_NAME" "$MYSQL_IMAGE"
 rm -rf "$MYSQL_LIBS_TMP"
 mkdir -p "$MYSQL_LIBS_TMP/lib64"
-# Oracle Linux MySQL image: libs in /usr/lib64/mysql/ or /usr/lib/mysql/
-docker cp "$CONTAINER_NAME":/usr/lib64/mysql/. "$MYSQL_LIBS_TMP/lib64/" 2>/dev/null || \
-  docker cp "$CONTAINER_NAME":/usr/lib/mysql/. "$MYSQL_LIBS_TMP/lib64/" 2>/dev/null || \
-  { echo "Could not find libmysqlclient in $MYSQL_IMAGE"; exit 1; }
+
+# Find libmysqlclient inside the image (location varies by MySQL version)
+echo "==> Locating libmysqlclient in $MYSQL_IMAGE..."
+LIBPATH=$(docker run --rm "$MYSQL_IMAGE" \
+  find /usr -name "libmysqlclient.so*" -type f 2>/dev/null | head -1)
+if [ -z "$LIBPATH" ]; then
+  echo "ERROR: libmysqlclient not found in $MYSQL_IMAGE"
+  exit 1
+fi
+echo "==> Found: $LIBPATH"
+LIBDIR=$(dirname "$LIBPATH")
+
+# Extract the entire lib directory containing libmysqlclient
+docker create --name "$CONTAINER_NAME" "$MYSQL_IMAGE"
+docker cp "$CONTAINER_NAME":"$LIBDIR"/. "$MYSQL_LIBS_TMP/lib64/"
 docker rm -f "$CONTAINER_NAME"
 
-echo "==> Extracted libs from $MYSQL_IMAGE:"
-ls -la "$MYSQL_LIBS_TMP/lib64/" 2>/dev/null || echo "(lib64 empty or missing)"
-ls -la "$MYSQL_LIBS_TMP/" 2>/dev/null
+echo "==> Extracted libs:"
+ls -la "$MYSQL_LIBS_TMP/lib64/"
 
 # cmake find_library needs the unversioned .so symlink (only in mysql-devel, not the server image).
-# Create it from the versioned lib if missing.
 (cd "$MYSQL_LIBS_TMP/lib64" && for f in libmysqlclient.so.[0-9]*; do
   [ -f "$f" ] || continue
   echo "==> Creating symlink: libmysqlclient.so -> $f"
