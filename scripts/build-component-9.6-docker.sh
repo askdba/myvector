@@ -1,86 +1,50 @@
 #!/usr/bin/env bash
-# Build MyVector component for MySQL 9.6.
-# Uses oraclelinux:9 for build tools; copies libmysqlclient from mysql:9.6
-# to guarantee ABI compatibility with mysql:9.6 runtime.
+# Build MyVector component for MySQL 9.6 inside an oraclelinux:9 container.
+# Installs mysql-community-devel from Oracle's MySQL innovation repo for
+# libmysqlclient and headers; uses gcc-toolset-14 as required by MySQL 9.6 cmake.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MYSQL_TAG="${1:-mysql-9.6.0}"
-MYSQL_LIBS_TMP="/tmp/mysql-libs-${MYSQL_TAG}"
-# Unique container name per run to avoid concurrency conflicts
-CONTAINER_NAME="myv96libs-$$-$(date +%s)"
 
 echo "==> Building MyVector component for $MYSQL_TAG"
 
-# Cleanup: container and temp dir. Install trap immediately so early failures are cleaned up.
-trap 'docker rm -f "$CONTAINER_NAME" 2>/dev/null || true; rm -rf "$MYSQL_LIBS_TMP"' EXIT
-
-# Map MYSQL_TAG (e.g. mysql-9.6.0) to Docker image (e.g. mysql:9.6.0)
-MYSQL_IMAGE_TAG="${MYSQL_TAG#mysql-}"
-MYSQL_IMAGE="mysql:${MYSQL_IMAGE_TAG:-9.6}"
-
-# Extract MySQL libs from the official image for ABI compatibility
-echo "==> Extracting libmysqlclient from $MYSQL_IMAGE..."
-rm -rf "$MYSQL_LIBS_TMP"
-mkdir -p "$MYSQL_LIBS_TMP/lib64"
-
-# Find libmysqlclient inside the image (location varies by MySQL version)
-echo "==> Locating libmysqlclient in $MYSQL_IMAGE..."
-LIBPATH=$(docker run --rm "$MYSQL_IMAGE" \
-  find /usr -name "libmysqlclient.so*" -type f 2>/dev/null | head -1)
-if [ -z "$LIBPATH" ]; then
-  echo "ERROR: libmysqlclient not found in $MYSQL_IMAGE"
-  exit 1
-fi
-echo "==> Found: $LIBPATH"
-LIBDIR=$(dirname "$LIBPATH")
-
-# Extract the entire lib directory containing libmysqlclient
-docker create --name "$CONTAINER_NAME" "$MYSQL_IMAGE"
-docker cp "$CONTAINER_NAME":"$LIBDIR"/. "$MYSQL_LIBS_TMP/lib64/"
-docker rm -f "$CONTAINER_NAME"
-
-echo "==> Extracted libs:"
-ls -la "$MYSQL_LIBS_TMP/lib64/"
-
-# cmake find_library needs the unversioned .so symlink (only in mysql-devel, not the server image).
-(cd "$MYSQL_LIBS_TMP/lib64" && for f in libmysqlclient.so.[0-9]*; do
-  [ -f "$f" ] || continue
-  echo "==> Creating symlink: libmysqlclient.so -> $f"
-  [ -L libmysqlclient.so ] || ln -sf "$f" libmysqlclient.so
-done)
-
 docker run --rm \
   -v "$REPO_ROOT:/workspace:rw" \
-  -v "$MYSQL_LIBS_TMP:/mysql-libs:ro" \
   -w /workspace \
   -e MYSQL_TAG="$MYSQL_TAG" \
   oraclelinux:9 \
   bash -c '
     set -e
+
     echo "==> Installing build dependencies..."
-    # Enable CodeReady Builder repo for cyrus-sasl-devel and protobuf packages
     dnf install -y oraclelinux-developer-release-el9 dnf-plugins-core >/dev/null 2>&1
     dnf config-manager --enable ol9_codeready_builder >/dev/null 2>&1
+
+    # MySQL innovation repo provides mysql-community-devel (libmysqlclient + headers)
+    dnf install -y https://dev.mysql.com/get/mysql-innovation-community-release-el9-1.noarch.rpm \
+      >/dev/null 2>&1
+
     dnf install -y --nodocs \
-      gcc gcc-c++ cmake make git \
-      bison pkg-config \
+      gcc gcc-c++ cmake make git bison pkg-config rpcgen \
       libtirpc-devel openldap-devel cyrus-sasl-devel \
       libcurl-devel protobuf-devel protobuf-compiler \
       zlib-devel openssl-devel ncurses-devel \
       gcc-toolset-14-gcc gcc-toolset-14-gcc-c++ \
       gcc-toolset-14-binutils \
       gcc-toolset-14-annobin-annocheck gcc-toolset-14-annobin-plugin-gcc \
-      rpcgen \
+      mysql-community-devel \
       >/dev/null 2>&1
 
     echo "==> Cloning MySQL source ($MYSQL_TAG)..."
     MYSQL_WORKSPACE="/workspace/mysql-server-${MYSQL_TAG}"
     NEED_CLONE=true
     if [ -d "$MYSQL_WORKSPACE/.git" ]; then
-      CURRENT_TAG="$(git -C "$MYSQL_WORKSPACE" describe --tags --exact-match 2>/dev/null || git -C "$MYSQL_WORKSPACE" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-      if [ "$CURRENT_TAG" = "$MYSQL_TAG" ] && [ -f "$MYSQL_WORKSPACE/include/mysql/components/component_implementation.h" ]; then
+      CURRENT_TAG="$(git -C "$MYSQL_WORKSPACE" describe --tags --exact-match 2>/dev/null \
+        || git -C "$MYSQL_WORKSPACE" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+      if [ "$CURRENT_TAG" = "$MYSQL_TAG" ] && \
+         [ -f "$MYSQL_WORKSPACE/include/mysql/components/component_implementation.h" ]; then
         NEED_CLONE=false
       fi
     fi
@@ -107,7 +71,7 @@ docker run --rm \
       -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
       -DCMAKE_BUILD_TYPE=Release
 
-    echo "==> Building MyVector component (MYSQL_DIR=/mysql-libs for extracted libs)..."
+    echo "==> Building MyVector component..."
     cd /workspace
     rm -rf build
     mkdir -p build
@@ -117,7 +81,7 @@ docker run --rm \
       -DCMAKE_BUILD_TYPE=Release \
       -DMYSQL_SOURCE_DIR="$MYSQL_SRC" \
       -DMYSQL_BUILD_DIR="$MYSQL_SRC/bld" \
-      -DMYSQL_DIR=/mysql-libs
+      -DMYSQL_DIR=/usr
     make -C build -j$(nproc) VERBOSE=1
 
     echo "==> Packaging artifact..."
