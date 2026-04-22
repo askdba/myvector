@@ -500,43 +500,34 @@ bool KNNIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
 }
 
 bool KNNIndex::saveIndex(const string&, const string&) {
-    my_plugin_log_message(&gplugin,
-                          MY_WARNING_LEVEL,
-                          "KNN Memory Index (%s) - Save Index to disk is no-op",
-                          m_name.c_str());
+    MYVEC_LOG_WARN("KNN Memory Index (%s) - Save Index to disk is no-op",
+                   m_name.c_str());
 
     return true;
 }
 
 bool KNNIndex::saveIndexIncr(const string&, const string&) {
-    my_plugin_log_message(
-        &gplugin,
-        MY_WARNING_LEVEL,
-        "KNN Memory Index (%s) - Save Index Incr to disk is no-op",
-        m_name.c_str());
+    MYVEC_LOG_WARN("KNN Memory Index (%s) - Save Index Incr to disk is no-op",
+                   m_name.c_str());
 
     return true;
 }
 
 bool KNNIndex::dropIndex(const string&) {
-    my_plugin_log_message(&gplugin,
-                          MY_WARNING_LEVEL,
-                          "KNN Memory Index (%s) - Drop Index is no-op",
-                          m_name.c_str());
+    MYVEC_LOG_WARN("KNN Memory Index (%s) - Drop Index is no-op",
+                   m_name.c_str());
 
     return true;
 }
 
 bool KNNIndex::loadIndex(const string&) {
-    my_plugin_log_message(&gplugin,
-                          MY_WARNING_LEVEL,
-                          "KNN Memory Index (%s) - Load Index is no op",
-                          m_name.c_str());
+    MYVEC_LOG_WARN("KNN Memory Index (%s) - Load Index is no op",
+                   m_name.c_str());
     return true;
 }
 
 bool KNNIndex::initIndex() {
-    debug_print("KNN Memory Index (%s) - initIndex()", m_name.c_str());
+    MYVEC_LOG_DEBUG("KNN Memory Index (%s) - initIndex()", m_name.c_str());
 
     /// nothing much to do!!
     m_vectors.clear();
@@ -685,7 +676,7 @@ HNSWMemoryIndex::HNSWMemoryIndex(const string& name, const string& options)
     if (m_optionsMap.getOption("ef_search").length())
         m_ef_search = m_optionsMap.getIntOption("ef_search", m_ef_construction);
 
-    debug_print("hnsw index params %s %s  %d %d %d %d %d",
+    MYVEC_LOG_DEBUG("hnsw index params %s %s  %d %d %d %d %d",
                 name.c_str(),
                 m_type.c_str(),
                 m_dim,
@@ -703,7 +694,7 @@ HNSWMemoryIndex::~HNSWMemoryIndex() {
 }
 
 bool HNSWMemoryIndex::initIndex() {
-    debug_print("hnsw initIndexO %p %s %d %d %d %d %d",
+    MYVEC_LOG_DEBUG("hnsw initIndexO %p %s %d %d %d %d %d",
                 this,
                 m_name.c_str(),
                 m_dim,
@@ -746,10 +737,8 @@ void HNSWMemoryIndex::getCheckPointString(string& ckstr) {
 bool HNSWMemoryIndex::saveIndex(const string& path, const string& option) {
 #ifdef TODO
     if (!m_isDirty) {
-        my_plugin_log_message(&gplugin,
-                              MY_WARNING_LEVEL,
-                              "HNSW index %s is not updated, save not required",
-                              m_name.c_str());
+        MYVEC_LOG_WARN("HNSW index %s is not updated, save not required",
+                       m_name.c_str());
         return true;
     }
 #endif
@@ -760,7 +749,7 @@ bool HNSWMemoryIndex::saveIndex(const string& path, const string& option) {
         flushBatchSerial();  // last batch, maybe small
     }
 
-    debug_print(
+    MYVEC_LOG_DEBUG(
         "HNSWemoryIndex::saveIndex %s %s.", path.c_str(), option.c_str());
 
     string filename = path + "/" + m_name + ".hnsw.index";
@@ -769,7 +758,7 @@ bool HNSWMemoryIndex::saveIndex(const string& path, const string& option) {
     getCheckPointString(checkPointStr);
 
     if (!m_alg_hnsw) {
-        error_print("HNSWMemoryIndex::saveIndex (%s) : null HNSW object.",
+        MYVEC_LOG_ERROR("HNSWMemoryIndex::saveIndex (%s) : null HNSW object.",
                     m_name.c_str());
         return false;
     }
@@ -809,7 +798,7 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
 
     string indexfile = path + "/" + m_name + ".hnsw.index";
 
-    debug_print(
+    MYVEC_LOG_DEBUG(
         "Loading HNSW index %s from %s", m_name.c_str(), indexfile.c_str());
 
     /* hnswlib throws std::runtime_error for errors */
@@ -817,7 +806,7 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
     try {
         m_alg_hnsw = new hnswlib::HierarchicalDiskNSW<FP32>(m_space, indexfile);
     } catch (std::runtime_error& e) {
-        warning_print("Error loading hnsw index (%s) from file : %s",
+        MYVEC_LOG_WARN("Error loading hnsw index (%s) from file : %s",
                       m_name.c_str(),
                       e.what());
     }
@@ -835,7 +824,7 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
 
         if (ckid.find("Checkpoint:timestamp") != string::npos) {
             ts = atol(ckid.substr(ckid.rfind(":") + 1).c_str());
-            debug_print("load index checkpoint ts = %lu.", ts);
+            MYVEC_LOG_DEBUG("load index checkpoint ts = %lu.", ts);
             setUpdateTs(ts);
         } else if (ckid.find("Checkpoint:binlog") != string::npos) {
             // ckptid=Checkpoint:binlog:binlog.000516:6761
@@ -847,7 +836,7 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
         }
     }
 
-    debug_print(
+    MYVEC_LOG_DEBUG(
         "debug HNSW index %s from %s", m_name.c_str(), indexfile.c_str());
     dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw)->debug();
     return true;
@@ -954,7 +943,7 @@ void HNSWMemoryIndex::setLastUpdateCoordinates(const string& binlogFile,
                                                const size_t& binlogPosition) {
     m_binlogFile = binlogFile;
     m_binlogPosition = binlogPosition;
-    debug_print(
+    MYVEC_LOG_DEBUG(
         "setLastUpdateCoordinates %s %lu", binlogFile.c_str(), binlogPosition);
 }
 
@@ -964,7 +953,7 @@ inline void ParallelFor(size_t start,
                         size_t end,
                         size_t numThreads,
                         Function fn) {
-    debug_print("Entered ParallelFor %lu %lu t=%lu", start, end, numThreads);
+    MYVEC_LOG_DEBUG("Entered ParallelFor %lu %lu t=%lu", start, end, numThreads);
     if (numThreads <= 0) {
         numThreads = thread::hardware_concurrency();
     }
@@ -1026,7 +1015,7 @@ bool HNSWMemoryIndex::startParallelBuild(int nthreads) {
 }
 
 bool HNSWMemoryIndex::flushBatchSerial() {
-    debug_print("flushBatchSerial %lu", m_batchkeys.size());
+    MYVEC_LOG_DEBUG("flushBatchSerial %lu", m_batchkeys.size());
     for (unsigned int i = 0; i < m_batchkeys.size(); i++) {
         m_alg_hnsw->addPoint((void*)&(m_batch[i * m_space->get_data_size()]),
                              m_batchkeys[i]);
@@ -1035,7 +1024,7 @@ bool HNSWMemoryIndex::flushBatchSerial() {
 }
 
 bool HNSWMemoryIndex::flushBatchParallel() {
-    debug_print("Entered flushBatchParallel for (%s), nthreads = %d, sz = %u",
+    MYVEC_LOG_DEBUG("Entered flushBatchParallel for (%s), nthreads = %d, sz = %u",
                 m_name.c_str(),
                 m_threads,
                 (unsigned int)m_batchkeys.size());
@@ -1080,7 +1069,7 @@ AbstractVectorIndex* VectorIndexCollection::open(const string& name,
                                                  const string& useraction) {
     lock_guard<mutex> l(m_mutex);  // exclusive
 
-    debug_print("Opening new index %s %s %s",
+    MYVEC_LOG_DEBUG("Opening new index %s %s %s",
                 name.c_str(),
                 options.c_str(),
                 useraction.c_str());
@@ -1093,12 +1082,9 @@ AbstractVectorIndex* VectorIndexCollection::open(const string& name,
     } else if (options.rfind("type=KNN") != string::npos) {
         hnewindex = new KNNIndex(name, options);
     } else {
-        my_plugin_log_message(
-            &gplugin,
-            MY_ERROR_LEVEL,
-            "MyVector unknown index type for %s options = %s, using KNN",
-            name.c_str(),
-            options.c_str());
+        MYVEC_LOG_ERROR("MyVector unknown index type for %s options = %s, using KNN",
+                        name.c_str(),
+                        options.c_str());
         hnewindex = new KNNIndex(name, options);
     }
 
@@ -1115,10 +1101,8 @@ AbstractVectorIndex* VectorIndexCollection::get(const string& name) {
         hindex = m_indexes[name];
         hindex->lockShared(); /* acquire lock before returning from here */
     } else {
-        my_plugin_log_message(&gplugin,
-                              MY_ERROR_LEVEL,
-                              "VectorIndexCollection::get() index not found %s",
-                              name.c_str());
+        MYVEC_LOG_ERROR("VectorIndexCollection::get() index not found %s",
+                        name.c_str());
     }
 
     return hindex;
@@ -1156,7 +1140,7 @@ string VectorIndexCollection::FindEarliestBinlogFile() {
     }
     if (ret == "zzzzzz.bin")
         ret = "";
-    debug_print("FindEarliestBinlogFile : %s.", ret.c_str());
+    MYVEC_LOG_DEBUG("FindEarliestBinlogFile : %s.", ret.c_str());
     return ret;
 }
 
@@ -1199,19 +1183,15 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         size_t epos = newQuery.find_first_of(')', pos);
 
         if (epos == string::npos) {
-            my_plugin_log_message(&gplugin,
-                                  MY_ERROR_LEVEL,
-                                  "MYVECTOR column terminating ')' not found.");
+            MYVEC_LOG_ERROR("MYVECTOR column terminating ')' not found.");
             error = true;
             break;
         }
 
         string colinfo = newQuery.substr(spos, (epos - spos));
         if (colinfo.length() > MYVECTOR_MAX_COLUMN_INFO_LEN) {
-            my_plugin_log_message(&gplugin,
-                                  MY_ERROR_LEVEL,
-                                  "MYVECTOR column info too long, length = %zu.",
-                                  colinfo.length());
+            MYVEC_LOG_ERROR("MYVECTOR column info too long, length = %zu.",
+                            colinfo.length());
             error = true;
             break;
         }
@@ -1219,11 +1199,8 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         MyVectorOptions vo(colinfo);
 
         if (!vo.isValid()) {
-            my_plugin_log_message(
-                &gplugin,
-                MY_ERROR_LEVEL,
-                "MYVECTOR column options parse error, options=%s.",
-                colinfo.c_str());
+            MYVEC_LOG_ERROR("MYVECTOR column options parse error, options=%s.",
+                            colinfo.c_str());
             error = true;
             break;
         }
@@ -1236,9 +1213,7 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         }
 
         if (vo.getOption("dim") == "") {
-            my_plugin_log_message(&gplugin,
-                                  MY_ERROR_LEVEL,
-                                  "MYVECTOR column dimension not defined.");
+            MYVEC_LOG_ERROR("MYVECTOR column dimension not defined.");
             error = true;
             break;
         }
@@ -1254,10 +1229,7 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         int dim = vo.getIntOption("dim", 0, &dimValid);
 
         if (!dimValid || dim <= 1 || dim > MYVECTOR_MAX_VECTOR_DIM) {
-            my_plugin_log_message(&gplugin,
-                                  MY_ERROR_LEVEL,
-                                  "MYVECTOR column dimension incorrect %d.",
-                                  dim);
+            MYVEC_LOG_ERROR("MYVECTOR column dimension incorrect %d.", dim);
             error = true;
             break;
         }
@@ -1287,10 +1259,7 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
             newQuery.substr(0, pos) + newColumn + newQuery.substr(epos + 1);
     }  // while
 
-    my_plugin_log_message(&gplugin,
-                          MY_INFORMATION_LEVEL,
-                          "MYVECTOR column rewrite \n%s.",
-                          newQuery.c_str());
+    MYVEC_LOG_INFO("MYVECTOR column rewrite \n%s.", newQuery.c_str());
     return error;
 }
 
@@ -1348,10 +1317,7 @@ bool rewriteMyVectorIsANN(const string& query, string& newQuery) {
             newQuery.substr(0, pos) + ss.str() + newQuery.substr(epos + 1);
     }  // while
 
-    my_plugin_log_message(&gplugin,
-                          MY_INFORMATION_LEVEL,
-                          "MYVECTOR_IS_ANN query rewrite \n%s.",
-                          newQuery.c_str());
+    MYVEC_LOG_INFO("MYVECTOR_IS_ANN query rewrite \n%s.", newQuery.c_str());
     return error;
 }
 
@@ -1386,12 +1352,9 @@ bool rewriteMyVectorSearch(const string& query, string& newQuery) {
         split(strparams, annparams);
 
         if (annparams.size() < 4 || annparams.size() > 5) {
-            my_plugin_log_message(
-                &gplugin,
-                MY_ERROR_LEVEL,
-                "Incorrect MYVECTOR_SEARCH syntax : %s\nExample usage : %s",
-                strparams.c_str(),
-                MYVECTOR_SEARCH_USAGE.c_str());
+            MYVEC_LOG_ERROR("Incorrect MYVECTOR_SEARCH syntax : %s\nExample usage : %s",
+                            strparams.c_str(),
+                            MYVECTOR_SEARCH_USAGE.c_str());
             error = true;
             break;
         }
@@ -2168,7 +2131,7 @@ void myvector_open_index_impl(char* vecid,
     }
 
     else if (!strcmp(action, "load")) {
-        debug_print("Loading index %s.", vecid);
+        MYVEC_LOG_DEBUG("Loading index %s.", vecid);
         vi->loadIndex(myvector_index_dir);  // will handle 'reload' also
     } else if (!strcmp(action, "build")) {
         vi->dropIndex(myvector_index_dir);
@@ -2239,14 +2202,12 @@ PLUGIN_EXPORT char* myvector_search_open_udf(UDF_INIT*,
     char* action = args->args[3];
     char* extra = args->args[4];
 
-    my_plugin_log_message(&gplugin,
-                          MY_INFORMATION_LEVEL,
-                          "myvector_search_open() params %s %s %s %s %s",
-                          vecid,
-                          details,
-                          pkidcol,
-                          action,
-                          extra);
+    MYVEC_LOG_INFO("myvector_search_open() params %s %s %s %s %s",
+                   vecid,
+                   details,
+                   pkidcol,
+                   action,
+                   extra);
 
     strcpy(result, "SUCCESS");
 
@@ -2281,10 +2242,7 @@ PLUGIN_EXPORT char* myvector_search_save_udf(UDF_INIT*,
     char* extra = args->args[4];
 
     if (!g_indexes.get(vecid)) {
-        my_plugin_log_message(&gplugin,
-                              MY_ERROR_LEVEL,
-                              "Index %s is not opened for build/refresh.",
-                              vecid);
+        MYVEC_LOG_ERROR("Index %s is not opened for build/refresh.", vecid);
         strcpy(result, "FAILED");
         *length = 7;
         return result;
@@ -2305,10 +2263,7 @@ PLUGIN_EXPORT bool myvector_search_add_row_udf_init(UDF_INIT* initid,
 
     /* Check if index is open and 'cache' it */
     if (!g_indexes.get(vecid)) {
-        my_plugin_log_message(&gplugin,
-                              MY_ERROR_LEVEL,
-                              "Index %s is not opened for update.",
-                              vecid);
+        MYVEC_LOG_ERROR("Index %s is not opened for update.", vecid);
         return true;
     }
 
@@ -2345,17 +2300,12 @@ PLUGIN_EXPORT void myvector_search_add_row_udf_deinit(UDF_INIT* initid) {
     AbstractVectorIndex* vi = (AbstractVectorIndex*)(initid->ptr);
 
     if (vi) {
-        my_plugin_log_message(&gplugin,
-                              MY_INFORMATION_LEVEL,
-                              "Not Saving index %s to disk",
-                              vi->getName().c_str());
+        MYVEC_LOG_INFO("Not Saving index %s to disk", vi->getName().c_str());
 
         // vi->saveIndex(myvector_index_dir);
 
-        my_plugin_log_message(&gplugin,
-                              MY_INFORMATION_LEVEL,
-                              "Not Saving index %s to disk completed",
-                              vi->getName().c_str());
+        MYVEC_LOG_INFO("Not Saving index %s to disk completed",
+                       vi->getName().c_str());
     }
 
     return;
@@ -2402,7 +2352,7 @@ PLUGIN_EXPORT long long myvector_is_valid(UDF_INIT*,
     ha_checksum cksum2 = my_checksum(
         0, (const unsigned char*)raw, args->lengths[0] - sizeof(ha_checksum));
     if (cksum1 != cksum2) {
-        debug_print(
+        MYVEC_LOG_DEBUG(
             "myvector_is_valid checksum failure (%u != %u)", cksum1, cksum2);
         return 0;
     }
@@ -2469,7 +2419,7 @@ void myvector_table_op(const string& dbname,
         if (isAfter(binlogfile, binlogpos, binlogfileold, binlogposold)) {
             vi->insertVector(vec.data(), vi->getDimension(), pkid);
         } else {
-            debug_print("Skipping index update (%s %lu) < (%s %lu).",
+            MYVEC_LOG_DEBUG("Skipping index update (%s %lu) < (%s %lu).",
                         binlogfile.c_str(),
                         binlogpos,
                         binlogfileold.c_str(),
@@ -2496,7 +2446,7 @@ void myvector_checkpoint_index(const string& dbtable,
         size_t binlogposold;
 
         vi->getLastUpdateCoordinates(binlogfileold, binlogposold);
-        debug_print("Checkpoint index %s at (%s %lu)\n",
+        MYVEC_LOG_DEBUG("Checkpoint index %s at (%s %lu)\n",
                     vecid.c_str(),
                     binlogFile.c_str(),
                     binlogPos);
