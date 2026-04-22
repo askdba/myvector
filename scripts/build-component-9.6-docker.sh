@@ -40,10 +40,13 @@ docker run --rm \
   bash -c '
     set -e
     echo "==> Installing build dependencies..."
+    # Enable CodeReady Builder repo for cyrus-sasl-devel and protobuf packages
+    dnf install -y oraclelinux-developer-release-el9 dnf-plugins-core >/dev/null 2>&1
+    dnf config-manager --enable ol9_codeready_builder >/dev/null 2>&1
     dnf install -y --nodocs \
       gcc gcc-c++ cmake make git \
       bison pkg-config \
-      libtirpc-devel libldap-devel cyrus-sasl-devel \
+      libtirpc-devel openldap-devel cyrus-sasl-devel \
       libcurl-devel protobuf-devel protobuf-compiler \
       zlib-devel openssl-devel ncurses-devel \
       >/dev/null 2>&1
