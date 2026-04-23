@@ -68,10 +68,14 @@ docker run --rm \
 
     echo "==> Building libmysqlclient from source..."
     make -C "$MYSQL_SRC/bld" mysqlclient -j$(nproc)
-    LIBSO=$(find "$MYSQL_SRC/bld" -name "libmysqlclient.so*" -type f 2>/dev/null | head -1)
-    LIBSO_DIR=$(dirname "$LIBSO")
-    [ -f "$LIBSO_DIR/libmysqlclient.so" ] || ln -sf "$(basename "$LIBSO")" "$LIBSO_DIR/libmysqlclient.so"
-    echo "==> libmysqlclient at: $LIBSO_DIR"
+    LIBMYSQL_A=$(find "$MYSQL_SRC/bld" -name "libmysqlclient.a" -type f 2>/dev/null | grep -v CMakeFiles | head -1)
+    if [ -z "$LIBMYSQL_A" ]; then
+      echo "ERROR: libmysqlclient.a not found after make mysqlclient" >&2
+      find "$MYSQL_SRC/bld" -name "libmysqlclient*" 2>/dev/null >&2 || true
+      exit 1
+    fi
+    LIBMYSQL_DIR=$(dirname "$LIBMYSQL_A")
+    echo "==> libmysqlclient.a at: $LIBMYSQL_DIR"
 
     echo "==> Building MyVector component..."
     cd /workspace
@@ -83,7 +87,7 @@ docker run --rm \
       -DCMAKE_BUILD_TYPE=Release \
       -DMYSQL_SOURCE_DIR="$MYSQL_SRC" \
       -DMYSQL_BUILD_DIR="$MYSQL_SRC/bld" \
-      -DMYSQL_DIR="$LIBSO_DIR"
+      -DMYSQL_DIR="$LIBMYSQL_DIR"
     make -C build -j$(nproc) VERBOSE=1
 
     echo "==> Packaging artifact..."
