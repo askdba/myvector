@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build MyVector component for MySQL 9.6 inside an oraclelinux:9 container.
-# Installs mysql-community-devel from Oracle's MySQL innovation repo for
-# libmysqlclient and headers; uses gcc-toolset-14 as required by MySQL 9.6 cmake.
+# Clones MySQL source, builds libmysqlclient from source (no external repo),
+# then builds the component using gcc-toolset-14 as required by MySQL 9.6.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,10 +22,6 @@ docker run --rm \
     dnf install -y oraclelinux-developer-release-el9 dnf-plugins-core >/dev/null 2>&1
     dnf config-manager --enable ol9_codeready_builder >/dev/null 2>&1
 
-    # MySQL innovation repo provides mysql-community-devel (libmysqlclient + headers)
-    dnf install -y https://dev.mysql.com/get/mysql-innovation-community-release-el9-1.noarch.rpm \
-      >/dev/null 2>&1
-
     dnf install -y --nodocs \
       gcc gcc-c++ cmake make git bison pkg-config rpcgen \
       libtirpc-devel openldap-devel cyrus-sasl-devel \
@@ -34,7 +30,6 @@ docker run --rm \
       gcc-toolset-14-gcc gcc-toolset-14-gcc-c++ \
       gcc-toolset-14-binutils \
       gcc-toolset-14-annobin-annocheck gcc-toolset-14-annobin-plugin-gcc \
-      mysql-community-devel \
       >/dev/null 2>&1
 
     echo "==> Cloning MySQL source ($MYSQL_TAG)..."
@@ -71,6 +66,13 @@ docker run --rm \
       -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
       -DCMAKE_BUILD_TYPE=Release
 
+    echo "==> Building libmysqlclient from source..."
+    make -C "$MYSQL_SRC/bld" mysqlclient -j$(nproc)
+    LIBSO=$(find "$MYSQL_SRC/bld" -name "libmysqlclient.so*" -type f 2>/dev/null | head -1)
+    LIBSO_DIR=$(dirname "$LIBSO")
+    [ -f "$LIBSO_DIR/libmysqlclient.so" ] || ln -sf "$(basename "$LIBSO")" "$LIBSO_DIR/libmysqlclient.so"
+    echo "==> libmysqlclient at: $LIBSO_DIR"
+
     echo "==> Building MyVector component..."
     cd /workspace
     rm -rf build
@@ -81,7 +83,7 @@ docker run --rm \
       -DCMAKE_BUILD_TYPE=Release \
       -DMYSQL_SOURCE_DIR="$MYSQL_SRC" \
       -DMYSQL_BUILD_DIR="$MYSQL_SRC/bld" \
-      -DMYSQL_DIR=/usr
+      -DMYSQL_DIR="$LIBSO_DIR"
     make -C build -j$(nproc) VERBOSE=1
 
     echo "==> Packaging artifact..."
