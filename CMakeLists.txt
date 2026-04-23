@@ -77,7 +77,7 @@ endif()
 find_library(MYSQLCLIENT_LIBRARY
   NAMES mysqlclient
   HINTS "${MYSQL_DIR}" "${MYSQL_BUILD_DIR}" "${MYSQL_SOURCE_DIR}"
-  PATH_SUFFIXES lib lib64 lib/mysql
+  PATH_SUFFIXES lib lib64 lib/mysql lib64/mysql
 )
 if(NOT MYSQLCLIENT_LIBRARY)
   message(FATAL_ERROR
