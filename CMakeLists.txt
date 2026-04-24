@@ -129,6 +129,14 @@ target_include_directories(myvector_component PRIVATE ${MYVECTOR_INCLUDE_DIRS})
 target_compile_definitions(myvector_component PRIVATE ${MYVECTOR_COMPONENT_DEFS} MYVECTOR_COMPONENT_BUILD)
 target_link_libraries(myvector_component PRIVATE ${MYSQLCLIENT_LIBRARY} ZLIB::ZLIB)
 
+# Embed RPATH so the component .so finds libmysqlclient at runtime from wherever
+# it was found at build time (e.g. /usr/lib64/mysql on el9 RPM installs).
+get_filename_component(_MYSQLCLIENT_DIR "${MYSQLCLIENT_LIBRARY}" DIRECTORY)
+set_target_properties(myvector_component PROPERTIES
+  BUILD_WITH_INSTALL_RPATH TRUE
+  INSTALL_RPATH "${_MYSQLCLIENT_DIR}"
+)
+
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   set_property(TARGET myvector_component APPEND_STRING PROPERTY LINK_FLAGS
     " -static-libstdc++ -static-libgcc")

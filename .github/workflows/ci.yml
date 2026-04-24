@@ -276,7 +276,6 @@ jobs:
           docker exec myv97 mysql -uroot -proot -e "SELECT 1" 2>/dev/null && break
           sleep 2
         done
-        docker exec myv97 bash -c 'echo /usr/lib64/mysql > /etc/ld.so.conf.d/mysql-client.conf && ldconfig'
 
     - name: Install and Test Component (9.7)
       run: |
