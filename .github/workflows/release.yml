@@ -48,8 +48,8 @@ jobs:
         include:
           - mysql-version: '8.4.8'
             mysql-tag: 'mysql-8.4.8'
-          - mysql-version: '9.6.0'
-            mysql-tag: 'mysql-9.6.0'
+          - mysql-version: '9.7.0'
+            mysql-tag: 'mysql-9.7.0'
 
     steps:
       - name: Checkout code
@@ -75,8 +75,8 @@ jobs:
 
       - name: Build component
         run: |
-          if [ "${{ matrix.mysql-version }}" = "9.6.0" ]; then
-            ./scripts/build-component-9.6-docker.sh mysql-9.6.0
+          if [ "${{ matrix.mysql-version }}" = "9.7.0" ]; then
+            ./scripts/build-component-9.7-docker.sh mysql-9.7.0
           else
             ./scripts/build-component.sh "${{ matrix.mysql-tag }}" "$(pwd)/mysql-server"
           fi
