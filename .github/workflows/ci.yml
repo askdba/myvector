@@ -144,27 +144,27 @@ jobs:
         path: build/component/
         if-no-files-found: warn
 
-  # MySQL 9.6: build inside mysql:9.6 container for libmysqlclient ABI compatibility
-  build-component-9-6:
+  # MySQL 9.7 LTS: build inside oraclelinux:9 container for ABI compatibility
+  build-component-9-7:
     runs-on: ubuntu-latest
     continue-on-error: true  # dnf install in oraclelinux:9 can be flaky; 8.4 component build also validates this path
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Cache MySQL 9.6 source
+    - name: Cache MySQL 9.7 source
       uses: actions/cache@v4
       with:
-        path: mysql-server-9.6
-        key: mysql-source-9.6.0-v1
+        path: mysql-server-mysql-9.7.0
+        key: mysql-source-9.7.0-v1
 
-    - name: Build component inside mysql:9.6 container
-      run: chmod +x scripts/build-component-9.6-docker.sh && ./scripts/build-component-9.6-docker.sh mysql-9.6.0
+    - name: Build component inside mysql:9.7 LTS container
+      run: chmod +x scripts/build-component-9.7-docker.sh && ./scripts/build-component-9.7-docker.sh mysql-9.7.0
 
     - name: Upload Component Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: myvector-component-mysql9.6-linux
+        name: myvector-component-mysql9.7-linux
         path: build/component/
 
   # Step 5: Install component and run basic verification
@@ -254,11 +254,11 @@ jobs:
 
         echo "=== Step 5 verification passed ==="
 
-  # MySQL 9.6: actions-setup-mysql does not support 9.6 yet; use Docker mysql:9.6
-  test-component-9-6:
+  # MySQL 9.7 LTS: actions-setup-mysql does not support 9.7 yet; use Docker mysql:9.7
+  test-component-9-7:
     runs-on: ubuntu-latest
-    continue-on-error: true  # dnf install in oraclelinux:9 can be flaky; mirrors build-component-9-6
-    needs: build-component-9-6
+    continue-on-error: true  # mirrors build-component-9-7
+    needs: build-component-9-7
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -266,50 +266,50 @@ jobs:
     - name: Download Component Artifact
       uses: actions/download-artifact@v4
       with:
-        name: myvector-component-mysql9.6-linux
+        name: myvector-component-mysql9.7-linux
         path: ./component
 
-    - name: Start MySQL 9.6 container
+    - name: Start MySQL 9.7 container
       run: |
-        docker run -d --name myv96 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_ROOT_HOST=% mysql:9.6
+        docker run -d --name myv97 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_ROOT_HOST=% mysql:9.7
         for _i in $(seq 1 45); do
-          docker exec myv96 mysql -uroot -proot -e "SELECT 1" 2>/dev/null && break
+          docker exec myv97 mysql -uroot -proot -e "SELECT 1" 2>/dev/null && break
           sleep 2
         done
 
-    - name: Install and Test Component (9.6)
+    - name: Install and Test Component (9.7)
       run: |
-        PLUGIN_DIR=$(docker exec myv96 mysql -uroot -proot -N -e "SELECT @@plugin_dir;")
-        docker cp ./component/libmyvector_component.so myv96:"$PLUGIN_DIR/myvector.so"
-        docker exec myv96 mkdir -p /usr/share/mysql/component
-        docker cp ./component/myvector.json myv96:/usr/share/mysql/component/myvector.json
+        PLUGIN_DIR=$(docker exec myv97 mysql -uroot -proot -N -e "SELECT @@plugin_dir;")
+        docker cp ./component/libmyvector_component.so myv97:"$PLUGIN_DIR/myvector.so"
+        docker exec myv97 mkdir -p /usr/share/mysql/component
+        docker cp ./component/myvector.json myv97:/usr/share/mysql/component/myvector.json
 
-        docker exec myv96 mysql -uroot -proot -e "INSTALL COMPONENT 'file://myvector';"
-        docker exec myv96 mysql -uroot -proot -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';"
-        docker exec myv96 mysql -uroot -proot -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
-        docker exec myv96 mysql -uroot -proot -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'));"
+        docker exec myv97 mysql -uroot -proot -e "INSTALL COMPONENT 'file://myvector';"
+        docker exec myv97 mysql -uroot -proot -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';"
+        docker exec myv97 mysql -uroot -proot -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
+        docker exec myv97 mysql -uroot -proot -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'));"
 
-        docker exec myv96 mysql -uroot -proot -e "CREATE DATABASE IF NOT EXISTS test;"
-        docker cp examples/stanford50d/create-basic.sql myv96:/tmp/create.sql
-        docker exec myv96 mysql -uroot -proot test -e "SOURCE /tmp/create.sql;"
-        gunzip -c examples/stanford50d/insert50d.sql.gz | awk 'BEGIN{RS=";"} NR<=5000{printf "%s;", $0} NR==5000{exit}' | docker exec -i myv96 mysql -uroot -proot test
-        docker exec myv96 mysql -uroot -proot test -e "
+        docker exec myv97 mysql -uroot -proot -e "CREATE DATABASE IF NOT EXISTS test;"
+        docker cp examples/stanford50d/create-basic.sql myv97:/tmp/create.sql
+        docker exec myv97 mysql -uroot -proot test -e "SOURCE /tmp/create.sql;"
+        gunzip -c examples/stanford50d/insert50d.sql.gz | awk 'BEGIN{RS=";"} NR<=5000{printf "%s;", $0} NR==5000{exit}' | docker exec -i myv97 mysql -uroot -proot test
+        docker exec myv97 mysql -uroot -proot test -e "
           SELECT word, myvector_distance(wordvec, (SELECT wordvec FROM words50d WHERE word='the')) AS dist
           FROM words50d ORDER BY dist LIMIT 5;
         "
 
-        docker exec myv96 mysql -uroot -proot -e "UNINSTALL COMPONENT 'file://myvector';"
+        docker exec myv97 mysql -uroot -proot -e "UNINSTALL COMPONENT 'file://myvector';"
 
         echo "=== Reinstall test (UNINSTALL -> INSTALL -> verify UDFs) ==="
-        docker exec myv96 mysql -uroot -proot -e "INSTALL COMPONENT 'file://myvector';"
-        docker exec myv96 mysql -uroot -proot -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
-        docker exec myv96 mysql -uroot -proot -e "UNINSTALL COMPONENT 'file://myvector';"
+        docker exec myv97 mysql -uroot -proot -e "INSTALL COMPONENT 'file://myvector';"
+        docker exec myv97 mysql -uroot -proot -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
+        docker exec myv97 mysql -uroot -proot -e "UNINSTALL COMPONENT 'file://myvector';"
 
-        echo "=== MySQL 9.6 component tests passed ==="
+        echo "=== MySQL 9.7 component tests passed ==="
 
-    - name: Cleanup MySQL 9.6 container
+    - name: Cleanup MySQL 9.7 container
       if: always()
-      run: docker rm -f myv96 2>/dev/null || true
+      run: docker rm -f myv97 2>/dev/null || true
 
   # Fast build job - builds plugin only (in-tree)
   build:
