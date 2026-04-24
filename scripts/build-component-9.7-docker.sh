@@ -82,15 +82,19 @@ docker run --rm \
     rm -rf build
     mkdir -p build
 
-    # Locate libmysqlclient installed by mysql-community-devel
-    MYSQLCLIENT_LIB=$(find /usr/lib64 /usr/lib \( -name "libmysqlclient.so" -o -name "libmysqlclient.a" \) 2>/dev/null | head -1)
+    # Prefer the static archive so the component .so has no libmysqlclient.so
+    # runtime dependency (the mysql:9.7 Docker test image has no shared client lib).
+    MYSQLCLIENT_LIB=$(find /usr/lib64 /usr/lib -name "libmysqlclient.a" 2>/dev/null | head -1)
+    if [ -z "$MYSQLCLIENT_LIB" ]; then
+      MYSQLCLIENT_LIB=$(find /usr/lib64 /usr/lib -name "libmysqlclient.so" 2>/dev/null | head -1)
+    fi
     if [ -z "$MYSQLCLIENT_LIB" ]; then
       echo "ERROR: libmysqlclient not found after devel RPM install" >&2
       find /usr/lib64 /usr/lib -name "libmysql*" 2>/dev/null >&2 || true
       exit 1
     fi
     MYSQL_LIBDIR=$(dirname "$MYSQLCLIENT_LIB")
-    echo "==> libmysqlclient at: $MYSQL_LIBDIR"
+    echo "==> libmysqlclient at: $MYSQLCLIENT_LIB"
 
     cmake -B build -S . \
       -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc \
@@ -98,7 +102,8 @@ docker run --rm \
       -DCMAKE_BUILD_TYPE=Release \
       -DMYSQL_SOURCE_DIR="$MYSQL_SRC" \
       -DMYSQL_BUILD_DIR="$MYSQL_SRC/bld" \
-      -DMYSQL_DIR="$MYSQL_LIBDIR"
+      -DMYSQL_DIR="$MYSQL_LIBDIR" \
+      -DMYSQLCLIENT_LIBRARY="$MYSQLCLIENT_LIB"
     make -C build -j$(nproc) VERBOSE=1
 
     echo "==> Packaging artifact..."
