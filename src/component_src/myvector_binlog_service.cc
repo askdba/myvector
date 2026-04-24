@@ -38,7 +38,11 @@
 #include "myvectorutils.h"
 #if MYSQL_VERSION_ID >= 80400
 #include "mysql/binlog/event/binlog_event.h"
+#if MYSQL_VERSION_ID < 90700
+// MySQL 9.7+ declares namespace [[deprecated]] binary_log in event_reader.h;
+// redeclaring it as an alias here conflicts. For <9.7, define it ourselves.
 namespace binary_log = mysql::binlog::event;
+#endif
 #else
 #include "binlog_event.h"
 #endif
