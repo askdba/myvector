@@ -215,7 +215,7 @@ mysql -u root -p < sql/install_functions.sql
 
 > **Installation paths:**
 > The **plugin** (`INSTALL PLUGIN`) is the current stable path and supports MySQL 8.0, 8.4, and 9.0.
-> The **component** (`INSTALL COMPONENT`) is the forward path for MySQL 8.4 and 9.6 (LTS).
+> The **component** (`INSTALL COMPONENT`) is the forward path for MySQL 8.4 and 9.7 (LTS).
 > MySQL 8.0 plugin support will be maintained through MySQL 8.0 EOL; no component build is planned for 8.0.
 
 | Tag | MySQL Version |

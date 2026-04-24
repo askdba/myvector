@@ -501,6 +501,13 @@ char* myvector_display(UDF_INIT* initid,
         *error = 1;
         return result;
     }
+#if MYSQL_VERSION_ID < 90000
+    if (args->lengths[0] < static_cast<unsigned long>(MYVECTOR_COLUMN_EXTRA_LEN)) {
+        *error = 1;
+        *is_null = 1;
+        return result;
+    }
+#endif
 
     int precision = 0;
     if (args->arg_count > 1 && args->args[1] && args->lengths[1]) {

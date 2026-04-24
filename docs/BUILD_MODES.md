@@ -20,7 +20,7 @@ This document describes the two build modes (plugin and component) and their beh
 
 ## Reinstall Behavior (Going-Forward Plan)
 
-**Component:** Supports in-process reinstall (`UNINSTALL COMPONENT` then `INSTALL COMPONENT`). The binlog service uses `EventsQ::clear_shutdown()` in `start_binlog_monitoring()` to reset the queue; without it, worker threads would exit immediately after reinstall. CI tests this path in `test-component` and `test-component-9-6`.
+**Component:** Supports in-process reinstall (`UNINSTALL COMPONENT` then `INSTALL COMPONENT`). The binlog service uses `EventsQ::clear_shutdown()` in `start_binlog_monitoring()` to reset the queue; without it, worker threads would exit immediately after reinstall. CI tests this path in `test-component` and `test-component-9-7`.
 
 **Plugin:** Uses a different `EventsQ` in `src/myvector_binlog.cc` (no `request_shutdown`/`shutting_down_`). Load/unload semantics differ; reinstall requires `UNINSTALL PLUGIN` then `INSTALL PLUGIN` plus re-registering UDFs. CI tests plugin reinstall in the `test` job.
 

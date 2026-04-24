@@ -954,7 +954,7 @@ inline void ParallelFor(size_t start,
                         size_t numThreads,
                         Function fn) {
     MYVEC_LOG_DEBUG("Entered ParallelFor %lu %lu t=%lu", start, end, numThreads);
-    if (numThreads <= 0) {
+    if (numThreads == 0) {
         numThreads = thread::hardware_concurrency();
     }
 

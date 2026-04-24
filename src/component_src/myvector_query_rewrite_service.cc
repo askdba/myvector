@@ -2,6 +2,7 @@
 #include <mysql/components/my_service.h>
 #include <mysql/components/services/mysql_string.h>
 #include <mysql/components/services/query_rewrite.h>
+#include "mysql_component_service_base.h"
 #include "myvector.h"
 #include "my_inttypes.h"
 #include "my_thread.h"
