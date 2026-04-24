@@ -281,8 +281,7 @@ jobs:
       run: |
         PLUGIN_DIR=$(docker exec myv97 mysql -uroot -proot -N -e "SELECT @@plugin_dir;")
         docker cp ./component/libmyvector_component.so myv97:"$PLUGIN_DIR/myvector.so"
-        docker exec myv97 mkdir -p /usr/share/mysql/component
-        docker cp ./component/myvector.json myv97:/usr/share/mysql/component/myvector.json
+        docker cp ./component/myvector.json myv97:"$PLUGIN_DIR/myvector.json"
 
         docker exec myv97 mysql -uroot -proot -e "INSTALL COMPONENT 'file://myvector';"
         docker exec myv97 mysql -uroot -proot -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';"

@@ -62,13 +62,14 @@ jobs:
 
       - name: Cache MySQL source
         id: cache-mysql
+        if: matrix.mysql-version != '9.7.0'
         uses: actions/cache@v4
         with:
           path: mysql-server
           key: release-mysql-${{ matrix.mysql-tag }}-v1
 
       - name: Clone MySQL source
-        if: steps.cache-mysql.outputs.cache-hit != 'true'
+        if: matrix.mysql-version != '9.7.0' && steps.cache-mysql.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --branch ${{ matrix.mysql-tag }} \
             https://github.com/mysql/mysql-server.git mysql-server
