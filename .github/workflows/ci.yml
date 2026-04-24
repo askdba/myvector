@@ -289,8 +289,7 @@ jobs:
         docker exec myv97 mysql -uroot -proot -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'));"
 
         docker exec myv97 mysql -uroot -proot -e "CREATE DATABASE IF NOT EXISTS test;"
-        docker cp examples/stanford50d/create-basic.sql myv97:/tmp/create.sql
-        docker exec myv97 mysql -uroot -proot test -e "SOURCE /tmp/create.sql;"
+        docker exec -i myv97 mysql -uroot -proot test < examples/stanford50d/create-basic.sql
         gunzip -c examples/stanford50d/insert50d.sql.gz | awk 'BEGIN{RS=";"} NR<=5000{printf "%s;", $0} NR==5000{exit}' | docker exec -i myv97 mysql -uroot -proot test
         docker exec myv97 mysql -uroot -proot test -e "
           SELECT word, myvector_distance(wordvec, (SELECT wordvec FROM words50d WHERE word='the')) AS dist
