@@ -276,6 +276,24 @@ jobs:
           docker exec myv97 mysql -uroot -proot -e "SELECT 1" 2>/dev/null && break
           sleep 2
         done
+        echo "=== libmysqlclient in mysql:9.7 container ==="
+        docker exec myv97 find /usr -name "libmysqlclient*" 2>/dev/null | sort || echo "none found"
+        docker exec myv97 bash -c '
+          if ! find /usr/lib64 /usr/lib -name "libmysqlclient.so.24" 2>/dev/null | grep -q .; then
+            echo "libmysqlclient.so.24 not found, installing from CDN..."
+            ARCH=$(uname -m)
+            BASE="https://cdn.mysql.com/Downloads/MySQL-9.7"
+            VER="9.7.0-1.el9"
+            dnf install -y --nodocs \
+              "${BASE}/mysql-community-common-${VER}.${ARCH}.rpm" \
+              "${BASE}/mysql-community-client-plugins-${VER}.${ARCH}.rpm" \
+              "${BASE}/mysql-community-libs-${VER}.${ARCH}.rpm" \
+              >/dev/null 2>&1
+            echo /usr/lib64/mysql > /etc/ld.so.conf.d/mysql-client.conf && ldconfig
+          else
+            echo "libmysqlclient.so.24 already present"
+          fi
+        '
 
     - name: Install and Test Component (9.7)
       run: |
