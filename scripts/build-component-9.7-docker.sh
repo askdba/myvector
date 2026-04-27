@@ -10,10 +10,15 @@ MYSQL_TAG="${1:-mysql-9.7.0}"
 
 echo "==> Building MyVector component for $MYSQL_TAG"
 
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+
 docker run --rm \
   -v "$REPO_ROOT:/workspace:rw" \
   -w /workspace \
   -e MYSQL_TAG="$MYSQL_TAG" \
+  -e HOST_UID="$HOST_UID" \
+  -e HOST_GID="$HOST_GID" \
   oraclelinux:9 \
   bash -c '
     set -e
@@ -111,4 +116,8 @@ docker run --rm \
     cp build/libmyvector_component.so build/component/
     cp src/component_src/myvector.json build/component/
     echo "==> Built: build/component/libmyvector_component.so"
+
+    # Restore host ownership of the MySQL source workspace so the runner user
+    # can save it via actions/cache@v4 (container runs as root).
+    chown -R "${HOST_UID}:${HOST_GID}" "/workspace/mysql-server-${MYSQL_TAG}" 2>/dev/null || true
   '
