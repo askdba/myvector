@@ -234,8 +234,10 @@ jobs:
         "
 
         $MYSQL_CMD -e "UNINSTALL COMPONENT 'file://myvector';"
+        set +e
         output=$($MYSQL_CMD -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';" -s -N 2>&1)
         mysql_exit=$?
+        set -e
         if [[ $mysql_exit -ne 0 ]]; then
           echo "Post-uninstall verification query failed (exit $mysql_exit): $output"; exit 1
         fi
@@ -247,7 +249,13 @@ jobs:
         $MYSQL_CMD -e "INSTALL COMPONENT 'file://myvector';"
         $MYSQL_CMD -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
         $MYSQL_CMD -e "UNINSTALL COMPONENT 'file://myvector';"
+        set +e
         output=$($MYSQL_CMD -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';" -s -N 2>&1)
+        mysql_exit=$?
+        set -e
+        if [[ $mysql_exit -ne 0 ]]; then
+          echo "Post-uninstall verification query failed (exit $mysql_exit): $output"; exit 1
+        fi
         if [[ -n "$output" ]]; then
           echo "Component still registered after reinstall test: $output"; exit 1
         fi
@@ -303,6 +311,16 @@ jobs:
         $MYQ -e "INSTALL COMPONENT 'file://myvector';"
         $MYQ -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
         $MYQ -e "UNINSTALL COMPONENT 'file://myvector';"
+        set +e
+        output=$($MYQ -N -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';" 2>&1)
+        mysql_exit=$?
+        set -e
+        if [[ $mysql_exit -ne 0 ]]; then
+          echo "Post-uninstall verification query failed (exit $mysql_exit): $output"; exit 1
+        fi
+        if [[ -n "$output" ]]; then
+          echo "Component still registered after reinstall test: $output"; exit 1
+        fi
 
         echo "=== MySQL 9.7 component tests passed ==="
 
