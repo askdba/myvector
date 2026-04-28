@@ -312,11 +312,11 @@ jobs:
         $MYQ -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
         $MYQ -e "UNINSTALL COMPONENT 'file://myvector';"
         set +e
-        output=$($MYQ -N -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';" 2>&1)
+        output=$($MYQ -N -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';" 2>/dev/null)
         mysql_exit=$?
         set -e
         if [[ $mysql_exit -ne 0 ]]; then
-          echo "Post-uninstall verification query failed (exit $mysql_exit): $output"; exit 1
+          echo "Post-uninstall verification query failed (exit $mysql_exit)"; exit 1
         fi
         if [[ -n "$output" ]]; then
           echo "Component still registered after reinstall test: $output"; exit 1
