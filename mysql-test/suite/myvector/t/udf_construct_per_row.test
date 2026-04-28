@@ -1,0 +1,46 @@
+-- Test for issue #79: myvector_construct() nested in myvector_distance() is
+-- invoked once per row (not cached). Uses myvector_debug_construct_calls() to
+-- verify invocation count.
+--source include/have_log_bin.inc
+
+--disable_query_log
+let $MYVECTOR_VARDIR = `select @@datadir`;
+let $MYVECTOR_CONFIG = `select @@myvector_config_file`;
+let $MYVECTOR_IDXDIR = `select @@myvector_index_dir`;
+--write_file $MYVECTOR_CONFIG
+myvector_user_id=root
+myvector_user_password=
+myvector_socket=@MYSQLTEST_VARDIR/tmp/mysqld.1.sock
+EOF
+--chmod 0600 $MYVECTOR_CONFIG
+--enable_query_log
+
+--replace_result .dylib .so
+eval INSTALL PLUGIN myvector SONAME 'myvector.so';
+
+CREATE FUNCTION myvector_construct RETURNS STRING SONAME 'myvector.so';
+CREATE FUNCTION myvector_distance  RETURNS REAL   SONAME 'myvector.so';
+CREATE FUNCTION myvector_debug_construct_calls RETURNS INTEGER SONAME 'myvector.so';
+
+CREATE TABLE t79 (id INT PRIMARY KEY, v VARBINARY(128));
+-- Insert 10 rows with 3-dim vectors (INSERT invokes myvector_construct 10 times)
+INSERT INTO t79 VALUES (1, myvector_construct('[1,2,3]')), (2, myvector_construct('[2,3,4]')), (3, myvector_construct('[3,4,5]')), (4, myvector_construct('[4,5,6]')), (5, myvector_construct('[5,6,7]')), (6, myvector_construct('[6,7,8]')), (7, myvector_construct('[7,8,9]')), (8, myvector_construct('[8,9,10]')), (9, myvector_construct('[9,10,11]')), (10, myvector_construct('[10,11,12]'));
+
+-- Reset counter so we only measure the following SELECT
+SELECT myvector_debug_construct_calls() AS reset_ignore;
+
+-- Run distance query with nested myvector_construct (constant arg).
+-- MySQL evaluates myvector_construct('[1,2,3]') once per row (issue #79).
+SELECT COUNT(*) FROM (SELECT myvector_distance(v, myvector_construct('[1,2,3]'), 'L2') AS d FROM t79) sub;
+
+-- Get invocation count: expect 10 (one per row)
+SELECT myvector_debug_construct_calls() AS construct_calls;
+
+-- Cleanup
+DROP FUNCTION myvector_debug_construct_calls;
+DROP FUNCTION myvector_construct;
+DROP FUNCTION myvector_distance;
+DROP TABLE t79;
+UNINSTALL PLUGIN myvector;
+--remove_file $MYVECTOR_CONFIG
+--force-rmdir $MYVECTOR_IDXDIR

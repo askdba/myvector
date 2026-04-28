@@ -16,7 +16,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 REGISTRY_IMAGE="${REGISTRY_IMAGE:-ghcr.io/askdba/myvector}"
-TAGS=(mysql8.0 mysql8.4 mysql9.6)
+TAGS=(mysql8.0 mysql8.4 mysql9.7)
 
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-myvector}"
 MYSQL_DATABASE="${MYSQL_DATABASE:-vectordb}"

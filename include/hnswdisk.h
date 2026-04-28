@@ -13,6 +13,7 @@
 #include <unordered_set>
 
 #include "hnswlib.h"
+#include "myvector_log.h"
 #include "myvectorutils.h"
 #include "visited_list_pool.h"
 #include <fcntl.h>

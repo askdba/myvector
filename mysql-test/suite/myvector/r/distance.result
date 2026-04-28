@@ -1,0 +1,20 @@
+INSTALL PLUGIN myvector SONAME 'myvector.so';
+CREATE FUNCTION myvector_construct RETURNS STRING SONAME 'myvector.so';
+CREATE FUNCTION myvector_distance  RETURNS REAL   SONAME 'myvector.so';
+SELECT myvector_distance(myvector_construct('[1, 0, 0]'), myvector_construct('[0, 1, 0]'), 'L2') as dist_l2;
+dist_l2
+1.4142135381698608
+SELECT myvector_distance(myvector_construct('[1, 0, 0]'), myvector_construct('[1, 0, 0]'), 'COSINE') as dist_cos_0;
+dist_cos_0
+0
+SELECT myvector_distance(myvector_construct('[1, 0, 0]'), myvector_construct('[-1, 0, 0]'), 'COSINE') as dist_cos_2;
+dist_cos_2
+2
+SELECT myvector_distance(myvector_construct('[1, 2, 3]'), myvector_construct('[4, 5, 6]'), 'IP') as dist_ip;
+dist_ip
+-31
+SELECT myvector_distance(myvector_construct('[1, 0]'), myvector_construct('[0, 1]'), 'INVALID');
+ERROR HY000: Can't initialize function 'myvector_distance'; Incorrect distance measure
+DROP FUNCTION myvector_construct;
+DROP FUNCTION myvector_distance;
+UNINSTALL PLUGIN myvector;
