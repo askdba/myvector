@@ -273,35 +273,36 @@ jobs:
       run: |
         docker run -d --name myv97 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_ROOT_HOST=% mysql:9.7
         for _i in $(seq 1 45); do
-          docker exec myv97 mysql -uroot -proot -e "SELECT 1" 2>/dev/null && break
+          docker exec myv97 mysql -uroot -proot -h 127.0.0.1 -e "SELECT 1" 2>/dev/null && break
           sleep 2
         done
 
     - name: Install and Test Component (9.7)
       run: |
-        PLUGIN_DIR=$(docker exec myv97 mysql -uroot -proot -N -e "SELECT @@plugin_dir;")
+        MYQ="docker exec myv97 mysql -uroot -proot -h 127.0.0.1"
+        PLUGIN_DIR=$($MYQ -N -e "SELECT @@plugin_dir;")
         docker cp ./component/libmyvector_component.so myv97:"$PLUGIN_DIR/myvector.so"
         docker cp ./component/myvector.json myv97:"$PLUGIN_DIR/myvector.json"
 
-        docker exec myv97 mysql -uroot -proot -e "INSTALL COMPONENT 'file://myvector';"
-        docker exec myv97 mysql -uroot -proot -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';"
-        docker exec myv97 mysql -uroot -proot -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
-        docker exec myv97 mysql -uroot -proot -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'));"
+        $MYQ -e "INSTALL COMPONENT 'file://myvector';"
+        $MYQ -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';"
+        $MYQ -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
+        $MYQ -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'));"
 
-        docker exec myv97 mysql -uroot -proot -e "CREATE DATABASE IF NOT EXISTS test;"
-        docker exec -i myv97 mysql -uroot -proot test < examples/stanford50d/create-basic.sql
-        gunzip -c examples/stanford50d/insert50d.sql.gz | awk 'BEGIN{RS=";"} NR<=5000{printf "%s;", $0} NR==5000{exit}' | docker exec -i myv97 mysql -uroot -proot test
-        docker exec myv97 mysql -uroot -proot test -e "
+        $MYQ -e "CREATE DATABASE IF NOT EXISTS test;"
+        docker exec -i myv97 mysql -uroot -proot -h 127.0.0.1 test < examples/stanford50d/create-basic.sql
+        gunzip -c examples/stanford50d/insert50d.sql.gz | awk 'BEGIN{RS=";"} NR<=5000{printf "%s;", $0} NR==5000{exit}' | docker exec -i myv97 mysql -uroot -proot -h 127.0.0.1 test
+        $MYQ test -e "
           SELECT word, myvector_distance(wordvec, (SELECT wordvec FROM words50d WHERE word='the')) AS dist
           FROM words50d ORDER BY dist LIMIT 5;
         "
 
-        docker exec myv97 mysql -uroot -proot -e "UNINSTALL COMPONENT 'file://myvector';"
+        $MYQ -e "UNINSTALL COMPONENT 'file://myvector';"
 
         echo "=== Reinstall test (UNINSTALL -> INSTALL -> verify UDFs) ==="
-        docker exec myv97 mysql -uroot -proot -e "INSTALL COMPONENT 'file://myvector';"
-        docker exec myv97 mysql -uroot -proot -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
-        docker exec myv97 mysql -uroot -proot -e "UNINSTALL COMPONENT 'file://myvector';"
+        $MYQ -e "INSTALL COMPONENT 'file://myvector';"
+        $MYQ -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
+        $MYQ -e "UNINSTALL COMPONENT 'file://myvector';"
 
         echo "=== MySQL 9.7 component tests passed ==="
 
