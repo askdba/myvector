@@ -67,20 +67,25 @@ docker run --rm \
     MYSQL_SRC="$MYSQL_WORKSPACE"
 
     echo "==> Configuring MySQL (generate headers)..."
-    mkdir -p "$MYSQL_SRC/bld" && cd "$MYSQL_SRC/bld"
-    cmake .. \
-      -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc \
-      -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++ \
-      -DDOWNLOAD_BOOST=1 \
-      -DWITH_BOOST=/tmp/boost_mysql97 \
-      -DWITH_UNIT_TESTS=OFF \
-      -DWITH_ROUTER=OFF \
-      -DWITH_RAPID=OFF \
-      -DWITH_NDB=OFF \
-      -DWITH_NDBCLUSTER=OFF \
-      -DWITH_GROUP_REPLICATION=OFF \
-      -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
-      -DCMAKE_BUILD_TYPE=Release
+    mkdir -p "$MYSQL_SRC/bld"
+    if [ ! -f "$MYSQL_SRC/bld/CMakeCache.txt" ]; then
+      cd "$MYSQL_SRC/bld"
+      cmake .. \
+        -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc \
+        -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++ \
+        -DDOWNLOAD_BOOST=1 \
+        -DWITH_BOOST=/tmp/boost_mysql97 \
+        -DWITH_UNIT_TESTS=OFF \
+        -DWITH_ROUTER=OFF \
+        -DWITH_RAPID=OFF \
+        -DWITH_NDB=OFF \
+        -DWITH_NDBCLUSTER=OFF \
+        -DWITH_GROUP_REPLICATION=OFF \
+        -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
+        -DCMAKE_BUILD_TYPE=Release
+    else
+      echo "==> Reusing existing MySQL bld/ (CMakeCache.txt present)"
+    fi
 
     echo "==> Building MyVector component..."
     cd /workspace
@@ -120,4 +125,5 @@ docker run --rm \
     # Restore host ownership of the MySQL source workspace so the runner user
     # can save it via actions/cache@v4 (container runs as root).
     chown -R "${HOST_UID}:${HOST_GID}" "/workspace/mysql-server-${MYSQL_TAG}" 2>/dev/null || true
+    chown -R "${HOST_UID}:${HOST_GID}" "/workspace/build" 2>/dev/null || true
   '
