@@ -89,6 +89,41 @@ done
 echo "MySQL ready."
 echo ""
 
+# ── ensure libmysqlclient is present (server image omits it) ─────────────────
+# The component .so may link against libmysqlclient dynamically.  The plain
+# mysql:X Docker image is server-only (Oracle Linux 9) and does not ship the
+# client shared library.  Install it from the MySQL CDN if missing.
+
+echo "Checking runtime library dependencies..."
+ARCH=$(docker exec "$CONTAINER" uname -m)
+if ! docker exec "$CONTAINER" sh -c "ldconfig -p 2>/dev/null | grep -q libmysqlclient" 2>/dev/null; then
+    SRV_VER=$(docker exec "$CONTAINER" mysqld --version 2>/dev/null \
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    if [[ -z "$SRV_VER" ]]; then
+        SRV_VER=$(mq -N -e "SELECT @@version;" 2>/dev/null | tr -d '[:space:]')
+    fi
+    MAJOR_MINOR=$(echo "$SRV_VER" | cut -d. -f1,2 | tr -d '.')  # e.g. 84 or 97
+    BASE="https://cdn.mysql.com/Downloads/MySQL-${SRV_VER%.*}"
+    VER="${SRV_VER}-1.el9"
+    echo "Installing libmysqlclient ${SRV_VER} (${ARCH}) from MySQL CDN..."
+    docker exec "$CONTAINER" bash -c "
+        set -e
+        BASE='${BASE}'
+        VER='${VER}'
+        ARCH='${ARCH}'
+        rpm -ivh --nodeps \
+          \"\${BASE}/mysql-community-common-\${VER}.\${ARCH}.rpm\" \
+          2>/dev/null || true
+        rpm -ivh --nodeps \
+          \"\${BASE}/mysql-community-client-plugins-\${VER}.\${ARCH}.rpm\" \
+          2>/dev/null || true
+        rpm -ivh --nodeps \
+          \"\${BASE}/mysql-community-libs-\${VER}.\${ARCH}.rpm\" \
+          2>/dev/null
+        ldconfig 2>/dev/null || true
+    " || echo "WARNING: CDN install failed — INSTALL COMPONENT may fail if .so needs libmysqlclient"
+fi
+
 # ── install component ────────────────────────────────────────────────────────
 
 echo "Installing component..."
@@ -100,9 +135,22 @@ mq -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myve
     | grep -q myvector || die "Component not registered after install"
 pass "INSTALL COMPONENT"
 
+# ── write myvector.cnf so index-build thread can connect back via TCP ────────
+# The component reads "myvector.cnf" (relative path from mysqld's CWD).
+# mysqld CWD is typically the datadir; write there and also to / as fallback.
+
+DATADIR=$(mq -N -e "SELECT @@datadir;" 2>/dev/null | tr -d '[:space:]')
+CNF_CONTENT="myvector_host=127.0.0.1
+myvector_user_id=root
+myvector_user_password=${ROOT_PW}
+myvector_port=3306
+"
+docker exec "$CONTAINER" bash -c "printf '%s' '$CNF_CONTENT' > '${DATADIR}myvector.cnf'"
+docker exec "$CONTAINER" bash -c "printf '%s' '$CNF_CONTENT' > /myvector.cnf"
+
 # ── set index directory ──────────────────────────────────────────────────────
 
-mq -e "SET GLOBAL myvector_index_dir='/var/lib/mysql';" 2>/dev/null || true
+mq -e "SET GLOBAL myvector_index_dir='${DATADIR}';" 2>/dev/null || true
 
 # ── register remaining UDFs (not auto-registered by component) ───────────────
 # myvector_row_distance and myvector_is_valid are defined in myvector.so
@@ -232,9 +280,25 @@ mq -D "$DB" -e "
 
 echo "Loading data..."
 T_START=$(date +%s)
+# awk exits early after n records, causing SIGPIPE on gunzip; pipefail treats that
+# as a pipeline failure — turn it off for this pipeline only.
+set +o pipefail
+# The SQL file starts with "set autocommit=off;" — when we load a subset the
+# file's COMMIT never runs and MySQL rolls back everything on disconnect.
+# Use awk to: (1) replace the autocommit=off line with autocommit=1,
+# (2) print n INSERT records, (3) append COMMIT before exiting.
 gunzip -c "$STANFORD_DIR/insert50d.sql.gz" \
-    | awk -v n="$LOAD_ROWS" 'BEGIN{RS=";"; ORS=";"} NR<=n{print} NR==n{exit}' \
+    | awk -v n="$LOAD_ROWS" '
+        BEGIN { RS=";"; ORS=";"; committed=0 }
+        NR==1 && /autocommit/ { print "SET SESSION autocommit=1"; next }
+        NR<=n+1 { print }
+        NR==n+1 { print "COMMIT"; committed=1; exit }
+        END { if (!committed) print "COMMIT;" }
+    ' \
     | mq_stdin -D "$DB" 2>/dev/null
+LOAD_EXIT=$?
+set -o pipefail
+[[ $LOAD_EXIT -eq 0 ]] || die "Data load pipeline failed (exit $LOAD_EXIT)"
 T_END=$(date +%s)
 ACTUAL=$(mq -D "$DB" -N -e "SELECT COUNT(*) FROM words50d;" 2>/dev/null | tr -d '[:space:]')
 pass "Loaded $ACTUAL rows in $((T_END - T_START))s"

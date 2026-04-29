@@ -38,11 +38,8 @@
 #include "myvectorutils.h"
 #if MYSQL_VERSION_ID >= 80400
 #include "mysql/binlog/event/binlog_event.h"
-#if MYSQL_VERSION_ID < 90700
-// MySQL 9.7+ declares namespace [[deprecated]] binary_log in event_reader.h;
-// redeclaring it as an alias here conflicts. For <9.7, define it ourselves.
-namespace binary_log = mysql::binlog::event;
-#endif
+// MySQL 8.4+ headers declare namespace [[deprecated]] binary_log {} in event_reader.h.
+// We cannot redeclare it as an alias. Use mysql::binlog::event:: directly below.
 #else
 #include "binlog_event.h"
 #endif
@@ -1500,13 +1497,10 @@ private:
                 break;
             }
 #if MYSQL_VERSION_ID >= 80400
-            MYVECTOR_DIAGNOSTIC_PUSH
-            MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS
-            using MyvectorLogEventType = binary_log::Log_event_type;
-            constexpr MyvectorLogEventType kRotateEvent = binary_log::ROTATE_EVENT;
-            constexpr MyvectorLogEventType kTableMapEvent = binary_log::TABLE_MAP_EVENT;
-            constexpr MyvectorLogEventType kWriteRowsEvent = binary_log::WRITE_ROWS_EVENT;
-            MYVECTOR_DIAGNOSTIC_POP
+            using MyvectorLogEventType = mysql::binlog::event::Log_event_type;
+            constexpr MyvectorLogEventType kRotateEvent = mysql::binlog::event::ROTATE_EVENT;
+            constexpr MyvectorLogEventType kTableMapEvent = mysql::binlog::event::TABLE_MAP_EVENT;
+            constexpr MyvectorLogEventType kWriteRowsEvent = mysql::binlog::event::WRITE_ROWS_EVENT;
 #else
             using MyvectorLogEventType = binary_log::Log_event_type;
             constexpr MyvectorLogEventType kRotateEvent = binary_log::ROTATE_EVENT;
