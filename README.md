@@ -84,7 +84,7 @@ docker run -d \
   -p 3306:3306 \
   -e MYSQL_ROOT_PASSWORD=myvector \
   -e MYSQL_DATABASE=vectordb \
-  ghcr.io/askdba/myvector:mysql-8.4
+  ghcr.io/askdba/myvector:mysql8.4
 ```
 
 ### 2. Connect to MySQL
@@ -220,9 +220,9 @@ mysql -u root -p < sql/install_functions.sql
 
 | Tag | MySQL Version |
 | :--- | :--- |
-| `ghcr.io/askdba/myvector:mysql-8.0` | 8.0.x |
-| `ghcr.io/askdba/myvector:mysql-8.4` | 8.4.x (Recommended) |
-| `ghcr.io/askdba/myvector:mysql-9.0` | 9.0.x |
+| `ghcr.io/askdba/myvector:mysql8.0` | 8.0.x |
+| `ghcr.io/askdba/myvector:mysql8.4` | 8.4.x (Recommended) |
+| `ghcr.io/askdba/myvector:mysql9.7` | 9.7.x (LTS) |
 | `ghcr.io/askdba/myvector:latest` | 8.4.x |
 
 ### Docker Compose
@@ -232,7 +232,7 @@ version: '3.8'
 
 services:
   myvector:
-    image: ghcr.io/askdba/myvector:mysql-8.4
+    image: ghcr.io/askdba/myvector:mysql8.4
     ports:
       - "3306:3306"
     environment:

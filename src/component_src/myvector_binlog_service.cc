@@ -22,9 +22,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cerrno>
 #include <fcntl.h>
 #include <fstream>
 #include <list>
+#include <sys/stat.h>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -777,14 +779,74 @@ void readConfigFile(const char* config_file) {
     if (!config_file || !strlen(config_file))
         return;
 
-    std::ifstream file(config_file);
-    std::string line, info;
+    /* Open before stat to avoid TOCTOU race (symlink swap between check and open). */
+    int fd = open(config_file, O_RDONLY);
+    if (fd < 0) {
+        if (errno == ENOENT)
+            return;  /* Missing file is non-fatal: proceed with empty credentials. */
+        fprintf(stderr,
+                "MyVector: cannot open config file %s (errno %d). "
+                "Refusing to load credentials.\n",
+                config_file, errno);
+        return;
+    }
 
-    while (std::getline(file, line)) {
-        if (line.length() && line[0] == '#')
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        fprintf(stderr,
+                "MyVector: cannot fstat config file %s (errno %d). "
+                "Refusing to load credentials.\n",
+                config_file, errno);
+        close(fd);
+        return;
+    }
+
+    /* Reject group/world access — the file holds plaintext credentials. */
+    if ((st.st_mode & 0077) != 0) {
+        fprintf(stderr,
+                "MyVector: config file %s has insecure permissions "
+                "(group or world readable). Set to 0600 or 0400. "
+                "Refusing to load credentials.\n",
+                config_file);
+        close(fd);
+        return;
+    }
+
+    /* Reject if not owned by the effective process user (skip when root). */
+    if (geteuid() != 0 && st.st_uid != geteuid()) {
+        fprintf(stderr,
+                "MyVector: config file %s is not owned by the MySQL "
+                "process user. Refusing to load credentials.\n",
+                config_file);
+        close(fd);
+        return;
+    }
+
+    const size_t max_size = 65536;
+    size_t to_read = (st.st_size > 0 && (size_t)st.st_size < max_size)
+                         ? (size_t)st.st_size
+                         : (st.st_size > 0 ? max_size : 4096);
+    std::string content(to_read + 1, '\0');
+    ssize_t n = read(fd, &content[0], to_read);
+    close(fd);
+    if (n < 0) {
+        fprintf(stderr,
+                "MyVector: cannot read config file %s (errno %d). "
+                "Refusing to load credentials.\n",
+                config_file, errno);
+        return;
+    }
+    content.resize(n > 0 ? (size_t)n : 0);
+
+    /* Convert newline-separated key=value lines into comma-separated form
+       for MyVectorOptions, skipping comment lines. */
+    std::string info;
+    std::istringstream ss(content);
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (line.empty() || line[0] == '#')
             continue;
-
-        if (info.length())
+        if (!info.empty())
             info += ",";
         info += line;
     }

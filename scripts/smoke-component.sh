@@ -146,8 +146,9 @@ myvector_user_id=root
 myvector_user_password=${ROOT_PW}
 myvector_port=3306
 "
-docker exec "$CONTAINER" bash -c "printf '%s' '$CNF_CONTENT' > '${DATADIR}myvector.cnf'"
-docker exec "$CONTAINER" bash -c "printf '%s' '$CNF_CONTENT' > /myvector.cnf"
+DATADIR_OWNER=$(docker exec "$CONTAINER" stat -c '%U' "$DATADIR" 2>/dev/null || echo "mysql")
+docker exec "$CONTAINER" bash -c "printf '%s' '$CNF_CONTENT' > '${DATADIR}myvector.cnf' && chmod 0600 '${DATADIR}myvector.cnf' && chown '${DATADIR_OWNER}' '${DATADIR}myvector.cnf'"
+docker exec "$CONTAINER" bash -c "printf '%s' '$CNF_CONTENT' > /myvector.cnf && chmod 0600 /myvector.cnf && chown '${DATADIR_OWNER}' /myvector.cnf"
 
 # ── set index directory ──────────────────────────────────────────────────────
 

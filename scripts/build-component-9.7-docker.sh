@@ -28,9 +28,12 @@ docker run --rm \
     dnf install -y oraclelinux-developer-release-el9 dnf-plugins-core >/dev/null 2>&1
     dnf config-manager --enable ol9_codeready_builder >/dev/null 2>&1
 
-    # Install MySQL 9.7 devel RPMs from CDN (version-pinned, no repo setup required)
-    BASE="https://cdn.mysql.com/Downloads/MySQL-9.7"
-    VER="9.7.0-1.el9"
+    # Install MySQL 9.7 devel RPMs from CDN — version derived from MYSQL_TAG.
+    # Strip "mysql-" prefix (e.g. mysql-9.7.0 -> 9.7.0) and append distro suffix.
+    MYSQL_VER="${MYSQL_TAG#mysql-}"
+    MYSQL_MINOR="${MYSQL_VER%.*}"   # e.g. 9.7
+    BASE="https://cdn.mysql.com/Downloads/MySQL-${MYSQL_MINOR}"
+    VER="${MYSQL_VER}-1.el9"
     dnf install -y --nodocs \
       "${BASE}/mysql-community-common-${VER}.${ARCH}.rpm" \
       "${BASE}/mysql-community-client-plugins-${VER}.${ARCH}.rpm" \
