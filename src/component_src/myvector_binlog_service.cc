@@ -158,7 +158,9 @@ private:
 static EventsQ gqueue_;
 
 std::mutex binlog_stream_mutex_;
-std::map<std::string, VectorIndexColumnInfo> g_OnlineVectorIndexes;
+// Keyed by "db.table"; value is a list of all vector columns on that table.
+// Using a vector so tables with multiple vector columns are fully tracked.
+std::map<std::string, std::vector<VectorIndexColumnInfo>> g_OnlineVectorIndexes;
 std::string currentBinlogFile = "";
 size_t currentBinlogPos = 0;
 
@@ -578,6 +580,7 @@ void parseRowsEvent(const unsigned char* event_buf,
                     TableMapEvent& tev,
                     unsigned int pos1,
                     unsigned int pos2,
+                    const std::string& columnName,
                     const std::string& binlog_file,
                     size_t binlog_pos,
                     std::vector<VectorIndexUpdateItem*>& updates) {
@@ -601,20 +604,33 @@ void parseRowsEvent(const unsigned char* event_buf,
     memcpy(&extrainfo, &event_buf[index], 2);
     index += extrainfo;
 
-    unsigned int ncols = (unsigned int)event_buf[index];
-    index++;
-    unsigned int inclen = (((unsigned int)(ncols) + 7) >> 3);
-    (void)inclen;
-    // TODO : Assuming included & null bitmaps are single byte
-    unsigned int incbitmap = (unsigned int)event_buf[index];
-    (void)incbitmap;
-    index++;
+    // Parse ncols as a MySQL length-encoded integer (single byte when < 0xFB).
+    if (index + 1 > event_len)
+        return;
+    unsigned int ncols;
+    uint8_t ncols_first = event_buf[index++];
+    if (ncols_first < 0xFB) {
+        ncols = ncols_first;
+    } else if (ncols_first == 0xFC) {
+        if (index + 2 > event_len) return;
+        ncols = (unsigned int)event_buf[index] | ((unsigned int)event_buf[index+1] << 8);
+        index += 2;
+    } else {
+        // 3- or 8-byte encoding: unsupported column count, skip event
+        return;
+    }
+    // included-columns bitmap: ceil(ncols/8) bytes
+    unsigned int inclen = (ncols + 7) >> 3;
+    if (index + inclen > event_len)
+        return;
+    index += inclen;  // skip included-columns bitmap
+
     while (true) {
-        if (index + 1 > event_len)
+        // null bitmap: ceil(ncols/8) bytes per row
+        unsigned int nulllen = (ncols + 7) >> 3;
+        if (index + nulllen > event_len)
             break;
-        unsigned int nullbitmap = (unsigned int)event_buf[index];
-        (void)nullbitmap;
-        index++;
+        index += nulllen;
 
         unsigned int lval = 0;
         unsigned long llval = 0;
@@ -719,8 +735,6 @@ void parseRowsEvent(const unsigned char* event_buf,
             continue;  /* skip row: no vector data */
         }
         VectorIndexUpdateItem* item = new VectorIndexUpdateItem();
-        std::string key = tev.dbName + "." + tev.tableName;
-        std::string columnName = g_OnlineVectorIndexes[key].vectorColumn;
         item->dbName_ = tev.dbName;
         item->tableName_ = tev.tableName;
         item->columnName_ = columnName;
@@ -967,7 +981,7 @@ void OpenAllOnlineVectorIndexes(MYSQL* hnd) {
 
             snprintf(vecid, sizeof(vecid), "%s.%s", dbname, tbl);
             VectorIndexColumnInfo vc{col, idcolpos, veccolpos};
-            g_OnlineVectorIndexes[vecid] = vc;
+            g_OnlineVectorIndexes[vecid].push_back(vc);
         }
     }  // while
 
@@ -1105,8 +1119,6 @@ void BuildMyVectorIndexSQL(const char* db,
         query[sizeof(query) - 1] = '\0';
     }
 
-    vi->setUpdateTs(current_ts);
-
     if (mysql_real_query(&mysql, query, strlen(query))) {
         snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "Build query failed: %s", mysql_error(&mysql));
         goto cleanup;
@@ -1117,6 +1129,10 @@ void BuildMyVectorIndexSQL(const char* db,
         snprintf(errorbuf, MYVECTOR_BUFF_SIZE, "store_result failed: %s", mysql_error(&mysql));
         goto cleanup;
     }
+
+    // Advance the incremental watermark only after the query and result are
+    // confirmed good; doing it before would skip rows on a query failure.
+    vi->setUpdateTs(current_ts);
 
     MYSQL_ROW row;
     while ((row = mysql_fetch_row(result))) {
@@ -1159,7 +1175,16 @@ void BuildMyVectorIndexSQL(const char* db,
                  (unsigned long)savedBinlogPos,
                  nRows);
         if (supportsIncr) {
-            g_OnlineVectorIndexes[key] = vc;
+            // Replace any existing entry for this column; don't duplicate.
+            auto& cols = g_OnlineVectorIndexes[key];
+            auto it = std::find_if(cols.begin(), cols.end(),
+                [&](const VectorIndexColumnInfo& c) {
+                    return c.vectorColumn == vc.vectorColumn;
+                });
+            if (it != cols.end())
+                *it = vc;
+            else
+                cols.push_back(vc);
         }
         snprintf(query, sizeof(query), "UNLOCK TABLES");
         int ret = 0;
@@ -1192,7 +1217,7 @@ void myvector_checkpoint_index(const std::string& dbtable,
 void FlushOnlineVectorIndexes() {
     std::string binlog_file;
     size_t binlog_pos = 0;
-    std::map<std::string, VectorIndexColumnInfo> snapshot;
+    std::map<std::string, std::vector<VectorIndexColumnInfo>> snapshot;
     {
         std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
         binlog_file = currentBinlogFile;
@@ -1200,11 +1225,13 @@ void FlushOnlineVectorIndexes() {
         snapshot = g_OnlineVectorIndexes;
     }
     gqueue_.wait_until_empty();
-    for (auto const& [key, val] : snapshot) {
-        myvector_checkpoint_index(key,
-                                  val.vectorColumn,
-                                  binlog_file,
-                                  binlog_pos);
+    for (auto const& [key, cols] : snapshot) {
+        for (auto const& ci : cols) {
+            myvector_checkpoint_index(key,
+                                      ci.vectorColumn,
+                                      binlog_file,
+                                      binlog_pos);
+        }
     }
 }
 
@@ -1272,12 +1299,6 @@ public:
         {
             std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
             persist_state_snapshot(currentBinlogFile, currentBinlogPos);
-        }
-        // Drain any remaining items using non-blocking try_dequeue (avoids TOCTOU)
-        VectorIndexUpdateItem* p;
-        while ((p = gqueue_.try_dequeue()) != nullptr) {
-            delete p;
-            gqueue_.mark_processed();
         }
         return 0;
     }
@@ -1465,9 +1486,12 @@ private:
         for (int i = 0; i < num_q_threads; i++) {
             worker_threads_.emplace_back([this]() {
                 VectorIndexUpdateItem* item = nullptr;
-                while (!this->shutdown_binlog_thread_.load()) {
+                // Drain until the queue signals shutdown (returns nullptr).
+                // Do NOT check shutdown_binlog_thread_ here — that would cause
+                // workers to exit before draining queued DMLs on component stop.
+                while (true) {
                     item = gqueue_.dequeue();
-                    if (!item) break;  // queue shutdown; exit worker
+                    if (!item) break;  // queue shutdown sentinel; exit worker
                     myvector_table_op(item->dbName_,
                                       item->tableName_,
                                       item->columnName_,
@@ -1546,25 +1570,26 @@ private:
                     parseTableMapEvent(event_buf, event_len, tev);
                 } else if (type == kWriteRowsEvent) {
                     std::string key = tev.dbName + "." + tev.tableName;
-                    if (g_OnlineVectorIndexes.find(key) ==
-                        g_OnlineVectorIndexes.end()) {
+                    auto kit = g_OnlineVectorIndexes.find(key);
+                    if (kit == g_OnlineVectorIndexes.end())
                         continue;
-                    }
-                    int idcolpos = g_OnlineVectorIndexes[key].idColumnPosition;
-                    int veccolpos = g_OnlineVectorIndexes[key].vecColumnPosition;
                     std::string binlog_file = currentBinlogFile;
                     size_t binlog_pos = currentBinlogPos;
-                    std::vector<VectorIndexUpdateItem*> updates;
-                    parseRowsEvent(event_buf,
-                                   event_len,
-                                   tev,
-                                   idcolpos - 1,
-                                   veccolpos - 1,
-                                   binlog_file,
-                                   binlog_pos,
-                                   updates);
-                    for (auto item : updates) {
-                        gqueue_.enqueue(item);
+                    // One parseRowsEvent call per vector column on this table.
+                    for (const auto& ci : kit->second) {
+                        std::vector<VectorIndexUpdateItem*> updates;
+                        parseRowsEvent(event_buf,
+                                       event_len,
+                                       tev,
+                                       static_cast<unsigned int>(ci.idColumnPosition - 1),
+                                       static_cast<unsigned int>(ci.vecColumnPosition - 1),
+                                       ci.vectorColumn,
+                                       binlog_file,
+                                       binlog_pos,
+                                       updates);
+                        for (auto item : updates) {
+                            gqueue_.enqueue(item);
+                        }
                     }
                 }
             }

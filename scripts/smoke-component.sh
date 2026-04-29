@@ -57,8 +57,9 @@ echo ""
 
 [[ -f "$COMPONENT_DIR/libmyvector_component.so" ]] || \
     die "Component .so not found at $COMPONENT_DIR/libmyvector_component.so. Build first:
-  ./scripts/build-component.sh mysql-8.4.8 <mysql-source-dir>
-  OR: ./scripts/build-component-9.7-docker.sh mysql-9.7.0"
+  MySQL 8.4: ./scripts/build-component-8.4-docker.sh mysql-8.4.8
+  MySQL 9.7: ./scripts/build-component-9.7-docker.sh mysql-9.7.0
+  macOS/local: ./scripts/build-component.sh mysql-8.4.8 <mysql-source-dir>"
 
 [[ -f "$COMPONENT_DIR/myvector.json" ]] || \
     die "myvector.json not found at $COMPONENT_DIR/myvector.json"
@@ -296,11 +297,18 @@ gunzip -c "$STANFORD_DIR/insert50d.sql.gz" \
         END { if (!committed) print "COMMIT;" }
     ' \
     | mq_stdin -D "$DB" 2>/dev/null
-LOAD_EXIT=$?
+PIPE_STATUSES=("${PIPESTATUS[@]}")
 set -o pipefail
-[[ $LOAD_EXIT -eq 0 ]] || die "Data load pipeline failed (exit $LOAD_EXIT)"
+# gunzip SIGPIPE (141) is expected when awk exits early — treat as ok; other errors are not
+[[ ${PIPE_STATUSES[0]} -eq 0 || ${PIPE_STATUSES[0]} -eq 141 ]] || \
+    die "gunzip failed (exit ${PIPE_STATUSES[0]})"
+[[ ${PIPE_STATUSES[1]} -eq 0 ]] || die "awk failed (exit ${PIPE_STATUSES[1]})"
+[[ ${PIPE_STATUSES[2]} -eq 0 ]] || die "mysql load failed (exit ${PIPE_STATUSES[2]})"
 T_END=$(date +%s)
 ACTUAL=$(mq -D "$DB" -N -e "SELECT COUNT(*) FROM words50d;" 2>/dev/null | tr -d '[:space:]')
+[[ -n "$ACTUAL" && "$ACTUAL" -gt 0 ]] || die "No rows loaded — data load failed silently"
+[[ "$ACTUAL" -ge "$((LOAD_ROWS * 95 / 100))" ]] || \
+    echo "WARNING: Loaded $ACTUAL rows but expected ~$LOAD_ROWS (>5% short)"
 pass "Loaded $ACTUAL rows in $((T_END - T_START))s"
 
 # ── KNN brute-force search ────────────────────────────────────────────────────
@@ -397,11 +405,19 @@ fi
 
 echo ""
 echo "=== Uninstall ==="
+# DROP supplemental UDFs (SONAME-registered; UNINSTALL COMPONENT does not remove them)
+mq -e "
+    DROP FUNCTION IF EXISTS myvector_row_distance;
+    DROP FUNCTION IF EXISTS myvector_is_valid;
+    DROP FUNCTION IF EXISTS myvector_search_open_udf;
+" 2>/dev/null || true
 mq -e "UNINSTALL COMPONENT 'file://myvector';"
 set +e
 REMAINING=$(mq -N -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';" 2>/dev/null)
+UDFS_REMAINING=$(mq -N -e "SELECT name FROM mysql.func WHERE name IN ('myvector_row_distance','myvector_is_valid','myvector_search_open_udf');" 2>/dev/null | tr -d '[:space:]')
 set -e
 [[ -z "$REMAINING" ]] || die "Component still registered after UNINSTALL: $REMAINING"
+[[ -z "$UDFS_REMAINING" ]] || die "Supplemental UDFs still in mysql.func after DROP: $UDFS_REMAINING"
 pass "UNINSTALL COMPONENT — component removed cleanly"
 
 echo ""
