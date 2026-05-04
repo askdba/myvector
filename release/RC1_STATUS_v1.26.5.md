@@ -12,7 +12,7 @@
 ## 2) Candidate commit and branch
 
 - Working branch: `main`
-- **RC1 validation baseline commit:** TBD — fill in after `git push origin v1.26.5-rc1`
+- **RC1 validation baseline commit:** `1864941e93478d4c2d3366094a812c8b966f7974`
 - Scope range: `v1.26.3..HEAD` on `main`.
 
 ## 3) Scope and freeze status
