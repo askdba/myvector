@@ -107,7 +107,8 @@ CREATE TABLE words50d (
 
 -- Download and insert the data (from the examples/stanford50d directory)
 -- In a real-world scenario, you would generate your own vectors.
--- wget https://raw.githubusercontent.com/askdba/myvector/main/examples/stanford50d/insert50d.sql
+-- wget https://raw.githubusercontent.com/askdba/myvector/main/examples/stanford50d/insert50d.sql.gz
+-- gunzip insert50d.sql.gz
 -- mysql -h 127.0.0.1 -u root -pmyvector vectordb < insert50d.sql
 ```
 
