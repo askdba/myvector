@@ -30,10 +30,10 @@ adding `-static-libstdc++ -static-libgcc` to the `MYSQL_ADD_PLUGIN` CMake target
 
 ### Build and CI
 
-- CI status: pending RC2 tag.
-- Release workflow (`release.yml`): pending RC2 tag.
-- Docker publish (`docker-publish.yml`): pending RC2 tag.
-- Lint status: Green on main (pre-tag).
+- CI status: Green (MyVector CI run id=25335355491).
+- Release workflow (`release.yml`): **Success** (run id=25335363538, tag v1.26.5-rc2).
+- Docker publish (`docker-publish.yml`): **Success** (run id=25338779931, all 3 matrix jobs).
+- Lint status: Green on main.
 
 ### Functional checks
 
@@ -50,13 +50,13 @@ adding `-static-libstdc++ -static-libgcc` to the `MYSQL_ADD_PLUGIN` CMake target
 
 ## 5) GHCR images smoke-tested
 
-Fill in after images are published.
+Images published 2026-05-04 via run id=25338779931.
 
 | Tag | Image digest (pulled) |
 | :-- | :-- |
-| `mysql8.0` | TBD |
-| `mysql8.4` | TBD |
-| `mysql9.7` | TBD |
+| `mysql8.0` | `sha256:fcf32086416e0876394f18533611ea7fb6439e21ef07dfae7a527cec2dd1ddcb` |
+| `mysql8.4` | `sha256:b2072f1dfe857b67f00565200cad8c60192ca6167ecac6894a392186451febf1` |
+| `mysql9.7` | `sha256:e287b0846d6ea19f4b18b0c51b5ae79c4f0b5ad337b5719e62747ff49fe608aa` |
 
 ## 6) Component smoke results
 
