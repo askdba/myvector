@@ -38,7 +38,7 @@ Tags published (multi-arch `linux/amd64`, `linux/arm64`):
 | :----------- | :-------- |
 | MySQL 8.0.45 | `ghcr.io/askdba/myvector:mysql8.0` |
 | MySQL 8.4.8  | `ghcr.io/askdba/myvector:mysql8.4` |
-| MySQL 9.6.0  | `ghcr.io/askdba/myvector:mysql9.6` |
+| MySQL 9.7.0  | `ghcr.io/askdba/myvector:mysql9.7` |
 
 MySQL 8.0 build also receives `ghcr.io/askdba/myvector:latest`.
 
@@ -81,7 +81,7 @@ MYSQL_ROOT_PASSWORD=myvector MYSQL_DATABASE=vectordb \
   bash scripts/smoke-readme.sh ghcr.io/askdba/myvector:mysql8.4
 ```
 
-Repeat for `mysql8.0` and `mysql9.6`.
+Repeat for `mysql8.0` and `mysql9.7`.
 
 ## 5) Online index updates (optional, longer)
 
