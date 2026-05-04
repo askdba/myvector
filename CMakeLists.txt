@@ -25,6 +25,12 @@ if(COMMAND MYSQL_ADD_PLUGIN)
     myvectorutils.cc
   )
   MYSQL_ADD_PLUGIN(myvector ${MYVECTOR_PLUGIN_SRCS})
+  # Static-link libstdc++/libgcc so the .so loads on older distros (e.g.
+  # OracleLinux 8) that ship libstdc++ without GLIBCXX_3.4.30.
+  if(TARGET myvector AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set_target_properties(myvector PROPERTIES
+      LINK_FLAGS "-static-libstdc++ -static-libgcc")
+  endif()
   return()
 endif()
 
