@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.5] - 2026-05-04
+
+### Added (1.26.5)
+
+- **MySQL Component build path** for MySQL 8.4 LTS and 9.7 LTS (`src/component_src/`). Installs via `INSTALL COMPONENT` alongside the existing plugin path (#88).
+- `myvector_log.h` unified logging abstraction — shared by plugin and component build, replacing per-TU `#ifdef` chains.
+- `scripts/build-component.sh`, `build-component-8.4-docker.sh`, `build-component-9.7-docker.sh` — out-of-tree component build helpers.
+- `scripts/smoke-component.sh` — real-data smoke test for component build.
+- CI jobs: `build-component (8.4)`, `build-component-9-7`, `test-component (8.4)`, `test-component-9-7`.
+- Release workflow now produces component artifacts for 8.4 and 9.7 alongside plugin artifacts.
+- Docker image tag `mysql9.7` (replaces `mysql9.6`; MySQL 9.7 is the LTS line).
+
+### Changed (1.26.5)
+
+- MySQL 9.x image updated from 9.6 → 9.7 LTS across CI, release, and Docker publish workflows.
+- `CMakeLists.txt` supports dual build mode: in-tree plugin (`MYSQL_ADD_PLUGIN`) and out-of-tree component (`MYSQL_SOURCE_DIR`).
+- `hnswdisk.h`/`hnswdisk.i` logging updated to use `MYVEC_LOG_*` macros.
+
+### Fixed (1.26.5)
+
+- Thread safety: replaced `gmtime`/`asctime` with `gmtime_r`/`asctime_r` throughout (#87).
+- Null-guard in `myvector_ann_set` row function; `*length=0` on null-index return (#87).
+- Concurrency corrections in plugin init/deinit path (#87).
+- `binary_log` namespace conflict on MySQL 8.4 component build — guarded for 9.7+ which declares it in `event_reader.h`.
+- Config file reader hardened against permission errors and malformed input.
+- CMakeCache.txt guard in component build scripts to prevent stale cache collisions.
+- Quick Start `wget` URL fixed: `insert50d.sql` → `insert50d.sql.gz` (issue #89).
+
+### Documentation updates (1.26.5)
+
+- `docs/BUILD_MODES.md` — plugin vs. component build comparison.
+- `docs/COMPONENT_MIGRATION_PLAN.md` — migration roadmap from plugin to component path.
+- `README.md` — Docker tag table updated (`mysql9.7`), install path note for plugin vs. component, insert50d fix.
+
+### Upgrade / migration notes (1.26.5)
+
+- No schema or index migration required.
+- **Docker tag change:** If you pull `ghcr.io/askdba/myvector:mysql9.6`, switch to `:mysql9.7`.
+- The component path (`INSTALL COMPONENT`) is the forward path for MySQL 8.4+ but is not yet the default. The plugin path remains stable for 8.0/8.4/9.0.
+- Windows builds remain unsupported.
+
 ## [1.26.3] - 2026-03-19
 
 ### Added (1.26.3)
