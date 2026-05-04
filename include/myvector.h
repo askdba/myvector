@@ -1,3 +1,4 @@
+#pragma once
 /*  Copyright (c) 2024 - p3io.in / shiyer22@gmail.com */
 /*
    This program is free software; you can redistribute it and/or modify

@@ -1,0 +1,17 @@
+INSTALL PLUGIN myvector SONAME 'myvector.so';
+CREATE FUNCTION myvector_construct RETURNS STRING SONAME 'myvector.so';
+CREATE FUNCTION myvector_display   RETURNS STRING SONAME 'myvector.so';
+CREATE FUNCTION myvector_distance  RETURNS REAL   SONAME 'myvector.so';
+SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]')) as vec;
+vec
+[1, 2, 3]
+SELECT myvector_distance(myvector_construct('[1.0, 0.0]'), myvector_construct('[0.0, 1.0]'), 'L2') as dist_l2;
+dist_l2
+1.4142135381698608
+SELECT myvector_distance(myvector_construct('[1.0, 0.0]'), myvector_construct('[0.0, 1.0]'), 'COSINE') as dist_cosine;
+dist_cosine
+1
+DROP FUNCTION myvector_construct;
+DROP FUNCTION myvector_display;
+DROP FUNCTION myvector_distance;
+UNINSTALL PLUGIN myvector;

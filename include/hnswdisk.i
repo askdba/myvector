@@ -231,21 +231,21 @@
         MyVectorOptions vo(logr1);
         string status = vo.getOption("status");
         string ckptid = vo.getOption("ckptid");
-        debug_print("makeIndexConsistent %s, current checkpoint status : %s %s",
+        MYVEC_LOG_DEBUG("makeIndexConsistent %s, current checkpoint status : %s %s",
                     hnswFile.c_str(), status.c_str(), ckptid.c_str());
 
         CheckPointState cs = static_cast<CheckPointState>(atoi(status.c_str()));
 
         if (cs == CKPT_CONSISTENT)
         {
-            info_print("HNSW index %s is consistent.", hnswFile.c_str());
+            MYVEC_LOG_INFO("HNSW index %s is consistent.", hnswFile.c_str());
             setCheckPointId(ckptid);
             consistent = true;
         }
 
       // Check if it was a interrupted full-write, recovery is not possible.
       if (cs == CKPT_BEGIN_FULL_WRITE) {
-        error_print("HNSW Index %s is not succesfully saved to disk,"
+        MYVEC_LOG_ERROR("HNSW Index %s is not succesfully saved to disk,"
                     "this index needs to be rebuilt and saved.",
                     hnswFile.c_str());
         deleteIndexFiles(hnswFile);
@@ -255,7 +255,7 @@
 
       if (cs == CKPT_BEGIN_INCR_PASS1 || cs == CKPT_END_INCR_PASS1) {
         // Recovery not needed, just delete the temp file
-        warning_print("Flush of HNSW index %s was interrupted, rolling back "
+        MYVEC_LOG_WARN("Flush of HNSW index %s was interrupted, rolling back "
                       "writes to open the index.", hnswFile.c_str());
         std::string filename = hnswFile + ".ckpt.state";
         unlink(filename.c_str());
@@ -265,7 +265,7 @@
 
       // Needs recovery.
       if (cs == CKPT_BEGIN_INCR_PASS2) {
-        warning_print("Flush of HNSW index %s was interrupted, crash "
+        MYVEC_LOG_WARN("Flush of HNSW index %s was interrupted, crash "
                       "recovery is required.", hnswFile.c_str());
         setCheckPointId(ckptid);
         doRecovery(hnswFile);
@@ -273,7 +273,7 @@
       }
 
       if (cs == CKPT_END_INCR_PASS2 || cs == CKPT_END_FULL_WRITE) {
-        warning_print("Flush of HNSW index %s had completed, recovery "
+        MYVEC_LOG_WARN("Flush of HNSW index %s had completed, recovery "
                       "not required.", hnswFile.c_str());
         setCheckPointId(ckptid);
         setCheckPointComplete(hnswFile);
@@ -285,7 +285,7 @@
     } // makeIndexConsistent()
 
     void deleteIndexFiles(const std::string &hnswFile) {
-      warning_print("Deleting all files of HNSW index %s.", hnswFile.c_str());
+      MYVEC_LOG_WARN("Deleting all files of HNSW index %s.", hnswFile.c_str());
       std::string filename = hnswFile;
       unlink(filename.c_str());
       filename = hnswFile + ".status";
@@ -334,7 +334,7 @@
         memset(&buf[0], '.', 256);
         memcpy(buf, ss.str().c_str(), ss.str().length());
 
-        warning_print("CheckPoint line = %s", ss.str().c_str());
+        MYVEC_LOG_WARN("CheckPoint line = %s", ss.str().c_str());
 
         Lseek(ckptf, 0, SEEK_SET, statusFileName);
 
@@ -405,7 +405,7 @@
     s = mx_nodeLinksLevelGt0Updates.size();
     Write(ckptFile, &s, sizeof(s), ckptFileName, __LINE__);
 
-    debug_print("Flush List Sizes (%lu) (%lu) (%lu).", mx_nodeUpdates.size(),
+    MYVEC_LOG_DEBUG("Flush List Sizes (%lu) (%lu) (%lu).", mx_nodeUpdates.size(),
                 mx_nodeLinksLevel0Updates.size(), mx_nodeLinksLevelGt0Updates.size());
 
     // Sort the flush lists in NodeID order - already done in ordered_set<>
@@ -495,7 +495,7 @@
         size_t ofs = (level0Links - data_level0_memory_) + HNSW_FILE_METADATA_SIZE;
         Lseek(hnswFile, ofs, SEEK_SET, hnswFileName);
         Write(hnswFile, level0Links, size_links_level0_, hnswFileName, __LINE__);
-        /// debug_print("Write level0 links of %lu at %lu.", nodeId, ofs);
+        /// MYVEC_LOG_DEBUG("Write level0 links of %lu at %lu.", nodeId, ofs);
     }
 
     Fsync(hnswFile, hnswFileName);
@@ -520,7 +520,7 @@
                     linksLocation, __LINE__);
               Write(linksDirOutput, &linkListSize, sizeof(linkListSize), 
                     linksLocation, __LINE__);
-              /// debug_print("Flushing new gt0 node %lu.", nodeId);
+              /// MYVEC_LOG_DEBUG("Flushing new gt0 node %lu.", nodeId);
             }
             else {
               datafileOfs = m_linksOffsetsInFile[nodeId];
@@ -531,7 +531,7 @@
             {
                Lseek(linksDataOutput, 0, SEEK_END, linksDataLocation);
                m_linksOffsetsInFile[nodeId] = Lseek(linksDataOutput, 0, SEEK_CUR, linksDataLocation);
-               /// debug_print("Writing Gt0 links of node %lu, size %lu, file offset %lu.",
+               /// MYVEC_LOG_DEBUG("Writing Gt0 links of node %lu, size %lu, file offset %lu.",
                ///            nodeId, linkListSize, m_linksOffsetsInFile[nodeId]);
             }
             Write(linksDataOutput, linkLists_[nodeId], linkListSize, linksDataLocation, __LINE__);
@@ -579,7 +579,7 @@
       Read(ckptFile, &nodeLevelGt0LinksCount, sizeof(nodeLevelGt0LinksCount),
            ckptFileName, __LINE__);
 
-      debug_print("Recovery of %s, nodeCount=%lu,level0Links=%lu,levelGt0Links=%lu.",
+      MYVEC_LOG_DEBUG("Recovery of %s, nodeCount=%lu,level0Links=%lu,levelGt0Links=%lu.",
                   hnswFileName.c_str(), nodeCount, nodeLevel0LinksCount,
                   nodeLevelGt0LinksCount);
  
@@ -781,11 +781,11 @@
 
     void debug() {
       size_t c = cur_element_count;
-      debug_print("MaxElements = %lu, CurElements = %lu, SizePerElement = %lu"
+      MYVEC_LOG_DEBUG("MaxElements = %lu, CurElements = %lu, SizePerElement = %lu"
                   "maxLevel = %lu, maxM = %lu, maxM0_ = %lu, M_  = %lu.",
                   max_elements_, c, size_data_per_element_,
                   maxlevel_, maxM_, maxM0_, M_);
-      debug_print("CheckPointId = %s.", m_checkPointId.c_str());
+      MYVEC_LOG_DEBUG("CheckPointId = %s.", m_checkPointId.c_str());
     }
 
     std::string getCheckPointId() const {
@@ -838,7 +838,7 @@
             unsigned int linkListSize = element_levels_[i] > 0 ? 
               (size_links_per_element_ * element_levels_[i]) : 0;
             if (linkListSize)
-              debug_print("Writing links of size %u for node %lu.", linkListSize, i);
+              MYVEC_LOG_DEBUG("Writing links of size %u for node %lu.", linkListSize, i);
             if (linkListSize) {
               unsigned int nodeID = i;
               Write(gt0LinksF, &nodeID, sizeof(nodeID), linksLocation, __LINE__);

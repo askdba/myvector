@@ -26,8 +26,8 @@ jobs:
             mysql-version: '8.4'
             dockerfile: Dockerfile.oraclelinux9
             compiler: 10
-          - mysql-tag: 'mysql-9.6.0'
-            mysql-version: '9.6'
+          - mysql-tag: 'mysql-9.7.0'
+            mysql-version: '9.7'
             dockerfile: Dockerfile.oraclelinux9
             compiler: 11
     steps:
