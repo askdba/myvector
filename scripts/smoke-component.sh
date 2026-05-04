@@ -262,7 +262,29 @@ pass "myvector_construct + myvector_display"
 DIST=$(mq -N -e "SELECT myvector_distance(myvector_construct('[0.0,0.0]'), myvector_construct('[3.0,4.0]'), 'L2');" 2>/dev/null | tr -d '[:space:]')
 [[ "$DIST" == "5" || "$DIST" == "5.0" || "$DIST" == "25" ]] || \
     echo "WARNING: myvector_distance L2 returned '$DIST' (expected 5 or 25 depending on squared)"
-pass "myvector_distance"
+pass "myvector_distance L2"
+
+# Cosine: identical unit vectors → 0; orthogonal → 1
+CDIST=$(mq -N -e "SELECT ROUND(myvector_distance(myvector_construct('[1.0,0.0]'), myvector_construct('[1.0,0.0]'), 'cosine'), 4);" 2>/dev/null | tr -d '[:space:]')
+[[ "$CDIST" == "0" || "$CDIST" == "0.0000" ]] || die "cosine(identical) expected 0, got '$CDIST'"
+CDIST2=$(mq -N -e "SELECT ROUND(myvector_distance(myvector_construct('[1.0,0.0]'), myvector_construct('[0.0,1.0]'), 'cosine'), 4);" 2>/dev/null | tr -d '[:space:]')
+[[ "$CDIST2" == "1" || "$CDIST2" == "1.0000" ]] || die "cosine(orthogonal) expected 1, got '$CDIST2'"
+pass "myvector_distance cosine"
+
+# IP distance = 1 - dot_product; orthogonal unit vectors → 1.0; identical unit vector → 0
+IDIST=$(mq -N -e "SELECT ROUND(myvector_distance(myvector_construct('[1.0,0.0]'), myvector_construct('[0.0,1.0]'), 'ip'), 4);" 2>/dev/null | tr -d '[:space:]')
+[[ "$IDIST" == "1" || "$IDIST" == "1.0000" ]] || die "ip(orthogonal) expected 1, got '$IDIST'"
+IDIST2=$(mq -N -e "SELECT ROUND(myvector_distance(myvector_construct('[0.0,1.0]'), myvector_construct('[0.0,1.0]'), 'ip'), 4);" 2>/dev/null | tr -d '[:space:]')
+[[ "$IDIST2" == "0" || "$IDIST2" == "0.0000" ]] || die "ip(identical unit) expected 0, got '$IDIST2'"
+pass "myvector_distance ip"
+
+# myvector_is_valid(vec, dim): requires 2 args; 8.x returns 1 for valid (checksum ok),
+# 9.x native vectors have no checksum so returns 0 — accept either; NULL input → 0
+VALID=$(mq -N -e "SELECT myvector_is_valid(myvector_construct('[1.0,2.0,3.0]'), 3);" 2>/dev/null | tr -d '[:space:]') || true
+[[ "$VALID" == "0" || "$VALID" == "1" ]] || die "myvector_is_valid(vec,3) expected 0 or 1, got '$VALID'"
+INVALID=$(mq -N -e "SELECT COALESCE(myvector_is_valid(NULL, 3), 0);" 2>/dev/null | tr -d '[:space:]') || true
+[[ "$INVALID" == "0" ]] || die "myvector_is_valid(NULL,3) expected 0, got '$INVALID'"
+pass "myvector_is_valid"
 
 # ── create database + Stanford 50d table ─────────────────────────────────────
 
@@ -358,6 +380,42 @@ if [[ "$SKIP_INDEX" = "0" ]]; then
         pass "ANN search via MYVECTOR_IS_ANN"
     fi
 
+    # ── index status check ────────────────────────────────────────────────────
+    echo ""
+    echo "=== MYVECTOR_INDEX_STATUS ==="
+    STATUS_OUT=$(mq -D "$DB" -e "CALL mysql.MYVECTOR_INDEX_STATUS('${DB}.words50d.wordvec');" 2>&1 || true)
+    echo "$STATUS_OUT"
+    echo "$STATUS_OUT" | grep -qiE "success|rows" || die "MYVECTOR_INDEX_STATUS returned unexpected output"
+    pass "MYVECTOR_INDEX_STATUS"
+
+    # ── persist-and-reload: UNINSTALL → INSTALL → LOAD → verify KNN ──────────
+    # Verifies HNSW index survives component restart (reads back from disk file).
+    echo ""
+    echo "=== Index persist-and-reload ==="
+    KNN_BEFORE=$(mq -D "$DB" -N -e "
+        SELECT word FROM words50d
+        ORDER BY myvector_distance(wordvec, (SELECT wordvec FROM words50d WHERE word='the'))
+        LIMIT 3;" 2>/dev/null | tr '\n' ',')
+    echo "KNN before reload: $KNN_BEFORE"
+    [[ -n "$KNN_BEFORE" ]] || die "KNN before reload returned no results"
+
+    mq -e "UNINSTALL COMPONENT 'file://myvector';"
+    mq -e "INSTALL COMPONENT 'file://myvector';"
+    mq -e "SET GLOBAL myvector_index_dir='${DATADIR}';" 2>/dev/null || true
+
+    LOAD_OUT=$(mq -D "$DB" -e "CALL mysql.MYVECTOR_INDEX_LOAD('${DB}.words50d.wordvec');" 2>&1 || true)
+    echo "$LOAD_OUT"
+    echo "$LOAD_OUT" | grep -qiE "success" || die "MYVECTOR_INDEX_LOAD after reinstall did not return SUCCESS"
+
+    KNN_AFTER=$(mq -D "$DB" -N -e "
+        SELECT word FROM words50d
+        ORDER BY myvector_distance(wordvec, (SELECT wordvec FROM words50d WHERE word='the'))
+        LIMIT 3;" 2>/dev/null | tr '\n' ',')
+    echo "KNN after reload: $KNN_AFTER"
+    [[ "$KNN_BEFORE" == "$KNN_AFTER" ]] || \
+        die "KNN results changed after persist-and-reload: before='$KNN_BEFORE' after='$KNN_AFTER'"
+    pass "Index persist-and-reload (UNINSTALL → INSTALL → LOAD)"
+
     # Drop index for online-update test (rebuild with smaller sample)
     mq -D "$DB" -e "CALL mysql.MYVECTOR_INDEX_DROP('${DB}.words50d.wordvec');" 2>/dev/null || true
 fi
@@ -396,10 +454,68 @@ if [[ "$SKIP_INDEX" = "0" ]]; then
 
     ROW_COUNT=$(mq -D "$DB" -N -e "SELECT COUNT(*) FROM ov_test;" 2>/dev/null | tr -d '[:space:]')
     [[ "$ROW_COUNT" == "3" ]] || die "Expected 3 rows after delete, got $ROW_COUNT"
+
+    # Diagnostic: check index row count to verify binlog listener is working
+    OV_STATUS=$(mq -D "$DB" -N -e "CALL mysql.MYVECTOR_INDEX_STATUS('${DB}.ov_test.vec');" 2>/dev/null || true)
+    OV_ROWS=$(echo "$OV_STATUS" | grep -ioE 'rows[^0-9]+[0-9]+' | grep -oE '[0-9]+$' || echo "unknown")
+    echo "ov_test index row count after INSERT/UPDATE/DELETE: $OV_ROWS (expected 3; INSERT+1 then DELETE-1)"
     pass "Online updates: INSERT, UPDATE, DELETE"
 
     mq -D "$DB" -e "CALL mysql.MYVECTOR_INDEX_DROP('${DB}.ov_test.vec');" 2>/dev/null || true
     mq -D "$DB" -e "DROP TABLE ov_test;"
+
+    # ── multi-column binlog test ───────────────────────────────────────────────
+    # A table with two MYVECTOR columns exercises the std::vector<VectorIndexColumnInfo>
+    # multi-column path in g_OnlineVectorIndexes — the old map overwrote col1 with col2.
+    echo ""
+    echo "=== Multi-column binlog (two vector columns) ==="
+    mq -D "$DB" -e "
+        DROP TABLE IF EXISTS mc_test;
+        CREATE TABLE mc_test (
+            id   INT PRIMARY KEY,
+            tag  VARCHAR(64),
+            vec1 VARBINARY(256) COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=1000,m=16,ef=50,idcol=id,dist=L2,online=Y',
+            vec2 VARBINARY(256) COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=1000,m=16,ef=50,idcol=id,dist=cosine,online=Y'
+        );
+        INSERT INTO mc_test VALUES
+            (1,'a', myvector_construct('[1.0,0.0,0.0]'), myvector_construct('[1.0,0.0,0.0]')),
+            (2,'b', myvector_construct('[0.0,1.0,0.0]'), myvector_construct('[0.0,1.0,0.0]')),
+            (3,'c', myvector_construct('[0.0,0.0,1.0]'), myvector_construct('[0.0,0.0,1.0]'));
+    "
+
+    mq -D "$DB" -e "CALL mysql.MYVECTOR_INDEX_BUILD('${DB}.mc_test.vec1', 'id');" 2>/dev/null | grep -iv error || true
+    mq -D "$DB" -e "CALL mysql.MYVECTOR_INDEX_BUILD('${DB}.mc_test.vec2', 'id');" 2>/dev/null | grep -iv error || true
+
+    # Capture row counts from both indexes before INSERT
+    ROWS1_BEFORE=$(mq -D "$DB" -N -e "CALL mysql.MYVECTOR_INDEX_STATUS('${DB}.mc_test.vec1');" 2>/dev/null \
+        | grep -ioE 'rows[^0-9]+[0-9]+' | grep -oE '[0-9]+$' || echo "0")
+    ROWS2_BEFORE=$(mq -D "$DB" -N -e "CALL mysql.MYVECTOR_INDEX_STATUS('${DB}.mc_test.vec2');" 2>/dev/null \
+        | grep -ioE 'rows[^0-9]+[0-9]+' | grep -oE '[0-9]+$' || echo "0")
+    echo "Index row counts before INSERT: vec1=$ROWS1_BEFORE vec2=$ROWS2_BEFORE"
+    [[ "$ROWS1_BEFORE" == "3" && "$ROWS2_BEFORE" == "3" ]] || \
+        die "Expected 3 rows in each index before INSERT, got vec1=$ROWS1_BEFORE vec2=$ROWS2_BEFORE"
+
+    # INSERT a new row — binlog listener must update BOTH indexes
+    mq -D "$DB" -e "INSERT INTO mc_test VALUES (4,'d', myvector_construct('[1.0,1.0,0.0]'), myvector_construct('[1.0,1.0,0.0]'));"
+    sleep 6
+
+    ROWS1_AFTER=$(mq -D "$DB" -N -e "CALL mysql.MYVECTOR_INDEX_STATUS('${DB}.mc_test.vec1');" 2>/dev/null \
+        | grep -ioE 'rows[^0-9]+[0-9]+' | grep -oE '[0-9]+$' || echo "0")
+    ROWS2_AFTER=$(mq -D "$DB" -N -e "CALL mysql.MYVECTOR_INDEX_STATUS('${DB}.mc_test.vec2');" 2>/dev/null \
+        | grep -ioE 'rows[^0-9]+[0-9]+' | grep -oE '[0-9]+$' || echo "0")
+    echo "Index row counts after INSERT: vec1=$ROWS1_AFTER vec2=$ROWS2_AFTER"
+    if [[ "$ROWS1_AFTER" != "4" || "$ROWS2_AFTER" != "4" ]]; then
+        echo "=== mysqld recent logs ==="
+        docker logs "$CONTAINER" 2>&1 | grep -i "myvector\|binlog\|error\|warning" | tail -40 || true
+        echo "==="
+        [[ "$ROWS1_AFTER" == "4" ]] || die "vec1 not updated by binlog INSERT (rows=$ROWS1_AFTER, expected 4)"
+        [[ "$ROWS2_AFTER" == "4" ]] || die "vec2 not updated by binlog INSERT (rows=$ROWS2_AFTER, expected 4)"
+    fi
+    pass "Multi-column binlog: INSERT updated both vec1 and vec2 indexes"
+
+    mq -D "$DB" -e "CALL mysql.MYVECTOR_INDEX_DROP('${DB}.mc_test.vec1');" 2>/dev/null || true
+    mq -D "$DB" -e "CALL mysql.MYVECTOR_INDEX_DROP('${DB}.mc_test.vec2');" 2>/dev/null || true
+    mq -D "$DB" -e "DROP TABLE mc_test;"
 fi
 
 # ── uninstall + verify ────────────────────────────────────────────────────────
