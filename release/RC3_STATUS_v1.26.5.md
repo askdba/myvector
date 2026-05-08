@@ -12,14 +12,14 @@
 ## 2) Candidate commit and branch
 
 - Working branch: `main`
-- **RC3 validation baseline commit:** TBD (post-tag)
+- **RC3 validation baseline commit:** `3e790870bfc1badae900261029bd0cd1616408cf`
 - Scope range: `v1.26.5-rc2..HEAD` on `main`.
 
 ## 3) RC2 → RC3 delta
 
 | Commit | Description |
 | :----- | :---------- |
-| TBD | fix(component): fix binlog WRITE_ROWS handler for multi-column tables |
+| `3e79087` | fix(component): fix binlog WRITE_ROWS handler for multi-column tables |
 
 **Root causes fixed:**
 
@@ -33,18 +33,18 @@
 
 ### Build and CI
 
-- CI status: TBD
-- Release workflow (`release.yml`): TBD
-- Docker publish (`docker-publish.yml`): TBD
-- Lint status: TBD
+- CI status: **Green** (MyVector CI run id=25571134015).
+- Release workflow (`release.yml`): **Success** (run id=25571135302, tag v1.26.5-rc3).
+- Docker publish (`docker-publish.yml`): **Success** (run id=25571408041, all 3 matrix jobs).
+- Lint status: Green on main.
 
 ### Functional checks
 
-- Plugin smoke (`smoke-published-images.sh`): TBD
-- Component smoke (`smoke-component.sh` 8.4): **PASS** (local, pre-tag)
-- Component smoke (`smoke-component.sh` 9.7): **PASS** (local, pre-tag)
-- Online index flow: PASS (ov_test + mc_test both passing)
-- Regression: CI coverage pre-tag TBD
+- Plugin smoke (`smoke-published-images.sh`): **PASS** — all 3 tags (mysql8.0 / mysql8.4 / mysql9.7).
+- Component smoke (`smoke-component.sh` 8.4): **PASS** (local, pre-tag — all 15 checks).
+- Component smoke (`smoke-component.sh` 9.7): **PASS** (local, pre-tag — all 15 checks).
+- Online index flow: PASS (ov_test + mc_test both passing).
+- Regression: CI coverage pre-tag is green.
 
 ### Performance smoke
 
@@ -54,24 +54,25 @@
 
 ## 5) GHCR images smoke-tested
 
-Fill in after `docker-publish.yml` completes for `v1.26.5-rc3`.
+Images published 2026-05-08 via run id=25571408041.
 
 | Tag | Image digest (pulled) |
 | :-- | :-- |
-| `mysql8.0` | TBD |
-| `mysql8.4` | TBD |
-| `mysql9.7` | TBD |
+| `mysql8.0` | `sha256:0c94a258e0dc20fbf9c65e4fdc1932bfe578620dc21527ecfe29fda0c7391301` |
+| `mysql8.4` | `sha256:0593ebf09600e5bea6f4f13b18f2c4d7be232e9de45f09b225caf07b30ab47dd` |
+| `mysql9.7` | `sha256:563c0c3a82d6f8f2e2df3884aa1dad7e47ef9e42995b44fff588b1a9603ceeb2` |
 
 ## 6) Component smoke results (published images)
 
-Fill in after `./scripts/smoke-published-images.sh` runs against RC3 images.
+Smoke run completed 2026-05-08 against published RC3 images.
 
 | Tag | Result |
 | :-- | :-- |
-| `mysql8.4` | TBD |
-| `mysql9.7` | TBD |
+| `mysql8.0` | **PASS** |
+| `mysql8.4` | **PASS** |
+| `mysql9.7` | **PASS** |
 
 ## 7) Go/No-Go
 
-- Decision: Pending CI and published-image smoke results.
-- Blockers: None identified at RC3 cut time.
+- Decision: **Go** — all CI green, all 3 published images pass smoke, component smoke passes on 8.4 and 9.7.
+- Blockers: None.
