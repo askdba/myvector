@@ -497,7 +497,11 @@ if [[ "$SKIP_INDEX" = "0" ]]; then
 
     # INSERT a new row — binlog listener must update BOTH indexes
     mq -D "$DB" -e "INSERT INTO mc_test VALUES (4,'d', myvector_construct('[1.0,1.0,0.0]'), myvector_construct('[1.0,1.0,0.0]'));"
-    sleep 6
+    echo "=== BINLOG STATUS after INSERT ==="
+    mq -e "SHOW MASTER STATUS\G" 2>/dev/null || true
+    mq -e "SHOW BINARY LOGS\G" 2>/dev/null || true
+    echo "==="
+    sleep 12
 
     ROWS1_AFTER=$(mq -D "$DB" -N -e "CALL mysql.MYVECTOR_INDEX_STATUS('${DB}.mc_test.vec1');" 2>/dev/null \
         | grep -ioE 'rows[^0-9]+[0-9]+' | grep -oE '[0-9]+$' || echo "0")
@@ -506,7 +510,7 @@ if [[ "$SKIP_INDEX" = "0" ]]; then
     echo "Index row counts after INSERT: vec1=$ROWS1_AFTER vec2=$ROWS2_AFTER"
     if [[ "$ROWS1_AFTER" != "4" || "$ROWS2_AFTER" != "4" ]]; then
         echo "=== mysqld recent logs ==="
-        docker logs "$CONTAINER" 2>&1 | grep -i "myvector\|binlog\|error\|warning" | tail -40 || true
+        docker logs "$CONTAINER" 2>&1 | grep -i "myvector\|binlog\|error\|warning" | tail -100 || true
         echo "==="
         [[ "$ROWS1_AFTER" == "4" ]] || die "vec1 not updated by binlog INSERT (rows=$ROWS1_AFTER, expected 4)"
         [[ "$ROWS2_AFTER" == "4" ]] || die "vec2 not updated by binlog INSERT (rows=$ROWS2_AFTER, expected 4)"

@@ -37,7 +37,7 @@ adding `-static-libstdc++ -static-libgcc` to the `MYSQL_ADD_PLUGIN` CMake target
 
 ### Functional checks
 
-- Plugin smoke (`smoke-published-images.sh`): not yet run.
+- Plugin smoke (`smoke-published-images.sh`): **PASS** — all 3 tags (mysql8.0 / mysql8.4 / mysql9.7).
 - Component smoke (`smoke-component.sh`): not yet run.
 - Online index flow: optional for RC2.
 - Regression: CI coverage pre-tag is green.
@@ -55,19 +55,25 @@ Images published 2026-05-04 via run id=25338779931.
 | Tag | Image digest (pulled) |
 | :-- | :-- |
 | `mysql8.0` | `sha256:fcf32086416e0876394f18533611ea7fb6439e21ef07dfae7a527cec2dd1ddcb` |
-| `mysql8.4` | `sha256:b2072f1dfe857b67f00565200cad8c60192ca6167ecac6894a392186451febf1` |
+| `mysql8.4` | `sha256:7a47c6bab45895954ce7158e897ac78e0844c5e42cda175a1b3881df0643a78d` |
 | `mysql9.7` | `sha256:e287b0846d6ea19f4b18b0c51b5ae79c4f0b5ad337b5719e62747ff49fe608aa` |
 
 ## 6) Component smoke results
 
-Fill in after `./scripts/smoke-component.sh` runs.
+Smoke run completed 2026-05-08.
 
 | Tag | Result |
 | :-- | :-- |
-| `mysql8.4` | TBD |
-| `mysql9.7` | TBD |
+| `mysql8.4` | **FAIL** — multi-column binlog INSERT not reflected (mc_test vec1=3, expected 4) |
+| `mysql9.7` | **FAIL** — multi-column binlog INSERT not reflected (vec1=6 double-insertion before INSERT) |
+
+Two bugs identified:
+1. FDE reconnect crash loop: FORMAT_DESCRIPTION_EVENT (type=15) `next_log_pos` pushes `currentBinlogPos` past EOF on every reconnect.
+2. `KNNIndex` missing binlog coordinate storage: `setLastUpdateCoordinates`/`getLastUpdateCoordinates` were no-ops; `isAfter` always returned true. Also, `BuildMyVectorIndexSQL` was saving the listener's stale reconnect position instead of the actual DB binlog position.
+
+Both bugs fixed in RC3.
 
 ## 7) Go/No-Go
 
-- Decision: Pending smoke results.
-- Blockers: None identified at RC2 cut time.
+- Decision: **No-Go** — binlog fix required; proceeding to RC3.
+- Blockers: Multi-column binlog INSERT failure on mysql8.4 and mysql9.7 (fixed in RC3).

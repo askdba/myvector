@@ -410,12 +410,26 @@ public:
 
     unsigned long getRowCount() { return m_n_rows; }
 
+    void getLastUpdateCoordinates(string& binlogFile, size_t& binlogPos) {
+        binlogFile = m_binlogFile;
+        binlogPos  = m_binlogPosition;
+    }
+
+    void setLastUpdateCoordinates(const string& binlogFile,
+                                  const size_t& binlogPos) {
+        m_binlogFile     = binlogFile;
+        m_binlogPosition = binlogPos;
+    }
+
 private:
     string m_name;
     string m_options;
     int m_dim;
     unsigned long m_updateTs;
     MyVectorOptions m_optionsMap;
+
+    string m_binlogFile;
+    size_t m_binlogPosition{0};
 
     mutable std::shared_mutex search_insert_mutex_;
 
@@ -529,10 +543,14 @@ bool KNNIndex::loadIndex(const string&) {
 bool KNNIndex::initIndex() {
     MYVEC_LOG_DEBUG("KNN Memory Index (%s) - initIndex()", m_name.c_str());
 
-    /// nothing much to do!!
     m_vectors.clear();
     m_n_rows = 0;
     m_n_searches = 0;
+    // Sentinel: any real binlog file name is lexicographically less than
+    // "zzzzzz.bin", so isAfter() returns false until setLastUpdateCoordinates
+    // is called with the BUILD position.
+    m_binlogFile     = "zzzzzz.bin";
+    m_binlogPosition = 99999999999;
 
     return true;
 }

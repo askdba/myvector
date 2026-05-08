@@ -27,8 +27,10 @@
 #include <fstream>
 #include <list>
 #include <sys/stat.h>
+#include <algorithm>
 #include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -163,6 +165,9 @@ std::mutex binlog_stream_mutex_;
 // Keyed by "db.table"; value is a list of all vector columns on that table.
 // Using a vector so tables with multiple vector columns are fully tracked.
 std::map<std::string, std::vector<VectorIndexColumnInfo>> g_OnlineVectorIndexes;
+// Tables confirmed to have no online MYVECTOR columns (avoids repeated IS queries).
+// Only accessed from the binlog event-loop thread; no mutex needed.
+static std::set<std::string> g_NonOnlineTables;
 std::string currentBinlogFile = "";
 size_t currentBinlogPos = 0;
 
@@ -468,6 +473,103 @@ typedef struct {
     std::vector<int> columnMetadata;
 } TableMapEvent;
 
+// Forward declarations for functions defined later in this file that are
+// needed by discoverOnlineColumns.
+void readConfigFile(const char* config_file);
+void GetBaseTableColumnPositions(MYSQL* hnd, const char* db, const char* table,
+                                  const char* idcol, const char* veccol,
+                                  int& idcolpos, int& veccolpos);
+
+// Extract db and table name from a TABLE_MAP_EVENT buffer without touching
+// g_OnlineVectorIndexes. Used for pre-event lazy discovery.
+static bool peek_table_name(const unsigned char* event_buf, unsigned int event_len,
+                             std::string& dbName, std::string& tableName) {
+    unsigned int index = EVENT_HEADER_LENGTH;
+    if (index + 6 > event_len) return false;
+    index += 6;   // table_id
+    index += 2;   // flags
+    if (index + 1 > event_len) return false;
+    unsigned int dbLen = (unsigned int)event_buf[index++];
+    if (index + dbLen + 1 > event_len) return false;
+    dbName = std::string((const char*)&event_buf[index], dbLen);
+    index += dbLen + 1;
+    if (index + 1 > event_len) return false;
+    unsigned int tbLen = (unsigned int)event_buf[index++];
+    if (index + tbLen + 1 > event_len) return false;
+    tableName = std::string((const char*)&event_buf[index], tbLen);
+    return true;
+}
+
+// Query INFORMATION_SCHEMA to find online MYVECTOR columns for a newly-seen table.
+// Opens its own transient connection so it can be called outside binlog_stream_mutex_.
+// Returns one VectorIndexColumnInfo per online vector column; empty on error/none found.
+static std::vector<VectorIndexColumnInfo>
+discoverOnlineColumns(const std::string& dbName, const std::string& tableName) {
+    std::vector<VectorIndexColumnInfo> result;
+    readConfigFile(myvector_config_file);
+
+    MYSQL mysql;
+    if (!mysql_init(&mysql)) return result;
+
+    {
+        std::string h = g_conn_config.host;
+        std::string u = g_conn_config.user_id;
+        std::string p = g_conn_config.password;
+        std::string s = g_conn_config.socket;
+        int port = g_conn_config.port.length() ? atoi(g_conn_config.port.c_str()) : 0;
+        bool ok = mysql_real_connect(&mysql, h.c_str(), u.c_str(), p.c_str(),
+                                     nullptr, port, s.c_str(),
+                                     CLIENT_IGNORE_SIGPIPE) != nullptr;
+        secure_zero_string(p);
+        if (!ok) {
+            mysql_close(&mysql);
+            return result;
+        }
+    }
+
+    char esc_db[512], esc_tbl[512];
+    mysql_real_escape_string(&mysql, esc_db, dbName.c_str(),
+                             (unsigned long)dbName.size());
+    mysql_real_escape_string(&mysql, esc_tbl, tableName.c_str(),
+                             (unsigned long)tableName.size());
+
+    char q[1024];
+    snprintf(q, sizeof(q),
+             "SELECT COLUMN_NAME, COLUMN_COMMENT"
+             " FROM INFORMATION_SCHEMA.COLUMNS"
+             " WHERE TABLE_SCHEMA='%s' AND TABLE_NAME='%s'"
+             " AND COLUMN_COMMENT LIKE 'MYVECTOR%%'",
+             esc_db, esc_tbl);
+
+    if (!mysql_real_query(&mysql, q, strlen(q))) {
+        MYSQL_RES* res = mysql_store_result(&mysql);
+        if (res) {
+            MYSQL_ROW row;
+            while ((row = mysql_fetch_row(res))) {
+                if (!row[0] || !row[1]) continue;
+                const char* col     = row[0];
+                const char* info_str = row[1];
+                MyVectorOptions vo(info_str);
+                if (!vo.isValid()) continue;
+                std::string online = vo.getOption("online");
+                if (online != "Y" && online != "y") continue;
+                std::string idcol = vo.getOption("idcol");
+                if (idcol.empty()) continue;
+                int idcolpos = 0, veccolpos = 0;
+                GetBaseTableColumnPositions(&mysql, dbName.c_str(),
+                                            tableName.c_str(),
+                                            idcol.c_str(), col,
+                                            idcolpos, veccolpos);
+                if (idcolpos == 0 || veccolpos == 0) continue;
+                result.push_back(VectorIndexColumnInfo{col, idcolpos, veccolpos});
+            }
+            mysql_free_result(res);
+        }
+    }
+    mysql_close(&mysql);
+    return result;
+}
+
 /* parseTableMapEvent - Parse the TableMap binlog event that appears before
  * any *ROWS* event.
  */
@@ -588,10 +690,10 @@ void parseRowsEvent(const unsigned char* event_buf,
                     std::vector<VectorIndexUpdateItem*>& updates) {
     updates.clear();
 
-    if (event_len < 4)
-        return;  // need at least 4-byte checksum
-    event_len -= 4;  // checksum at the end
-
+    // @source_binlog_checksum='NONE' is always set before COM_BINLOG_DUMP,
+    // so the server sends events without any trailing CRC. Do NOT subtract
+    // 4 here — doing so would shorten the buffer and cause row_overflow when
+    // a table has multiple wide VARBINARY columns (e.g. mc_test.vec1 + .vec2).
     const unsigned int min_payload = EVENT_HEADER_LENGTH + 6 + 2;
     if (event_len < min_payload)
         return;
@@ -983,6 +1085,7 @@ static const char* kMyVectorColumnsSchema = "mysql";
  * done on the base table. This routine is called during plugin init.
  */
 void OpenAllOnlineVectorIndexes(MYSQL* hnd) {
+    g_NonOnlineTables.clear();  // stale cache from previous session; rebuild with fresh data
     char query_buf[256];
     snprintf(query_buf, sizeof(query_buf),
              "select db,tbl,col,info from %s.myvector_columns",
@@ -1212,19 +1315,46 @@ void BuildMyVectorIndexSQL(const char* db,
     mysql_free_result(result);
     result = nullptr;
 
+    // Snapshot the binlog position using SHOW BINARY LOG STATUS on the same
+    // connection that held the table lock during SELECT.  This gives a position
+    // that is guaranteed to be >= every row we just read, so the listener will
+    // not replay the original INSERT events.  Using currentBinlogPos instead
+    // would use the listener's reconnect position, which can be earlier than
+    // the rows we built from, causing double-insertion.
+    {
+        const char* show_q = "SHOW BINARY LOG STATUS";
+        if (mysql_real_query(&mysql, show_q, strlen(show_q)) == 0) {
+            MYSQL_RES* blres = mysql_store_result(&mysql);
+            if (blres) {
+                MYSQL_ROW blrow = mysql_fetch_row(blres);
+                if (blrow && blrow[0] && blrow[1]) {
+                    savedBinlogFile = blrow[0];
+                    savedBinlogPos  = static_cast<size_t>(strtoull(blrow[1], nullptr, 10));
+                }
+                mysql_free_result(blres);
+            }
+        }
+        if (savedBinlogFile.empty()) {
+            // Fallback: use listener's current position if SHOW BINARY LOG STATUS failed.
+            std::lock_guard<std::mutex> binlogMutex(binlog_stream_mutex_);
+            savedBinlogFile = currentBinlogFile;
+            savedBinlogPos  = currentBinlogPos;
+        }
+    }
+
     key = std::string(db) + "." + std::string(table);
     {
         std::lock_guard<std::mutex> binlogMutex(binlog_stream_mutex_);
-        vi->setLastUpdateCoordinates(currentBinlogFile, currentBinlogPos);
-        savedBinlogFile = currentBinlogFile;
-        savedBinlogPos = currentBinlogPos;
+        vi->setLastUpdateCoordinates(savedBinlogFile, savedBinlogPos);
         supportsIncr = vi->supportsIncrUpdates();
-        if (supportsIncr) {
-            int idcolpos = 0, veccolpos = 0;
-            GetBaseTableColumnPositions(
-                &mysql, db, table, idcol, veccol, idcolpos, veccolpos);
-            vc = VectorIndexColumnInfo{veccol, idcolpos, veccolpos};
-        }
+    }
+    // GetBaseTableColumnPositions issues a MySQL query — call outside the mutex
+    // so the binlog listener thread is not blocked during lazy discovery.
+    if (supportsIncr) {
+        int idcolpos = 0, veccolpos = 0;
+        GetBaseTableColumnPositions(
+            &mysql, db, table, idcol, veccol, idcolpos, veccolpos);
+        vc = VectorIndexColumnInfo{veccol, idcolpos, veccolpos};
     }
     vi->saveIndex(myvector_index_dir, "build");
     {
@@ -1420,7 +1550,31 @@ private:
             start_binlog_pos_ = state.binlog_pos;
         } else {
             start_binlog_file_ = myvector_find_earliest_binlog_file();
-            start_binlog_pos_ = 4;
+            if (start_binlog_file_.empty()) {
+                // No registered online indexes — anchor at the current master
+                // position so reinstall doesn't replay the full binlog history
+                // (which can cause many seconds of lag on large datasets).
+                // MySQL 8.4+ uses SHOW BINARY LOG STATUS; older uses SHOW MASTER STATUS.
+                // Try SHOW BINARY LOG STATUS (MySQL 8.4+), then SHOW MASTER STATUS (8.0).
+                auto try_show_binlog_status = [&](const char* q) {
+                    if (!start_binlog_file_.empty()) return;
+                    if (mysql_real_query(mysql_ptr, q, strlen(q)) != 0) return;
+                    MYSQL_RES* ms = mysql_store_result(mysql_ptr);
+                    if (!ms) return;
+                    MYSQL_ROW r = mysql_fetch_row(ms);
+                    if (r && r[0] && r[1]) {
+                        start_binlog_file_ = r[0];
+                        start_binlog_pos_ = (size_t)strtoull(r[1], nullptr, 10);
+                    }
+                    mysql_free_result(ms);
+                };
+                try_show_binlog_status("SHOW BINARY LOG STATUS");
+                try_show_binlog_status("SHOW MASTER STATUS");
+                if (start_binlog_file_.empty())
+                    start_binlog_pos_ = 4;
+            } else {
+                start_binlog_pos_ = 4;
+            }
         }
 
         mysql_close(mysql_ptr);
@@ -1439,110 +1593,8 @@ private:
     }
 
     void binlog_loop_fn(int num_q_threads) {
-        MYSQL mysql;
-        int connect_attempts = 0;
-
-        auto close_binlog_mysql_conn = [&]() {
-            if (binlog_mysql_conn_ == &mysql) {
-                mysql_close(&mysql);
-                binlog_mysql_conn_ = nullptr;
-            }
-        };
-
-        // Connect to MySQL
-        while (!shutdown_binlog_thread_.load()) {
-            if (connect_attempts > 0) {
-                mysql_close(&mysql);
-                binlog_mysql_conn_ = nullptr;
-            }
-            if (!mysql_init(&mysql)) {
-                close_binlog_mysql_conn();
-                return;
-            }
-            binlog_mysql_conn_ = &mysql;
-            unsigned int read_timeout_sec = 1;
-            mysql_options(&mysql, MYSQL_OPT_READ_TIMEOUT, &read_timeout_sec);
-
-            std::string conn_host = g_conn_config.host;
-            std::string conn_user = g_conn_config.user_id;
-            std::string conn_password = g_conn_config.password;
-            std::string conn_socket = g_conn_config.socket;
-            std::string conn_port = g_conn_config.port;
-            if (!mysql_real_connect(
-                    &mysql,
-                    conn_host.c_str(),
-                    conn_user.c_str(),
-                    conn_password.c_str(),
-                    NULL,
-                    (conn_port.length() ? atoi(conn_port.c_str()) : 0),
-                    conn_socket.c_str(),
-                    CLIENT_IGNORE_SIGPIPE)) {
-                secure_zero_string(conn_password);
-                mysql_close(&mysql);
-                binlog_mysql_conn_ = nullptr;
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-                if (shutdown_binlog_thread_.load()) {
-                    secure_zero_string(g_conn_config.password);
-                    return;
-                }
-                connect_attempts++;
-                if (connect_attempts > 600) {
-                    secure_zero_string(g_conn_config.password);
-                    return;
-                }
-                continue;
-            }
-            secure_zero_string(conn_password);
-            secure_zero_string(g_conn_config.password);
-            break;  /// connected
-        }
-
-        if (shutdown_binlog_thread_.load()) {
-            close_binlog_mysql_conn();
-            return;
-        }
-
-        std::string connected_uuid;
-        if (!fetch_server_uuid(&mysql, &connected_uuid) ||
-            (!server_uuid_.empty() && connected_uuid != server_uuid_)) {
-            // TODO: Replace with component-specific logging
-            close_binlog_mysql_conn();
-            return;
-        }
-
-        std::string initQuery =
-            "SET @master_binlog_checksum = 'NONE', @source_binlog_checksum = "
-            "'NONE',@net_read_timeout = 3000, @replica_net_timeout = 3000;";
-        if (mysql_real_query(&mysql, initQuery.c_str(), initQuery.length())) {
-            close_binlog_mysql_conn();
-            return;
-        }
-
-        OpenAllOnlineVectorIndexes(&mysql);
-
-        std::string startbinlog = start_binlog_file_.empty()
-                                      ? myvector_find_earliest_binlog_file()
-                                      : start_binlog_file_;
-
-        MYSQL_RPL rpl;
-        memset(&rpl, 0, sizeof(rpl));
-        rpl.file_name = NULL;
-        if (startbinlog.length())
-            rpl.file_name = startbinlog.c_str();
-        rpl.start_position = start_binlog_pos_ ? start_binlog_pos_ : 4;
-        rpl.server_id = g_binlog_server_id;
-        if (mysql_binlog_open(&mysql, &rpl)) {
-            close_binlog_mysql_conn();
-            return;
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
-            currentBinlogFile = startbinlog;
-            currentBinlogPos = rpl.start_position;
-        }
-
-        // Start queue processing threads (do not detach; join on shutdown)
+        // Workers start once and survive reconnections; only shut down when
+        // the entire binlog thread exits.
         worker_threads_.clear();
         worker_threads_.reserve(static_cast<size_t>(num_q_threads));
         for (int i = 0; i < num_q_threads; i++) {
@@ -1567,21 +1619,137 @@ private:
             });
         }
 
-        TableMapEvent tev;
+        bool password_cleared = false;
+        bool reconnecting = false;
+        int connect_attempts = 0;
+        // Keep a local copy of the password so reconnects work after the
+        // global config copy has been zeroed for security.
+        std::string saved_password;
+
+        // Outer reconnect loop: re-enters whenever the binlog fetch connection
+        // drops (including MYSQL_OPT_READ_TIMEOUT firing).
         while (!shutdown_binlog_thread_.load()) {
-            int fetch_rc = mysql_binlog_fetch(&mysql, &rpl);
-            if (fetch_rc != 0) {
-                if (shutdown_binlog_thread_.load()) {
-                    break;
+            MYSQL mysql;
+
+            auto close_binlog_mysql_conn = [&]() {
+                if (binlog_mysql_conn_ == &mysql) {
+                    mysql_close(&mysql);
+                    binlog_mysql_conn_ = nullptr;
                 }
-                std::string err = mysql_error(&mysql);
-                if (err.find("timed out") != std::string::npos) {
-                    continue;
-                }
-                // Non-timeout error: signal workers to exit before join
-                gqueue_.request_shutdown();
+            };
+
+            if (!mysql_init(&mysql)) {
                 break;
             }
+            binlog_mysql_conn_ = &mysql;
+            unsigned int read_timeout_sec = 1;
+            mysql_options(&mysql, MYSQL_OPT_READ_TIMEOUT, &read_timeout_sec);
+
+            std::string conn_host = g_conn_config.host;
+            std::string conn_user = g_conn_config.user_id;
+            std::string conn_password =
+                password_cleared ? saved_password : g_conn_config.password;
+            if (!password_cleared)
+                saved_password = g_conn_config.password;
+            std::string conn_socket = g_conn_config.socket;
+            std::string conn_port = g_conn_config.port;
+            if (!mysql_real_connect(
+                    &mysql,
+                    conn_host.c_str(),
+                    conn_user.c_str(),
+                    conn_password.c_str(),
+                    NULL,
+                    (conn_port.length() ? atoi(conn_port.c_str()) : 0),
+                    conn_socket.c_str(),
+                    CLIENT_IGNORE_SIGPIPE)) {
+                secure_zero_string(conn_password);
+                mysql_close(&mysql);
+                binlog_mysql_conn_ = nullptr;
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                connect_attempts++;
+                if (shutdown_binlog_thread_.load() || connect_attempts > 600) {
+                    if (!password_cleared)
+                        secure_zero_string(g_conn_config.password);
+                    break;
+                }
+                continue;
+            }
+            secure_zero_string(conn_password);
+            if (!password_cleared) {
+                secure_zero_string(g_conn_config.password);
+                password_cleared = true;
+            }
+            connect_attempts = 0;
+
+            if (shutdown_binlog_thread_.load()) {
+                close_binlog_mysql_conn();
+                break;
+            }
+
+            std::string connected_uuid;
+            if (!fetch_server_uuid(&mysql, &connected_uuid) ||
+                (!server_uuid_.empty() && connected_uuid != server_uuid_)) {
+                close_binlog_mysql_conn();
+                break;
+            }
+
+            std::string initQuery =
+                "SET @master_binlog_checksum = 'NONE', @source_binlog_checksum = "
+                "'NONE',@net_read_timeout = 3000, @replica_net_timeout = 3000;";
+            if (mysql_real_query(&mysql, initQuery.c_str(), initQuery.length())) {
+                close_binlog_mysql_conn();
+                break;
+            }
+
+            // Only open indexes on first connection; lazy discovery handles
+            // tables seen for the first time on subsequent reconnects.
+            if (!reconnecting) {
+                OpenAllOnlineVectorIndexes(&mysql);
+            }
+
+            std::string startbinlog = start_binlog_file_.empty()
+                                          ? myvector_find_earliest_binlog_file()
+                                          : start_binlog_file_;
+
+            MYSQL_RPL rpl;
+            memset(&rpl, 0, sizeof(rpl));
+            rpl.file_name = NULL;
+            if (startbinlog.length())
+                rpl.file_name = startbinlog.c_str();
+            rpl.start_position = start_binlog_pos_ ? start_binlog_pos_ : 4;
+            rpl.server_id = g_binlog_server_id;
+            if (mysql_binlog_open(&mysql, &rpl)) {
+                close_binlog_mysql_conn();
+                break;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
+                currentBinlogFile = startbinlog;
+                currentBinlogPos = rpl.start_position;
+            }
+
+            reconnecting = false;
+
+            TableMapEvent tev;
+            while (!shutdown_binlog_thread_.load()) {
+                int fetch_rc = mysql_binlog_fetch(&mysql, &rpl);
+                if (fetch_rc != 0) {
+                    if (shutdown_binlog_thread_.load()) {
+                        break;
+                    }
+                    // Any fetch error (timeout or lost connection): save the
+                    // resume position and let the outer loop reconnect from it.
+                    {
+                        std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
+                        if (!currentBinlogFile.empty()) {
+                            start_binlog_file_ = currentBinlogFile;
+                            start_binlog_pos_  = currentBinlogPos;
+                        }
+                    }
+                    reconnecting = true;
+                    break;
+                }
 #if MYSQL_VERSION_ID >= 80400
             using MyvectorLogEventType = mysql::binlog::event::Log_event_type;
             constexpr MyvectorLogEventType kRotateEvent = mysql::binlog::event::ROTATE_EVENT;
@@ -1603,34 +1771,79 @@ private:
                 rpl.buffer[1 + EVENT_TYPE_OFFSET]);
             unsigned long event_len = rpl.size - 1;
             const unsigned char* event_buf = rpl.buffer + 1;
-
             if (type == kRotateEvent) {
                 if (currentBinlogFile.length()) {
                     FlushOnlineVectorIndexes();
                 }
                 {
                     std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
+                    // offs=0: @source_binlog_checksum='NONE' means events
+                    // carry no trailing CRC, so no bytes need stripping.
                     parseRotateEvent(event_buf,
                                      event_len,
                                      currentBinlogFile,
                                      currentBinlogPos,
-                                     (currentBinlogFile.length() > 0));
+                                     false);
                     persist_state_snapshot(currentBinlogFile,
                                            currentBinlogPos);
                 }
                 continue;
             }
             {
+                // Use next_pos from the event header (bytes 13-16) rather than
+                // adding event_len, but skip this update for FORMAT_DESCRIPTION_EVENT
+                // (type=15). MySQL 8.4 sends FDE at reconnect with a non-zero
+                // next_log_pos pointing past the current end of file; using that
+                // value pushes currentBinlogPos beyond EOF, causing mysql_binlog_fetch
+                // to time out immediately on every reconnect (infinite crash loop).
+                const bool is_fde = (static_cast<int>(type) == 15);
+                uint32_t next_pos_hdr = 0;
+                if (!is_fde && event_len >= 17)
+                    memcpy(&next_pos_hdr, &event_buf[13], 4);
                 std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
-                currentBinlogPos += event_len;
+                if (next_pos_hdr != 0)
+                    currentBinlogPos = static_cast<size_t>(next_pos_hdr);
+            }
+            // Lazy discovery: when a TABLE_MAP_EVENT names a table we haven't seen,
+            // query INFORMATION_SCHEMA outside the mutex (avoids recursive lock with
+            // BuildMyVectorIndexSQL which also acquires binlog_stream_mutex_) and
+            // register any online MYVECTOR columns found.
+            if (type == kTableMapEvent) {
+                std::string peekDb, peekTbl;
+                if (peek_table_name(event_buf, event_len, peekDb, peekTbl)) {
+                    std::string peekKey = peekDb + "." + peekTbl;
+                    bool known = false;
+                    {
+                        std::lock_guard<std::mutex> lk(binlog_stream_mutex_);
+                        known = g_OnlineVectorIndexes.count(peekKey) > 0;
+                    }
+                    if (!known && !g_NonOnlineTables.count(peekKey)) {
+                        auto newCols = discoverOnlineColumns(peekDb, peekTbl);
+                        if (newCols.empty()) {
+                            g_NonOnlineTables.insert(peekKey);
+                        } else {
+                            std::lock_guard<std::mutex> lk(binlog_stream_mutex_);
+                            auto& cols = g_OnlineVectorIndexes[peekKey];
+                            for (const auto& vc : newCols) {
+                                auto it = std::find_if(
+                                    cols.begin(), cols.end(),
+                                    [&](const VectorIndexColumnInfo& c) {
+                                        return c.vectorColumn == vc.vectorColumn;
+                                    });
+                                if (it == cols.end())
+                                    cols.push_back(vc);
+                            }
+                        }
+                    }
+                }
             }
             {
                 std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
-                if (g_OnlineVectorIndexes.empty())
-                    continue;  // optimization!
                 if (type == kTableMapEvent) {
                     parseTableMapEvent(event_buf, event_len, tev);
                 } else if (type == kWriteRowsEvent) {
+                    if (g_OnlineVectorIndexes.empty())
+                        continue;
                     std::string key = tev.dbName + "." + tev.tableName;
                     auto kit = g_OnlineVectorIndexes.find(key);
                     if (kit == g_OnlineVectorIndexes.end())
@@ -1656,13 +1869,23 @@ private:
                 }
             }
         }
-        gqueue_.request_shutdown();  /* ensure workers unblock if we exited loop by break */
+            // Inner loop exited. Close the binlog stream and connection.
+            mysql_binlog_close(&mysql, &rpl);
+            close_binlog_mysql_conn();
+
+            if (!reconnecting) break;
+
+            // Brief pause before reconnecting to avoid tight-loop on failure.
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }  // end outer reconnect loop
+
+        secure_zero_string(saved_password);
+        gqueue_.request_shutdown();  /* ensure workers unblock on final exit */
         for (auto& t : worker_threads_) {
             if (t.joinable())
                 t.join();
         }
         worker_threads_.clear();
-        close_binlog_mysql_conn();
     }
 };
 
