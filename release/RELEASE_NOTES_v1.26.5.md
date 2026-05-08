@@ -1,6 +1,6 @@
 # Release Notes - v1.26.5
 
-Release date: 2026-05-04
+Release date: 2026-05-08
 Previous release: v1.26.3
 
 ## Summary
@@ -42,6 +42,7 @@ No source-breaking changes; the plugin path for 8.0/8.4/9.0 remains stable.
 - Config file reader: hardened permission and parse error handling.
 - CMakeCache.txt guard in component build scripts.
 - Quick Start `wget` URL: `insert50d.sql` → `insert50d.sql.gz` (issue #89).
+- **Binlog WRITE_ROWS handler for multi-column online index tables** (component): three bugs fixed — FORMAT_DESCRIPTION_EVENT reconnect crash loop; `KNNIndex` missing binlog coordinate tracking causing double-insertion; `BuildMyVectorIndexSQL` saving stale reconnect position instead of `SHOW BINARY LOG STATUS` snapshot.
 
 ## Documentation updates
 
@@ -59,8 +60,7 @@ No source-breaking changes; the plugin path for 8.0/8.4/9.0 remains stable.
 
 ## Known issues
 
-- No release-blocking issues identified at RC1 cut.
-- Final known-issues list validated at RC sign-off.
+- No release-blocking issues. Validated through RC3 with full component smoke (8.4 + 9.7) and published-image smoke (8.0 / 8.4 / 9.7).
 
 ## Excluded from this release scope
 

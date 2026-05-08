@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.26.5] - 2026-05-04
+## [1.26.5] - 2026-05-08
 
 ### Added (1.26.5)
 
@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config file reader hardened against permission errors and malformed input.
 - CMakeCache.txt guard in component build scripts to prevent stale cache collisions.
 - Quick Start `wget` URL fixed: `insert50d.sql` → `insert50d.sql.gz` (issue #89).
+- **Binlog WRITE_ROWS handler for multi-column online index tables** (component): three bugs fixed together:
+  - FORMAT_DESCRIPTION_EVENT (type=15) sent at binlog reconnect had a non-zero `next_log_pos` pointing past EOF, causing an infinite reconnect crash loop.
+  - `KNNIndex` (brute-force fallback) did not implement `setLastUpdateCoordinates`/`getLastUpdateCoordinates`, so `isAfter()` always returned true and already-indexed rows were double-inserted on reconnect.
+  - `BuildMyVectorIndexSQL` saved the listener's stale reconnect position instead of the actual DB binlog position (`SHOW BINARY LOG STATUS`), causing re-replay of pre-build INSERT events.
 
 ### Documentation updates (1.26.5)
 
