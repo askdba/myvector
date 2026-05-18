@@ -79,6 +79,8 @@ public:
 
     virtual bool supportsConcurrentUpdates() { return false; }
 
+    virtual bool isCosineMetric() const { return false; }
+
     virtual bool supportsIncrRefresh() { return false; }
 
     virtual bool isReady() { return false; }
