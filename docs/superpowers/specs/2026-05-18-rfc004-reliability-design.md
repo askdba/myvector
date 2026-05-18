@@ -21,12 +21,12 @@ Five gaps exist between RFC-004 (as written in issue #77) and the current codeba
 
 **Problem:** `insertVector()` with a cosine-metric index silently accepts zero-magnitude vectors. `computeCosineDistance` guards against division by zero with `if (t)` but returns `1.0` (max distance) instead of rejecting the insert.
 
-**Design:** At the top of the insert path, before adding to the HNSW graph, when the index metric is `COSINE`:
-1. Compute the L2 norm of the input vector.
-2. If `norm == 0.0`, set UDF error message to `ER_MYVECTOR_INVALID_VECTOR` and return early.
-3. The InnoDB row commit is unaffected — only the index update is skipped and the error surfaced to the client.
+**Design:** Two separate check points — the insert reaches the index via two different code paths with different error semantics:
 
-**Scope:** Insert path only. `computeCosineDistance` is unchanged — zero query vectors in search return max-distance results, not errors.
+- **UDF path** (direct client INSERT): In the UDF insert handler where the error message buffer is available, compute L2 norm before calling `insertVector()`. If `norm == 0.0` and metric is `COSINE`, set error message to `ER_MYVECTOR_INVALID_VECTOR` and return early. Client receives a hard error; transaction behavior follows MySQL's UDF error semantics.
+- **Binlog path** (`myvector_table_op`, `src/myvector.cc:2421`): Add the same norm check before `vi->insertVector()`. If zero-magnitude, call `warning_print()` and return — the row stays in InnoDB, the index silently omits it. This matches the existing pattern for null/missing row data in the binlog worker (do nothing, keep the thread running).
+
+**Scope:** Both insert paths only. `computeCosineDistance` is unchanged — zero query vectors in search return max-distance results, not errors.
 
 ---
 
@@ -38,7 +38,7 @@ Five gaps exist between RFC-004 (as written in issue #77) and the current codeba
 
 **Design:**
 - Replace `const size_t MYVECTOR_MAX_VECTOR_DIM = 4096` with a global `ulong myvector_max_vector_dim`.
-- **Plugin path** (`myvector_plugin.cc`): register `MYSQL_SYSVAR_ULONG(max_vector_dim, myvector_max_vector_dim, PLUGIN_VAR_RQCMDARG, ...)` with min=2, max=16383, default=4096. Add to `myvector_system_variables[]`.
+- **Plugin path** (`myvector_plugin.cc`): register `MYSQL_SYSVAR_ULONG(max_vector_dim, myvector_max_vector_dim, PLUGIN_VAR_READONLY | PLUGIN_VAR_RQCMDARG, ...)` with min=2, max=16383, default=4096. `PLUGIN_VAR_READONLY` prevents runtime changes that would create dimension inconsistency against already-loaded indexes. Add to `myvector_system_variables[]`.
 - **Component path** (`myvector_component_config.cc`): add `unsigned long myvector_max_vector_dim = 4096` alongside the existing `myvector_rebuild_on_start` bool. No component sysvar registration (plugin sysvars are being phased out with the plugin architecture).
 - The existing validation `dim <= 1 || dim > MYVECTOR_MAX_VECTOR_DIM` reads the variable instead of the constant — no structural change.
 
