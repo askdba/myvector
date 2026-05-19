@@ -455,7 +455,7 @@
 
     Fsync(ckptFile, ckptFileName);
 
-    DBUG_EXECUTE_IF("simulate_vector_crash", abort(););
+    DBUG_EXECUTE_IF("simulate_vector_crash", DBUG_ABORT());
 
     Close(ckptFile, ckptFileName);
     

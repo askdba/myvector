@@ -409,7 +409,10 @@ jobs:
       run: |
         cd mysql-server
         mkdir -p bld && cd bld
-        
+        # Remove stale cmake cache so plugin discovery always re-runs.
+        # Without this, a cached CMakeCache.txt from a run where the myvector
+        # plugin directory was absent would cause cmake to skip the target.
+        rm -f CMakeCache.txt
         # Configure MySQL with minimal options for plugin build
         cmake .. \
           -DDOWNLOAD_BOOST=1 \

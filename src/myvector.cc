@@ -2323,8 +2323,9 @@ PLUGIN_EXPORT long long myvector_search_add_row_udf(UDF_INIT* initid,
     AbstractVectorIndex* vi = (AbstractVectorIndex*)(initid->ptr);
     if (vi) {
         if (vi->isCosineMetric() && isZeroVector((const FP32*)vecval, dims)) {
-            MYVEC_LOG_WARN("Zero-magnitude vector rejected for cosine index"
-                           " (pkid=%lld).", pkid);
+            MYVEC_LOG_ERROR("Zero-magnitude vector rejected for cosine index"
+                            " (pkid=%lld).", pkid);
+            *is_null = 1;
             *error = 1;
             return 0;
         }
