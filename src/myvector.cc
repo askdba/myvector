@@ -1193,7 +1193,11 @@ const size_t MYVECTOR_MAX_COLUMN_INFO_LEN = 128;
  * now in model :  text-embedding-3-large. Technically, there is no limitation
  * in the VARBINARY datatype. MySQL's VECTOR datatype supports max of 16383.
  */
+#ifdef MYVECTOR_COMPONENT_BUILD
+extern ulong myvector_max_vector_dim;  // defined in myvector_component_config.cc
+#else
 ulong myvector_max_vector_dim = 4096;
+#endif
 
 /* rewriteMyVectorColumnDef() - rewrite the MYVECTOR(...) annotation in
  * CREATE TABLE & ALTER TABLE.
