@@ -474,8 +474,8 @@ jobs:
 
     - name: Install actionlint
       run: |
-        curl -sL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
-          | bash -s -- -b /usr/local/bin
+        curl -sL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash | bash
+        sudo mv actionlint /usr/local/bin/
 
     - name: Run actionlint
       run: actionlint -color .github/workflows/*.yml
