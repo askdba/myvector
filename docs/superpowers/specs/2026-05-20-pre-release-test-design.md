@@ -52,6 +52,7 @@ build/component-9.7/
 If either directory is missing or the `.so` is absent, the script prints the exact build command and exits 1.
 
 Build commands:
+
 ```bash
 ./scripts/build-component-8.4-docker.sh mysql-8.4.8   # outputs to build/component-8.4/
 ./scripts/build-component-9.7-docker.sh mysql-9.7.0   # outputs to build/component-9.7/

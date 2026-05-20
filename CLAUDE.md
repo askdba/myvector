@@ -58,6 +58,7 @@ bash scripts/smoke-readme.sh ghcr.io/askdba/myvector:mysql8.4
 ```
 
 **Pre-release gate (run before every tag):**
+
 ```bash
 # Build version-specific artifacts first (output to dist/ to avoid cmake build/ collision):
 ./scripts/build-component-8.4-docker.sh mysql-8.4.8 dist/component-8.4

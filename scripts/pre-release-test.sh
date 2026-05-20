@@ -40,7 +40,11 @@ print_summary() {
   echo "=== Results: ${PASS_COUNT} passed, ${FAIL_COUNT} failed, ${SKIP_COUNT} skipped ==="
   [[ "$FAIL_COUNT" -eq 0 ]]
 }
-trap print_summary EXIT
+on_exit() {
+  cleanup_container
+  print_summary
+}
+trap on_exit EXIT
 
 echo "=== MyVector Pre-Release Test Suite ==="
 echo "MySQL versions : ${VERSIONS[*]}"
@@ -52,8 +56,8 @@ echo ""
 # ── pre-flight ────────────────────────────────────────────────────────────────
 for VER in "${VERSIONS[@]}"; do
   DIR="${COMPONENT_DIRS[$VER]}"
-  if [[ ! -f "$DIR/libmyvector_component.so" ]]; then
-    die "Artifact missing: $DIR/libmyvector_component.so
+  if [[ ! -f "$DIR/libmyvector_component.so" || ! -f "$DIR/myvector.json" ]]; then
+    die "Artifact missing in $DIR/ (need libmyvector_component.so + myvector.json)
 Build it first:
   MySQL 8.4: ./scripts/build-component-8.4-docker.sh mysql-8.4.8 dist/component-8.4
   MySQL 9.7: ./scripts/build-component-9.7-docker.sh mysql-9.7.0 dist/component-9.7"
@@ -431,8 +435,8 @@ for VER in "${VERSIONS[@]}"; do
 
   run_rfc004_zero_vector
   run_rfc004_max_dim "$VER"
-  run_rfc004_crash_injection
   run_edge_cases
+  run_rfc004_crash_injection
 
   cleanup_container
   echo ""
