@@ -472,6 +472,14 @@ jobs:
           -I include -I src/component_src \
           src/component_src/
 
+    - name: Install actionlint
+      run: |
+        curl -sL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
+          | bash -s -- -b /usr/local/bin
+
+    - name: Run actionlint
+      run: actionlint -color .github/workflows/*.yml
+
   # Integration test - loads plugin into running MySQL
   test:
     runs-on: ubuntu-latest
