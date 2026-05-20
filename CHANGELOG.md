@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.26.5.1-rc1] - 2026-05-19
+## [1.26.5.1] - 2026-05-20
 
 ### Fixed
 - Zero-magnitude vector inserts on cosine-metric indexes now return
