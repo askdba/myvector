@@ -40,10 +40,24 @@ print_summary() {
   echo "=== Results: ${PASS_COUNT} passed, ${FAIL_COUNT} failed, ${SKIP_COUNT} skipped ==="
   [[ "$FAIL_COUNT" -eq 0 ]]
 }
+
+# ── Phase 2 helpers ───────────────────────────────────────────────────────────
+CONTAINER=""
+ROOT_PW="prerelroot"
+
+cleanup_container() {
+  [[ -n "$CONTAINER" ]] && docker rm -f "$CONTAINER" 2>/dev/null || true
+  CONTAINER=""
+}
+
 on_exit() {
+  local exit_code=$?
   cleanup_container
   print_summary
-  if [[ "$FAIL_COUNT" -ne 0 ]]; then exit 1; else exit 0; fi
+  if [[ "$exit_code" -ne 0 || "$FAIL_COUNT" -ne 0 ]]; then
+    exit 1
+  fi
+  exit 0
 }
 trap on_exit EXIT
 
@@ -74,10 +88,6 @@ for VER in "${VERSIONS[@]}"; do
   echo ""
 done
 
-# ── Phase 2 helpers ───────────────────────────────────────────────────────────
-CONTAINER=""
-ROOT_PW="prerelroot"
-
 mq() {
   docker exec -e MYSQL_PWD="$ROOT_PW" "$CONTAINER" \
     mysql -uroot -h 127.0.0.1 "$@"
@@ -86,11 +96,6 @@ mq() {
 mq_stdin() {
   docker exec -i -e MYSQL_PWD="$ROOT_PW" "$CONTAINER" \
     mysql -uroot -h 127.0.0.1 "$@"
-}
-
-cleanup_container() {
-  [[ -n "$CONTAINER" ]] && docker rm -f "$CONTAINER" 2>/dev/null || true
-  CONTAINER=""
 }
 
 start_container() {
