@@ -123,12 +123,13 @@ docker run --rm \
     make -C build -j$(nproc) VERBOSE=1
 
     echo "==> Packaging artifact..."
-    mkdir -p "$OUTPUT_DIR"
-    cp build/libmyvector_component.so "$OUTPUT_DIR/"
-    cp src/component_src/myvector.json "$OUTPUT_DIR/"
-    echo "==> Built: $OUTPUT_DIR/libmyvector_component.so"
+    mkdir -p "/workspace/$OUTPUT_DIR"
+    cp build/libmyvector_component.so "/workspace/$OUTPUT_DIR/"
+    cp src/component_src/myvector.json "/workspace/$OUTPUT_DIR/"
+    echo "==> Built: /workspace/$OUTPUT_DIR/libmyvector_component.so"
 
     # Restore host ownership so runner can use the result and cache can save the source.
     chown -R "${HOST_UID}:${HOST_GID}" "/workspace/mysql-server-${MYSQL_TAG}" 2>/dev/null || true
     chown -R "${HOST_UID}:${HOST_GID}" "/workspace/build" 2>/dev/null || true
+    chown -R "${HOST_UID}:${HOST_GID}" "/workspace/${OUTPUT_DIR}" 2>/dev/null || true
   '
