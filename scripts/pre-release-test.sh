@@ -21,8 +21,8 @@ case "$VERSION_ARG" in
 esac
 
 declare -A COMPONENT_DIRS=(
-  ["8.4"]="build/component-8.4"
-  ["9.7"]="build/component-9.7"
+  ["8.4"]="dist/component-8.4"
+  ["9.7"]="dist/component-9.7"
 )
 
 # ── counters ──────────────────────────────────────────────────────────────────
@@ -55,8 +55,8 @@ for VER in "${VERSIONS[@]}"; do
   if [[ ! -f "$DIR/libmyvector_component.so" ]]; then
     die "Artifact missing: $DIR/libmyvector_component.so
 Build it first:
-  MySQL 8.4: ./scripts/build-component-8.4-docker.sh mysql-8.4.8 build/component-8.4
-  MySQL 9.7: ./scripts/build-component-9.7-docker.sh mysql-9.7.0 build/component-9.7"
+  MySQL 8.4: ./scripts/build-component-8.4-docker.sh mysql-8.4.8 dist/component-8.4
+  MySQL 9.7: ./scripts/build-component-9.7-docker.sh mysql-9.7.0 dist/component-9.7"
   fi
 done
 
