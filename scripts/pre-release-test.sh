@@ -325,17 +325,28 @@ run_rfc004_max_dim() {
     skip "myvector_max_vector_dim DDL enforcement requires MySQL 9.0+ query rewrite (skipping $VER)"
     return 0
   fi
-  # MySQL 9.0+: MYVECTOR(dim=4097) DDL annotation should be rejected during rewrite
+  # MySQL 9.0+: MYVECTOR(dim=4097) DDL annotation should be rejected during rewrite.
+  # First verify the query rewrite service is functioning with a control DDL (dim=3).
+  CONTROL_CREATE=$(mq -D prerel -e "
+    DROP TABLE IF EXISTS bigdim_ok;
+    CREATE TABLE bigdim_ok (
+      id  INT PRIMARY KEY,
+      vec MYVECTOR(type=hnsw,dim=3,size=10,m=16,ef=50,idcol=id,dist=L2)
+    );" 2>&1 || true)
+  if echo "$CONTROL_CREATE" | grep -qiE "ERROR"; then
+    fail "control MYVECTOR DDL (dim=3) failed on MySQL $VER — rewrite service not active, max-dim enforcement not verified: $CONTROL_CREATE"
+    return 0
+  fi
   CREATE_BIG=$(mq -D prerel -e "
     DROP TABLE IF EXISTS bigdim_t;
     CREATE TABLE bigdim_t (
       id  INT PRIMARY KEY,
       vec MYVECTOR(type=hnsw,dim=4097,size=10,m=16,ef=50,idcol=id,dist=L2)
     );" 2>&1 || true)
-  if echo "$CREATE_BIG" | grep -qiE "ERROR"; then
+  if echo "$CREATE_BIG" | grep -qi "dimension incorrect"; then
     pass "4097-dim MYVECTOR DDL rejected (max_vector_dim=4096 enforced on MySQL $VER)"
   else
-    fail "4097-dim MYVECTOR DDL: expected rejection on MySQL $VER, got: $CREATE_BIG"
+    fail "4097-dim MYVECTOR DDL: expected 'dimension incorrect' rejection on MySQL $VER, got: $CREATE_BIG"
   fi
 }
 
@@ -353,9 +364,10 @@ run_rfc004_crash_injection() {
       );
       INSERT INTO crash_t VALUES (1, myvector_construct('[1.0,2.0,3.0]'));
     " 2>/dev/null
-    mq -e "SET SESSION debug='+d,simulate_vector_crash';" 2>/dev/null || true
-    mq -D prerel -e \
-      "CALL mysql.MYVECTOR_INDEX_BUILD('prerel.crash_t.vec', 'id');" 2>/dev/null || true
+    mq_stdin -D prerel 2>/dev/null <<'SQL' || true
+SET SESSION debug='+d,simulate_vector_crash';
+CALL mysql.MYVECTOR_INDEX_BUILD('prerel.crash_t.vec', 'id');
+SQL
     sleep 3
     if ! docker inspect "$CONTAINER" --format '{{.State.Running}}' 2>/dev/null | grep -q "^true$"; then
       pass "crash injection: server aborted as expected (simulate_vector_crash)"
