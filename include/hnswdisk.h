@@ -15,6 +15,7 @@
 #include "hnswlib.h"
 #include "myvector_log.h"
 #include "myvectorutils.h"
+#include "my_dbug.h"
 #include "visited_list_pool.h"
 #include <fcntl.h>
 #include <sys/time.h>

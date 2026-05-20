@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.5.1-rc1] - 2026-05-19
+
+### Fixed
+- Zero-magnitude vector inserts on cosine-metric indexes now return
+  `ER_MYVECTOR_INVALID_VECTOR` to the client (UDF path) or log a warning
+  and skip the index update (binlog/online-index path) instead of silently
+  inserting max-distance entries.
+- Added `DBUG_EXECUTE_IF("simulate_vector_crash", abort())` in
+  `hnswdisk.i` checkpoint flush path for crash-recovery testing.
+  No-op in release builds; requires `-DWITH_DEBUG=1`.
+
+### Added
+- New sysvar `myvector_max_vector_dim` (read-only, default 4096, max 16383).
+  Allows indexes with dimensions up to MySQL's native VECTOR type limit.
+  Set at server start: `--myvector-max-vector-dim=8192`.
+
+### Documentation
+- Added `docs/RFC-004-RELIABILITY.md` — corrected on-disk version of RFC-004
+  (max dimension, persistence model, rebuild-on-start scope, error codes).
+- Closes #77.
+
 ## [1.26.5] - 2026-05-08
 
 ### Added (1.26.5)

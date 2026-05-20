@@ -380,6 +380,10 @@ public:
     string getName() { return m_name; }
     string getType() { return "KNN"; }
 
+    bool isCosineMetric() const override {
+        return (m_distfn == computeCosineDistance);
+    }
+
     string getStatus();
 
     bool searchVectorNN(VectorPtr qvec,
@@ -596,6 +600,10 @@ public:
     string getName() { return m_name; }
 
     string getType() { return m_type; }
+
+    bool isCosineMetric() const override {
+        return (m_dist == "Cosine" || m_dist == "CosineNorm" || m_dist == "Angular");
+    }
 
     string getStatus();
 
@@ -1185,7 +1193,11 @@ const size_t MYVECTOR_MAX_COLUMN_INFO_LEN = 128;
  * now in model :  text-embedding-3-large. Technically, there is no limitation
  * in the VARBINARY datatype. MySQL's VECTOR datatype supports max of 16383.
  */
-const size_t MYVECTOR_MAX_VECTOR_DIM = 4096;
+#ifdef MYVECTOR_COMPONENT_BUILD
+extern ulong myvector_max_vector_dim;  // defined in myvector_component_config.cc
+#else
+ulong myvector_max_vector_dim = 4096;
+#endif
 
 /* rewriteMyVectorColumnDef() - rewrite the MYVECTOR(...) annotation in
  * CREATE TABLE & ALTER TABLE.
@@ -1246,7 +1258,7 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         bool dimValid = true;
         int dim = vo.getIntOption("dim", 0, &dimValid);
 
-        if (!dimValid || dim <= 1 || dim > MYVECTOR_MAX_VECTOR_DIM) {
+        if (!dimValid || dim <= 1 || (ulong)dim > myvector_max_vector_dim) {
             MYVEC_LOG_ERROR("MYVECTOR column dimension incorrect %d.", dim);
             error = true;
             break;
@@ -2289,6 +2301,13 @@ PLUGIN_EXPORT bool myvector_search_add_row_udf_init(UDF_INIT* initid,
     return false;
 }
 
+static bool isZeroVector(const FP32* vec, int dim) {
+    double norm = 0.0;
+    for (int i = 0; i < dim; i++)
+        norm += (double)vec[i] * vec[i];
+    return (norm == 0.0);
+}
+
 /* UDF : myvector_search_add_row_udf() */
 PLUGIN_EXPORT long long myvector_search_add_row_udf(UDF_INIT* initid,
                                                     UDF_ARGS* args,
@@ -2303,6 +2322,13 @@ PLUGIN_EXPORT long long myvector_search_add_row_udf(UDF_INIT* initid,
 
     AbstractVectorIndex* vi = (AbstractVectorIndex*)(initid->ptr);
     if (vi) {
+        if (vi->isCosineMetric() && isZeroVector((const FP32*)vecval, dims)) {
+            MYVEC_LOG_ERROR("Zero-magnitude vector rejected for cosine index"
+                            " (pkid=%lld).", pkid);
+            *is_null = 1;
+            *error = 1;
+            return 0;
+        }
         vi->insertVector((FP32*)vecval, dims, pkid);
     } else {
         *error = 1;
@@ -2435,7 +2461,15 @@ void myvector_table_op(const string& dbname,
 
         vi->getLastUpdateCoordinates(binlogfileold, binlogposold);
         if (isAfter(binlogfile, binlogpos, binlogfileold, binlogposold)) {
-            vi->insertVector(vec.data(), vi->getDimension(), pkid);
+            if (vi->isCosineMetric() &&
+                isZeroVector(reinterpret_cast<const FP32*>(vec.data()),
+                             vi->getDimension())) {
+                MYVEC_LOG_WARN("Skipping zero-magnitude vector for cosine index"
+                               " (pkid=%u), row is in table but not in index.",
+                               pkid);
+            } else {
+                vi->insertVector(vec.data(), vi->getDimension(), pkid);
+            }
         } else {
             MYVEC_LOG_DEBUG("Skipping index update (%s %lu) < (%s %lu).",
                         binlogfile.c_str(),

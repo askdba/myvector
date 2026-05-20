@@ -455,6 +455,8 @@
 
     Fsync(ckptFile, ckptFileName);
 
+    DBUG_EXECUTE_IF("simulate_vector_crash", DBUG_ABORT());
+
     Close(ckptFile, ckptFileName);
     
     WriteCheckPointStatus(hnswFileName, CKPT_END_INCR_PASS1);

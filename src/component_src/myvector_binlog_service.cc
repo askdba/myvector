@@ -208,8 +208,10 @@ static void secure_zero_string(std::string& s) {
         return;
 #if defined(_WIN32)
     SecureZeroMemory(&s[0], s.size());
-#elif defined(__linux__) || defined(__APPLE__)
+#elif defined(__linux__)
     explicit_bzero(&s[0], s.size());
+#elif defined(__APPLE__)
+    bzero(&s[0], s.size());
 #else
     volatile char* p = const_cast<char*>(s.data());
     for (size_t i = 0; i < s.size(); i++)

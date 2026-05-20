@@ -91,6 +91,7 @@ long myvector_feature_level;
 long myvector_index_bg_threads;
 char* myvector_index_dir;
 char* myvector_config_file;
+extern ulong myvector_max_vector_dim;
 
 static MYSQL_SYSVAR_LONG(feature_level,
                          myvector_feature_level,
@@ -130,10 +131,24 @@ static MYSQL_SYSVAR_STR(config_file,
                         nullptr,
                         "myvector.cnf");
 
+static MYSQL_SYSVAR_ULONG(max_vector_dim,
+    myvector_max_vector_dim,
+    PLUGIN_VAR_READONLY | PLUGIN_VAR_RQCMDARG,
+    "Maximum vector dimension allowed for index creation (default 4096, max 16383). "
+    "Read-only at runtime -- set at server start.",
+    nullptr,
+    nullptr,
+    4096,
+    2,
+    16383,
+    0
+);
+
 static SYS_VAR* myvector_system_variables[] = {MYSQL_SYSVAR(feature_level),
                                                MYSQL_SYSVAR(index_bg_threads),
                                                MYSQL_SYSVAR(index_dir),
                                                MYSQL_SYSVAR(config_file),
+                                               MYSQL_SYSVAR(max_vector_dim),
                                                nullptr};
 
 static int myvector_sql_preparse(MYSQL_THD,
