@@ -43,6 +43,7 @@ print_summary() {
 on_exit() {
   cleanup_container
   print_summary
+  if [[ "$FAIL_COUNT" -ne 0 ]]; then exit 1; else exit 0; fi
 }
 trap on_exit EXIT
 
