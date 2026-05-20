@@ -8,6 +8,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 MYSQL_TAG="${1:-mysql-8.4.8}"
+OUTPUT_DIR="${2:-build/component}"
 
 echo "==> Building MyVector component for $MYSQL_TAG"
 
@@ -20,6 +21,7 @@ docker run --rm \
   -e MYSQL_TAG="$MYSQL_TAG" \
   -e HOST_UID="$HOST_UID" \
   -e HOST_GID="$HOST_GID" \
+  -e OUTPUT_DIR="$OUTPUT_DIR" \
   oraclelinux:9 \
   bash -c '
     set -e
@@ -121,10 +123,10 @@ docker run --rm \
     make -C build -j$(nproc) VERBOSE=1
 
     echo "==> Packaging artifact..."
-    mkdir -p build/component
-    cp build/libmyvector_component.so build/component/
-    cp src/component_src/myvector.json build/component/
-    echo "==> Built: build/component/libmyvector_component.so"
+    mkdir -p "$OUTPUT_DIR"
+    cp build/libmyvector_component.so "$OUTPUT_DIR/"
+    cp src/component_src/myvector.json "$OUTPUT_DIR/"
+    echo "==> Built: $OUTPUT_DIR/libmyvector_component.so"
 
     # Restore host ownership so runner can use the result and cache can save the source.
     chown -R "${HOST_UID}:${HOST_GID}" "/workspace/mysql-server-${MYSQL_TAG}" 2>/dev/null || true
