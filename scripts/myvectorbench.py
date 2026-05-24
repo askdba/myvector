@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import random
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -288,9 +289,108 @@ def load_dataset(dataset: str, wp: dict) -> list:
 
 # ── workloads (implemented in Task 3) ────────────────────────────────────────
 
+def _vec_literal(v: list) -> str:
+    """Format a float list as a myvector_construct('[...]') SQL literal."""
+    inner = ",".join(f"{x:.6f}" for x in v)
+    return f"myvector_construct('[{inner}]')"
+
+
+def _create_bench_table(container: Container, dim: int, M: int, ef: int,
+                         db: str, table: str, online: bool = False,
+                         dist: str = "L2") -> None:
+    online_flag = ",online=Y" if online else ""
+    container.sql(f"CREATE DATABASE IF NOT EXISTS {db};")
+    container.sql(f"DROP TABLE IF EXISTS {db}.{table};")
+    container.sql(
+        f"CREATE TABLE {db}.{table} ("
+        f"  id  INT PRIMARY KEY,"
+        f"  vec VARBINARY(8192)"
+        f"    COMMENT 'MYVECTOR COLUMN type=hnsw,dim={dim},size=10000,m={M},ef={ef},"
+        f"idcol=id,dist={dist}{online_flag}'"
+        f");"
+    )
+
+
+def bench_index_build(container: Container, vectors: list, wp: dict) -> float:
+    """INSERT all rows, then call MYVECTOR_INDEX_BUILD; return wall-clock seconds."""
+    dim = wp['dim']
+    M = wp.get('M', 16)
+    ef = wp.get('ef_construction', 200)
+    rows = len(vectors)
+    print(f"  [index_build] {rows} rows, dim={dim}")
+
+    _create_bench_table(container, dim, M, ef, "bench", "build_t")
+
+    batch = 500
+    for start in range(0, rows, batch):
+        chunk = vectors[start:start + batch]
+        vals = ", ".join(f"({start + i}, {_vec_literal(v)})" for i, v in enumerate(chunk))
+        container.sql(f"INSERT INTO bench.build_t (id, vec) VALUES {vals};")
+
+    t0 = time.time()
+    container.sql("CALL mysql.MYVECTOR_INDEX_BUILD('bench.build_t.vec', 'id');")
+    elapsed = time.time() - t0
+    print(f"    index_build_time_s = {elapsed:.2f}")
+    return elapsed
+
+
+def bench_insert_throughput(container: Container, vectors: list, wp: dict) -> float:
+    """INSERT rows into an online=Y indexed table; return QPS."""
+    dim = wp['dim']
+    M = wp.get('M', 16)
+    ef = wp.get('ef_construction', 200)
+    rows = len(vectors)
+    print(f"  [insert_throughput] {rows} rows, dim={dim}, online=Y")
+
+    _create_bench_table(container, dim, M, ef, "bench", "insert_t", online=True)
+
+    t0 = time.time()
+    batch = 500
+    for start in range(0, rows, batch):
+        chunk = vectors[start:start + batch]
+        vals = ", ".join(f"({start + i}, {_vec_literal(v)})" for i, v in enumerate(chunk))
+        container.sql(f"INSERT INTO bench.insert_t (id, vec) VALUES {vals};")
+    elapsed = time.time() - t0
+
+    qps = rows / elapsed if elapsed > 0 else 0.0
+    print(f"    insert_qps = {qps:.0f}")
+    return qps
+
+
+def bench_knn_search(container: Container, vectors: list, wp: dict) -> dict:
+    """Run knn_queries ORDER-BY-distance queries against build_t; return timing metrics."""
+    n_queries = wp.get('knn_queries', 200)
+    print(f"  [knn_search] {n_queries} queries, dim={wp['dim']}")
+
+    rng = random.Random(99)
+    query_vectors = [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n_queries)]
+
+    latencies_ms = []
+    for q in query_vectors:
+        sql = (
+            f"SELECT id FROM bench.build_t"
+            f" ORDER BY myvector_row_distance(vec, {_vec_literal(q)}, 'L2') LIMIT 10;"
+        )
+        t0 = time.time()
+        container.sql(sql)
+        latencies_ms.append((time.time() - t0) * 1000)
+
+    latencies_ms.sort()
+    p50 = statistics.median(latencies_ms)
+    p99 = latencies_ms[max(0, int(len(latencies_ms) * 0.99) - 1)]
+    qps = n_queries / (sum(latencies_ms) / 1000) if latencies_ms else 0.0
+    print(f"    knn_qps={qps:.0f}  p50={p50:.1f}ms  p99={p99:.1f}ms")
+    return {"knn_qps": qps, "knn_p50_ms": p50, "knn_p99_ms": p99}
+
+
 def run_workloads(container: Container, vectors: list, wp: dict,
                   build_path: str, mysql_version: str) -> dict:
-    raise NotImplementedError("workloads not yet implemented (Task 3)")
+    metrics = {}
+    metrics["index_build_time_s"] = bench_index_build(container, vectors, wp)
+    metrics["insert_qps"] = bench_insert_throughput(container, vectors, wp)
+    metrics.update(bench_knn_search(container, vectors, wp))
+    metrics["recall_at_10"] = None  # requires ANN query API not available in v1
+    return metrics
 
 
 # ── promote (implemented in Task 4) ──────────────────────────────────────────
