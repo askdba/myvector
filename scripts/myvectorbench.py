@@ -15,12 +15,14 @@ import json
 import math
 import os
 import random
+import shutil
 import statistics
 import subprocess
 import sys
 import tempfile
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import yaml
 
@@ -280,12 +282,83 @@ def _synthetic_vectors(rows: int, dim: int, seed: int = 42) -> list:
 
 
 def load_dataset(dataset: str, wp: dict) -> list:
-    """Return a list of float lists (rows × dim). Implemented fully in Task 4."""
+    """Return a list of float lists (rows × dim).
+
+    dataset values:
+      'synthetic'          — deterministic Gaussian vectors (seed=42)
+      'glove50'            — GloVe 6B 50d (downloaded to ~/.cache/myvectorbench/)
+      'glove300'           — GloVe 6B 300d
+      '/path/to/file.tsv'  — custom space/tab-separated file
+    """
     rows = wp.get("rows", 10000)
     dim = wp.get("dim", 128)
+
     if dataset == "synthetic":
         return _synthetic_vectors(rows, dim)
-    raise NotImplementedError(f"dataset '{dataset}' not yet implemented (Task 4)")
+
+    if dataset in ("glove50", "glove300"):
+        dim_map = {"glove50": 50, "glove300": 300}
+        actual_dim = dim_map[dataset]
+        if dim != actual_dim:
+            print(
+                f"  WARNING: config dim={dim} overridden to {actual_dim} for {dataset}",
+                file=sys.stderr,
+            )
+        return _load_glove(dataset, rows, actual_dim)
+
+    return _load_tsv(dataset, rows, dim)
+
+
+def _load_glove(dataset: str, rows: int, dim: int) -> list:
+    import urllib.request
+    import zipfile
+
+    filenames = {"glove50": "glove.6B.50d.txt", "glove300": "glove.6B.300d.txt"}
+    glove_url = "https://nlp.stanford.edu/data/glove.6B.zip"
+    cache_dir = Path(
+        os.environ.get("MYVECTOR_DATASET_CACHE", os.path.expanduser("~/.cache/myvectorbench"))
+    )
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    txt_path = cache_dir / filenames[dataset]
+
+    if not txt_path.exists():
+        zip_path = cache_dir / "glove.6B.zip"
+        if not zip_path.exists():
+            print(f"  Downloading GloVe 6B from {glove_url} (~860 MB) ...")
+            urllib.request.urlretrieve(glove_url, zip_path)
+        print(f"  Extracting {filenames[dataset]} ...")
+        with zipfile.ZipFile(zip_path) as z:
+            z.extract(filenames[dataset], cache_dir)
+
+    return _load_tsv(str(txt_path), rows, dim)
+
+
+def _load_tsv(path: str, rows: int, dim: int) -> list:
+    """Load up to `rows` vectors from a whitespace-separated file.
+
+    Each line is either '<word> <f1> <f2> ...' or '<f1> <f2> ...' — the
+    first non-numeric field is treated as a word token and skipped.
+    """
+    vectors = []
+    with open(path) as f:
+        for line in f:
+            if len(vectors) >= rows:
+                break
+            parts = line.strip().split()
+            if not parts:
+                continue
+            start = 0
+            try:
+                float(parts[0])
+            except ValueError:
+                start = 1
+            try:
+                v = [float(x) for x in parts[start:start + dim]]
+            except ValueError:
+                continue
+            if len(v) == dim:
+                vectors.append(v)
+    return vectors
 
 
 # ── workloads (implemented in Task 3) ────────────────────────────────────────
@@ -399,7 +472,65 @@ def run_workloads(container: Container, vectors: list, wp: dict,
 # ── promote (implemented in Task 4) ──────────────────────────────────────────
 
 def promote(git_ref: str, config_path: str):
-    raise NotImplementedError("promote not yet implemented (Task 4)")
+    """Copy git_ref result JSONs to baseline.json on the benchmarks/ branch.
+
+    Uses a temporary git worktree; requires the benchmarks/ branch to exist
+    (created by the first CI run) or origin/benchmarks to be fetchable.
+    """
+    config = load_config(config_path)
+    matrix = config.get("matrix", {})
+    mysql_versions = matrix.get("mysql_versions", [])
+    build_paths = matrix.get("build_paths", [])
+
+    with tempfile.TemporaryDirectory() as wt_dir:
+        r = subprocess.run(
+            ["git", "worktree", "add", wt_dir, "benchmarks"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            r2 = subprocess.run(
+                ["git", "worktree", "add", "--track", "-b", "benchmarks",
+                 wt_dir, "origin/benchmarks"],
+                capture_output=True, text=True,
+            )
+            if r2.returncode != 0:
+                print(
+                    "ERROR: benchmarks/ branch does not exist locally or on origin.\n"
+                    "It is created automatically by the first CI run.\n"
+                    "Run the myvectorbench workflow at least once before promoting.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+        promoted = 0
+        for ver in mysql_versions:
+            for bp in build_paths:
+                cell_dir = Path(wt_dir) / str(ver) / bp
+                if not cell_dir.exists():
+                    print(f"  SKIP {ver}/{bp}: no results directory on benchmarks/ branch")
+                    continue
+                candidates = sorted(cell_dir.glob(f"{git_ref}-*.json"))
+                if not candidates:
+                    print(f"  SKIP {ver}/{bp}: no result file for {git_ref}")
+                    continue
+                src = candidates[-1]
+                dst = cell_dir / "baseline.json"
+                shutil.copy(src, dst)
+                print(f"  PROMOTED {ver}/{bp}: {src.name} → baseline.json")
+                promoted += 1
+
+        if promoted == 0:
+            print(f"  No results found for {git_ref} on benchmarks/ branch — nothing promoted.")
+            subprocess.run(["git", "worktree", "remove", "--force", wt_dir], capture_output=True)
+            return
+
+        subprocess.run(["git", "-C", wt_dir, "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", wt_dir, "commit", "-m", f"promote: set baseline to {git_ref}"],
+            check=True,
+        )
+        subprocess.run(["git", "worktree", "remove", wt_dir], check=True)
+    print(f"  Done: promoted {promoted} cell(s) to baseline for {git_ref}.")
 
 
 # ── git helper ────────────────────────────────────────────────────────────────
