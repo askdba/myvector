@@ -10,7 +10,6 @@ workload:
   dim: 128
   M: 16
   ef_construction: 200
-  ef_search: 50
   knn_queries: 200
 
 thresholds:

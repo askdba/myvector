@@ -266,7 +266,7 @@ jobs:
             git -c user.name="github-actions[bot]" \
                 -c user.email="github-actions[bot]@users.noreply.github.com" \
                 commit -m "chore: initialize benchmarks branch"
-            git push origin HEAD:benchmarks
+            git push origin HEAD:benchmarks || true  # tolerate race: another cell won
             git checkout -
           fi
 

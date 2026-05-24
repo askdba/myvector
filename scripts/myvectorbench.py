@@ -313,6 +313,7 @@ def load_dataset(dataset: str, wp: dict) -> list:
                 f"  WARNING: config dim={dim} overridden to {actual_dim} for {dataset}",
                 file=sys.stderr,
             )
+            wp['dim'] = actual_dim
         return _load_glove(dataset, rows, actual_dim)
 
     return _load_tsv(dataset, rows, dim)
@@ -386,7 +387,7 @@ def _vec_literal(v: list) -> str:
     return f"myvector_construct('[{inner}]')"
 
 
-def _create_bench_table(container: Container, dim: int, M: int, ef: int,
+def _create_bench_table(container: Container, dim: int, rows: int, M: int, ef: int,
                          db: str, table: str, online: bool = False,
                          dist: str = "L2") -> None:
     online_flag = ",online=Y" if online else ""
@@ -396,7 +397,7 @@ def _create_bench_table(container: Container, dim: int, M: int, ef: int,
         f"CREATE TABLE {db}.{table} ("
         f"  id  INT PRIMARY KEY,"
         f"  vec VARBINARY({dim * 4 + 8})"
-        f"    COMMENT 'MYVECTOR COLUMN type=hnsw,dim={dim},size=10000,m={M},ef={ef},"
+        f"    COMMENT 'MYVECTOR COLUMN type=hnsw,dim={dim},size={rows},m={M},ef={ef},"
         f"idcol=id,dist={dist}{online_flag}'"
         f");"
     )
@@ -410,7 +411,7 @@ def bench_index_build(container: Container, vectors: list, wp: dict) -> float:
     rows = len(vectors)
     print(f"  [index_build] {rows} rows, dim={dim}")
 
-    _create_bench_table(container, dim, M, ef, "bench", "build_t")
+    _create_bench_table(container, dim, rows, M, ef, "bench", "build_t")
 
     batch = 500
     for start in range(0, rows, batch):
@@ -433,7 +434,7 @@ def bench_insert_throughput(container: Container, vectors: list, wp: dict) -> fl
     rows = len(vectors)
     print(f"  [insert_throughput] {rows} rows, dim={dim}, online=Y")
 
-    _create_bench_table(container, dim, M, ef, "bench", "insert_t", online=True)
+    _create_bench_table(container, dim, rows, M, ef, "bench", "insert_t", online=True)
 
     t0 = time.time()
     batch = 500
@@ -603,7 +604,6 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
             "dim": wp.get("dim", 128),
             "M": wp.get("M", 16),
             "ef_construction": wp.get("ef_construction", 200),
-            "ef_search": wp.get("ef_search", 50),
             "knn_queries": wp.get("knn_queries", 200),
         },
         "metrics": metrics,

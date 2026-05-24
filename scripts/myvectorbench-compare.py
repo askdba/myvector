@@ -102,6 +102,9 @@ def compare(baseline_path: str, current_path: str, config_path: str) -> int:
             print(f"| {metric:<22} | {'N/A':>10} | {'N/A':>10} | {'N/A':>9} | ⚠️   |")
             continue
         mode, _ = parse_threshold(threshold_str)
+        if mode.startswith('percent') and float(bval) == 0:
+            print(f"| {metric:<22} | {'N/A':>10} | {'N/A':>10} | {'N/A':>9} | ⚠️   |")
+            continue
         breached, delta = check_threshold(float(bval), float(cval), threshold_str)
         delta_str = format_delta(delta, mode)
         status = "❌" if breached else "✅"
