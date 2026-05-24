@@ -291,14 +291,17 @@ jobs:
           CELL_DIR="benchmarks-branch/${{ matrix.mysql_version }}/${{ matrix.build_path }}"
           RESULT_FILE="${GIT_REF}-${TIMESTAMP}.json"
           BASELINE="${CELL_DIR}/baseline.json"
-          echo "cell_dir=${CELL_DIR}" >> "$GITHUB_OUTPUT"
-          echo "result_file=${RESULT_FILE}" >> "$GITHUB_OUTPUT"
-          echo "baseline=${BASELINE}" >> "$GITHUB_OUTPUT"
           if [ -f "${BASELINE}" ]; then
-            echo "has_baseline=true" >> "$GITHUB_OUTPUT"
+            HAS_BASELINE=true
           else
-            echo "has_baseline=false" >> "$GITHUB_OUTPUT"
+            HAS_BASELINE=false
           fi
+          {
+            echo "cell_dir=${CELL_DIR}"
+            echo "result_file=${RESULT_FILE}"
+            echo "baseline=${BASELINE}"
+            echo "has_baseline=${HAS_BASELINE}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Compare against baseline
         if: >
@@ -333,11 +336,12 @@ jobs:
           steps.download.outcome == 'success' &&
           steps.paths.outputs.has_baseline == 'false'
         run: |
-          echo "## myvectorbench — ${{ github.ref_name }} · mysql:${{ matrix.mysql_version }} · ${{ matrix.build_path }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "_NO_BASELINE: first run for this matrix cell. Results stored; no comparison performed._" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          python3 -c "
+          {
+            echo "## myvectorbench — ${{ github.ref_name }} · mysql:${{ matrix.mysql_version }} · ${{ matrix.build_path }}"
+            echo ""
+            echo "_NO_BASELINE: first run for this matrix cell. Results stored; no comparison performed._"
+            echo ""
+            python3 -c "
           import json, sys
           r = json.load(open('result.json'))
           m = r.get('metrics', {})
@@ -345,7 +349,8 @@ jobs:
           print('|--------|-------|')
           for k, v in m.items():
               print(f'| {k} | {v if v is not None else \"N/A\"} |')
-          " >> "$GITHUB_STEP_SUMMARY"
+          "
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit result to benchmarks branch
         if: >
