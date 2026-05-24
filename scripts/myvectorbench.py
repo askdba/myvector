@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+"""myvectorbench — benchmarking runner for MyVector.
+
+Usage:
+  ./scripts/myvectorbench.py \
+      --mysql-version 8.4 --build-path component \
+      --artifact-dir dist/component-8.4 \
+      [--config myvectorbench.yml] [--output result.json]
+
+  ./scripts/myvectorbench.py --promote <git-ref> [--config myvectorbench.yml]
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
+
+
+# ── config ────────────────────────────────────────────────────────────────────
+
+def load_config(path: str) -> dict:
+    with open(path) as f:
+        return yaml.safe_load(f)
+
+
+# ── Container ─────────────────────────────────────────────────────────────────
+
+class Container:
+    def __init__(self, mysql_version: str, root_pw: str = "benchroot"):
+        self.version = mysql_version
+        self.root_pw = root_pw
+        self.name = f"myvector-bench-{os.getpid()}-{mysql_version.replace('.', '')}"
+        self._running = False
+
+    def start(self):
+        subprocess.run(
+            ["docker", "run", "-d", "--name", self.name,
+             "-e", f"MYSQL_ROOT_PASSWORD={self.root_pw}",
+             "-e", "MYSQL_ROOT_HOST=%",
+             f"mysql:{self.version}"],
+            check=True, capture_output=True,
+        )
+        self._running = True
+        self._wait_ready()
+        print(f"  MySQL {self.version} container ready ({self.name})")
+
+    def _wait_ready(self):
+        ready = 0
+        for _ in range(60):
+            try:
+                r = subprocess.run(
+                    ["docker", "exec", "-e", f"MYSQL_PWD={self.root_pw}",
+                     self.name, "mysql", "-uroot", "-h127.0.0.1", "-e", "SELECT 1"],
+                    capture_output=True, timeout=5,
+                )
+                ready = ready + 1 if r.returncode == 0 else 0
+                if ready >= 3:
+                    return
+            except Exception:
+                ready = 0
+            time.sleep(2)
+        raise RuntimeError(f"MySQL {self.version} container did not become ready")
+
+    def stop(self):
+        if self._running:
+            subprocess.run(["docker", "rm", "-f", self.name], capture_output=True)
+            self._running = False
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *_):
+        self.stop()
+
+    def _base_cmd(self, db: str = "", interactive: bool = False) -> list:
+        cmd = ["docker", "exec"]
+        if interactive:
+            cmd.append("-i")
+        cmd += ["-e", f"MYSQL_PWD={self.root_pw}", self.name,
+                "mysql", "-uroot", "-h127.0.0.1", "--batch", "--silent"]
+        if db:
+            cmd += ["-D", db]
+        return cmd
+
+    def sql(self, sql: str, db: str = "") -> str:
+        """Execute SQL, return stdout."""
+        r = subprocess.run(self._base_cmd(db) + ["-e", sql], capture_output=True, text=True)
+        return r.stdout
+
+    def sql_stdin(self, sql: str, db: str = ""):
+        """Execute multi-statement SQL from stdin (handles DELIMITER)."""
+        subprocess.run(self._base_cmd(db, interactive=True),
+                       input=sql.encode(), capture_output=True)
+
+    def scalar(self, sql: str, db: str = "") -> str:
+        """Return last non-empty line of sql() output."""
+        out = self.sql(sql, db).strip()
+        return out.splitlines()[-1].strip() if out else ""
+
+    def cp(self, host_src: str, container_dst: str):
+        subprocess.run(["docker", "cp", host_src, f"{self.name}:{container_dst}"], check=True)
+
+    def exec(self, *args) -> subprocess.CompletedProcess:
+        return subprocess.run(["docker", "exec", self.name] + list(args),
+                               capture_output=True, text=True)
+
+    def plugin_dir(self) -> str:
+        return self.scalar("SELECT @@plugin_dir;")
+
+    def data_dir(self) -> str:
+        return self.scalar("SELECT @@datadir;")
+
+
+# ── stored procedures SQL (same as pre-release-test.sh install_procs) ─────────
+
+INSTALL_PROCS_SQL = """\
+DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_INTERNAL;
+DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_STATUS;
+DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_DROP;
+DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_BUILD;
+
+DELIMITER //
+
+CREATE PROCEDURE MYVECTOR_INDEX_STATUS(IN myvectorcolumn VARCHAR(256))
+BEGIN
+  DECLARE extra VARCHAR(1024); DECLARE pkid VARCHAR(1024);
+  SET extra = ''; SET pkid = '';
+  CALL MYVECTOR_INDEX_INTERNAL(myvectorcolumn, pkid, 'status', extra);
+END //
+
+CREATE PROCEDURE MYVECTOR_INDEX_DROP(IN myvectorcolumn VARCHAR(256))
+BEGIN
+  DECLARE extra VARCHAR(1024); DECLARE pkid VARCHAR(1024);
+  SET extra = ''; SET pkid = '';
+  CALL MYVECTOR_INDEX_INTERNAL(myvectorcolumn, pkid, 'drop', extra);
+END //
+
+CREATE PROCEDURE MYVECTOR_INDEX_INTERNAL(
+    IN myvectorcolumn VARCHAR(256), IN pkidcolumn VARCHAR(64),
+    IN action VARCHAR(64), IN extra VARCHAR(1024))
+BEGIN
+  DECLARE pos    INT; DECLARE status VARCHAR(1024);
+  DECLARE temp   VARCHAR(256); DECLARE dbname VARCHAR(64);
+  DECLARE tname  VARCHAR(64); DECLARE cname  VARCHAR(64);
+  DECLARE colinfo VARCHAR(1024);
+  DECLARE CONTINUE HANDLER FOR NOT FOUND SET colinfo = NULL;
+  SET pos    = LOCATE('.', myvectorcolumn);
+  SET dbname = SUBSTR(myvectorcolumn, 1, pos-1);
+  SET temp   = SUBSTR(myvectorcolumn, pos+1);
+  SET pos    = LOCATE('.', temp);
+  SET tname  = SUBSTR(temp, 1, pos-1);
+  SET cname  = SUBSTR(temp, pos+1);
+  SELECT column_comment INTO colinfo
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE table_schema = dbname AND table_name = tname AND column_name = cname;
+  IF colinfo IS NULL THEN
+    SIGNAL SQLSTATE '50001' SET MESSAGE_TEXT = 'Vector column not found.';
+  END IF;
+  IF LOCATE('MYVECTOR COLUMN', colinfo) <> 1 THEN
+    SIGNAL SQLSTATE '50002' SET MESSAGE_TEXT = 'Column is not a MYVECTOR column.';
+  END IF;
+  SET status = MYVECTOR_SEARCH_OPEN_UDF(myvectorcolumn, colinfo, pkidcolumn, action, extra);
+  SELECT status AS Status;
+END //
+
+CREATE PROCEDURE MYVECTOR_INDEX_BUILD(
+    IN myvectorcolumn VARCHAR(256), IN pkidcolumn VARCHAR(64))
+BEGIN
+  DECLARE extra VARCHAR(1024); SET extra = '';
+  CALL MYVECTOR_INDEX_INTERNAL(myvectorcolumn, pkidcolumn, 'build', extra);
+END //
+
+DELIMITER ;
+"""
+
+
+# ── install helpers ───────────────────────────────────────────────────────────
+
+def _ensure_libmysqlclient(container: Container):
+    r = container.exec("sh", "-c", "ldconfig -p 2>/dev/null | grep -q libmysqlclient")
+    if r.returncode == 0:
+        return
+    srv_ver = container.scalar("SELECT @@version;")
+    arch = container.exec("uname", "-m").stdout.strip()
+    base = f"https://cdn.mysql.com/Downloads/MySQL-{'.'.join(srv_ver.split('.')[:2])}"
+    ver_rpm = f"{srv_ver}-1.el9"
+    container.exec("bash", "-c", (
+        f"rpm -ivh --nodeps '{base}/mysql-community-common-{ver_rpm}.{arch}.rpm' 2>/dev/null || true"
+        f" && rpm -ivh --nodeps '{base}/mysql-community-client-plugins-{ver_rpm}.{arch}.rpm' 2>/dev/null || true"
+        f" && rpm -ivh --nodeps '{base}/mysql-community-libs-{ver_rpm}.{arch}.rpm' 2>/dev/null"
+        f" && ldconfig 2>/dev/null || true"
+    ))
+
+
+def install_component(container: Container, comp_dir: str):
+    """Install MyVector component build into the container."""
+    _ensure_libmysqlclient(container)
+    plugin_dir = container.plugin_dir()
+    data_dir = container.data_dir()
+
+    container.cp(f"{comp_dir}/libmyvector_component.so", f"{plugin_dir}/myvector.so")
+    container.cp(f"{comp_dir}/myvector.json", f"{plugin_dir}/myvector.json")
+    container.sql("INSTALL COMPONENT 'file://myvector';")
+
+    owner = container.exec("stat", "-c", "%U", data_dir).stdout.strip() or "mysql"
+    cnf = (
+        f"myvector_host=127.0.0.1\n"
+        f"myvector_user_id=root\n"
+        f"myvector_user_password={container.root_pw}\n"
+        f"myvector_port=3306\n"
+    )
+    container.exec("bash", "-c", (
+        f"printf '%s' '{cnf}' > '{data_dir}myvector.cnf'"
+        f" && chmod 0600 '{data_dir}myvector.cnf' && chown '{owner}' '{data_dir}myvector.cnf'"
+    ))
+    container.sql(f"SET GLOBAL myvector_index_dir='{data_dir}';")
+    container.sql(
+        "DROP FUNCTION IF EXISTS myvector_row_distance;"
+        " DROP FUNCTION IF EXISTS myvector_is_valid;"
+        " DROP FUNCTION IF EXISTS myvector_search_open_udf;"
+        " CREATE FUNCTION myvector_row_distance    RETURNS REAL    SONAME 'myvector.so';"
+        " CREATE FUNCTION myvector_is_valid        RETURNS INTEGER SONAME 'myvector.so';"
+        " CREATE FUNCTION myvector_search_open_udf RETURNS STRING  SONAME 'myvector.so';",
+        "mysql",
+    )
+    container.sql_stdin(INSTALL_PROCS_SQL, "mysql")
+    print("  Component installed.")
+
+
+def install_plugin(container: Container, plugin_so: str):
+    """Install MyVector plugin build into the container."""
+    plugin_dir = container.plugin_dir()
+    data_dir = container.data_dir()
+    container.cp(plugin_so, f"{plugin_dir}/myvector.so")
+    container.sql("INSTALL PLUGIN myvector SONAME 'myvector.so';", "mysql")
+    container.sql(f"SET GLOBAL myvector_index_dir='{data_dir}';")
+    container.sql_stdin(INSTALL_PROCS_SQL, "mysql")
+    print("  Plugin installed.")
+
+
+# ── dataset helpers ───────────────────────────────────────────────────────────
+
+def _synthetic_vectors(rows: int, dim: int, seed: int = 42) -> list:
+    import random
+    rng = random.Random(seed)
+    return [[rng.gauss(0, 1) for _ in range(dim)] for _ in range(rows)]
+
+
+def load_dataset(dataset: str, wp: dict) -> list:
+    """Return a list of float lists (rows × dim). Implemented fully in Task 4."""
+    rows = wp.get("rows", 10000)
+    dim = wp.get("dim", 128)
+    if dataset == "synthetic":
+        return _synthetic_vectors(rows, dim)
+    raise NotImplementedError(f"dataset '{dataset}' not yet implemented (Task 4)")
+
+
+# ── workloads (implemented in Task 3) ────────────────────────────────────────
+
+def run_workloads(container: Container, vectors: list, wp: dict,
+                  build_path: str, mysql_version: str) -> dict:
+    raise NotImplementedError("workloads not yet implemented (Task 3)")
+
+
+# ── promote (implemented in Task 4) ──────────────────────────────────────────
+
+def promote(git_ref: str, config_path: str):
+    raise NotImplementedError("promote not yet implemented (Task 4)")
+
+
+# ── git helper ────────────────────────────────────────────────────────────────
+
+def _git_ref() -> str:
+    try:
+        r = subprocess.run(
+            ["git", "describe", "--tags", "--always"],
+            capture_output=True, text=True, check=True,
+        )
+        return r.stdout.strip()
+    except Exception:
+        return "unknown"
+
+
+# ── main benchmark orchestration ─────────────────────────────────────────────
+
+def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
+                  config: dict, output: str):
+    wp = config.get('workload', {})
+    git_ref = _git_ref()
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    runner = os.environ.get("RUNNER_NAME", "local")
+    dataset = wp.get("dataset", "synthetic")
+
+    print(f"=== myvectorbench: mysql:{mysql_version} {build_path} @ {git_ref} ===")
+
+    with Container(mysql_version) as c:
+        if build_path == "component":
+            install_component(c, artifact_dir)
+        else:
+            install_plugin(c, os.path.join(artifact_dir, "myvector.so"))
+
+        vectors = load_dataset(dataset, wp)
+        metrics = run_workloads(c, vectors, wp, build_path, mysql_version)
+
+    result = {
+        "git_ref": git_ref,
+        "mysql_version": mysql_version,
+        "build_path": build_path,
+        "timestamp": timestamp,
+        "runner": runner,
+        "dataset": dataset,
+        "workload_params": {
+            "rows": wp.get("rows", 10000),
+            "dim": wp.get("dim", 128),
+            "M": wp.get("M", 16),
+            "ef_construction": wp.get("ef_construction", 200),
+            "ef_search": wp.get("ef_search", 50),
+            "knn_queries": wp.get("knn_queries", 200),
+        },
+        "metrics": metrics,
+    }
+
+    with open(output, "w") as f:
+        json.dump(result, f, indent=2)
+    print(f"  Result written to {output}")
+    print(f"  Metrics: {json.dumps(metrics, indent=2)}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="myvectorbench runner")
+    parser.add_argument("--mysql-version", help="MySQL version, e.g. 8.4")
+    parser.add_argument("--build-path", choices=["component", "plugin"])
+    parser.add_argument("--artifact-dir", help="Dir containing build artifacts")
+    parser.add_argument("--config", default="myvectorbench.yml")
+    parser.add_argument("--output", default="result.json")
+    parser.add_argument("--promote", metavar="GIT_REF",
+                        help="Promote GIT_REF results to baseline on benchmarks/ branch")
+    args = parser.parse_args()
+
+    if args.promote:
+        promote(args.promote, args.config)
+        return
+
+    if not all([args.mysql_version, args.build_path, args.artifact_dir]):
+        parser.error("--mysql-version, --build-path, and --artifact-dir are required")
+
+    config = load_config(args.config)
+    run_benchmark(args.mysql_version, args.build_path, args.artifact_dir, config, args.output)
+
+
+if __name__ == "__main__":
+    main()
