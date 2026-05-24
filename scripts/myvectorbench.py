@@ -266,6 +266,15 @@ def install_plugin(container: Container, plugin_so: str):
     data_dir = container.data_dir()
     container.cp(plugin_so, f"{plugin_dir}/myvector.so")
     container.sql("INSTALL PLUGIN myvector SONAME 'myvector.so';", "mysql")
+    container.sql(
+        "DROP FUNCTION IF EXISTS myvector_row_distance;"
+        " DROP FUNCTION IF EXISTS myvector_is_valid;"
+        " DROP FUNCTION IF EXISTS myvector_search_open_udf;"
+        " CREATE FUNCTION myvector_row_distance    RETURNS REAL    SONAME 'myvector.so';"
+        " CREATE FUNCTION myvector_is_valid        RETURNS INTEGER SONAME 'myvector.so';"
+        " CREATE FUNCTION myvector_search_open_udf RETURNS STRING  SONAME 'myvector.so';",
+        "mysql",
+    )
     try:
         container.sql(f"SET GLOBAL myvector_index_dir='{data_dir}';")
     except RuntimeError:

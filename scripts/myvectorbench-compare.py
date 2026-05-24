@@ -39,15 +39,15 @@ def check_threshold(baseline: float, current: float, threshold_str: str):
     delta_display is pct_delta for percent thresholds, raw delta for absolute.
     """
     mode, limit = parse_threshold(threshold_str)
+    delta = current - baseline
+    if mode == 'absolute':
+        return (delta < limit - _EPS if limit < 0 else delta > limit + _EPS), delta
     if baseline == 0:
         return False, 0.0
-    pct_delta = (current - baseline) / baseline
-    delta = current - baseline
+    pct_delta = delta / baseline
     if mode == 'percent_upper':
         return pct_delta > limit, pct_delta
-    if mode == 'percent_lower':
-        return pct_delta < limit, pct_delta
-    return (delta < limit - _EPS if limit < 0 else delta > limit + _EPS), delta
+    return pct_delta < limit, pct_delta
 
 
 def format_delta(delta: float, mode: str) -> str:
