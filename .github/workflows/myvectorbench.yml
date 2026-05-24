@@ -253,6 +253,23 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      - name: Bootstrap benchmarks branch if absent
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          steps.download.outcome == 'success'
+        run: |
+          if ! git ls-remote --exit-code origin benchmarks > /dev/null 2>&1; then
+            git checkout --orphan benchmarks
+            git reset --hard
+            printf '# benchmarks\n\nResult history written by myvectorbench CI.\n' > README.md
+            git add README.md
+            git -c user.name="github-actions[bot]" \
+                -c user.email="github-actions[bot]@users.noreply.github.com" \
+                commit -m "chore: initialize benchmarks branch"
+            git push origin HEAD:benchmarks
+            git checkout -
+          fi
+
       - name: Checkout benchmarks branch
         if: >
           steps.filter.outputs.skip != 'true' &&
@@ -381,6 +398,10 @@ jobs:
           git commit -m "bench: ${{ github.ref_name }} mysql:${{ matrix.mysql_version }} ${{ matrix.build_path }}"
           for attempt in 1 2 3; do
             git pull --rebase origin benchmarks && git push origin benchmarks && break
-            echo "Push attempt $attempt failed, retrying in 5-10s..."
+            echo "Push attempt $attempt failed, retrying..."
             sleep $((RANDOM % 6 + 5))
+            if [ "$attempt" -eq 3 ]; then
+              echo "ERROR: all push attempts exhausted" >&2
+              exit 1
+            fi
           done

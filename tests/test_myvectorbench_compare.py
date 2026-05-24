@@ -100,18 +100,21 @@ def test_compare_all_pass(capsys):
         baseline = _make_json(tmp, 'baseline.json', {
             'index_build_time_s': 12.0,
             'insert_qps': 440,
+            'knn_qps': 810,
             'knn_p99_ms': 3.2,
             'recall_at_10': 0.942,
         })
         current = _make_json(tmp, 'current.json', {
             'index_build_time_s': 12.8,   # +6.7%, under +25%
             'insert_qps': 435,            # -1.1%, under -25%
+            'knn_qps': 810,               # 0%, well within -25%
             'knn_p99_ms': 3.4,            # +6.3%, under +30%
             'recall_at_10': 0.940,        # -0.002, under -0.05
         })
         cfg = _make_config(tmp,
             "  index_build_time_s: +25%\n"
             "  insert_qps: -25%\n"
+            "  knn_qps: -25%\n"
             "  knn_p99_ms: +30%\n"
             "  recall_at_10: -0.05\n"
         )
@@ -127,6 +130,17 @@ def test_compare_breach(capsys):
         baseline = _make_json(tmp, 'baseline.json', {'insert_qps': 440})
         current = _make_json(tmp, 'current.json', {'insert_qps': 300})  # -31.8%
         cfg = _make_config(tmp, "  insert_qps: -25%\n")
+        rc = compare(baseline, current, cfg)
+        captured = capsys.readouterr()
+    assert "FAIL: one or more metrics exceeded threshold." in captured.out
+    assert rc == 1
+
+
+def test_compare_knn_qps_breach(capsys):
+    with tempfile.TemporaryDirectory() as tmp:
+        baseline = _make_json(tmp, 'baseline.json', {'knn_qps': 810})
+        current = _make_json(tmp, 'current.json', {'knn_qps': 600})  # -25.9%, exceeds -25%
+        cfg = _make_config(tmp, "  knn_qps: -25%\n")
         rc = compare(baseline, current, cfg)
         captured = capsys.readouterr()
     assert "FAIL: one or more metrics exceeded threshold." in captured.out

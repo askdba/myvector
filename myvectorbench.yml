@@ -18,4 +18,4 @@ thresholds:
   insert_qps: -25%
   knn_qps: -25%
   knn_p99_ms: +30%
-  recall_at_10: -0.05        # absolute delta, not percent
+  recall_at_10: -0.05   # absolute delta — NOT YET EVALUATED: always emitted as null in v1
