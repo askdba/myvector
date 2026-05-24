@@ -417,7 +417,7 @@ def bench_index_build(container: Container, vectors: list, wp: dict) -> float:
     for start in range(0, rows, batch):
         chunk = vectors[start:start + batch]
         vals = ", ".join(f"({start + i}, {_vec_literal(v)})" for i, v in enumerate(chunk))
-        container.sql(f"INSERT INTO bench.build_t (id, vec) VALUES {vals};")
+        container.sql_stdin(f"INSERT INTO bench.build_t (id, vec) VALUES {vals};")
 
     t0 = time.time()
     container.sql("CALL mysql.MYVECTOR_INDEX_BUILD('bench.build_t.vec', 'id');")
@@ -441,7 +441,7 @@ def bench_insert_throughput(container: Container, vectors: list, wp: dict) -> fl
     for start in range(0, rows, batch):
         chunk = vectors[start:start + batch]
         vals = ", ".join(f"({start + i}, {_vec_literal(v)})" for i, v in enumerate(chunk))
-        container.sql(f"INSERT INTO bench.insert_t (id, vec) VALUES {vals};")
+        container.sql_stdin(f"INSERT INTO bench.insert_t (id, vec) VALUES {vals};")
     elapsed = time.time() - t0
 
     qps = rows / elapsed if elapsed > 0 else 0.0
@@ -460,8 +460,8 @@ def bench_knn_search(container: Container, vectors: list, wp: dict) -> dict:
     latencies_ms = []
     for q in query_vectors:
         sql = (
-            f"SELECT id FROM bench.build_t"
-            f" ORDER BY myvector_row_distance(vec, {_vec_literal(q)}, 'L2') LIMIT 10;"
+            f"SELECT id, myvector_distance(vec, {_vec_literal(q)}, 'L2') AS dist"
+            f" FROM bench.build_t ORDER BY dist LIMIT 10;"
         )
         t0 = time.time()
         container.sql(sql)
