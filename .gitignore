@@ -53,3 +53,6 @@ docs/ISSUE_*_CLOSE_COMMENT.md
 
 # actionlint binary (official download script may drop this in repo root)
 /actionlint
+
+# git worktrees
+.worktrees/
