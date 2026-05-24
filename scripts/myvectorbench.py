@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import json
+import math
 import os
 import random
 import statistics
@@ -291,6 +292,8 @@ def load_dataset(dataset: str, wp: dict) -> list:
 
 def _vec_literal(v: list) -> str:
     """Format a float list as a myvector_construct('[...]') SQL literal."""
+    if not all(math.isfinite(x) for x in v):
+        raise ValueError(f"Vector contains non-finite value: {v[:8]}")
     inner = ",".join(f"{x:.6f}" for x in v)
     return f"myvector_construct('[{inner}]')"
 
@@ -304,7 +307,7 @@ def _create_bench_table(container: Container, dim: int, M: int, ef: int,
     container.sql(
         f"CREATE TABLE {db}.{table} ("
         f"  id  INT PRIMARY KEY,"
-        f"  vec VARBINARY(8192)"
+        f"  vec VARBINARY({dim * 4 + 8})"
         f"    COMMENT 'MYVECTOR COLUMN type=hnsw,dim={dim},size=10000,m={M},ef={ef},"
         f"idcol=id,dist={dist}{online_flag}'"
         f");"
@@ -377,7 +380,7 @@ def bench_knn_search(container: Container, vectors: list, wp: dict) -> dict:
 
     latencies_ms.sort()
     p50 = statistics.median(latencies_ms)
-    p99 = latencies_ms[max(0, int(len(latencies_ms) * 0.99) - 1)]
+    p99 = latencies_ms[max(0, math.ceil(len(latencies_ms) * 0.99) - 1)]
     qps = n_queries / (sum(latencies_ms) / 1000) if latencies_ms else 0.0
     print(f"    knn_qps={qps:.0f}  p50={p50:.1f}ms  p99={p99:.1f}ms")
     return {"knn_qps": qps, "knn_p50_ms": p50, "knn_p99_ms": p99}
