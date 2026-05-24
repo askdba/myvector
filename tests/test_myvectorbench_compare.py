@@ -116,6 +116,9 @@ def test_compare_all_pass(capsys):
             "  recall_at_10: -0.05\n"
         )
         rc = compare(baseline, current, cfg)
+        captured = capsys.readouterr()
+    assert "PASS: all metrics within threshold." in captured.out
+    assert "## myvectorbench" in captured.out
     assert rc == 0
 
 
@@ -125,6 +128,8 @@ def test_compare_breach(capsys):
         current = _make_json(tmp, 'current.json', {'insert_qps': 300})  # -31.8%
         cfg = _make_config(tmp, "  insert_qps: -25%\n")
         rc = compare(baseline, current, cfg)
+        captured = capsys.readouterr()
+    assert "FAIL: one or more metrics exceeded threshold." in captured.out
     assert rc == 1
 
 
@@ -133,4 +138,6 @@ def test_compare_no_baseline(capsys):
         current = _make_json(tmp, 'current.json', {'insert_qps': 440})
         cfg = _make_config(tmp, "  insert_qps: -25%\n")
         rc = compare(os.path.join(tmp, 'nonexistent.json'), current, cfg)
+        captured = capsys.readouterr()
+    assert "NO_BASELINE" in captured.err
     assert rc == 0  # missing baseline → NO_BASELINE, not a failure

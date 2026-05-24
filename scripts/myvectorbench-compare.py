@@ -14,6 +14,8 @@ import sys
 
 import yaml
 
+_EPS = 1e-9
+
 
 def parse_threshold(value: str):
     """Parse a threshold string into (mode, limit).
@@ -45,7 +47,7 @@ def check_threshold(baseline: float, current: float, threshold_str: str):
         return pct_delta > limit, pct_delta
     if mode == 'percent_lower':
         return pct_delta < limit, pct_delta
-    return (delta < limit if limit < 0 else delta > limit), delta
+    return (delta < limit - _EPS if limit < 0 else delta > limit + _EPS), delta
 
 
 def format_delta(delta: float, mode: str) -> str:
@@ -56,8 +58,12 @@ def format_delta(delta: float, mode: str) -> str:
 
 
 def compare(baseline_path: str, current_path: str, config_path: str) -> int:
-    with open(config_path) as f:
-        config = yaml.safe_load(f)
+    try:
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+    except FileNotFoundError:
+        print(f"ERROR: config file not found at {config_path}", file=sys.stderr)
+        return 1
     thresholds = config.get('thresholds', {})
 
     try:
@@ -70,8 +76,12 @@ def compare(baseline_path: str, current_path: str, config_path: str) -> int:
         )
         return 0
 
-    with open(current_path) as f:
-        current = json.load(f)
+    try:
+        with open(current_path) as f:
+            current = json.load(f)
+    except FileNotFoundError:
+        print(f"ERROR: current result not found at {current_path}", file=sys.stderr)
+        return 1
 
     bm = baseline.get('metrics', {})
     cm = current.get('metrics', {})
