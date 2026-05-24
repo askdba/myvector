@@ -325,7 +325,13 @@ def _load_glove(dataset: str, rows: int, dim: int) -> list:
         zip_path = cache_dir / "glove.6B.zip"
         if not zip_path.exists():
             print(f"  Downloading GloVe 6B from {glove_url} (~860 MB) ...")
-            urllib.request.urlretrieve(glove_url, zip_path)
+            zip_tmp = zip_path.with_suffix(".zip.tmp")
+            try:
+                urllib.request.urlretrieve(glove_url, zip_tmp)
+                zip_tmp.rename(zip_path)
+            except Exception:
+                zip_tmp.unlink(missing_ok=True)
+                raise
         print(f"  Extracting {filenames[dataset]} ...")
         with zipfile.ZipFile(zip_path) as z:
             z.extract(filenames[dataset], cache_dir)
@@ -356,7 +362,7 @@ def _load_tsv(path: str, rows: int, dim: int) -> list:
                 v = [float(x) for x in parts[start:start + dim]]
             except ValueError:
                 continue
-            if len(v) == dim:
+            if len(v) == dim and all(math.isfinite(x) for x in v):
                 vectors.append(v)
     return vectors
 
@@ -477,6 +483,11 @@ def promote(git_ref: str, config_path: str):
     Uses a temporary git worktree; requires the benchmarks/ branch to exist
     (created by the first CI run) or origin/benchmarks to be fetchable.
     """
+    r0 = subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True, text=True)
+    if r0.returncode != 0:
+        print("ERROR: not inside a git repository.", file=sys.stderr)
+        sys.exit(1)
+
     config = load_config(config_path)
     matrix = config.get("matrix", {})
     mysql_versions = matrix.get("mysql_versions", [])
@@ -524,12 +535,16 @@ def promote(git_ref: str, config_path: str):
             subprocess.run(["git", "worktree", "remove", "--force", wt_dir], capture_output=True)
             return
 
-        subprocess.run(["git", "-C", wt_dir, "add", "-A"], check=True)
-        subprocess.run(
-            ["git", "-C", wt_dir, "commit", "-m", f"promote: set baseline to {git_ref}"],
-            check=True,
-        )
-        subprocess.run(["git", "worktree", "remove", wt_dir], check=True)
+        try:
+            subprocess.run(["git", "-C", wt_dir, "add", "-A"], check=True)
+            subprocess.run(
+                ["git", "-C", wt_dir, "commit", "-m", f"promote: set baseline to {git_ref}"],
+                check=True,
+            )
+            subprocess.run(["git", "worktree", "remove", wt_dir], check=True)
+        except Exception:
+            subprocess.run(["git", "worktree", "remove", "--force", wt_dir], capture_output=True)
+            raise
     print(f"  Done: promoted {promoted} cell(s) to baseline for {git_ref}.")
 
 
