@@ -13,11 +13,12 @@ Usage:
 import argparse
 import json
 import os
+import random
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 import yaml
 
@@ -47,7 +48,11 @@ class Container:
             check=True, capture_output=True,
         )
         self._running = True
-        self._wait_ready()
+        try:
+            self._wait_ready()
+        except Exception:
+            self.stop()
+            raise
         print(f"  MySQL {self.version} container ready ({self.name})")
 
     def _wait_ready(self):
@@ -90,14 +95,18 @@ class Container:
         return cmd
 
     def sql(self, sql: str, db: str = "") -> str:
-        """Execute SQL, return stdout."""
+        """Execute SQL, return stdout. Raises RuntimeError on nonzero exit."""
         r = subprocess.run(self._base_cmd(db) + ["-e", sql], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"SQL failed (rc={r.returncode}): {r.stderr.strip()}")
         return r.stdout
 
     def sql_stdin(self, sql: str, db: str = ""):
         """Execute multi-statement SQL from stdin (handles DELIMITER)."""
-        subprocess.run(self._base_cmd(db, interactive=True),
-                       input=sql.encode(), capture_output=True)
+        r = subprocess.run(self._base_cmd(db, interactive=True),
+                           input=sql.encode(), capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"SQL (stdin) failed (rc={r.returncode}): {r.stderr.decode().strip()}")
 
     def scalar(self, sql: str, db: str = "") -> str:
         """Return last non-empty line of sql() output."""
@@ -191,12 +200,14 @@ def _ensure_libmysqlclient(container: Container):
     arch = container.exec("uname", "-m").stdout.strip()
     base = f"https://cdn.mysql.com/Downloads/MySQL-{'.'.join(srv_ver.split('.')[:2])}"
     ver_rpm = f"{srv_ver}-1.el9"
-    container.exec("bash", "-c", (
+    r = container.exec("bash", "-c", (
         f"rpm -ivh --nodeps '{base}/mysql-community-common-{ver_rpm}.{arch}.rpm' 2>/dev/null || true"
         f" && rpm -ivh --nodeps '{base}/mysql-community-client-plugins-{ver_rpm}.{arch}.rpm' 2>/dev/null || true"
         f" && rpm -ivh --nodeps '{base}/mysql-community-libs-{ver_rpm}.{arch}.rpm' 2>/dev/null"
         f" && ldconfig 2>/dev/null || true"
     ))
+    if r.returncode != 0:
+        print("  WARNING: libmysqlclient CDN install failed", file=sys.stderr)
 
 
 def install_component(container: Container, comp_dir: str):
@@ -216,11 +227,22 @@ def install_component(container: Container, comp_dir: str):
         f"myvector_user_password={container.root_pw}\n"
         f"myvector_port=3306\n"
     )
-    container.exec("bash", "-c", (
-        f"printf '%s' '{cnf}' > '{data_dir}myvector.cnf'"
-        f" && chmod 0600 '{data_dir}myvector.cnf' && chown '{owner}' '{data_dir}myvector.cnf'"
-    ))
-    container.sql(f"SET GLOBAL myvector_index_dir='{data_dir}';")
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.cnf', delete=False) as tmp:
+        tmp.write(cnf)
+        tmp_path = tmp.name
+    try:
+        container.cp(tmp_path, f"{data_dir}myvector.cnf")
+        container.cp(tmp_path, "/myvector.cnf")
+    finally:
+        os.unlink(tmp_path)
+    container.exec("bash", "-c",
+        f"chmod 0600 '{data_dir}myvector.cnf' && chown '{owner}' '{data_dir}myvector.cnf'"
+        f" && chmod 0600 /myvector.cnf && chown '{owner}' /myvector.cnf"
+    )
+    try:
+        container.sql(f"SET GLOBAL myvector_index_dir='{data_dir}';")
+    except RuntimeError:
+        pass  # sysvar not available on all versions
     container.sql(
         "DROP FUNCTION IF EXISTS myvector_row_distance;"
         " DROP FUNCTION IF EXISTS myvector_is_valid;"
@@ -240,7 +262,10 @@ def install_plugin(container: Container, plugin_so: str):
     data_dir = container.data_dir()
     container.cp(plugin_so, f"{plugin_dir}/myvector.so")
     container.sql("INSTALL PLUGIN myvector SONAME 'myvector.so';", "mysql")
-    container.sql(f"SET GLOBAL myvector_index_dir='{data_dir}';")
+    try:
+        container.sql(f"SET GLOBAL myvector_index_dir='{data_dir}';")
+    except RuntimeError:
+        pass  # sysvar not available on all versions
     container.sql_stdin(INSTALL_PROCS_SQL, "mysql")
     print("  Plugin installed.")
 
@@ -248,7 +273,6 @@ def install_plugin(container: Container, plugin_so: str):
 # ── dataset helpers ───────────────────────────────────────────────────────────
 
 def _synthetic_vectors(rows: int, dim: int, seed: int = 42) -> list:
-    import random
     rng = random.Random(seed)
     return [[rng.gauss(0, 1) for _ in range(dim)] for _ in range(rows)]
 
