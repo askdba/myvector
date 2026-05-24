@@ -1,0 +1,412 @@
+---
+name: myvectorbench
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      mysql_version:
+        description: "MySQL version to benchmark (e.g. 8.4). Leave empty to run all."
+        required: false
+        default: ""
+      build_path:
+        description: "Build path to benchmark (plugin or component). Leave empty to run all."
+        required: false
+        default: ""
+
+permissions: read-all
+
+jobs:
+  # ── Job 1: build artifacts ───────────────────────────────────────────────────
+  build-artifacts:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mysql_version: "8.4"
+            mysql_tag: "mysql-8.4.8"
+            build_path: plugin
+          - mysql_version: "8.4"
+            mysql_tag: "mysql-8.4.8"
+            build_path: component
+          - mysql_version: "9.7"
+            mysql_tag: "mysql-9.7.0"
+            build_path: component
+
+    steps:
+      - name: Filter by workflow_dispatch inputs
+        id: filter
+        env:
+          INPUT_MV: ${{ github.event.inputs.mysql_version }}
+          INPUT_BP: ${{ github.event.inputs.build_path }}
+        run: |
+          MV="${INPUT_MV}"
+          BP="${INPUT_BP}"
+          SKIP=false
+          if [ -n "$MV" ] && [ "$MV" != "${{ matrix.mysql_version }}" ]; then
+            SKIP=true
+          fi
+          if [ -n "$BP" ] && [ "$BP" != "${{ matrix.build_path }}" ]; then
+            SKIP=true
+          fi
+          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/checkout@v4
+
+      - name: Build component (8.4)
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          matrix.build_path == 'component' &&
+          matrix.mysql_version == '8.4'
+        run: |
+          chmod +x scripts/build-component-8.4-docker.sh
+          ./scripts/build-component-8.4-docker.sh "${{ matrix.mysql_tag }}" dist/component-${{ matrix.mysql_version }}
+
+      - name: Build component (9.7)
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          matrix.build_path == 'component' &&
+          matrix.mysql_version == '9.7'
+        run: |
+          chmod +x scripts/build-component-9.7-docker.sh
+          ./scripts/build-component-9.7-docker.sh "${{ matrix.mysql_tag }}" dist/component-${{ matrix.mysql_version }}
+
+      - name: Install build dependencies (plugin)
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          matrix.build_path == 'plugin'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake libssl-dev libncurses5-dev pkg-config \
+            bison libtirpc-dev libldap2-dev libsasl2-dev libudev-dev \
+            libre2-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler
+
+      - name: Cache MySQL source (plugin)
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          matrix.build_path == 'plugin'
+        id: cache-mysql
+        uses: actions/cache@v4
+        with:
+          path: mysql-server
+          key: mysql-source-${{ matrix.mysql_tag }}-bench-v1
+
+      - name: Clone MySQL source (plugin)
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          matrix.build_path == 'plugin' &&
+          steps.cache-mysql.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "${{ matrix.mysql_tag }}" \
+            https://github.com/mysql/mysql-server.git mysql-server
+
+      - name: Cache Boost (plugin)
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          matrix.build_path == 'plugin'
+        id: cache-boost
+        uses: actions/cache@v4
+        with:
+          path: boost_cache
+          key: boost-${{ matrix.mysql_tag }}-bench-v1
+
+      - name: Copy MyVector into plugin dir
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          matrix.build_path == 'plugin'
+        run: |
+          mkdir -p mysql-server/plugin/myvector
+          cp src/*.cc mysql-server/plugin/myvector/
+          cp include/*.h mysql-server/plugin/myvector/
+          cp include/*.i mysql-server/plugin/myvector/ 2>/dev/null || true
+          cp CMakeLists.txt mysql-server/plugin/myvector/
+
+      - name: Configure MySQL build (plugin)
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          matrix.build_path == 'plugin'
+        run: |
+          cd mysql-server
+          mkdir -p bld && cd bld
+          rm -f CMakeCache.txt
+          cmake .. \
+            -DDOWNLOAD_BOOST=1 \
+            -DWITH_BOOST=../../boost_cache \
+            -DWITH_UNIT_TESTS=OFF \
+            -DWITH_ROUTER=OFF \
+            -DWITH_RAPID=OFF \
+            -DWITH_NDB=OFF \
+            -DWITH_NDBCLUSTER=OFF \
+            -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build plugin
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          matrix.build_path == 'plugin'
+        run: |
+          cd mysql-server/bld
+          make myvector -j"$(nproc)"
+          mkdir -p "$GITHUB_WORKSPACE/dist/plugin-${{ matrix.mysql_version }}"
+          cp plugin_output_directory/myvector.so \
+            "$GITHUB_WORKSPACE/dist/plugin-${{ matrix.mysql_version }}/myvector.so"
+
+      - name: Upload artifact
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: myvector-${{ matrix.mysql_version }}-${{ matrix.build_path }}
+          path: dist/${{ matrix.build_path }}-${{ matrix.mysql_version }}/
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ── Job 2: benchmark ─────────────────────────────────────────────────────────
+  benchmark:
+    runs-on: ubuntu-22.04
+    needs: build-artifacts
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mysql_version: "8.4"
+            build_path: plugin
+          - mysql_version: "8.4"
+            build_path: component
+          - mysql_version: "9.7"
+            build_path: component
+
+    steps:
+      - name: Filter by workflow_dispatch inputs
+        id: filter
+        env:
+          INPUT_MV: ${{ github.event.inputs.mysql_version }}
+          INPUT_BP: ${{ github.event.inputs.build_path }}
+        run: |
+          MV="${INPUT_MV}"
+          BP="${INPUT_BP}"
+          SKIP=false
+          if [ -n "$MV" ] && [ "$MV" != "${{ matrix.mysql_version }}" ]; then
+            SKIP=true
+          fi
+          if [ -n "$BP" ] && [ "$BP" != "${{ matrix.build_path }}" ]; then
+            SKIP=true
+          fi
+          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        if: steps.filter.outputs.skip != 'true'
+        uses: actions/checkout@v4
+
+      - name: Install Python dependencies
+        if: steps.filter.outputs.skip != 'true'
+        run: pip3 install pyyaml
+
+      - name: Download artifact
+        if: steps.filter.outputs.skip != 'true'
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: myvector-${{ matrix.mysql_version }}-${{ matrix.build_path }}
+          path: ./artifact
+
+      - name: Skip if no artifact
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          steps.download.outcome == 'failure'
+        run: |
+          echo "No artifact found for mysql:${{ matrix.mysql_version }} ${{ matrix.build_path }} — skipping."
+          echo "This is expected for combinations that are not built (e.g. 9.7 plugin)."
+
+      - name: Run benchmark
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          steps.download.outcome == 'success'
+        env:
+          RUNNER_NAME: github-ubuntu-22.04
+        run: |
+          python3 scripts/myvectorbench.py \
+            --mysql-version "${{ matrix.mysql_version }}" \
+            --build-path "${{ matrix.build_path }}" \
+            --artifact-dir ./artifact \
+            --config myvectorbench.yml \
+            --output result.json
+
+      - name: Upload result
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          steps.download.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-result-${{ matrix.mysql_version }}-${{ matrix.build_path }}
+          path: result.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Bootstrap benchmarks branch if absent
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          steps.download.outcome == 'success'
+        run: |
+          if ! git ls-remote --exit-code origin benchmarks > /dev/null 2>&1; then
+            git checkout --orphan benchmarks
+            git reset --hard
+            printf '# benchmarks\n\nResult history written by myvectorbench CI.\n' > README.md
+            git add README.md
+            git -c user.name="github-actions[bot]" \
+                -c user.email="github-actions[bot]@users.noreply.github.com" \
+                commit -m "chore: initialize benchmarks branch"
+            git push origin HEAD:benchmarks || true  # tolerate race: another cell won
+            git checkout -
+          fi
+
+      - name: Checkout benchmarks branch
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          steps.download.outcome == 'success'
+        uses: actions/checkout@v4
+        with:
+          ref: benchmarks
+          path: benchmarks-branch
+          fetch-depth: 0
+
+      - name: Compute result path and check baseline
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          steps.download.outcome == 'success'
+        id: paths
+        run: |
+          GIT_REF="${GITHUB_REF_NAME}"
+          TIMESTAMP="$(date -u +%Y%m%dT%H%M%S)"
+          CELL_DIR="benchmarks-branch/${{ matrix.mysql_version }}/${{ matrix.build_path }}"
+          RESULT_FILE="${GIT_REF}-${TIMESTAMP}.json"
+          BASELINE="${CELL_DIR}/baseline.json"
+          if [ -f "${BASELINE}" ]; then
+            HAS_BASELINE=true
+          else
+            HAS_BASELINE=false
+          fi
+          {
+            echo "cell_dir=${CELL_DIR}"
+            echo "result_file=${RESULT_FILE}"
+            echo "baseline=${BASELINE}"
+            echo "has_baseline=${HAS_BASELINE}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Compare against baseline
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          steps.download.outcome == 'success' &&
+          steps.paths.outputs.has_baseline == 'true'
+        id: compare
+        run: |
+          set +e
+          python3 scripts/myvectorbench-compare.py \
+            "${{ steps.paths.outputs.baseline }}" \
+            result.json \
+            --config myvectorbench.yml | tee compare-output.txt
+          EXIT_CODE="${PIPESTATUS[0]}"
+          set -e
+          exit "${EXIT_CODE}"
+
+      - name: Post job summary (with baseline)
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          steps.download.outcome == 'success' &&
+          steps.paths.outputs.has_baseline == 'true' &&
+          (success() || steps.compare.outcome == 'failure')
+        run: |
+          if [ -f compare-output.txt ]; then
+            cat compare-output.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Post job summary (no baseline)
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          steps.download.outcome == 'success' &&
+          steps.paths.outputs.has_baseline == 'false'
+        run: |
+          {
+            echo "## myvectorbench — ${{ github.ref_name }} · mysql:${{ matrix.mysql_version }} · ${{ matrix.build_path }}"
+            echo ""
+            echo "_NO_BASELINE: first run for this matrix cell. Results stored; no comparison performed._"
+            echo ""
+            python3 -c "
+          import json, sys
+          r = json.load(open('result.json'))
+          m = r.get('metrics', {})
+          print('| Metric | Value |')
+          print('|--------|-------|')
+          for k, v in m.items():
+              print(f'| {k} | {v if v is not None else \"N/A\"} |')
+          "
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit result to benchmarks branch
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          steps.download.outcome == 'success' &&
+          (success() || steps.compare.outcome == 'failure')
+        run: |
+          CELL_DIR="${{ steps.paths.outputs.cell_dir }}"
+          RESULT_FILE="${{ steps.paths.outputs.result_file }}"
+          mkdir -p "${CELL_DIR}"
+          cp result.json "${CELL_DIR}/${RESULT_FILE}"
+          cp result.json "${CELL_DIR}/latest.json"
+
+          cd benchmarks-branch
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Create README if this is the first-ever commit to the branch
+          if [ ! -f README.md ]; then
+            printf '%s\n' \
+              '# benchmarks/' \
+              '' \
+              'This branch stores myvectorbench result history for the MyVector project.' \
+              '' \
+              '## Layout' \
+              '' \
+              '```' \
+              'benchmarks/' \
+              '  <mysql_version>/' \
+              '    <build_path>/' \
+              '      <git_ref>-<timestamp>.json   -- individual run result' \
+              '      latest.json                  -- copy of most recent run' \
+              '      baseline.json                -- manually promoted baseline' \
+              '```' \
+              '' \
+              '## Baseline promotion' \
+              '' \
+              'After a release passes the pre-release gate, promote results to baseline:' \
+              '' \
+              '```bash' \
+              'python3 scripts/myvectorbench.py --promote <git-ref> --config myvectorbench.yml' \
+              'git -C <benchmarks-worktree> push origin benchmarks' \
+              '```' \
+              > README.md
+            git add README.md
+          fi
+
+          git add "${{ matrix.mysql_version }}/${{ matrix.build_path }}/${RESULT_FILE}"
+          git add "${{ matrix.mysql_version }}/${{ matrix.build_path }}/latest.json"
+          git commit -m "bench: ${{ github.ref_name }} mysql:${{ matrix.mysql_version }} ${{ matrix.build_path }}"
+          for attempt in 1 2 3; do
+            git pull --rebase origin benchmarks && git push origin benchmarks && break
+            echo "Push attempt $attempt failed, retrying..."
+            sleep $((RANDOM % 6 + 5))
+            if [ "$attempt" -eq 3 ]; then
+              echo "ERROR: all push attempts exhausted" >&2
+              exit 1
+            fi
+          done

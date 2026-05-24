@@ -1,6 +1,9 @@
 /build_fast/
 /scripts/build-fast.sh
 /src/myvector.cc.tmp
+__pycache__/
+*.pyc
+*.pyo
 # Build artifacts
 .cache/
 mysql-server/
@@ -53,3 +56,6 @@ docs/ISSUE_*_CLOSE_COMMENT.md
 
 # actionlint binary (official download script may drop this in repo root)
 /actionlint
+
+# git worktrees
+.worktrees/
