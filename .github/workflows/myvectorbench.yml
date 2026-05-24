@@ -41,9 +41,12 @@ jobs:
     steps:
       - name: Filter by workflow_dispatch inputs
         id: filter
+        env:
+          INPUT_MV: ${{ github.event.inputs.mysql_version }}
+          INPUT_BP: ${{ github.event.inputs.build_path }}
         run: |
-          MV="${{ github.event.inputs.mysql_version }}"
-          BP="${{ github.event.inputs.build_path }}"
+          MV="${INPUT_MV}"
+          BP="${INPUT_BP}"
           SKIP=false
           if [ -n "$MV" ] && [ "$MV" != "${{ matrix.mysql_version }}" ]; then
             SKIP=true
@@ -163,6 +166,7 @@ jobs:
           name: myvector-${{ matrix.mysql_version }}-${{ matrix.build_path }}
           path: dist/${{ matrix.build_path }}-${{ matrix.mysql_version }}/
           if-no-files-found: warn
+          retention-days: 7
 
   # ── Job 2: benchmark ─────────────────────────────────────────────────────────
   benchmark:
@@ -184,9 +188,12 @@ jobs:
     steps:
       - name: Filter by workflow_dispatch inputs
         id: filter
+        env:
+          INPUT_MV: ${{ github.event.inputs.mysql_version }}
+          INPUT_BP: ${{ github.event.inputs.build_path }}
         run: |
-          MV="${{ github.event.inputs.mysql_version }}"
-          BP="${{ github.event.inputs.build_path }}"
+          MV="${INPUT_MV}"
+          BP="${INPUT_BP}"
           SKIP=false
           if [ -n "$MV" ] && [ "$MV" != "${{ matrix.mysql_version }}" ]; then
             SKIP=true
@@ -244,6 +251,7 @@ jobs:
           name: bench-result-${{ matrix.mysql_version }}-${{ matrix.build_path }}
           path: result.json
           if-no-files-found: warn
+          retention-days: 30
 
       - name: Checkout benchmarks branch
         if: >
@@ -282,11 +290,13 @@ jobs:
           steps.paths.outputs.has_baseline == 'true'
         id: compare
         run: |
+          set +e
           python3 scripts/myvectorbench-compare.py \
             "${{ steps.paths.outputs.baseline }}" \
             result.json \
             --config myvectorbench.yml | tee compare-output.txt
           EXIT_CODE="${PIPESTATUS[0]}"
+          set -e
           exit "${EXIT_CODE}"
 
       - name: Post job summary (with baseline)
@@ -323,7 +333,8 @@ jobs:
       - name: Commit result to benchmarks branch
         if: >
           steps.filter.outputs.skip != 'true' &&
-          steps.download.outcome == 'success'
+          steps.download.outcome == 'success' &&
+          (success() || steps.compare.outcome == 'failure')
         run: |
           CELL_DIR="${{ steps.paths.outputs.cell_dir }}"
           RESULT_FILE="${{ steps.paths.outputs.result_file }}"
@@ -368,4 +379,8 @@ jobs:
           git add "${{ matrix.mysql_version }}/${{ matrix.build_path }}/${RESULT_FILE}"
           git add "${{ matrix.mysql_version }}/${{ matrix.build_path }}/latest.json"
           git commit -m "bench: ${{ github.ref_name }} mysql:${{ matrix.mysql_version }} ${{ matrix.build_path }}"
-          git push origin benchmarks
+          for attempt in 1 2 3; do
+            git pull --rebase origin benchmarks && git push origin benchmarks && break
+            echo "Push attempt $attempt failed, retrying in 5-10s..."
+            sleep $((RANDOM % 6 + 5))
+          done
