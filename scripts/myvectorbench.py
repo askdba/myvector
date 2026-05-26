@@ -503,7 +503,7 @@ def bench_knn_ann(container: Container, vectors: list, wp: dict) -> dict:
     probe_supported = True
     try:
         container.sql(
-            "SELECT MYVECTOR_IS_ANN('vec', 'id', myvector_construct('[0]'))"
+            "SELECT MYVECTOR_IS_ANN('bench.build_t.vec', 'id', myvector_construct('[0]'))"
             " FROM bench.build_t LIMIT 0;",
             db="bench",
         )
@@ -658,9 +658,15 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
         libstdcxx_files = sorted(_glob.glob(os.path.join(artifact_dir, "libstdc++.so.6.*")))
         if libstdcxx_files:
             libstdcxx_src = libstdcxx_files[-1]
-            # The mysql:8.4 container symlinks /lib64/libstdc++.so.6 -> libstdc++.so.6.0.29.
-            # We mount our newer .so over that exact versioned filename so the symlink works.
-            extra_volumes.append(f"{libstdcxx_src}:/lib64/libstdc++.so.6.0.29:ro")
+            # Detect the versioned filename the image's libstdc++.so.6 symlink resolves to,
+            # so the mount target stays correct across MySQL patch versions.
+            r = subprocess.run(
+                ["docker", "run", "--rm", f"mysql:{mysql_version}",
+                 "readlink", "-f", "/lib64/libstdc++.so.6"],
+                capture_output=True, text=True,
+            )
+            libstdcxx_target = r.stdout.strip() if r.returncode == 0 else "/lib64/libstdc++.so.6.0.29"
+            extra_volumes.append(f"{libstdcxx_src}:{libstdcxx_target}:ro")
 
     with Container(mysql_version, extra_volumes=extra_volumes) as c:
         if build_path == "component":

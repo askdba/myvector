@@ -83,7 +83,7 @@ knn_ann_p99_ms: +30%
 }
 ```
 
-`null` for p50/p99 when the query errored. The compare tool skips a metric if the baseline value is `null`; treats `knn_ann_qps = 0.0` baseline as a breach signal (workload was broken when baseline was recorded).
+`null` for p50/p99 when the query errored. The compare tool skips a metric if the baseline value is `null` or if `knn_ann_qps = 0.0` (the workload was broken when the baseline was recorded) — both cases produce an N/A row with no breach.
 
 ### Files touched
 
