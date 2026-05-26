@@ -484,6 +484,19 @@ def bench_knn_ann(container: Container, vectors: list, wp: dict) -> dict:
     n_queries = wp.get('knn_ann_queries', 200)
     print(f"  [knn_ann] {n_queries} queries, dim={wp['dim']}")
 
+    # Feature probe: if MYVECTOR_IS_ANN is not rewritten by the plugin/component,
+    # MySQL returns a "FUNCTION does not exist" error. Re-raise anything else.
+    try:
+        container.sql(
+            "SELECT MYVECTOR_IS_ANN('vec', 'id', myvector_construct('[0]'))"
+            " FROM bench.build_t LIMIT 0;"
+        )
+    except RuntimeError as e:
+        if "does not exist" in str(e) or "FUNCTION" in str(e):
+            print("    ⚠ MYVECTOR_IS_ANN not supported (query rewrite inactive)")
+            return {"knn_ann_qps": 0.0, "knn_ann_p50_ms": None, "knn_ann_p99_ms": None}
+        raise
+
     rng = random.Random(77)
     query_vectors = [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n_queries)]
 
@@ -496,11 +509,7 @@ def bench_knn_ann(container: Container, vectors: list, wp: dict) -> dict:
             f" ORDER BY dist LIMIT 10;"
         )
         t0 = time.time()
-        try:
-            container.sql(sql)
-        except RuntimeError:
-            print("    ⚠ MYVECTOR_IS_ANN not supported (query rewrite inactive)")
-            return {"knn_ann_qps": 0.0, "knn_ann_p50_ms": None, "knn_ann_p99_ms": None}
+        container.sql(sql)
         latencies_ms.append((time.time() - t0) * 1000)
 
     latencies_ms.sort()
