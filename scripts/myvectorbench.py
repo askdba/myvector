@@ -426,7 +426,7 @@ def bench_index_build(container: Container, vectors: list, wp: dict) -> float:
 
     _create_bench_table(container, dim, rows, M, ef, "bench", "build_t")
 
-    batch = 50
+    batch = 500
     for start in range(0, rows, batch):
         chunk = vectors[start:start + batch]
         vals = ", ".join(f"({start + i}, {_vec_literal(v)})" for i, v in enumerate(chunk))
@@ -450,7 +450,7 @@ def bench_insert_throughput(container: Container, vectors: list, wp: dict) -> fl
     _create_bench_table(container, dim, rows, M, ef, "bench", "insert_t", online=True)
 
     t0 = time.time()
-    batch = 50
+    batch = 500
     for start in range(0, rows, batch):
         chunk = vectors[start:start + batch]
         vals = ", ".join(f"({start + i}, {_vec_literal(v)})" for i, v in enumerate(chunk))
