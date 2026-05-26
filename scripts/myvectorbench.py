@@ -665,8 +665,14 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
                  "readlink", "-f", "/lib64/libstdc++.so.6"],
                 capture_output=True, text=True,
             )
-            libstdcxx_target = r.stdout.strip() if r.returncode == 0 else "/lib64/libstdc++.so.6.0.29"
-            extra_volumes.append(f"{libstdcxx_src}:{libstdcxx_target}:ro")
+            libstdcxx_target = r.stdout.strip() if r.returncode == 0 else ""
+            if libstdcxx_target:
+                extra_volumes.append(f"{libstdcxx_src}:{libstdcxx_target}:ro")
+            else:
+                print(
+                    "  Warning: could not resolve /lib64/libstdc++.so.6 inside "
+                    f"mysql:{mysql_version}; skipping bundled libstdc++ mount"
+                )
 
     with Container(mysql_version, extra_volumes=extra_volumes) as c:
         if build_path == "component":
