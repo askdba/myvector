@@ -155,3 +155,40 @@ def test_compare_no_baseline(capsys):
         captured = capsys.readouterr()
     assert "NO_BASELINE" in captured.err
     assert rc == 0  # missing baseline → NO_BASELINE, not a failure
+
+
+def test_compare_knn_ann_zero_baseline_skips(capsys):
+    """knn_ann_qps=0.0 baseline → N/A row, no breach (workload was broken at baseline time)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        baseline = _make_json(tmp, 'baseline.json', {'knn_ann_qps': 0.0})
+        current = _make_json(tmp, 'current.json', {'knn_ann_qps': 45.2})
+        cfg = _make_config(tmp, "  knn_ann_qps: -25%\n")
+        rc = compare(baseline, current, cfg)
+        captured = capsys.readouterr()
+    assert rc == 0
+    assert 'N/A' in captured.out
+
+
+def test_compare_knn_ann_null_latency_skips(capsys):
+    """knn_ann_p50_ms=null in baseline → N/A row, no breach."""
+    with tempfile.TemporaryDirectory() as tmp:
+        baseline = _make_json(tmp, 'baseline.json', {'knn_ann_p50_ms': None})
+        current = _make_json(tmp, 'current.json', {'knn_ann_p50_ms': 21.3})
+        cfg = _make_config(tmp, "  knn_ann_p50_ms: +30%\n")
+        rc = compare(baseline, current, cfg)
+        captured = capsys.readouterr()
+    assert rc == 0
+    assert 'N/A' in captured.out
+
+
+def test_compare_knn_ann_qps_breach(capsys):
+    """knn_ann_qps drops >25% after fix → breach detected."""
+    with tempfile.TemporaryDirectory() as tmp:
+        baseline = _make_json(tmp, 'baseline.json', {'knn_ann_qps': 45.0})
+        current = _make_json(tmp, 'current.json', {'knn_ann_qps': 32.0})  # -28.9%
+        cfg = _make_config(tmp, "  knn_ann_qps: -25%\n")
+        rc = compare(baseline, current, cfg)
+        captured = capsys.readouterr()
+    assert rc == 1
+    assert "FAIL: one or more metrics exceeded threshold." in captured.out
+    assert 'knn_ann_qps' in captured.out
