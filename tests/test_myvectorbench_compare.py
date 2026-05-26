@@ -190,4 +190,5 @@ def test_compare_knn_ann_qps_breach(capsys):
         rc = compare(baseline, current, cfg)
         captured = capsys.readouterr()
     assert rc == 1
-    assert 'FAIL' in captured.out
+    assert "FAIL: one or more metrics exceeded threshold." in captured.out
+    assert 'knn_ann_qps' in captured.out
