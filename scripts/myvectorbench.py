@@ -37,20 +37,22 @@ def load_config(path: str) -> dict:
 # ── Container ─────────────────────────────────────────────────────────────────
 
 class Container:
-    def __init__(self, mysql_version: str, root_pw: str = "benchroot"):
+    def __init__(self, mysql_version: str, root_pw: str = "benchroot",
+                 extra_volumes: list = None):
         self.version = mysql_version
         self.root_pw = root_pw
         self.name = f"myvector-bench-{os.getpid()}-{mysql_version.replace('.', '')}"
         self._running = False
+        self._extra_volumes = extra_volumes or []
 
     def start(self):
-        subprocess.run(
-            ["docker", "run", "-d", "--name", self.name,
-             "-e", f"MYSQL_ROOT_PASSWORD={self.root_pw}",
-             "-e", "MYSQL_ROOT_HOST=%",
-             f"mysql:{self.version}"],
-            check=True, capture_output=True,
-        )
+        cmd = ["docker", "run", "-d", "--name", self.name,
+               "-e", f"MYSQL_ROOT_PASSWORD={self.root_pw}",
+               "-e", "MYSQL_ROOT_HOST=%"]
+        for vol in self._extra_volumes:
+            cmd += ["-v", vol]
+        cmd.append(f"mysql:{self.version}")
+        subprocess.run(cmd, check=True, capture_output=True)
         self._running = True
         try:
             self._wait_ready()
@@ -247,6 +249,9 @@ def install_component(container: Container, comp_dir: str):
         container.sql(f"SET GLOBAL myvector_index_dir='{data_dir}';")
     except RuntimeError:
         pass  # sysvar not available on all versions
+    # myvector_distance is auto-registered by the component framework (dynamic UDF).
+    # myvector_row_distance / myvector_is_valid / myvector_search_open_udf are NOT
+    # auto-registered — they must be added via CREATE FUNCTION ... SONAME.
     container.sql(
         "DROP FUNCTION IF EXISTS myvector_row_distance;"
         " DROP FUNCTION IF EXISTS myvector_is_valid;"
@@ -267,11 +272,19 @@ def install_plugin(container: Container, plugin_so: str):
     container.cp(plugin_so, f"{plugin_dir}/myvector.so")
     container.sql("INSTALL PLUGIN myvector SONAME 'myvector.so';", "mysql")
     container.sql(
-        "DROP FUNCTION IF EXISTS myvector_row_distance;"
+        "DROP FUNCTION IF EXISTS myvector_construct;"
+        " DROP FUNCTION IF EXISTS myvector_display;"
+        " DROP FUNCTION IF EXISTS myvector_distance;"
+        " DROP FUNCTION IF EXISTS myvector_ann_set;"
         " DROP FUNCTION IF EXISTS myvector_is_valid;"
+        " DROP FUNCTION IF EXISTS myvector_row_distance;"
         " DROP FUNCTION IF EXISTS myvector_search_open_udf;"
-        " CREATE FUNCTION myvector_row_distance    RETURNS REAL    SONAME 'myvector.so';"
+        " CREATE FUNCTION myvector_construct       RETURNS STRING  SONAME 'myvector.so';"
+        " CREATE FUNCTION myvector_display         RETURNS STRING  SONAME 'myvector.so';"
+        " CREATE FUNCTION myvector_distance        RETURNS REAL    SONAME 'myvector.so';"
+        " CREATE FUNCTION myvector_ann_set         RETURNS STRING  SONAME 'myvector.so';"
         " CREATE FUNCTION myvector_is_valid        RETURNS INTEGER SONAME 'myvector.so';"
+        " CREATE FUNCTION myvector_row_distance    RETURNS REAL    SONAME 'myvector.so';"
         " CREATE FUNCTION myvector_search_open_udf RETURNS STRING  SONAME 'myvector.so';",
         "mysql",
     )
@@ -413,11 +426,11 @@ def bench_index_build(container: Container, vectors: list, wp: dict) -> float:
 
     _create_bench_table(container, dim, rows, M, ef, "bench", "build_t")
 
-    batch = 500
+    batch = 50
     for start in range(0, rows, batch):
         chunk = vectors[start:start + batch]
         vals = ", ".join(f"({start + i}, {_vec_literal(v)})" for i, v in enumerate(chunk))
-        container.sql(f"INSERT INTO bench.build_t (id, vec) VALUES {vals};")
+        container.sql_stdin(f"INSERT INTO bench.build_t (id, vec) VALUES {vals};", "bench")
 
     t0 = time.time()
     container.sql("CALL mysql.MYVECTOR_INDEX_BUILD('bench.build_t.vec', 'id');")
@@ -437,11 +450,11 @@ def bench_insert_throughput(container: Container, vectors: list, wp: dict) -> fl
     _create_bench_table(container, dim, rows, M, ef, "bench", "insert_t", online=True)
 
     t0 = time.time()
-    batch = 500
+    batch = 50
     for start in range(0, rows, batch):
         chunk = vectors[start:start + batch]
         vals = ", ".join(f"({start + i}, {_vec_literal(v)})" for i, v in enumerate(chunk))
-        container.sql(f"INSERT INTO bench.insert_t (id, vec) VALUES {vals};")
+        container.sql_stdin(f"INSERT INTO bench.insert_t (id, vec) VALUES {vals};", "bench")
     elapsed = time.time() - t0
 
     qps = rows / elapsed if elapsed > 0 else 0.0
@@ -461,7 +474,7 @@ def bench_knn_search(container: Container, vectors: list, wp: dict) -> dict:
     for q in query_vectors:
         sql = (
             f"SELECT id FROM bench.build_t"
-            f" ORDER BY myvector_row_distance(vec, {_vec_literal(q)}, 'L2') LIMIT 10;"
+            f" ORDER BY myvector_distance(vec, {_vec_literal(q)}, 'L2') LIMIT 10;"
         )
         t0 = time.time()
         container.sql(sql)
@@ -484,18 +497,25 @@ def bench_knn_ann(container: Container, vectors: list, wp: dict) -> dict:
     n_queries = wp.get('knn_ann_queries', 200)
     print(f"  [knn_ann] {n_queries} queries, dim={wp['dim']}")
 
-    # Feature probe: if MYVECTOR_IS_ANN is not rewritten by the plugin/component,
-    # MySQL returns a "FUNCTION does not exist" error. Re-raise anything else.
+    # Feature probe: test whether the query rewrite hook rewrites MYVECTOR_IS_ANN.
+    # If the rewrite is inactive, MySQL returns "FUNCTION X does not exist".
+    # Any other error (e.g. "index not open") means rewrite IS active; proceed.
+    probe_supported = True
     try:
         container.sql(
             "SELECT MYVECTOR_IS_ANN('vec', 'id', myvector_construct('[0]'))"
-            " FROM bench.build_t LIMIT 0;"
+            " FROM bench.build_t LIMIT 0;",
+            db="bench",
         )
     except RuntimeError as e:
-        if "does not exist" in str(e) or "FUNCTION" in str(e):
-            print("    ⚠ MYVECTOR_IS_ANN not supported (query rewrite inactive)")
-            return {"knn_ann_qps": 0.0, "knn_ann_p50_ms": None, "knn_ann_p99_ms": None}
-        raise
+        err = str(e)
+        if "does not exist" in err and "FUNCTION" in err:
+            probe_supported = False
+        # Other errors (e.g. index not open, dim mismatch) mean rewrite IS active.
+
+    if not probe_supported:
+        print("    ⚠ MYVECTOR_IS_ANN not supported (query rewrite inactive)")
+        return {"knn_ann_qps": 0.0, "knn_ann_p50_ms": None, "knn_ann_p99_ms": None}
 
     rng = random.Random(77)
     query_vectors = [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n_queries)]
@@ -505,7 +525,7 @@ def bench_knn_ann(container: Container, vectors: list, wp: dict) -> dict:
         sql = (
             f"SELECT id, myvector_row_distance(id) AS dist"
             f" FROM bench.build_t"
-            f" WHERE MYVECTOR_IS_ANN('vec', 'id', {_vec_literal(q)})"
+            f" WHERE MYVECTOR_IS_ANN('bench.build_t.vec', 'id', {_vec_literal(q)})"
             f" ORDER BY dist LIMIT 10;"
         )
         t0 = time.time()
@@ -629,7 +649,20 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
 
     print(f"=== myvectorbench: mysql:{mysql_version} {build_path} @ {git_ref} ===")
 
-    with Container(mysql_version) as c:
+    # For plugin builds, if a bundled libstdc++ is present we mount it over the
+    # container's existing libstdc++.so.6.0.XX so mysqld starts with the newer one.
+    # (Hot-swapping after mysqld starts is too late — dlopen uses the already-loaded lib.)
+    extra_volumes: list = []
+    if build_path == "plugin":
+        import glob as _glob
+        libstdcxx_files = sorted(_glob.glob(os.path.join(artifact_dir, "libstdc++.so.6.*")))
+        if libstdcxx_files:
+            libstdcxx_src = libstdcxx_files[-1]
+            # The mysql:8.4 container symlinks /lib64/libstdc++.so.6 -> libstdc++.so.6.0.29.
+            # We mount our newer .so over that exact versioned filename so the symlink works.
+            extra_volumes.append(f"{libstdcxx_src}:/lib64/libstdc++.so.6.0.29:ro")
+
+    with Container(mysql_version, extra_volumes=extra_volumes) as c:
         if build_path == "component":
             install_component(c, artifact_dir)
         else:
