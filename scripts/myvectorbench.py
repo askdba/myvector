@@ -475,12 +475,49 @@ def bench_knn_search(container: Container, vectors: list, wp: dict) -> dict:
     return {"knn_qps": qps, "knn_p50_ms": p50, "knn_p99_ms": p99}
 
 
+def bench_knn_ann(container: Container, vectors: list, wp: dict) -> dict:
+    """Run MYVECTOR_IS_ANN queries using the HNSW index.
+
+    Returns knn_ann_qps=0.0 and null latencies when query rewrite is inactive
+    (component build before the QueryRewriterService fix).
+    """
+    n_queries = wp.get('knn_ann_queries', 200)
+    print(f"  [knn_ann] {n_queries} queries, dim={wp['dim']}")
+
+    rng = random.Random(77)
+    query_vectors = [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n_queries)]
+
+    latencies_ms = []
+    for q in query_vectors:
+        sql = (
+            f"SELECT id, myvector_row_distance(id) AS dist"
+            f" FROM bench.build_t"
+            f" WHERE MYVECTOR_IS_ANN('vec', 'id', {_vec_literal(q)})"
+            f" ORDER BY dist LIMIT 10;"
+        )
+        t0 = time.time()
+        try:
+            container.sql(sql)
+        except RuntimeError:
+            print("    ⚠ MYVECTOR_IS_ANN not supported (query rewrite inactive)")
+            return {"knn_ann_qps": 0.0, "knn_ann_p50_ms": None, "knn_ann_p99_ms": None}
+        latencies_ms.append((time.time() - t0) * 1000)
+
+    latencies_ms.sort()
+    p50 = statistics.median(latencies_ms)
+    p99 = latencies_ms[max(0, math.ceil(len(latencies_ms) * 0.99) - 1)]
+    qps = n_queries / (sum(latencies_ms) / 1000) if latencies_ms else 0.0
+    print(f"    knn_ann_qps={qps:.0f}  p50={p50:.1f}ms  p99={p99:.1f}ms")
+    return {"knn_ann_qps": qps, "knn_ann_p50_ms": p50, "knn_ann_p99_ms": p99}
+
+
 def run_workloads(container: Container, vectors: list, wp: dict,
                   build_path: str, mysql_version: str) -> dict:
     metrics = {}
     metrics["index_build_time_s"] = bench_index_build(container, vectors, wp)
     metrics["insert_qps"] = bench_insert_throughput(container, vectors, wp)
     metrics.update(bench_knn_search(container, vectors, wp))
+    metrics.update(bench_knn_ann(container, vectors, wp))
     metrics["recall_at_10"] = None  # requires ANN query API not available in v1
     return metrics
 
@@ -605,6 +642,7 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
             "M": wp.get("M", 16),
             "ef_construction": wp.get("ef_construction", 200),
             "knn_queries": wp.get("knn_queries", 200),
+            "knn_ann_queries": wp.get("knn_ann_queries", 200),
         },
         "metrics": metrics,
     }
