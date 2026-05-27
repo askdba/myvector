@@ -2,7 +2,9 @@
 #include <mysql/components/services/udf_metadata.h>
 #include <mysql/components/services/udf_registration.h>
 #include <mysql/components/services/dynamic_loader_service_notification.h>
+#include <chrono>
 #include <cstring>
+#include <thread>
 #include "mysql/components/util/event_tracking/event_tracking_parse_consumer_helper.h"
 #include "myvector.h"
 #include "myvector_binlog_service.h"
@@ -69,6 +71,11 @@ static mysql_service_status_t myvector_unload_notify(const char **services,
   for (unsigned int i = 0; i < count; ++i) {
     if (strcmp(services[i], "event_tracking_parse.myvector") == 0) {
       myvector_component::get_binlog_service().stop_binlog_monitoring();
+      // After mysql_close() the server-side binlog THD cleanup (which
+      // releases the event_tracking_parse reference) is asynchronous.
+      // Give the server ~300 ms to destroy the THD before dynamic_loader
+      // checks the reference count for UNINSTALL COMPONENT.
+      std::this_thread::sleep_for(std::chrono::milliseconds(300));
       break;
     }
   }
