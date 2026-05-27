@@ -1333,6 +1333,24 @@ bool rewriteMyVectorIsANN(const string& query, string& newQuery) {
             break;
         }
 
+        // If 4th arg is a bare integer (k neighbors), convert to 'nn=k' options string.
+        // myvector_ann_set expects a string arg; MySQL sets lengths[3]=0 for integers,
+        // causing the options to be silently skipped and JSON_TABLE to fail.
+        if (annparams.size() == 4) {
+            string last = annparams[3];
+            size_t s = last.find_first_not_of(" \t\r\n");
+            if (s != string::npos) last = last.substr(s);
+            size_t e = last.find_last_not_of(" \t\r\n");
+            if (e != string::npos) last = last.substr(0, e + 1);
+            if (!last.empty() &&
+                last.find_first_not_of("0123456789") == string::npos) {
+                size_t last_comma = strparams.rfind(',');
+                if (last_comma != string::npos)
+                    strparams =
+                        strparams.substr(0, last_comma + 1) + " 'nn=" + last + "'";
+            }
+        }
+
         string idcolexpr = annparams[1];
         idcolexpr = idcolexpr.substr(
             1, idcolexpr.length() - 2);  // remove the single quote
