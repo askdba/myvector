@@ -1,6 +1,8 @@
 #include <mysql/components/component_implementation.h>
 #include <mysql/components/services/udf_metadata.h>
 #include <mysql/components/services/udf_registration.h>
+#include <mysql/components/services/dynamic_loader_service_notification.h>
+#include <cstring>
 #include "myvector.h"
 #include "myvector_binlog_service.h"
 #include "myvector_udf_service.h"
@@ -55,8 +57,24 @@ static int myvector_component_deinit() {
   return ret;
 }
 
+static DEFINE_BOOL_METHOD(myvector_unload_notify,
+                          (const char **services, unsigned int count)) {
+  for (unsigned int i = 0; i < count; ++i) {
+    if (strcmp(services[i], "event_tracking_parse.myvector") == 0) {
+      myvector_component::get_binlog_service().stop_binlog_monitoring();
+      break;
+    }
+  }
+  return false;
+}
+
+BEGIN_SERVICE_IMPLEMENTATION(myvector,
+                             dynamic_loader_services_unload_notification)
+myvector_unload_notify END_SERVICE_IMPLEMENTATION();
+
 /* Component provides no external services (UDF registration is internal) */
 BEGIN_COMPONENT_PROVIDES(myvector)
+PROVIDES_SERVICE(myvector, dynamic_loader_services_unload_notification),
 END_COMPONENT_PROVIDES();
 
 /* Dependencies */
