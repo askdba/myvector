@@ -1357,8 +1357,9 @@ bool rewriteMyVectorIsANN(const string& query, string& newQuery) {
 
         stringstream ss;
         ss << "( " << idcolexpr << " IN "
-           << "(select `myvecid` from JSON_TABLE(myvector_ann_set(" << strparams
-           << "), " << '"' << "$[*]" << '"'
+           << "(select `myvecid` from "
+           << "(select myvector_ann_set(" << strparams << ") `_mvjson`) `_mvsrc`,"
+           << "JSON_TABLE(`_mvsrc`.`_mvjson`, " << '"' << "$[*]" << '"'
            << " COLUMNS(`myvecid` BIGINT PATH \"$\")) `myvector_ann`) )";
 
         newQuery =
