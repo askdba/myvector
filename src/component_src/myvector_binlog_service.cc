@@ -1697,7 +1697,8 @@ private:
 
             std::string initQuery =
                 "SET @master_binlog_checksum = 'NONE', @source_binlog_checksum = "
-                "'NONE',@net_read_timeout = 3000, @replica_net_timeout = 3000;";
+                "'NONE', @net_read_timeout = 3000, @replica_net_timeout = 3000,"
+                " @master_heartbeat_period = 1000000000;";
             if (mysql_real_query(&mysql, initQuery.c_str(), initQuery.length())) {
                 close_binlog_mysql_conn();
                 break;

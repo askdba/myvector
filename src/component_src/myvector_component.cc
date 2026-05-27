@@ -75,7 +75,7 @@ static mysql_service_status_t myvector_unload_notify(const char **services,
       // releases the event_tracking_parse reference) is asynchronous.
       // Give the server ~300 ms to destroy the THD before dynamic_loader
       // checks the reference count for UNINSTALL COMPONENT.
-      std::this_thread::sleep_for(std::chrono::milliseconds(300));
+      std::this_thread::sleep_for(std::chrono::milliseconds(2000));
       break;
     }
   }
