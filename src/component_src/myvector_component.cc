@@ -1,6 +1,7 @@
 #include <mysql/components/component_implementation.h>
 #include <mysql/components/services/udf_metadata.h>
 #include <mysql/components/services/udf_registration.h>
+#include <mysql/components/services/dynamic_loader_service_notification.h>
 #include <cstring>
 #include "mysql/components/util/event_tracking/event_tracking_parse_consumer_helper.h"
 #include "myvector.h"
@@ -58,27 +59,29 @@ static int myvector_component_deinit() {
 }
 
 /* Define the service implementation structs (must be in same TU as PROVIDES) */
-namespace Event_tracking_implementation {
+IMPLEMENTS_SERVICE_EVENT_TRACKING_PARSE(myvector);
 
-mysql_event_tracking_parse_subclass_t
-    Event_tracking_parse_implementation::filtered_sub_events = 0;
-
-bool Event_tracking_parse_implementation::callback(
-    mysql_event_tracking_parse_data *data [[maybe_unused]]) {
-  // The parse service is primarily for event tracking/monitoring.
-  // Query rewriting should be handled by the plugin hooks in myvector_plugin.cc
-  // which use the AUDIT interface. The component's parse service provides
-  // the interface but doesn't perform the actual rewriting here to avoid
-  // conflicts and ensure stability.
-  return false;  // Success - no error
+/* Stop the binlog thread before MySQL checks the event_tracking_parse reference
+ * count during UNINSTALL. The binlog thread's server-side THD holds a reference
+ * that is never released while it is blocked in COM_BINLOG_DUMP. */
+static mysql_service_status_t myvector_unload_notify(const char **services,
+                                                      unsigned int count) {
+  for (unsigned int i = 0; i < count; ++i) {
+    if (strcmp(services[i], "event_tracking_parse.myvector") == 0) {
+      myvector_component::get_binlog_service().stop_binlog_monitoring();
+      break;
+    }
+  }
+  return false;
 }
 
-}  // namespace Event_tracking_implementation
-
-IMPLEMENTS_SERVICE_EVENT_TRACKING_PARSE(myvector);
+BEGIN_SERVICE_IMPLEMENTATION(myvector,
+                             dynamic_loader_services_unload_notification)
+myvector_unload_notify END_SERVICE_IMPLEMENTATION();
 
 BEGIN_COMPONENT_PROVIDES(myvector)
 PROVIDES_SERVICE_EVENT_TRACKING_PARSE(myvector),
+PROVIDES_SERVICE(myvector, dynamic_loader_services_unload_notification),
 END_COMPONENT_PROVIDES();
 
 /* Dependencies */
