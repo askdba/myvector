@@ -98,11 +98,13 @@ not the binlog thread's server-side THD.
 
 Provide `dynamic_loader_services_unload_notification` in the component. The `notify()` handler
 checks if `event_tracking_parse.myvector` is in the services-being-unloaded list, and if so
-calls `stop_binlog_monitoring()` synchronously before returning.
+calls `stop_binlog_monitoring()` synchronously, then sleeps ~5 s to allow the server-side THD
+teardown to complete and release the reference cache, before returning.
 
-`stop_binlog_monitoring()` closes the MySQL client connection, which causes the server-side THD
-to be destroyed and its reference cache to be freed — releasing the
-`event_tracking_parse.myvector` reference.
+`stop_binlog_monitoring()` closes the MySQL client connection, but the server-side binlog dump
+THD teardown (which destroys `events_cache_` and releases the `event_tracking_parse.myvector`
+reference) is asynchronous. The 5 s wait is necessary on Docker/macOS where THD cleanup takes
+longer than on bare-metal Linux.
 
 This runs **before** step 2 (the reference count check), so the count drops to 0 and uninstall
 succeeds.
@@ -119,11 +121,15 @@ before the reference count check — no deadlock.
 
 ```cpp
 // 1. Free function implementing the service
-static bool myvector_unload_notify(const char **services,
-                                   unsigned int count) {
+static mysql_service_status_t myvector_unload_notify(const char **services,
+                                                     unsigned int count) {
   for (unsigned int i = 0; i < count; ++i) {
     if (strcmp(services[i], "event_tracking_parse.myvector") == 0) {
       myvector_component::get_binlog_service().stop_binlog_monitoring();
+      // Server-side binlog dump THD teardown is asynchronous after mysql_close().
+      // Sleep 5 s so the THD's events_cache_ is destroyed before dynamic_loader
+      // checks the event_tracking_parse.myvector reference count.
+      std::this_thread::sleep_for(std::chrono::milliseconds(5000));
       break;
     }
   }

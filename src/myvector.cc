@@ -1340,21 +1340,38 @@ bool rewriteMyVectorIsANN(const string& query, string& newQuery) {
             break;
         }
 
-        // If 4th arg is a bare integer (k neighbors), convert to 'nn=k' options string.
-        // myvector_ann_set expects a string arg; MySQL sets lengths[3]=0 for integers,
+        // If last top-level arg is a bare integer k, convert to 'nn=k' options string.
+        // myvector_ann_set expects a string arg; MySQL sets lengths[n]=0 for integers,
         // causing the options to be silently skipped and JSON_TABLE to fail.
-        if (annparams.size() == 4) {
-            string last = annparams[3];
-            size_t s = last.find_first_not_of(" \t\r\n");
-            if (s != string::npos) last = last.substr(s);
-            size_t e = last.find_last_not_of(" \t\r\n");
-            if (e != string::npos) last = last.substr(0, e + 1);
-            if (!last.empty() &&
-                last.find_first_not_of("0123456789") == string::npos) {
-                size_t last_comma = strparams.rfind(',');
-                if (last_comma != string::npos)
-                    strparams =
-                        strparams.substr(0, last_comma + 1) + " 'nn=" + last + "'";
+        // Scan for the last top-level comma (outside parens/brackets/quotes) so that
+        // vector expressions like myvector_construct('[1,2,3]') work correctly —
+        // naive annparams.size()==4 fails when the expression contains inner commas.
+        {
+            size_t last_top_comma = string::npos;
+            int depth = 0;
+            bool in_sq = false, in_dq = false;
+            for (size_t ci = 0; ci < strparams.size(); ++ci) {
+                char ch = strparams[ci];
+                if (!in_sq && !in_dq) {
+                    if (ch == '(' || ch == '[') ++depth;
+                    else if (ch == ')' || ch == ']') --depth;
+                    else if (ch == '\'') in_sq = true;
+                    else if (ch == '"') in_dq = true;
+                    else if (ch == ',' && depth == 0) last_top_comma = ci;
+                } else if (in_sq && ch == '\'') in_sq = false;
+                else if (in_dq && ch == '"') in_dq = false;
+            }
+            if (last_top_comma != string::npos) {
+                string tail = strparams.substr(last_top_comma + 1);
+                size_t s = tail.find_first_not_of(" \t\r\n");
+                if (s != string::npos) tail = tail.substr(s);
+                size_t e = tail.find_last_not_of(" \t\r\n");
+                if (e != string::npos) tail = tail.substr(0, e + 1);
+                if (!tail.empty() &&
+                    tail.find_first_not_of("0123456789") == string::npos) {
+                    strparams = strparams.substr(0, last_top_comma + 1) +
+                                " 'nn=" + tail + "'";
+                }
             }
         }
 

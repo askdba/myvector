@@ -190,11 +190,15 @@ The service macro pattern comes from `mysql-server-mysql-8.4.8/components/refere
   /* Define the service implementation struct (must be in same TU as PROVIDES) */
   IMPLEMENTS_SERVICE_EVENT_TRACKING_PARSE(myvector);
 
-  static bool myvector_unload_notify(const char **services,
-                                     unsigned int count) {
+  static mysql_service_status_t myvector_unload_notify(const char **services,
+                                                       unsigned int count) {
     for (unsigned int i = 0; i < count; ++i) {
       if (strcmp(services[i], "event_tracking_parse.myvector") == 0) {
         myvector_component::get_binlog_service().stop_binlog_monitoring();
+        // Server-side binlog dump THD teardown is asynchronous after mysql_close().
+        // Sleep 5 s so the THD's events_cache_ is destroyed before dynamic_loader
+        // checks the event_tracking_parse.myvector reference count.
+        std::this_thread::sleep_for(std::chrono::milliseconds(5000));
         break;
       }
     }
