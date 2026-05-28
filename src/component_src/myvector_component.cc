@@ -73,9 +73,9 @@ static mysql_service_status_t myvector_unload_notify(const char **services,
       myvector_component::get_binlog_service().stop_binlog_monitoring();
       // After mysql_close() the server-side binlog THD cleanup (which
       // releases the event_tracking_parse reference) is asynchronous.
-      // Give the server ~300 ms to destroy the THD before dynamic_loader
+      // Give the server ~5s to destroy the THD before dynamic_loader
       // checks the reference count for UNINSTALL COMPONENT.
-      std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+      std::this_thread::sleep_for(std::chrono::milliseconds(5000));
       break;
     }
   }

@@ -1202,7 +1202,8 @@ ulong myvector_max_vector_dim = 4096;
 /* rewriteMyVectorColumnDef() - rewrite the MYVECTOR(...) annotation in
  * CREATE TABLE & ALTER TABLE.
  */
-bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
+bool rewriteMyVectorColumnDef(const string& query, string& newQuery,
+                              string& error_msg) {
     // support multiple MYVECTOR(...) columns
     size_t pos;
     bool error = false;
@@ -1213,14 +1214,16 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         size_t epos = newQuery.find_first_of(')', pos);
 
         if (epos == string::npos) {
-            MYVEC_LOG_ERROR("MYVECTOR column terminating ')' not found.");
+            error_msg = "MYVECTOR column terminating ')' not found";
+            MYVEC_LOG_ERROR("%s.", error_msg.c_str());
             error = true;
             break;
         }
 
         string colinfo = newQuery.substr(spos, (epos - spos));
         if (colinfo.length() > MYVECTOR_MAX_COLUMN_INFO_LEN) {
-            MYVEC_LOG_ERROR("MYVECTOR column info too long, length = %zu.",
+            error_msg = "MYVECTOR column info too long";
+            MYVEC_LOG_ERROR("%s, length = %zu.", error_msg.c_str(),
                             colinfo.length());
             error = true;
             break;
@@ -1229,7 +1232,8 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         MyVectorOptions vo(colinfo);
 
         if (!vo.isValid()) {
-            MYVEC_LOG_ERROR("MYVECTOR column options parse error, options=%s.",
+            error_msg = "MYVECTOR column options parse error";
+            MYVEC_LOG_ERROR("%s, options=%s.", error_msg.c_str(),
                             colinfo.c_str());
             error = true;
             break;
@@ -1243,7 +1247,8 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         }
 
         if (vo.getOption("dim") == "") {
-            MYVEC_LOG_ERROR("MYVECTOR column dimension not defined.");
+            error_msg = "MYVECTOR column dimension not defined";
+            MYVEC_LOG_ERROR("%s.", error_msg.c_str());
             error = true;
             break;
         }
@@ -1259,7 +1264,9 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         int dim = vo.getIntOption("dim", 0, &dimValid);
 
         if (!dimValid || dim <= 1 || (ulong)dim > myvector_max_vector_dim) {
-            MYVEC_LOG_ERROR("MYVECTOR column dimension incorrect %d.", dim);
+            error_msg =
+                "MYVECTOR column dimension incorrect " + to_string(dim);
+            MYVEC_LOG_ERROR("%s.", error_msg.c_str());
             error = true;
             break;
         }
@@ -1474,8 +1481,12 @@ bool myvector_query_rewrite(const string& query, string* rewritten_query) {
     } else if ((regex_search(query, create_table) ||
                 regex_search(query, alter_table)) &&
                (strstr(query.c_str(), MYVECTOR_COLUMN_A.c_str()))) {
-        if (rewriteMyVectorColumnDef(query, newQuery)) {
-            newQuery = "";
+        string error_msg;
+        if (rewriteMyVectorColumnDef(query, newQuery, error_msg)) {
+            // Rewrite to SIGNAL so the client receives the validation error.
+            // MESSAGE_TEXT values are fixed strings with no single quotes.
+            newQuery =
+                "SIGNAL SQLSTATE 'HY000' SET MESSAGE_TEXT = '" + error_msg + "'";
         }
     }
 
