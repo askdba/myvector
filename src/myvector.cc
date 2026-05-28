@@ -1214,7 +1214,7 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery,
         size_t epos = newQuery.find_first_of(')', pos);
 
         if (epos == string::npos) {
-            error_msg = "MYVECTOR column terminating ')' not found";
+            error_msg = "MYVECTOR column terminating ) not found";
             MYVEC_LOG_ERROR("%s.", error_msg.c_str());
             error = true;
             break;
@@ -1500,10 +1500,13 @@ bool myvector_query_rewrite(const string& query, string* rewritten_query) {
                (strstr(query.c_str(), MYVECTOR_COLUMN_A.c_str()))) {
         string error_msg;
         if (rewriteMyVectorColumnDef(query, newQuery, error_msg)) {
-            // Rewrite to SIGNAL so the client receives the validation error.
-            // MESSAGE_TEXT values are fixed strings with no single quotes.
+            // Escape any single quotes before embedding in SIGNAL statement.
+            string safe_msg;
+            safe_msg.reserve(error_msg.size());
+            for (char c : error_msg)
+                safe_msg += (c == '\'') ? "''" : string(1, c);
             newQuery =
-                "SIGNAL SQLSTATE 'HY000' SET MESSAGE_TEXT = '" + error_msg + "'";
+                "SIGNAL SQLSTATE 'HY000' SET MESSAGE_TEXT = '" + safe_msg + "'";
         }
     }
 

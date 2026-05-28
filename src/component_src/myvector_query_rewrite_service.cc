@@ -48,6 +48,10 @@ bool Event_tracking_parse_implementation::callback(
   //   [16..31] padding / PSI_thread* m_owner = nullptr
   static const size_t kPsiHdrSize = 32;
   static const uint32_t kPsiMagic = 1234;
+  // m_size at offset 8 is size_t wide; the 32-byte total requires 64-bit.
+  static_assert(sizeof(size_t) == 8,
+                "PSI memory header layout assumes 64-bit size_t (offset 8, 8 bytes); "
+                "verify layout against mysql/psi/mysql_memory.h before porting to 32-bit");
   const size_t alloc_size = rewritten.length() + 1;
   char *raw = static_cast<char *>(malloc(kPsiHdrSize + alloc_size));
   if (!raw) return true;

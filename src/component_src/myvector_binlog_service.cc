@@ -1494,7 +1494,7 @@ public:
             std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
             persist_state_snapshot(currentBinlogFile, currentBinlogPos);
         }
-        return 0;
+        return 1;  // 1 = thread was running and has been stopped
     }
 
 private:

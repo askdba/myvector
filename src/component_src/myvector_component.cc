@@ -70,12 +70,15 @@ static mysql_service_status_t myvector_unload_notify(const char **services,
                                                       unsigned int count) {
   for (unsigned int i = 0; i < count; ++i) {
     if (strcmp(services[i], "event_tracking_parse.myvector") == 0) {
-      myvector_component::get_binlog_service().stop_binlog_monitoring();
-      // After mysql_close() the server-side binlog THD cleanup (which
-      // releases the event_tracking_parse reference) is asynchronous.
-      // Give the server ~5s to destroy the THD before dynamic_loader
-      // checks the reference count for UNINSTALL COMPONENT.
-      std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+      int was_running =
+          myvector_component::get_binlog_service().stop_binlog_monitoring();
+      if (was_running) {
+        // After mysql_close() the server-side binlog THD cleanup (which
+        // releases the event_tracking_parse reference) is asynchronous.
+        // Give the server ~5s to destroy the THD before dynamic_loader
+        // checks the reference count for UNINSTALL COMPONENT.
+        std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+      }
       break;
     }
   }
