@@ -1202,7 +1202,8 @@ ulong myvector_max_vector_dim = 4096;
 /* rewriteMyVectorColumnDef() - rewrite the MYVECTOR(...) annotation in
  * CREATE TABLE & ALTER TABLE.
  */
-bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
+bool rewriteMyVectorColumnDef(const string& query, string& newQuery,
+                              string& error_msg) {
     // support multiple MYVECTOR(...) columns
     size_t pos;
     bool error = false;
@@ -1213,14 +1214,16 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         size_t epos = newQuery.find_first_of(')', pos);
 
         if (epos == string::npos) {
-            MYVEC_LOG_ERROR("MYVECTOR column terminating ')' not found.");
+            error_msg = "MYVECTOR column terminating ) not found";
+            MYVEC_LOG_ERROR("%s.", error_msg.c_str());
             error = true;
             break;
         }
 
         string colinfo = newQuery.substr(spos, (epos - spos));
         if (colinfo.length() > MYVECTOR_MAX_COLUMN_INFO_LEN) {
-            MYVEC_LOG_ERROR("MYVECTOR column info too long, length = %zu.",
+            error_msg = "MYVECTOR column info too long";
+            MYVEC_LOG_ERROR("%s, length = %zu.", error_msg.c_str(),
                             colinfo.length());
             error = true;
             break;
@@ -1229,7 +1232,8 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         MyVectorOptions vo(colinfo);
 
         if (!vo.isValid()) {
-            MYVEC_LOG_ERROR("MYVECTOR column options parse error, options=%s.",
+            error_msg = "MYVECTOR column options parse error";
+            MYVEC_LOG_ERROR("%s, options=%s.", error_msg.c_str(),
                             colinfo.c_str());
             error = true;
             break;
@@ -1243,7 +1247,8 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         }
 
         if (vo.getOption("dim") == "") {
-            MYVEC_LOG_ERROR("MYVECTOR column dimension not defined.");
+            error_msg = "MYVECTOR column dimension not defined";
+            MYVEC_LOG_ERROR("%s.", error_msg.c_str());
             error = true;
             break;
         }
@@ -1259,7 +1264,9 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
         int dim = vo.getIntOption("dim", 0, &dimValid);
 
         if (!dimValid || dim <= 1 || (ulong)dim > myvector_max_vector_dim) {
-            MYVEC_LOG_ERROR("MYVECTOR column dimension incorrect %d.", dim);
+            error_msg =
+                "MYVECTOR column dimension incorrect " + to_string(dim);
+            MYVEC_LOG_ERROR("%s.", error_msg.c_str());
             error = true;
             break;
         }
@@ -1333,14 +1340,50 @@ bool rewriteMyVectorIsANN(const string& query, string& newQuery) {
             break;
         }
 
+        // If last top-level arg is a bare integer k, convert to 'nn=k' options string.
+        // myvector_ann_set expects a string arg; MySQL sets lengths[n]=0 for integers,
+        // causing the options to be silently skipped and JSON_TABLE to fail.
+        // Scan for the last top-level comma (outside parens/brackets/quotes) so that
+        // vector expressions like myvector_construct('[1,2,3]') work correctly —
+        // naive annparams.size()==4 fails when the expression contains inner commas.
+        {
+            size_t last_top_comma = string::npos;
+            int depth = 0;
+            bool in_sq = false, in_dq = false;
+            for (size_t ci = 0; ci < strparams.size(); ++ci) {
+                char ch = strparams[ci];
+                if (!in_sq && !in_dq) {
+                    if (ch == '(' || ch == '[') ++depth;
+                    else if (ch == ')' || ch == ']') --depth;
+                    else if (ch == '\'') in_sq = true;
+                    else if (ch == '"') in_dq = true;
+                    else if (ch == ',' && depth == 0) last_top_comma = ci;
+                } else if (in_sq && ch == '\'') in_sq = false;
+                else if (in_dq && ch == '"') in_dq = false;
+            }
+            if (last_top_comma != string::npos) {
+                string tail = strparams.substr(last_top_comma + 1);
+                size_t s = tail.find_first_not_of(" \t\r\n");
+                if (s != string::npos) tail = tail.substr(s);
+                size_t e = tail.find_last_not_of(" \t\r\n");
+                if (e != string::npos) tail = tail.substr(0, e + 1);
+                if (!tail.empty() &&
+                    tail.find_first_not_of("0123456789") == string::npos) {
+                    strparams = strparams.substr(0, last_top_comma + 1) +
+                                " 'nn=" + tail + "'";
+                }
+            }
+        }
+
         string idcolexpr = annparams[1];
         idcolexpr = idcolexpr.substr(
             1, idcolexpr.length() - 2);  // remove the single quote
 
         stringstream ss;
         ss << "( " << idcolexpr << " IN "
-           << "(select `myvecid` from JSON_TABLE(myvector_ann_set(" << strparams
-           << "), " << '"' << "$[*]" << '"'
+           << "(select `myvecid` from "
+           << "(select myvector_ann_set(" << strparams << ") `_mvjson`) `_mvsrc`,"
+           << "JSON_TABLE(`_mvsrc`.`_mvjson`, " << '"' << "$[*]" << '"'
            << " COLUMNS(`myvecid` BIGINT PATH \"$\")) `myvector_ann`) )";
 
         newQuery =
@@ -1455,8 +1498,15 @@ bool myvector_query_rewrite(const string& query, string* rewritten_query) {
     } else if ((regex_search(query, create_table) ||
                 regex_search(query, alter_table)) &&
                (strstr(query.c_str(), MYVECTOR_COLUMN_A.c_str()))) {
-        if (rewriteMyVectorColumnDef(query, newQuery)) {
-            newQuery = "";
+        string error_msg;
+        if (rewriteMyVectorColumnDef(query, newQuery, error_msg)) {
+            // Escape any single quotes before embedding in SIGNAL statement.
+            string safe_msg;
+            safe_msg.reserve(error_msg.size());
+            for (char c : error_msg)
+                safe_msg += (c == '\'') ? "''" : string(1, c);
+            newQuery =
+                "SIGNAL SQLSTATE 'HY000' SET MESSAGE_TEXT = '" + safe_msg + "'";
         }
     }
 

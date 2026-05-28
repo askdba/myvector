@@ -1494,7 +1494,7 @@ public:
             std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
             persist_state_snapshot(currentBinlogFile, currentBinlogPos);
         }
-        return 0;
+        return 1;  // 1 = thread was running and has been stopped
     }
 
 private:
@@ -1697,7 +1697,8 @@ private:
 
             std::string initQuery =
                 "SET @master_binlog_checksum = 'NONE', @source_binlog_checksum = "
-                "'NONE',@net_read_timeout = 3000, @replica_net_timeout = 3000;";
+                "'NONE', @net_read_timeout = 3000, @replica_net_timeout = 3000,"
+                " @master_heartbeat_period = 1000000000;";
             if (mysql_real_query(&mysql, initQuery.c_str(), initQuery.length())) {
                 close_binlog_mysql_conn();
                 break;

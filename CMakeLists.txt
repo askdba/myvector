@@ -105,7 +105,8 @@ if(DEFINED BOOST_INCLUDE_DIR)
 endif()
 
 # Source files for the MyVector component (exclude plugin entry and plugin binlog).
-# query_rewrite service header exists in MySQL 9.0+ only; omit for 8.0/8.4.
+# event_tracking_parse_consumer_helper.h is available in MySQL 8.4+ via the
+# event_tracking component API; always include the query rewrite service.
 set(MYVECTOR_COMPONENT_SRCS
   src/component_src/myvector_component.cc
   src/component_src/myvector_component_config.cc
@@ -115,7 +116,7 @@ set(MYVECTOR_COMPONENT_SRCS
   src/myvectorutils.cc
 )
 set(MYVECTOR_COMPONENT_DEFS "")
-if(EXISTS "${MYSQL_SOURCE_DIR}/include/mysql/components/services/query_rewrite.h")
+if(EXISTS "${MYSQL_SOURCE_DIR}/include/mysql/components/util/event_tracking/event_tracking_parse_consumer_helper.h")
   list(APPEND MYVECTOR_COMPONENT_SRCS src/component_src/myvector_query_rewrite_service.cc)
   list(APPEND MYVECTOR_COMPONENT_DEFS MYVECTOR_HAS_QUERY_REWRITE_SERVICE)
 endif()
