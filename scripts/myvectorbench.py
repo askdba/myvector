@@ -861,10 +861,12 @@ def main():
         parser.error("--mysql-version and --build-path are required")
 
     artifact_dir = args.artifact_dir
+    if args.artifact and args.build_path == "plugin":
+        parser.error("--artifact is only supported for component builds; use --artifact-dir for plugin builds")
     if args.artifact:
         artifact_dir = _resolve_artifact_dir(args.artifact)
-    elif not artifact_dir and args.build_path == "component":
-        parser.error("--artifact-dir or --artifact is required for component builds")
+    elif not artifact_dir:
+        parser.error("--artifact-dir or --artifact is required")
 
     config = load_config(args.config)
     run_benchmark(
