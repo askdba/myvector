@@ -241,3 +241,4 @@ def test_compare_ann_rewrite_active_false_no_knn_ann_breach(capsys):
         captured = capsys.readouterr()
     assert rc == 0
     assert 'N/A' in captured.out
+    assert 'ann_rewrite_active' not in captured.out
