@@ -486,3 +486,69 @@ run_lifecycle_install_timing() {
   fi
   cleanup_container
 }
+
+run_lifecycle_uninstall_under_load() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Lifecycle 3.2] UNINSTALL under load — ERROR 3540 guard ($VER)"
+  cleanup_container
+  start_container "$VER"
+  install_component "$COMP_DIR"
+
+  # Build a 1000-row HNSW index so there is something to query.
+  mq -e "
+    CREATE DATABASE IF NOT EXISTS lc;
+    CREATE TABLE lc.unload_t (
+      id  INT PRIMARY KEY,
+      vec VARBINARY(256)
+        COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=1000,m=16,ef=50,idcol=id,dist=L2'
+    );
+  " 2>/dev/null
+  local i
+  for i in $(seq 0 9); do
+    local VALS=""
+    local j
+    for j in $(seq 0 99); do
+      local ROW=$(( i * 100 + j ))
+      VALS="${VALS}(${ROW}, myvector_construct('[$(( RANDOM % 100 )).0,$(( RANDOM % 100 )).0,$(( RANDOM % 100 )).0]')),"
+    done
+    VALS="${VALS%,}"
+    mq -D lc -e "INSERT INTO lc.unload_t (id, vec) VALUES ${VALS};" 2>/dev/null || true
+  done
+  mq -D lc -e "CALL mysql.MYVECTOR_INDEX_BUILD('lc.unload_t.vec', 'id');" 2>/dev/null
+
+  # Start 5 background KNN query loops (30s timeout each).
+  local -a BG_PIDS=()
+  for i in $(seq 1 5); do
+    (
+      local STOP=$(( $(date +%s) + 30 ))
+      while [[ $(date +%s) -lt $STOP ]]; do
+        mq -D lc -e \
+          "SELECT id FROM lc.unload_t ORDER BY myvector_distance(vec, myvector_construct('[1.0,0.0,0.0]'), 'L2') LIMIT 5;" \
+          >/dev/null 2>&1 || true
+      done
+    ) &
+    BG_PIDS+=($!)
+  done
+
+  local T0 T1 ELAPSED
+  T0=$(date +%s)
+  local UNINSTALL_OUT
+  UNINSTALL_OUT=$(mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>&1 || true)
+  T1=$(date +%s)
+  ELAPSED=$(( T1 - T0 ))
+
+  # Terminate background loops
+  for pid in "${BG_PIDS[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+  wait "${BG_PIDS[@]}" 2>/dev/null || true
+
+  if echo "$UNINSTALL_OUT" | grep -q "3540"; then
+    fail "UNINSTALL returned ERROR 3540 (myvector_unload_notify regression): $UNINSTALL_OUT"
+  elif [[ "$ELAPSED" -ge 12 ]]; then
+    fail "UNINSTALL took ${ELAPSED}s >= 12s (teardown timeout regression)"
+  else
+    pass "UNINSTALL under load: no ERROR 3540, elapsed=${ELAPSED}s < 12s"
+  fi
+  cleanup_container
+}
