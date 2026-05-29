@@ -688,8 +688,14 @@ def promote(git_ref: str, config_path: str):
 
     config = load_config(config_path)
     matrix = config.get("matrix", {})
-    mysql_versions = matrix.get("mysql_versions", [])
-    build_paths = matrix.get("build_paths", [])
+    # Support both the new `cells` format and the legacy flat matrix format.
+    cells = matrix.get("cells")
+    if cells:
+        pairs = [(str(cell['mysql']), cell['build']) for cell in cells]
+    else:
+        mysql_versions = matrix.get("mysql_versions", [])
+        build_paths = matrix.get("build_paths", [])
+        pairs = [(str(ver), bp) for ver in mysql_versions for bp in build_paths]
 
     with tempfile.TemporaryDirectory() as wt_dir:
         r = subprocess.run(
@@ -712,21 +718,20 @@ def promote(git_ref: str, config_path: str):
                 sys.exit(1)
 
         promoted = 0
-        for ver in mysql_versions:
-            for bp in build_paths:
-                cell_dir = Path(wt_dir) / str(ver) / bp
-                if not cell_dir.exists():
-                    print(f"  SKIP {ver}/{bp}: no results directory on benchmarks/ branch")
-                    continue
-                candidates = sorted(cell_dir.glob(f"{git_ref}-*.json"))
-                if not candidates:
-                    print(f"  SKIP {ver}/{bp}: no result file for {git_ref}")
-                    continue
-                src = candidates[-1]
-                dst = cell_dir / "baseline.json"
-                shutil.copy(src, dst)
-                print(f"  PROMOTED {ver}/{bp}: {src.name} → baseline.json")
-                promoted += 1
+        for ver, bp in pairs:
+            cell_dir = Path(wt_dir) / ver / bp
+            if not cell_dir.exists():
+                print(f"  SKIP {ver}/{bp}: no results directory on benchmarks/ branch")
+                continue
+            candidates = sorted(cell_dir.glob(f"{git_ref}-*.json"))
+            if not candidates:
+                print(f"  SKIP {ver}/{bp}: no result file for {git_ref}")
+                continue
+            src = candidates[-1]
+            dst = cell_dir / "baseline.json"
+            shutil.copy(src, dst)
+            print(f"  PROMOTED {ver}/{bp}: {src.name} → baseline.json")
+            promoted += 1
 
         if promoted == 0:
             print(f"  No results found for {git_ref} on benchmarks/ branch — nothing promoted.")
@@ -762,7 +767,8 @@ def _git_ref() -> str:
 # ── main benchmark orchestration ─────────────────────────────────────────────
 
 def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
-                  config: dict, output: str):
+                  config: dict, output: str, image: str = None,
+                  ann_gate: bool = False):
     wp = config.get('workload', {})
     git_ref = _git_ref()
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -796,14 +802,14 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
                     f"mysql:{mysql_version}; skipping bundled libstdc++ mount"
                 )
 
-    with Container(mysql_version, extra_volumes=extra_volumes) as c:
+    with Container(mysql_version, extra_volumes=extra_volumes, image=image) as c:
         if build_path == "component":
             install_component(c, artifact_dir)
         else:
             install_plugin(c, os.path.join(artifact_dir, "myvector.so"))
 
         vectors = load_dataset(dataset, wp)
-        metrics = run_workloads(c, vectors, wp, build_path, mysql_version)
+        metrics = run_workloads(c, vectors, wp, build_path, mysql_version, ann_gate=ann_gate)
 
     result = {
         "git_ref": git_ref,
@@ -837,6 +843,12 @@ def main():
     parser.add_argument("--artifact-dir", help="Dir containing build artifacts")
     parser.add_argument("--config", default="myvectorbench.yml")
     parser.add_argument("--output", default="result.json")
+    parser.add_argument("--image", default=None,
+                        help="Docker image to use, e.g. mysql:9.7")
+    parser.add_argument("--artifact", default=None, metavar="ARTIFACT_KEY",
+                        help="Artifact key e.g. component-9.7 (resolves dist/ or downloads via gh)")
+    parser.add_argument("--ann-gate", action="store_true",
+                        help="Fail cell if MYVECTOR_IS_ANN probe is inactive (for 9.x component cells)")
     parser.add_argument("--promote", metavar="GIT_REF",
                         help="Promote GIT_REF results to baseline on benchmarks/ branch")
     args = parser.parse_args()
@@ -845,11 +857,20 @@ def main():
         promote(args.promote, args.config)
         return
 
-    if not all([args.mysql_version, args.build_path, args.artifact_dir]):
-        parser.error("--mysql-version, --build-path, and --artifact-dir are required")
+    if not all([args.mysql_version, args.build_path]):
+        parser.error("--mysql-version and --build-path are required")
+
+    artifact_dir = args.artifact_dir
+    if args.artifact:
+        artifact_dir = _resolve_artifact_dir(args.artifact)
+    elif not artifact_dir and args.build_path == "component":
+        parser.error("--artifact-dir or --artifact is required for component builds")
 
     config = load_config(args.config)
-    run_benchmark(args.mysql_version, args.build_path, args.artifact_dir, config, args.output)
+    run_benchmark(
+        args.mysql_version, args.build_path, artifact_dir, config, args.output,
+        image=args.image, ann_gate=args.ann_gate,
+    )
 
 
 if __name__ == "__main__":
