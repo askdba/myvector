@@ -38,12 +38,13 @@ def load_config(path: str) -> dict:
 
 class Container:
     def __init__(self, mysql_version: str, root_pw: str = "benchroot",
-                 extra_volumes: list = None):
+                 extra_volumes: list = None, image: str = None):
         self.version = mysql_version
         self.root_pw = root_pw
         self.name = f"myvector-bench-{os.getpid()}-{mysql_version.replace('.', '')}"
         self._running = False
         self._extra_volumes = extra_volumes or []
+        self._image = image or f"mysql:{mysql_version}"
 
     def start(self):
         cmd = ["docker", "run", "-d", "--name", self.name,
@@ -51,7 +52,7 @@ class Container:
                "-e", "MYSQL_ROOT_HOST=%"]
         for vol in self._extra_volumes:
             cmd += ["-v", vol]
-        cmd.append(f"mysql:{self.version}")
+        cmd.append(self._image)
         subprocess.run(cmd, check=True, capture_output=True)
         self._running = True
         try:
@@ -294,6 +295,45 @@ def install_plugin(container: Container, plugin_so: str):
         pass  # sysvar not available on all versions
     container.sql_stdin(INSTALL_PROCS_SQL, "mysql")
     print("  Plugin installed.")
+
+
+def _resolve_artifact_dir(artifact_key: str) -> str:
+    """Return local path to component artifact directory.
+
+    Checks dist/<artifact_key>/ first. If libmyvector_component.so is missing,
+    downloads <artifact_key>.tar.gz from the latest GitHub release using gh CLI
+    and extracts into dist/<artifact_key>/.
+    """
+    local = Path(f"dist/{artifact_key}")
+    if local.is_dir() and (local / "libmyvector_component.so").exists():
+        return str(local)
+
+    with tempfile.TemporaryDirectory() as dl_dir:
+        r = subprocess.run(
+            ["gh", "release", "download", "--pattern", f"{artifact_key}.tar.gz",
+             "--dir", dl_dir],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"gh release download failed for {artifact_key}.tar.gz:\n{r.stderr.strip()}"
+            )
+        archives = list(Path(dl_dir).glob(f"{artifact_key}.tar.gz"))
+        if not archives:
+            raise RuntimeError(
+                f"Archive not found after gh release download: {artifact_key}.tar.gz"
+            )
+        local.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["tar", "-xzf", str(archives[0]), "-C", str(local)],
+            check=True,
+        )
+
+    if not (local / "libmyvector_component.so").exists():
+        raise RuntimeError(
+            f"libmyvector_component.so not found in {local} after extraction"
+        )
+    return str(local)
 
 
 # ── dataset helpers ───────────────────────────────────────────────────────────
