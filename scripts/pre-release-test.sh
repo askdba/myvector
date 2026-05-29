@@ -611,3 +611,40 @@ run_lifecycle_reload_persistence() {
   fi
   cleanup_container
 }
+
+run_lifecycle_binlog_cleanup() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Lifecycle 3.4] Binlog thread cleanup ($VER)"
+  cleanup_container
+  start_container "$VER"
+  install_component "$COMP_DIR"
+
+  # Verify a binlog connection (slave/replica) appears after component install.
+  sleep 2
+  local PROC_BEFORE
+  PROC_BEFORE=$(mq -N -e "SHOW PROCESSLIST;" 2>/dev/null | grep -iE "binlog|slave|replica" | wc -l | LC_ALL=C tr -d '[:space:]')
+  if [[ "$PROC_BEFORE" -eq 0 ]]; then
+    skip "binlog cleanup: no binlog listener in PROCESSLIST before UNINSTALL (binlog may be disabled on this container)"
+    cleanup_container
+    return 0
+  fi
+
+  mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
+
+  # Poll up to 8s for binlog connections to disappear.
+  local DEADLINE=$(( $(date +%s) + 8 ))
+  local REMAINING=1
+  while [[ $(date +%s) -lt $DEADLINE ]]; do
+    REMAINING=$(mq -N -e "SHOW PROCESSLIST;" 2>/dev/null \
+      | grep -iE "binlog|slave|replica" | wc -l | LC_ALL=C tr -d '[:space:]')
+    [[ "$REMAINING" -eq 0 ]] && break
+    sleep 0.5
+  done
+
+  if [[ "$REMAINING" -eq 0 ]]; then
+    pass "binlog thread cleaned up within 8s of UNINSTALL"
+  else
+    fail "binlog thread still present after 8s (stop_binlog_monitoring regression)"
+  fi
+  cleanup_container
+}
