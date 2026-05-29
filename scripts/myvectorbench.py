@@ -528,23 +528,27 @@ def bench_knn_search(container: Container, vectors: list, wp: dict) -> dict:
     return {"knn_qps": qps, "knn_p50_ms": p50, "knn_p99_ms": p99}
 
 
-def bench_knn_ann(container: Container, vectors: list, wp: dict) -> dict:
+def bench_knn_ann(container: Container, vectors: list, wp: dict,
+                  ann_gate: bool = False) -> dict:
     """Run MYVECTOR_IS_ANN queries using the HNSW index.
 
-    Returns knn_ann_qps=0.0 and null latencies when query rewrite is inactive
-    (component build before the QueryRewriterService fix).
+    When ann_gate=True (9.x component cell), probe failure is a hard error.
+    Otherwise returns knn_ann_qps=0.0 and null latencies when query rewrite
+    is inactive.
     """
     n_queries = wp.get('knn_ann_queries', 200)
     print(f"  [knn_ann] {n_queries} queries, dim={wp['dim']}")
 
-    # Feature probe: test whether the query rewrite hook rewrites MYVECTOR_IS_ANN.
-    # If the rewrite is inactive, MySQL returns "FUNCTION X does not exist".
-    # Any other error (e.g. "index not open") means rewrite IS active; proceed.
+    # Probe with a correctly-dimensioned zero vector. Using dim=1 previously
+    # prevented the rewrite hook from matching the column and falsely reported
+    # the rewrite as inactive.
+    probe_vec = "[" + ",".join(["0.0"] * wp['dim']) + "]"
     probe_supported = True
     try:
         container.sql(
-            "SELECT MYVECTOR_IS_ANN('bench.build_t.vec', 'id', myvector_construct('[0]'))"
-            " FROM bench.build_t LIMIT 0;",
+            f"SELECT MYVECTOR_IS_ANN('bench.build_t.vec', 'id',"
+            f" myvector_construct('{probe_vec}'))"
+            f" FROM bench.build_t LIMIT 0;",
             db="bench",
         )
     except RuntimeError as e:
@@ -554,8 +558,18 @@ def bench_knn_ann(container: Container, vectors: list, wp: dict) -> dict:
         # Other errors (e.g. index not open, dim mismatch) mean rewrite IS active.
 
     if not probe_supported:
+        if ann_gate:
+            raise RuntimeError(
+                "MYVECTOR_IS_ANN probe failed on gated cell: query rewrite inactive. "
+                "Ensure INSTALL COMPONENT succeeded and the index is loaded."
+            )
         print("    ⚠ MYVECTOR_IS_ANN not supported (query rewrite inactive)")
-        return {"knn_ann_qps": 0.0, "knn_ann_p50_ms": None, "knn_ann_p99_ms": None}
+        return {
+            "knn_ann_qps": 0.0,
+            "knn_ann_p50_ms": None,
+            "knn_ann_p99_ms": None,
+            "ann_rewrite_active": False,
+        }
 
     rng = random.Random(77)
     query_vectors = [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n_queries)]
@@ -577,7 +591,12 @@ def bench_knn_ann(container: Container, vectors: list, wp: dict) -> dict:
     p99 = latencies_ms[max(0, math.ceil(len(latencies_ms) * 0.99) - 1)]
     qps = n_queries / (sum(latencies_ms) / 1000) if latencies_ms else 0.0
     print(f"    knn_ann_qps={qps:.0f}  p50={p50:.1f}ms  p99={p99:.1f}ms")
-    return {"knn_ann_qps": qps, "knn_ann_p50_ms": p50, "knn_ann_p99_ms": p99}
+    return {
+        "knn_ann_qps": qps,
+        "knn_ann_p50_ms": p50,
+        "knn_ann_p99_ms": p99,
+        "ann_rewrite_active": True,
+    }
 
 
 def bench_recall(container: Container, vectors: list, wp: dict) -> dict:
@@ -591,10 +610,12 @@ def bench_recall(container: Container, vectors: list, wp: dict) -> dict:
 
     # Same probe used by bench_knn_ann to detect inactive query rewrite.
     probe_supported = True
+    probe_vec = "[" + ",".join(["0.0"] * wp['dim']) + "]"
     try:
         container.sql(
-            "SELECT MYVECTOR_IS_ANN('bench.build_t.vec', 'id', myvector_construct('[0]'))"
-            " FROM bench.build_t LIMIT 0;",
+            f"SELECT MYVECTOR_IS_ANN('bench.build_t.vec', 'id',"
+            f" myvector_construct('{probe_vec}'))"
+            f" FROM bench.build_t LIMIT 0;",
             db="bench",
         )
     except RuntimeError as e:
@@ -641,12 +662,13 @@ def bench_recall(container: Container, vectors: list, wp: dict) -> dict:
 
 
 def run_workloads(container: Container, vectors: list, wp: dict,
-                  build_path: str, mysql_version: str) -> dict:
+                  build_path: str, mysql_version: str,
+                  ann_gate: bool = False) -> dict:
     metrics = {}
     metrics["index_build_time_s"] = bench_index_build(container, vectors, wp)
     metrics["insert_qps"] = bench_insert_throughput(container, vectors, wp)
     metrics.update(bench_knn_search(container, vectors, wp))
-    metrics.update(bench_knn_ann(container, vectors, wp))
+    metrics.update(bench_knn_ann(container, vectors, wp, ann_gate=ann_gate))
     metrics.update(bench_recall(container, vectors, wp))
     return metrics
 
