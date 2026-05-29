@@ -217,3 +217,27 @@ def test_compare_recall_breach(capsys):
     assert rc == 1
     assert 'recall_at_10' in captured.out
     assert 'FAIL' in captured.out
+
+
+def test_compare_ignores_ann_rewrite_active_key(capsys):
+    """ann_rewrite_active is not in thresholds — compare should not error on it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        baseline = _make_json(tmp, 'baseline.json', {'knn_qps': 1000.0, 'ann_rewrite_active': False})
+        current  = _make_json(tmp, 'current.json',  {'knn_qps': 1000.0, 'ann_rewrite_active': True})
+        cfg = _make_config(tmp, "  knn_qps: -25%\n")
+        rc = compare(baseline, current, cfg)
+        captured = capsys.readouterr()
+    assert rc == 0
+    assert 'ann_rewrite_active' not in captured.out
+
+
+def test_compare_ann_rewrite_active_false_no_knn_ann_breach(capsys):
+    """knn_ann_qps=0 (rewrite inactive) triggers N/A row, not FAIL."""
+    with tempfile.TemporaryDirectory() as tmp:
+        baseline = _make_json(tmp, 'baseline.json', {'knn_ann_qps': 0.0, 'ann_rewrite_active': False})
+        current  = _make_json(tmp, 'current.json',  {'knn_ann_qps': 0.0, 'ann_rewrite_active': False})
+        cfg = _make_config(tmp, "  knn_ann_qps: -25%\n")
+        rc = compare(baseline, current, cfg)
+        captured = capsys.readouterr()
+    assert rc == 0
+    assert 'N/A' in captured.out
