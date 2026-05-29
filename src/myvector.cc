@@ -1104,7 +1104,8 @@ AbstractVectorIndex* VectorIndexCollection::open(const string& name,
 
     MyVectorOptions vopt(options);
     string itype = vopt.getOption("type");
-    transform(itype.begin(), itype.end(), itype.begin(), ::toupper);
+    transform(itype.begin(), itype.end(), itype.begin(),
+              [](unsigned char c) { return static_cast<char>(toupper(c)); });
 
     if (itype == "HNSW" || itype == "HNSW_BV") {
         hnewindex = new HNSWMemoryIndex(name, options);
@@ -1244,7 +1245,8 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery) {
             vtype = "KNN";
             vo.setOption("type", vtype);
         } else {
-            transform(vtype.begin(), vtype.end(), vtype.begin(), ::toupper);
+            transform(vtype.begin(), vtype.end(), vtype.begin(),
+                      [](unsigned char c) { return static_cast<char>(toupper(c)); });
         }
 
         if (vo.getOption("dim") == "") {

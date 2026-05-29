@@ -583,15 +583,13 @@ def bench_recall(container: Container, vectors: list, wp: dict) -> dict:
         # ANN top-10 via query rewrite.
         ann_sql = (
             f"SELECT id FROM bench.build_t"
-            f" WHERE MYVECTOR_IS_ANN('bench.build_t.vec', 'id', {_vec_literal(q)}, 10);"
+            f" WHERE MYVECTOR_IS_ANN('bench.build_t.vec', 'id', {_vec_literal(q)})"
+            f" ORDER BY myvector_row_distance(id) LIMIT 10;"
         )
-        try:
-            ann_out = container.sql(ann_sql)
-            ann_ids = {
-                int(line) for line in ann_out.strip().splitlines()[1:] if line.strip()
-            }
-        except RuntimeError:
-            ann_ids = set()
+        ann_out = container.sql(ann_sql)
+        ann_ids = {
+            int(line) for line in ann_out.strip().splitlines()[1:] if line.strip()
+        }
 
         if knn_ids:
             recalls.append(len(knn_ids & ann_ids) / len(knn_ids))
