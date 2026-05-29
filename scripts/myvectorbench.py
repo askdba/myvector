@@ -540,6 +540,68 @@ def bench_knn_ann(container: Container, vectors: list, wp: dict) -> dict:
     return {"knn_ann_qps": qps, "knn_ann_p50_ms": p50, "knn_ann_p99_ms": p99}
 
 
+def bench_recall(container: Container, vectors: list, wp: dict) -> dict:
+    """Measure recall@10: fraction of true KNN top-10 found by ANN, averaged over queries.
+
+    Returns recall_at_10=None when MYVECTOR_IS_ANN is inactive (plugin path or
+    component without query rewrite service).
+    """
+    n_queries = min(wp.get('recall_queries', 50), len(vectors))
+    print(f"  [recall] {n_queries} queries, dim={wp['dim']}")
+
+    # Same probe used by bench_knn_ann to detect inactive query rewrite.
+    probe_supported = True
+    try:
+        container.sql(
+            "SELECT MYVECTOR_IS_ANN('bench.build_t.vec', 'id', myvector_construct('[0]'))"
+            " FROM bench.build_t LIMIT 0;",
+            db="bench",
+        )
+    except RuntimeError as e:
+        if "does not exist" in str(e) and "FUNCTION" in str(e):
+            probe_supported = False
+
+    if not probe_supported:
+        print("    ⚠ MYVECTOR_IS_ANN not supported — recall_at_10=None")
+        return {"recall_at_10": None}
+
+    rng = random.Random(42)
+    query_vectors = [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n_queries)]
+
+    recalls = []
+    for q in query_vectors:
+        # Ground truth: brute-force top-10 by distance.
+        knn_sql = (
+            f"SELECT id FROM bench.build_t"
+            f" ORDER BY myvector_distance(vec, {_vec_literal(q)}, 'L2') LIMIT 10;"
+        )
+        knn_out = container.sql(knn_sql)
+        knn_ids = {
+            int(line) for line in knn_out.strip().splitlines()[1:] if line.strip()
+        }
+
+        # ANN top-10 via query rewrite.
+        ann_sql = (
+            f"SELECT id FROM bench.build_t"
+            f" WHERE MYVECTOR_IS_ANN('bench.build_t.vec', 'id', {_vec_literal(q)}, 10);"
+        )
+        try:
+            ann_out = container.sql(ann_sql)
+            ann_ids = {
+                int(line) for line in ann_out.strip().splitlines()[1:] if line.strip()
+            }
+        except RuntimeError:
+            ann_ids = set()
+
+        if knn_ids:
+            recalls.append(len(knn_ids & ann_ids) / len(knn_ids))
+
+    recall = sum(recalls) / len(recalls) if recalls else None
+    if recall is not None:
+        print(f"    recall_at_10={recall:.3f}")
+    return {"recall_at_10": recall}
+
+
 def run_workloads(container: Container, vectors: list, wp: dict,
                   build_path: str, mysql_version: str) -> dict:
     metrics = {}
@@ -547,7 +609,7 @@ def run_workloads(container: Container, vectors: list, wp: dict,
     metrics["insert_qps"] = bench_insert_throughput(container, vectors, wp)
     metrics.update(bench_knn_search(container, vectors, wp))
     metrics.update(bench_knn_ann(container, vectors, wp))
-    metrics["recall_at_10"] = None  # requires ANN query API not available in v1
+    metrics.update(bench_recall(container, vectors, wp))
     return metrics
 
 
@@ -697,6 +759,7 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
             "ef_construction": wp.get("ef_construction", 200),
             "knn_queries": wp.get("knn_queries", 200),
             "knn_ann_queries": wp.get("knn_ann_queries", 200),
+            "recall_queries": wp.get("recall_queries", 50),
         },
         "metrics": metrics,
     }
