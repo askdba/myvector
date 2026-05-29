@@ -463,3 +463,23 @@ for VER in "${VERSIONS[@]}"; do
   cleanup_container
   echo ""
 done
+
+# ── Phase 3: Component lifecycle regression ───────────────────────────────────
+
+run_lifecycle_install_timing() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Lifecycle 3.1] Cold INSTALL timing ($VER)"
+  cleanup_container
+  local T0 T1 ELAPSED
+  T0=$(date +%s)
+  start_container "$VER"
+  install_component "$COMP_DIR"
+  T1=$(date +%s)
+  ELAPSED=$(( T1 - T0 ))
+  if [[ "$ELAPSED" -lt 5 ]]; then
+    pass "install_time_s=${ELAPSED} < 5s"
+  else
+    fail "install_time_s=${ELAPSED} >= 5s (myvector_component_init regression)"
+  fi
+  cleanup_container
+}
