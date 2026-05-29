@@ -552,3 +552,62 @@ run_lifecycle_uninstall_under_load() {
   fi
   cleanup_container
 }
+
+run_lifecycle_reload_persistence() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Lifecycle 3.3] Reload cycle index persistence ($VER)"
+  cleanup_container
+  start_container "$VER"
+  install_component "$COMP_DIR"
+
+  # Build a 500-row HNSW index.
+  mq -e "
+    CREATE DATABASE IF NOT EXISTS lc;
+    CREATE TABLE lc.reload_t (
+      id  INT PRIMARY KEY,
+      vec VARBINARY(516)
+        COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=500,m=16,ef=50,idcol=id,dist=L2'
+    );
+  " 2>/dev/null
+  local i
+  for i in $(seq 0 4); do
+    local VALS=""
+    local j
+    for j in $(seq 0 99); do
+      local ROW=$(( i * 100 + j ))
+      VALS="${VALS}(${ROW}, myvector_construct('[$(( j % 10 )).$(( RANDOM % 9 )),$(( j % 5 )).$(( RANDOM % 9 )),$(( j % 7 )).$(( RANDOM % 9 ))']')),"
+    done
+    VALS="${VALS%,}"
+    mq -D lc -e "INSERT INTO lc.reload_t (id, vec) VALUES ${VALS};" 2>/dev/null || true
+  done
+  mq -D lc -e "CALL mysql.MYVECTOR_INDEX_BUILD('lc.reload_t.vec', 'id');" 2>/dev/null
+
+  # Record top-3 KNN results for a fixed query vector before UNINSTALL.
+  local BEFORE_RESULT
+  BEFORE_RESULT=$(mq -N -D lc -e \
+    "SELECT id FROM lc.reload_t ORDER BY myvector_distance(vec, myvector_construct('[1.0,2.0,3.0]'), 'L2') LIMIT 3;" \
+    2>/dev/null | LC_ALL=C tr -s '[:space:]' ',' | sed 's/,$//')
+
+  if [[ -z "$BEFORE_RESULT" ]]; then
+    fail "reload persistence: could not retrieve top-3 KNN before UNINSTALL"
+    cleanup_container
+    return 0
+  fi
+
+  # UNINSTALL then INSTALL + reload.
+  mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
+  install_component "$COMP_DIR"
+  mq -D lc -e "CALL mysql.MYVECTOR_INDEX_BUILD('lc.reload_t.vec', 'id');" 2>/dev/null
+
+  local AFTER_RESULT
+  AFTER_RESULT=$(mq -N -D lc -e \
+    "SELECT id FROM lc.reload_t ORDER BY myvector_distance(vec, myvector_construct('[1.0,2.0,3.0]'), 'L2') LIMIT 3;" \
+    2>/dev/null | LC_ALL=C tr -s '[:space:]' ',' | sed 's/,$//')
+
+  if [[ "$BEFORE_RESULT" == "$AFTER_RESULT" ]]; then
+    pass "reload cycle: top-3 KNN identical before/after UNINSTALL+INSTALL"
+  else
+    fail "reload cycle: top-3 KNN changed after reload (before='$BEFORE_RESULT' after='$AFTER_RESULT')"
+  fi
+  cleanup_container
+}
