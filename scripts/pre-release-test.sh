@@ -648,3 +648,13 @@ run_lifecycle_binlog_cleanup() {
   fi
   cleanup_container
 }
+
+for VER in "${VERSIONS[@]}"; do
+  DIR="${COMPONENT_DIRS[$VER]}"
+  echo "--- Phase 3 Lifecycle ($VER) ---"
+  run_lifecycle_install_timing  "$VER" "$DIR"
+  run_lifecycle_uninstall_under_load "$VER" "$DIR"
+  run_lifecycle_reload_persistence   "$VER" "$DIR"
+  run_lifecycle_binlog_cleanup       "$VER" "$DIR"
+  echo ""
+done
