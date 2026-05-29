@@ -192,3 +192,28 @@ def test_compare_knn_ann_qps_breach(capsys):
     assert rc == 1
     assert "FAIL: one or more metrics exceeded threshold." in captured.out
     assert 'knn_ann_qps' in captured.out
+
+
+def test_compare_recall_null_baseline_skips(capsys):
+    """recall_at_10=None in baseline → N/A row, no breach."""
+    with tempfile.TemporaryDirectory() as tmp:
+        baseline = _make_json(tmp, 'baseline.json', {'recall_at_10': None})
+        current  = _make_json(tmp, 'current.json',  {'recall_at_10': 0.940})
+        cfg = _make_config(tmp, "  recall_at_10: -0.05\n")
+        rc = compare(baseline, current, cfg)
+        captured = capsys.readouterr()
+    assert rc == 0
+    assert 'N/A' in captured.out
+
+
+def test_compare_recall_breach(capsys):
+    """recall_at_10 drops more than -0.05 absolute → FAIL."""
+    with tempfile.TemporaryDirectory() as tmp:
+        baseline = _make_json(tmp, 'baseline.json', {'recall_at_10': 0.942})
+        current  = _make_json(tmp, 'current.json',  {'recall_at_10': 0.880})  # -0.062
+        cfg = _make_config(tmp, "  recall_at_10: -0.05\n")
+        rc = compare(baseline, current, cfg)
+        captured = capsys.readouterr()
+    assert rc == 1
+    assert 'recall_at_10' in captured.out
+    assert 'FAIL' in captured.out

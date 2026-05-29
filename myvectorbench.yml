@@ -12,13 +12,14 @@ workload:
   ef_construction: 200
   knn_queries: 200
   knn_ann_queries: 200
+  recall_queries: 50
 
 thresholds:
   index_build_time_s: +25%
   insert_qps: -25%
   knn_qps: -25%
   knn_p99_ms: +30%
-  recall_at_10: -0.05   # absolute delta — NOT YET EVALUATED: always emitted as null in v1
+  recall_at_10: -0.05   # absolute delta
   knn_ann_qps: -25%
   knn_ann_p50_ms: +30%
   knn_ann_p99_ms: +30%

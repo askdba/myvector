@@ -1102,10 +1102,14 @@ AbstractVectorIndex* VectorIndexCollection::open(const string& name,
 
     AbstractVectorIndex* hnewindex = nullptr;
 
-    /* First case handles both HNSW and HNSW_BV */
-    if (options.rfind("type=HNSW") != string::npos) {
+    MyVectorOptions vopt(options);
+    string itype = vopt.getOption("type");
+    transform(itype.begin(), itype.end(), itype.begin(),
+              [](unsigned char c) { return static_cast<char>(toupper(c)); });
+
+    if (itype == "HNSW" || itype == "HNSW_BV") {
         hnewindex = new HNSWMemoryIndex(name, options);
-    } else if (options.rfind("type=KNN") != string::npos) {
+    } else if (itype == "KNN") {
         hnewindex = new KNNIndex(name, options);
     } else {
         MYVEC_LOG_ERROR("MyVector unknown index type for %s options = %s, using KNN",
@@ -1244,6 +1248,9 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery,
             colinfo = MYVECTOR_DEFAULT_INDEX_TYPE + "," + colinfo;
             vtype = "KNN";
             vo.setOption("type", vtype);
+        } else {
+            transform(vtype.begin(), vtype.end(), vtype.begin(),
+                      [](unsigned char c) { return static_cast<char>(toupper(c)); });
         }
 
         if (vo.getOption("dim") == "") {
