@@ -586,7 +586,7 @@ run_lifecycle_reload_persistence() {
   local BEFORE_RESULT
   BEFORE_RESULT=$(mq -N -D lc -e \
     "SELECT id FROM lc.reload_t ORDER BY myvector_distance(vec, myvector_construct('[1.0,2.0,3.0]'), 'L2') LIMIT 3;" \
-    2>/dev/null | LC_ALL=C tr -s '[:space:]' ',' | sed 's/,$//')
+    2>/dev/null | LC_ALL=C tr -s '[:space:]' ',' | sed 's/^,//;s/,$//')
 
   if [[ -z "$BEFORE_RESULT" ]]; then
     fail "reload persistence: could not retrieve top-3 KNN before UNINSTALL"
@@ -602,7 +602,7 @@ run_lifecycle_reload_persistence() {
   local AFTER_RESULT
   AFTER_RESULT=$(mq -N -D lc -e \
     "SELECT id FROM lc.reload_t ORDER BY myvector_distance(vec, myvector_construct('[1.0,2.0,3.0]'), 'L2') LIMIT 3;" \
-    2>/dev/null | LC_ALL=C tr -s '[:space:]' ',' | sed 's/,$//')
+    2>/dev/null | LC_ALL=C tr -s '[:space:]' ',' | sed 's/^,//;s/,$//')
 
   if [[ "$BEFORE_RESULT" == "$AFTER_RESULT" ]]; then
     pass "reload cycle: top-3 KNN identical before/after UNINSTALL+INSTALL"
