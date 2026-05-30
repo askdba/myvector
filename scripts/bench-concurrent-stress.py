@@ -315,7 +315,7 @@ def run_stress(mysql_version: str, build: str, artifact_dir: str,
     dim = wp['dim']
     vectors = _synthetic_vectors(wp.get('rows', 10000), dim)
 
-    with Container(mysql_version) as c:
+    with Container(mysql_version, image=image) as c:
         if build == "component":
             install_component(c, artifact_dir)
         elif artifact_dir:
@@ -422,15 +422,9 @@ def main():
     parser.add_argument("--output", default="stress-result.json")
     args = parser.parse_args()
 
-    if args.image:
-        print(f"WARNING: --image={args.image!r} passed but this branch's Container does not yet support custom images (requires PR #99 merge). Proceeding with default image.", flush=True)
-
     artifact_dir = args.artifact_dir
     if args.artifact:
-        _resolve = getattr(_bench_mod, '_resolve_artifact_dir', None)
-        if _resolve is None:
-            parser.error("--artifact requires myvectorbench.py with _resolve_artifact_dir (merge PR #99 first)")
-        artifact_dir = _resolve(args.artifact)
+        artifact_dir = _bench_mod._resolve_artifact_dir(args.artifact)
     if not artifact_dir and args.build == "component":
         parser.error("--artifact-dir or --artifact is required for component builds")
 
