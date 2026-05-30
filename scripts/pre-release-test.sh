@@ -533,9 +533,10 @@ run_lifecycle_uninstall_under_load() {
   sleep 1  # ensure workers have issued at least one query before UNINSTALL fires
 
   local T0 T1 ELAPSED
+  local UNINSTALL_RC=0
   T0=$(date +%s)
   local UNINSTALL_OUT
-  UNINSTALL_OUT=$(mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>&1 || true)
+  UNINSTALL_OUT=$(mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>&1) || UNINSTALL_RC=$?
   T1=$(date +%s)
   ELAPSED=$(( T1 - T0 ))
 
@@ -547,6 +548,8 @@ run_lifecycle_uninstall_under_load() {
 
   if echo "$UNINSTALL_OUT" | grep -q "3540"; then
     fail "UNINSTALL returned ERROR 3540 (myvector_unload_notify regression): $UNINSTALL_OUT"
+  elif [[ "$UNINSTALL_RC" -ne 0 ]]; then
+    fail "UNINSTALL failed unexpectedly (rc=$UNINSTALL_RC): $UNINSTALL_OUT"
   elif [[ "$ELAPSED" -ge 12 ]]; then
     fail "UNINSTALL took ${ELAPSED}s >= 12s (teardown timeout regression)"
   else
@@ -621,6 +624,11 @@ run_lifecycle_binlog_cleanup() {
   cleanup_container
   start_container "$VER"
   install_component "$COMP_DIR"
+  # install_component writes myvector.cnf AFTER INSTALL COMPONENT, so the binlog
+  # listener starts without config on the first install. Reinstall so the component
+  # reads the now-present cnf and starts binlog monitoring.
+  mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
+  mq -e "INSTALL COMPONENT 'file://myvector';"
 
   # Verify a binlog connection (slave/replica) appears after component install.
   sleep 2
