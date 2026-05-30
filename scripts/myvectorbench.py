@@ -269,7 +269,21 @@ def install_plugin(container: Container, plugin_so: str):
     plugin_dir = container.plugin_dir()
     data_dir = container.data_dir()
     container.cp(plugin_so, f"{plugin_dir}/myvector.so")
-    container.sql("INSTALL PLUGIN myvector SONAME 'myvector.so';", "mysql")
+    # Check if the plugin is already active (e.g. loaded via plugin-load-add in my.cnf
+    # on pre-built GHCR images). If load_option=ON it cannot be uninstalled while the
+    # server is running; skip INSTALL PLUGIN and rely on the .so already being in place.
+    out = container.sql(
+        "SELECT load_option FROM information_schema.plugins"
+        " WHERE plugin_name='myvector';",
+        "information_schema",
+    )
+    already_permanent = any(l.strip().upper() == "ON" for l in out.splitlines() if l.strip())
+    if not already_permanent:
+        try:
+            container.sql("UNINSTALL PLUGIN myvector;", "mysql")
+        except RuntimeError:
+            pass
+        container.sql("INSTALL PLUGIN myvector SONAME 'myvector.so';", "mysql")
     container.sql(
         "DROP FUNCTION IF EXISTS myvector_construct;"
         " DROP FUNCTION IF EXISTS myvector_display;"

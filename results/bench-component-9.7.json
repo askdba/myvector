@@ -1,0 +1,29 @@
+{
+  "git_ref": "v1.26.5.1-10-gc3190aa",
+  "mysql_version": "9.7",
+  "build_path": "component",
+  "timestamp": "2026-05-30T17:20:58Z",
+  "runner": "local",
+  "dataset": "synthetic",
+  "workload_params": {
+    "rows": 10000,
+    "dim": 128,
+    "M": 16,
+    "ef_construction": 200,
+    "knn_queries": 200,
+    "knn_ann_queries": 200,
+    "recall_queries": 50
+  },
+  "metrics": {
+    "index_build_time_s": 0.0544888973236084,
+    "insert_qps": 5127.942301259568,
+    "knn_qps": 6.634076111474389,
+    "knn_p50_ms": 115.82040786743164,
+    "knn_p99_ms": 838.4320735931396,
+    "knn_ann_qps": 0.0,
+    "knn_ann_p50_ms": null,
+    "knn_ann_p99_ms": null,
+    "ann_rewrite_active": false,
+    "recall_at_10": null
+  }
+}
