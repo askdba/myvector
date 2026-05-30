@@ -405,3 +405,53 @@ def run_stress(mysql_version: str, build: str, artifact_dir: str,
     print(f"  Result written to {output}")
     print(f"  passed={passed}")
     return 0 if passed else 1
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="RFC-004 concurrent stress test")
+    parser.add_argument("--mysql-version", required=True, help="e.g. 8.4 or 9.7")
+    parser.add_argument("--build", choices=["component", "plugin"], default="component")
+    parser.add_argument("--artifact-dir", help="Dir with build artifacts")
+    parser.add_argument("--artifact", help="Artifact key for auto-resolve (e.g. component-9.7)")
+    parser.add_argument("--image", default=None, help="Override Docker image")
+    parser.add_argument("--threads-knn",   type=int, default=50)
+    parser.add_argument("--threads-write", type=int, default=50)
+    parser.add_argument("--threads-ann",   type=int, default=20)
+    parser.add_argument("--duration",      type=int, default=60,
+                        help="Measurement window in seconds (warmup and drain are fixed at 30s each)")
+    parser.add_argument("--config", default="myvectorbench.yml")
+    parser.add_argument("--output", default="stress-result.json")
+    args = parser.parse_args()
+
+    artifact_dir = args.artifact_dir
+    if args.artifact:
+        artifact_dir = _bench_mod._resolve_artifact_dir(args.artifact)
+    if not artifact_dir and args.build == "component":
+        parser.error("--artifact-dir or --artifact is required for component builds")
+
+    try:
+        import yaml
+        with open(args.config) as f:
+            config = yaml.safe_load(f)
+    except FileNotFoundError:
+        config = {}
+
+    rc = run_stress(
+        mysql_version=args.mysql_version,
+        build=args.build,
+        artifact_dir=artifact_dir,
+        config=config,
+        output=args.output,
+        n_knn=args.threads_knn,
+        n_write=args.threads_write,
+        n_ann=args.threads_ann,
+        duration_s=args.duration,
+        image=args.image,
+    )
+    sys.exit(rc)
+
+
+if __name__ == "__main__":
+    main()
