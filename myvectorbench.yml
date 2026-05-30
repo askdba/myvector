@@ -1,8 +1,16 @@
 matrix:
-  mysql_versions: [8.4, 9.7]
-  build_paths: [plugin, component]
-  # A cell is skipped (not failed) if its build artifact is absent.
-  # plugin path is currently built for 8.4 only; 9.7 plugin cell is skipped.
+  cells:
+    - mysql: "8.4"
+      build: plugin
+      image: "ghcr.io/askdba/myvector:mysql8.4"
+    - mysql: "8.4"
+      build: component
+      image: "mysql:8.4"
+      artifact: "component-8.4"
+    - mysql: "9.7"
+      build: component
+      image: "mysql:9.7"
+      artifact: "component-9.7"
 
 workload:
   dataset: synthetic        # synthetic | glove50 | glove300 | /path/to/custom.tsv

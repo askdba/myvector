@@ -38,12 +38,13 @@ def load_config(path: str) -> dict:
 
 class Container:
     def __init__(self, mysql_version: str, root_pw: str = "benchroot",
-                 extra_volumes: list = None):
+                 extra_volumes: list = None, image: str = None):
         self.version = mysql_version
         self.root_pw = root_pw
         self.name = f"myvector-bench-{os.getpid()}-{mysql_version.replace('.', '')}"
         self._running = False
         self._extra_volumes = extra_volumes or []
+        self._image = image or f"mysql:{mysql_version}"
 
     def start(self):
         cmd = ["docker", "run", "-d", "--name", self.name,
@@ -51,7 +52,7 @@ class Container:
                "-e", "MYSQL_ROOT_HOST=%"]
         for vol in self._extra_volumes:
             cmd += ["-v", vol]
-        cmd.append(f"mysql:{self.version}")
+        cmd.append(self._image)
         subprocess.run(cmd, check=True, capture_output=True)
         self._running = True
         try:
@@ -296,6 +297,60 @@ def install_plugin(container: Container, plugin_so: str):
     print("  Plugin installed.")
 
 
+def _resolve_artifact_dir(artifact_key: str) -> str:
+    """Return local path to component artifact directory.
+
+    Checks dist/<artifact_key>/ first. If libmyvector_component.so is missing,
+    downloads <artifact_key>.tar.gz from the latest GitHub release using gh CLI
+    and extracts into dist/<artifact_key>/.
+    """
+    import re as _re
+    if not _re.fullmatch(r'[A-Za-z0-9._-]+', artifact_key):
+        raise ValueError(f"Invalid artifact_key {artifact_key!r}: only [A-Za-z0-9._-] allowed")
+    local = Path(f"dist/{artifact_key}")
+    if local.is_dir() and (local / "libmyvector_component.so").exists():
+        return str(local)
+
+    with tempfile.TemporaryDirectory() as dl_dir:
+        try:
+            r = subprocess.run(
+                ["gh", "release", "download", "--pattern", f"{artifact_key}.tar.gz",
+                 "--dir", dl_dir],
+                capture_output=True, text=True,
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "gh CLI not found. Install it from https://cli.github.com "
+                "or use --artifact-dir to specify a local path."
+            )
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"gh release download failed for {artifact_key}.tar.gz:\n{r.stderr.strip()}\n"
+                "Tip: release assets are named myvector-component-mysql<ver>-linux-<arch>.tar.gz; "
+                "use --artifact-dir dist/<key> after running the build script locally."
+            )
+        archives = list(Path(dl_dir).glob(f"{artifact_key}.tar.gz"))
+        if not archives:
+            raise RuntimeError(
+                f"Archive not found after gh release download: {artifact_key}.tar.gz\n"
+                "Tip: use --artifact-dir dist/<key> instead of --artifact for local builds."
+            )
+        local.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(
+                ["tar", "-xzf", str(archives[0]), "-C", str(local)],
+                check=True,
+            )
+        except FileNotFoundError:
+            raise RuntimeError("tar not found; install it or use --artifact-dir.")
+
+    if not (local / "libmyvector_component.so").exists():
+        raise RuntimeError(
+            f"libmyvector_component.so not found in {local} after extraction"
+        )
+    return str(local)
+
+
 # ── dataset helpers ───────────────────────────────────────────────────────────
 
 def _synthetic_vectors(rows: int, dim: int, seed: int = 42) -> list:
@@ -488,23 +543,27 @@ def bench_knn_search(container: Container, vectors: list, wp: dict) -> dict:
     return {"knn_qps": qps, "knn_p50_ms": p50, "knn_p99_ms": p99}
 
 
-def bench_knn_ann(container: Container, vectors: list, wp: dict) -> dict:
+def bench_knn_ann(container: Container, vectors: list, wp: dict,
+                  ann_gate: bool = False) -> dict:
     """Run MYVECTOR_IS_ANN queries using the HNSW index.
 
-    Returns knn_ann_qps=0.0 and null latencies when query rewrite is inactive
-    (component build before the QueryRewriterService fix).
+    When ann_gate=True (9.x component cell), probe failure is a hard error.
+    Otherwise returns knn_ann_qps=0.0 and null latencies when query rewrite
+    is inactive.
     """
     n_queries = wp.get('knn_ann_queries', 200)
     print(f"  [knn_ann] {n_queries} queries, dim={wp['dim']}")
 
-    # Feature probe: test whether the query rewrite hook rewrites MYVECTOR_IS_ANN.
-    # If the rewrite is inactive, MySQL returns "FUNCTION X does not exist".
-    # Any other error (e.g. "index not open") means rewrite IS active; proceed.
+    # Probe with a correctly-dimensioned zero vector. Using dim=1 previously
+    # prevented the rewrite hook from matching the column and falsely reported
+    # the rewrite as inactive.
+    probe_vec = "[" + ",".join(["0.0"] * wp['dim']) + "]"
     probe_supported = True
     try:
         container.sql(
-            "SELECT MYVECTOR_IS_ANN('bench.build_t.vec', 'id', myvector_construct('[0]'))"
-            " FROM bench.build_t LIMIT 0;",
+            f"SELECT MYVECTOR_IS_ANN('bench.build_t.vec', 'id',"
+            f" myvector_construct('{probe_vec}'))"
+            f" FROM bench.build_t LIMIT 0;",
             db="bench",
         )
     except RuntimeError as e:
@@ -514,8 +573,18 @@ def bench_knn_ann(container: Container, vectors: list, wp: dict) -> dict:
         # Other errors (e.g. index not open, dim mismatch) mean rewrite IS active.
 
     if not probe_supported:
+        if ann_gate:
+            raise RuntimeError(
+                "MYVECTOR_IS_ANN probe failed on gated cell: query rewrite inactive. "
+                "Ensure INSTALL COMPONENT succeeded and the index is loaded."
+            )
         print("    ⚠ MYVECTOR_IS_ANN not supported (query rewrite inactive)")
-        return {"knn_ann_qps": 0.0, "knn_ann_p50_ms": None, "knn_ann_p99_ms": None}
+        return {
+            "knn_ann_qps": 0.0,
+            "knn_ann_p50_ms": None,
+            "knn_ann_p99_ms": None,
+            "ann_rewrite_active": False,
+        }
 
     rng = random.Random(77)
     query_vectors = [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n_queries)]
@@ -537,7 +606,12 @@ def bench_knn_ann(container: Container, vectors: list, wp: dict) -> dict:
     p99 = latencies_ms[max(0, math.ceil(len(latencies_ms) * 0.99) - 1)]
     qps = n_queries / (sum(latencies_ms) / 1000) if latencies_ms else 0.0
     print(f"    knn_ann_qps={qps:.0f}  p50={p50:.1f}ms  p99={p99:.1f}ms")
-    return {"knn_ann_qps": qps, "knn_ann_p50_ms": p50, "knn_ann_p99_ms": p99}
+    return {
+        "knn_ann_qps": qps,
+        "knn_ann_p50_ms": p50,
+        "knn_ann_p99_ms": p99,
+        "ann_rewrite_active": True,
+    }
 
 
 def bench_recall(container: Container, vectors: list, wp: dict) -> dict:
@@ -551,10 +625,12 @@ def bench_recall(container: Container, vectors: list, wp: dict) -> dict:
 
     # Same probe used by bench_knn_ann to detect inactive query rewrite.
     probe_supported = True
+    probe_vec = "[" + ",".join(["0.0"] * wp['dim']) + "]"
     try:
         container.sql(
-            "SELECT MYVECTOR_IS_ANN('bench.build_t.vec', 'id', myvector_construct('[0]'))"
-            " FROM bench.build_t LIMIT 0;",
+            f"SELECT MYVECTOR_IS_ANN('bench.build_t.vec', 'id',"
+            f" myvector_construct('{probe_vec}'))"
+            f" FROM bench.build_t LIMIT 0;",
             db="bench",
         )
     except RuntimeError as e:
@@ -601,12 +677,13 @@ def bench_recall(container: Container, vectors: list, wp: dict) -> dict:
 
 
 def run_workloads(container: Container, vectors: list, wp: dict,
-                  build_path: str, mysql_version: str) -> dict:
+                  build_path: str, mysql_version: str,
+                  ann_gate: bool = False) -> dict:
     metrics = {}
     metrics["index_build_time_s"] = bench_index_build(container, vectors, wp)
     metrics["insert_qps"] = bench_insert_throughput(container, vectors, wp)
     metrics.update(bench_knn_search(container, vectors, wp))
-    metrics.update(bench_knn_ann(container, vectors, wp))
+    metrics.update(bench_knn_ann(container, vectors, wp, ann_gate=ann_gate))
     metrics.update(bench_recall(container, vectors, wp))
     return metrics
 
@@ -626,8 +703,14 @@ def promote(git_ref: str, config_path: str):
 
     config = load_config(config_path)
     matrix = config.get("matrix", {})
-    mysql_versions = matrix.get("mysql_versions", [])
-    build_paths = matrix.get("build_paths", [])
+    # Support both the new `cells` format and the legacy flat matrix format.
+    cells = matrix.get("cells")
+    if cells:
+        pairs = [(str(cell['mysql']), cell['build']) for cell in cells]
+    else:
+        mysql_versions = matrix.get("mysql_versions", [])
+        build_paths = matrix.get("build_paths", [])
+        pairs = [(str(ver), bp) for ver in mysql_versions for bp in build_paths]
 
     with tempfile.TemporaryDirectory() as wt_dir:
         r = subprocess.run(
@@ -650,21 +733,20 @@ def promote(git_ref: str, config_path: str):
                 sys.exit(1)
 
         promoted = 0
-        for ver in mysql_versions:
-            for bp in build_paths:
-                cell_dir = Path(wt_dir) / str(ver) / bp
-                if not cell_dir.exists():
-                    print(f"  SKIP {ver}/{bp}: no results directory on benchmarks/ branch")
-                    continue
-                candidates = sorted(cell_dir.glob(f"{git_ref}-*.json"))
-                if not candidates:
-                    print(f"  SKIP {ver}/{bp}: no result file for {git_ref}")
-                    continue
-                src = candidates[-1]
-                dst = cell_dir / "baseline.json"
-                shutil.copy(src, dst)
-                print(f"  PROMOTED {ver}/{bp}: {src.name} → baseline.json")
-                promoted += 1
+        for ver, bp in pairs:
+            cell_dir = Path(wt_dir) / ver / bp
+            if not cell_dir.exists():
+                print(f"  SKIP {ver}/{bp}: no results directory on benchmarks/ branch")
+                continue
+            candidates = sorted(cell_dir.glob(f"{git_ref}-*.json"))
+            if not candidates:
+                print(f"  SKIP {ver}/{bp}: no result file for {git_ref}")
+                continue
+            src = candidates[-1]
+            dst = cell_dir / "baseline.json"
+            shutil.copy(src, dst)
+            print(f"  PROMOTED {ver}/{bp}: {src.name} → baseline.json")
+            promoted += 1
 
         if promoted == 0:
             print(f"  No results found for {git_ref} on benchmarks/ branch — nothing promoted.")
@@ -700,7 +782,8 @@ def _git_ref() -> str:
 # ── main benchmark orchestration ─────────────────────────────────────────────
 
 def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
-                  config: dict, output: str):
+                  config: dict, output: str, image: str = None,
+                  ann_gate: bool = False):
     wp = config.get('workload', {})
     git_ref = _git_ref()
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -720,8 +803,9 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
             libstdcxx_src = libstdcxx_files[-1]
             # Detect the versioned filename the image's libstdc++.so.6 symlink resolves to,
             # so the mount target stays correct across MySQL patch versions.
+            probe_image = image or f"mysql:{mysql_version}"
             r = subprocess.run(
-                ["docker", "run", "--rm", f"mysql:{mysql_version}",
+                ["docker", "run", "--rm", probe_image,
                  "readlink", "-f", "/lib64/libstdc++.so.6"],
                 capture_output=True, text=True,
             )
@@ -731,17 +815,17 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
             else:
                 print(
                     "  Warning: could not resolve /lib64/libstdc++.so.6 inside "
-                    f"mysql:{mysql_version}; skipping bundled libstdc++ mount"
+                    f"{probe_image}; skipping bundled libstdc++ mount"
                 )
 
-    with Container(mysql_version, extra_volumes=extra_volumes) as c:
+    with Container(mysql_version, extra_volumes=extra_volumes, image=image) as c:
         if build_path == "component":
             install_component(c, artifact_dir)
         else:
             install_plugin(c, os.path.join(artifact_dir, "myvector.so"))
 
         vectors = load_dataset(dataset, wp)
-        metrics = run_workloads(c, vectors, wp, build_path, mysql_version)
+        metrics = run_workloads(c, vectors, wp, build_path, mysql_version, ann_gate=ann_gate)
 
     result = {
         "git_ref": git_ref,
@@ -775,6 +859,12 @@ def main():
     parser.add_argument("--artifact-dir", help="Dir containing build artifacts")
     parser.add_argument("--config", default="myvectorbench.yml")
     parser.add_argument("--output", default="result.json")
+    parser.add_argument("--image", default=None,
+                        help="Docker image to use, e.g. mysql:9.7")
+    parser.add_argument("--artifact", default=None, metavar="ARTIFACT_KEY",
+                        help="Artifact key e.g. component-9.7 (resolves dist/ or downloads via gh)")
+    parser.add_argument("--ann-gate", action="store_true",
+                        help="Fail cell if MYVECTOR_IS_ANN probe is inactive (for 9.x component cells)")
     parser.add_argument("--promote", metavar="GIT_REF",
                         help="Promote GIT_REF results to baseline on benchmarks/ branch")
     args = parser.parse_args()
@@ -783,11 +873,22 @@ def main():
         promote(args.promote, args.config)
         return
 
-    if not all([args.mysql_version, args.build_path, args.artifact_dir]):
-        parser.error("--mysql-version, --build-path, and --artifact-dir are required")
+    if not all([args.mysql_version, args.build_path]):
+        parser.error("--mysql-version and --build-path are required")
+
+    artifact_dir = args.artifact_dir
+    if args.artifact and args.build_path == "plugin":
+        parser.error("--artifact is only supported for component builds; use --artifact-dir for plugin builds")
+    if args.artifact:
+        artifact_dir = _resolve_artifact_dir(args.artifact)
+    elif not artifact_dir:
+        parser.error("--artifact-dir or --artifact is required")
 
     config = load_config(args.config)
-    run_benchmark(args.mysql_version, args.build_path, args.artifact_dir, config, args.output)
+    run_benchmark(
+        args.mysql_version, args.build_path, artifact_dir, config, args.output,
+        image=args.image, ann_gate=args.ann_gate,
+    )
 
 
 if __name__ == "__main__":
