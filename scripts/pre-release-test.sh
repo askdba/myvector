@@ -514,7 +514,8 @@ run_lifecycle_uninstall_under_load() {
     VALS="${VALS%,}"
     mq -D lc -e "INSERT INTO lc.unload_t (id, vec) VALUES ${VALS};" 2>/dev/null || true
   done
-  mq -D lc -e "CALL mysql.MYVECTOR_INDEX_BUILD('lc.unload_t.vec', 'id');" 2>/dev/null
+  mq -D lc -e "CALL mysql.MYVECTOR_INDEX_BUILD('lc.unload_t.vec', 'id');" 2>/dev/null \
+    || { fail "INDEX_BUILD failed for unload_t" ; cleanup_container ; return 1 ; }
 
   # Start 5 background KNN query loops (30s timeout each).
   local -a BG_PIDS=()
@@ -529,6 +530,7 @@ run_lifecycle_uninstall_under_load() {
     ) &
     BG_PIDS+=($!)
   done
+  sleep 1  # ensure workers have issued at least one query before UNINSTALL fires
 
   local T0 T1 ELAPSED
   T0=$(date +%s)
@@ -594,10 +596,11 @@ run_lifecycle_reload_persistence() {
     return 0
   fi
 
-  # UNINSTALL then INSTALL + reload.
+  # UNINSTALL then INSTALL + load persisted index from disk (not rebuild).
   mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
   install_component "$COMP_DIR"
-  mq -D lc -e "CALL mysql.MYVECTOR_INDEX_BUILD('lc.reload_t.vec', 'id');" 2>/dev/null
+  mq -D lc -e "CALL mysql.MYVECTOR_INDEX_LOAD('lc.reload_t.vec', 'id');" 2>/dev/null \
+    || { fail "MYVECTOR_INDEX_LOAD failed: on-disk index not preserved across UNINSTALL/INSTALL" ; cleanup_container ; return 1 ; }
 
   local AFTER_RESULT
   AFTER_RESULT=$(mq -N -D lc -e \
