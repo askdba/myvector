@@ -16,6 +16,7 @@ def test_import():
     mod = _load()
     assert hasattr(mod, '_aggregate')
     assert hasattr(mod, '_evaluate_pass')
+    assert hasattr(mod, '_build_result')
     assert hasattr(mod, 'run_stress')
 
 
@@ -29,6 +30,7 @@ def test_aggregate_basic():
     assert agg["threads"] == 2
     assert agg["qps"] == 30.0
     assert agg["errors"] == 0
+    assert "p50_ms" in agg
     assert "p99_ms" in agg
 
 
@@ -46,9 +48,9 @@ def test_aggregate_with_errors():
 def test_evaluate_pass_all_good():
     mod = _load()
     pools = {
-        "knn_readers": {"errors": 0, "qps": 500},
-        "writers": {"errors": 0, "qps": 200},
-        "ann_readers": {"errors": 0, "qps": 100},
+        "knn_readers": {"errors": 0, "qps": 500, "threads": 50},
+        "writers": {"errors": 0, "qps": 200, "threads": 50},
+        "ann_readers": {"errors": 0, "qps": 100, "threads": 20},
     }
     checks = {
         "index_row_count_stable": True,
@@ -61,7 +63,7 @@ def test_evaluate_pass_all_good():
 
 def test_evaluate_pass_errors_fail():
     mod = _load()
-    pools = {"knn_readers": {"errors": 3}}
+    pools = {"knn_readers": {"errors": 3, "qps": 500, "threads": 50}}
     checks = {"index_row_count_stable": True, "knn_result_stable": True,
               "no_deadlock": True, "all_threads_clean_exit": True}
     assert mod._evaluate_pass(pools, checks) is False
@@ -69,19 +71,28 @@ def test_evaluate_pass_errors_fail():
 
 def test_evaluate_pass_check_fail():
     mod = _load()
-    pools = {"knn_readers": {"errors": 0}}
+    pools = {"knn_readers": {"errors": 0, "qps": 500, "threads": 50}}
     checks = {"index_row_count_stable": False, "knn_result_stable": True,
               "no_deadlock": True, "all_threads_clean_exit": True}
     assert mod._evaluate_pass(pools, checks) is False
 
 
+def test_evaluate_pass_silent_pool_fail():
+    """A pool that produced zero throughput (all workers crashed) must fail."""
+    mod = _load()
+    pools = {"knn_readers": {"errors": 0, "qps": 0.0, "threads": 50}}
+    checks = {"index_row_count_stable": True, "knn_result_stable": True,
+              "no_deadlock": True, "all_threads_clean_exit": True}
+    assert mod._evaluate_pass(pools, checks) is False
+
+
 def test_result_json_structure():
-    """Output JSON has the required top-level keys."""
+    """_build_result produces valid JSON with all required top-level keys."""
     mod = _load()
     pools = {
-        "knn_readers": {"threads": 50, "qps": 1200.0, "errors": 0, "p99_ms": 8.2},
+        "knn_readers": {"threads": 50, "qps": 1200.0, "errors": 0, "p50_ms": 5.1, "p99_ms": 8.2},
         "writers":     {"threads": 50, "qps": 300.0,  "errors": 0},
-        "ann_readers": {"threads": 20, "qps": 280.0,  "errors": 0, "p99_ms": 14.1},
+        "ann_readers": {"threads": 20, "qps": 280.0,  "errors": 0, "p50_ms": 9.0, "p99_ms": 14.1},
     }
     checks = {
         "index_row_count_stable": True,
@@ -89,17 +100,8 @@ def test_result_json_structure():
         "no_deadlock":            True,
         "all_threads_clean_exit": True,
     }
-    import json, tempfile, os
-    result = {
-        "workload": "concurrent_stress",
-        "mysql_version": "9.7",
-        "build": "component",
-        "duration_s": 120.0,
-        "ann_rewrite_active": True,
-        "pools": pools,
-        "checks": checks,
-        "passed": mod._evaluate_pass(pools, checks),
-    }
+    import json, tempfile
+    result = mod._build_result("9.7", "component", 120.0, True, pools, checks)
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         json.dump(result, f)
         tmp = f.name
@@ -109,14 +111,17 @@ def test_result_json_structure():
         assert loaded["passed"] is True
         assert loaded["pools"]["knn_readers"]["errors"] == 0
         assert loaded["workload"] == "concurrent_stress"
+        assert loaded["ann_rewrite_active"] is True
+        assert "pools" in loaded and "checks" in loaded
     finally:
         os.unlink(tmp)
 
 
 def test_result_json_fails_on_errors():
-    """passed=False when any pool has errors."""
+    """_build_result sets passed=False when any pool has errors."""
     mod = _load()
-    pools = {"knn_readers": {"errors": 5}}
+    pools = {"knn_readers": {"errors": 5, "qps": 500, "threads": 50}}
     checks = {"index_row_count_stable": True, "knn_result_stable": True,
               "no_deadlock": True, "all_threads_clean_exit": True}
-    assert mod._evaluate_pass(pools, checks) is False
+    result = mod._build_result("9.7", "component", 60.0, False, pools, checks)
+    assert result["passed"] is False

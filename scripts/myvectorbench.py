@@ -24,12 +24,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import yaml
-
-
 # ── config ────────────────────────────────────────────────────────────────────
 
 def load_config(path: str) -> dict:
+    import yaml
     with open(path) as f:
         return yaml.safe_load(f)
 

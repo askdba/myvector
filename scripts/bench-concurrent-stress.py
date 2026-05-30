@@ -42,6 +42,8 @@ install_component = _bench_mod.install_component
 _vec_literal = _bench_mod._vec_literal
 _synthetic_vectors = _bench_mod._synthetic_vectors
 
+WARMUP_S = 30
+
 
 # ── aggregation + pass evaluation ────────────────────────────────────────────
 
@@ -60,18 +62,36 @@ def _aggregate(thread_results: list, duration_s: float) -> dict:
     }
     if all_lat:
         all_lat.sort()
-        agg["p99_ms"] = round(
-            all_lat[max(0, math.ceil(len(all_lat) * 0.99) - 1)], 1
-        )
+        n = len(all_lat)
+        agg["p50_ms"] = round(all_lat[max(0, math.ceil(n * 0.50) - 1)], 1)
+        agg["p99_ms"] = round(all_lat[max(0, math.ceil(n * 0.99) - 1)], 1)
     return agg
 
 
 def _evaluate_pass(pools: dict, checks: dict) -> bool:
     """Return True iff all pass criteria hold."""
-    for pool_name, pool_metrics in pools.items():
+    for pool_metrics in pools.values():
         if pool_metrics.get("errors", 0) > 0:
             return False
+        # A pool with threads but zero throughput means all workers silently failed.
+        if pool_metrics.get("threads", 1) > 0 and pool_metrics.get("qps", 0.0) <= 0:
+            return False
     return all(checks.values())
+
+
+def _build_result(mysql_version: str, build: str, duration_s: float,
+                  ann_rewrite_active: bool, pools: dict, checks: dict) -> dict:
+    """Build the canonical JSON result dict written by run_stress."""
+    return {
+        "workload": "concurrent_stress",
+        "mysql_version": mysql_version,
+        "build": build,
+        "duration_s": round(duration_s, 1),
+        "ann_rewrite_active": ann_rewrite_active,
+        "pools": pools,
+        "checks": checks,
+        "passed": _evaluate_pass(pools, checks),
+    }
 
 
 
@@ -163,7 +183,8 @@ def _ann_reader_worker(container_name: str, root_pw: str, vectors: list,
 
 # ── dataset + table setup ─────────────────────────────────────────────────────
 
-def _setup_stress_tables(container: Container, vectors: list, wp: dict) -> dict:
+def _setup_stress_tables(container: Container, vectors: list, wp: dict,
+                         n_write: int = 50, total_window_s: int = 90) -> dict:
     """Create stress_knn (read-only HNSW) and stress_write (online write) tables.
 
     Returns {'knn_rows': N, 'write_base_id': M} for consistency checks.
@@ -172,6 +193,11 @@ def _setup_stress_tables(container: Container, vectors: list, wp: dict) -> dict:
     rows = len(vectors)
     M_val = wp.get('M', 16)
     ef = wp.get('ef_construction', 200)
+
+    # Capacity for stress_write must cover warmup + measurement inserts.
+    # Upper-bound estimate: n_write threads × total_window_s × 500 ops/s each
+    # (generous ceiling; subprocess round-trip is typically 5–50 ms per INSERT).
+    write_capacity = rows + max(rows, n_write * total_window_s * 500)
 
     container.sql("CREATE DATABASE IF NOT EXISTS bench;")
     container.sql("DROP TABLE IF EXISTS bench.stress_knn;")
@@ -188,7 +214,7 @@ def _setup_stress_tables(container: Container, vectors: list, wp: dict) -> dict:
         f"CREATE TABLE bench.stress_write ("
         f"  id INT PRIMARY KEY,"
         f"  vec VARBINARY({dim * 4 + 8})"
-        f"    COMMENT 'MYVECTOR COLUMN type=hnsw,dim={dim},size={rows * 2},"
+        f"    COMMENT 'MYVECTOR COLUMN type=hnsw,dim={dim},size={write_capacity},"
         f"m={M_val},ef={ef},idcol=id,dist=L2,online=Y'"
         f");"
     )
@@ -213,7 +239,7 @@ def _probe_ann_rewrite(container: Container, dim: int) -> bool:
         container.sql(
             f"SELECT MYVECTOR_IS_ANN('bench.stress_knn.vec', 'id',"
             f" myvector_construct('{probe_vec}'))"
-            f" FROM bench.stress_knn LIMIT 0;",
+            f" FROM bench.stress_knn LIMIT 1;",
             db="bench",
         )
         return True
@@ -251,9 +277,15 @@ def _run_consistency_checks(container: Container, setup_info: dict,
     else:
         checks["knn_result_stable"] = True
 
-    # 3. No deadlock in InnoDB status
-    innodb = container.sql("SHOW ENGINE INNODB STATUS;")
-    checks["no_deadlock"] = "DEADLOCK" not in innodb.upper()
+    # 3. No InnoDB deadlocks (performance_schema counter avoids false positives
+    #    from the "LATEST DETECTED DEADLOCK" section header always present in
+    #    SHOW ENGINE INNODB STATUS output even when no deadlock has occurred)
+    dl_out = container.sql(
+        "SELECT VARIABLE_VALUE FROM performance_schema.global_status"
+        " WHERE VARIABLE_NAME='Innodb_deadlocks';"
+    )
+    dl_m = re.search(r'\b(\d+)\b', dl_out)
+    checks["no_deadlock"] = (not dl_m) or int(dl_m.group(1)) == 0
 
     # 4. All threads clean exit
     checks["all_threads_clean_exit"] = futures_clean
@@ -322,7 +354,9 @@ def run_stress(mysql_version: str, build: str, artifact_dir: str,
             _bench_mod.install_plugin(c, os.path.join(artifact_dir, "myvector.so"))
         # else: plugin pre-installed in image (GHCR); UDFs + procs assumed present
 
-        setup_info = _setup_stress_tables(c, vectors, wp)
+        setup_info = _setup_stress_tables(c, vectors, wp,
+                                          n_write=n_write,
+                                          total_window_s=WARMUP_S + duration_s)
         ann_active = _probe_ann_rewrite(c, dim)
         print(f"  ann_rewrite_active={ann_active}")
         n_ann_active = n_ann if ann_active else 0
@@ -386,17 +420,8 @@ def run_stress(mysql_version: str, build: str, artifact_dir: str,
     if ann_active and res_ann:
         pools["ann_readers"] = _aggregate(res_ann, actual_duration)
 
-    passed = _evaluate_pass(pools, checks)
-    result = {
-        "workload": "concurrent_stress",
-        "mysql_version": mysql_version,
-        "build": build,
-        "duration_s": round(actual_duration, 1),
-        "ann_rewrite_active": ann_active,
-        "pools": pools,
-        "checks": checks,
-        "passed": passed,
-    }
+    result = _build_result(mysql_version, build, actual_duration, ann_active, pools, checks)
+    passed = result["passed"]
     with open(output, "w") as f:
         json.dump(result, f, indent=2)
     print(f"  Result written to {output}")
@@ -417,7 +442,7 @@ def main():
     parser.add_argument("--threads-write", type=int, default=50)
     parser.add_argument("--threads-ann",   type=int, default=20)
     parser.add_argument("--duration",      type=int, default=60,
-                        help="Measurement window in seconds (warmup and drain are fixed at 30s each)")
+                        help="Measurement window in seconds (warmup is fixed at 30s)")
     parser.add_argument("--config", default="myvectorbench.yml")
     parser.add_argument("--output", default="stress-result.json")
     args = parser.parse_args()
