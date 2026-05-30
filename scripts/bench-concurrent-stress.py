@@ -105,6 +105,63 @@ def _knn_reader_worker(container_name: str, root_pw: str, vectors: list,
     return results
 
 
+def _writer_worker(container_name: str, root_pw: str, dim: int,
+                   next_id: list, id_lock: threading.Lock,
+                   stop_event: threading.Event) -> dict:
+    """Online writer: INSERTs rows into an online-indexed table in a tight loop."""
+    results: dict = {"ops": 0, "errors": 0}
+    rng = random.Random(threading.get_ident())
+    base_cmd = [
+        "docker", "exec", "-e", f"MYSQL_PWD={root_pw}", container_name,
+        "mysql", "-uroot", "-h127.0.0.1", "--batch", "--silent", "-D", "bench",
+    ]
+    while not stop_event.is_set():
+        with id_lock:
+            row_id = next_id[0]
+            next_id[0] += 1
+        v = [rng.gauss(0, 1) for _ in range(dim)]
+        sql = (
+            f"INSERT INTO bench.stress_write (id, vec) VALUES"
+            f" ({row_id}, {_vec_literal(v)});"
+        )
+        r = subprocess.run(base_cmd + ["-e", sql], capture_output=True, text=True)
+        if r.returncode != 0:
+            results["errors"] += 1
+        else:
+            results["ops"] += 1
+    return results
+
+
+def _ann_reader_worker(container_name: str, root_pw: str, vectors: list,
+                       stop_event: threading.Event) -> dict:
+    """ANN reader: issues MYVECTOR_IS_ANN queries via query rewrite in a tight loop.
+
+    Only dispatched when ann_rewrite_active=True on the 9.x component cell.
+    """
+    results: dict = {"queries": 0, "errors": 0, "latencies_ms": []}
+    rng = random.Random(threading.get_ident())
+    base_cmd = [
+        "docker", "exec", "-e", f"MYSQL_PWD={root_pw}", container_name,
+        "mysql", "-uroot", "-h127.0.0.1", "--batch", "--silent", "-D", "bench",
+    ]
+    while not stop_event.is_set():
+        q = vectors[rng.randint(0, len(vectors) - 1)]
+        sql = (
+            f"SELECT id FROM bench.stress_knn"
+            f" WHERE MYVECTOR_IS_ANN('bench.stress_knn.vec', 'id', {_vec_literal(q)})"
+            f" ORDER BY myvector_row_distance(id) LIMIT 10;"
+        )
+        t0 = time.time()
+        r = subprocess.run(base_cmd + ["-e", sql], capture_output=True, text=True)
+        elapsed_ms = (time.time() - t0) * 1000
+        if r.returncode != 0:
+            results["errors"] += 1
+        else:
+            results["queries"] += 1
+            results["latencies_ms"].append(elapsed_ms)
+    return results
+
+
 def run_stress(*args, **kwargs):
     """Entry point for RFC-004 concurrent stress run. To be implemented."""
     raise NotImplementedError("run_stress not yet implemented")
