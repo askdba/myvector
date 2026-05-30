@@ -259,6 +259,7 @@ jobs:
           steps.download.outcome == 'success'
         run: |
           if ! git ls-remote --exit-code origin benchmarks > /dev/null 2>&1; then
+            SAVE_SHA=$(git rev-parse HEAD)
             git checkout --orphan benchmarks
             git reset --hard
             printf '# benchmarks\n\nResult history written by myvectorbench CI.\n' > README.md
@@ -267,7 +268,7 @@ jobs:
                 -c user.email="github-actions[bot]@users.noreply.github.com" \
                 commit -m "chore: initialize benchmarks branch"
             git push origin HEAD:benchmarks || true  # tolerate race: another cell won
-            git checkout -
+            git checkout "$SAVE_SHA"  # actions/checkout leaves detached HEAD; git checkout - fails
           fi
 
       - name: Checkout benchmarks branch
