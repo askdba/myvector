@@ -17,3 +17,59 @@ def test_import():
     assert hasattr(mod, '_aggregate')
     assert hasattr(mod, '_evaluate_pass')
     assert hasattr(mod, 'run_stress')
+
+
+def test_aggregate_basic():
+    mod = _load()
+    results = [
+        {"queries": 100, "errors": 0, "latencies_ms": [5.0, 10.0, 8.0]},
+        {"queries": 200, "errors": 0, "latencies_ms": [3.0, 7.0]},
+    ]
+    agg = mod._aggregate(results, duration_s=10.0)
+    assert agg["threads"] == 2
+    assert agg["qps"] == 30.0
+    assert agg["errors"] == 0
+    assert "p99_ms" in agg
+
+
+def test_aggregate_with_errors():
+    mod = _load()
+    results = [
+        {"queries": 50, "errors": 2, "latencies_ms": []},
+        {"ops": 80, "errors": 1, "latencies_ms": []},
+    ]
+    agg = mod._aggregate(results, duration_s=5.0)
+    assert agg["errors"] == 3
+    assert agg["qps"] == 26.0
+
+
+def test_evaluate_pass_all_good():
+    mod = _load()
+    pools = {
+        "knn_readers": {"errors": 0, "qps": 500},
+        "writers": {"errors": 0, "qps": 200},
+        "ann_readers": {"errors": 0, "qps": 100},
+    }
+    checks = {
+        "index_row_count_stable": True,
+        "knn_result_stable": True,
+        "no_deadlock": True,
+        "all_threads_clean_exit": True,
+    }
+    assert mod._evaluate_pass(pools, checks) is True
+
+
+def test_evaluate_pass_errors_fail():
+    mod = _load()
+    pools = {"knn_readers": {"errors": 3}}
+    checks = {"index_row_count_stable": True, "knn_result_stable": True,
+              "no_deadlock": True, "all_threads_clean_exit": True}
+    assert mod._evaluate_pass(pools, checks) is False
+
+
+def test_evaluate_pass_check_fail():
+    mod = _load()
+    pools = {"knn_readers": {"errors": 0}}
+    checks = {"index_row_count_stable": False, "knn_result_stable": True,
+              "no_deadlock": True, "all_threads_clean_exit": True}
+    assert mod._evaluate_pass(pools, checks) is False

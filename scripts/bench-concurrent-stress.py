@@ -76,6 +76,35 @@ def _evaluate_pass(pools: dict, checks: dict) -> bool:
     return all(checks.values())
 
 
+
+# ── worker functions ──────────────────────────────────────────────────────────
+
+def _knn_reader_worker(container_name: str, root_pw: str, vectors: list,
+                       stop_event: threading.Event) -> dict:
+    """KNN reader: runs SELECT ... ORDER BY myvector_distance LIMIT 10 in a tight loop."""
+    results: dict = {"queries": 0, "errors": 0, "latencies_ms": []}
+    rng = random.Random(threading.get_ident())
+    base_cmd = [
+        "docker", "exec", "-e", f"MYSQL_PWD={root_pw}", container_name,
+        "mysql", "-uroot", "-h127.0.0.1", "--batch", "--silent", "-D", "bench",
+    ]
+    while not stop_event.is_set():
+        q = vectors[rng.randint(0, len(vectors) - 1)]
+        sql = (
+            f"SELECT id FROM bench.stress_knn"
+            f" ORDER BY myvector_distance(vec, {_vec_literal(q)}, 'L2') LIMIT 10;"
+        )
+        t0 = time.time()
+        r = subprocess.run(base_cmd + ["-e", sql], capture_output=True, text=True)
+        elapsed_ms = (time.time() - t0) * 1000
+        if r.returncode != 0:
+            results["errors"] += 1
+        else:
+            results["queries"] += 1
+            results["latencies_ms"].append(elapsed_ms)
+    return results
+
+
 def run_stress(*args, **kwargs):
     """Entry point for RFC-004 concurrent stress run. To be implemented."""
     raise NotImplementedError("run_stress not yet implemented")
