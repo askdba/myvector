@@ -20,6 +20,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import random
 import statistics
 import subprocess
@@ -228,18 +229,15 @@ def _probe_ann_rewrite(container: Container, dim: int) -> bool:
 # ── consistency checks ────────────────────────────────────────────────────────
 
 def _run_consistency_checks(container: Container, setup_info: dict,
-                             knn_before: list, write_expected: int,
+                             knn_before: list,
                              futures_clean: bool) -> dict:
     """Run post-stress consistency assertions."""
     checks: dict = {}
 
     # 1. Index row count stable (stress_knn is read-only, must not drift)
-    out = container.scalar("CALL mysql.MYVECTOR_INDEX_STATUS('bench.stress_knn.vec');")
-    actual_rows_str = ""
-    for part in out.split():
-        if part.isdigit():
-            actual_rows_str = part
-            break
+    out = container.sql("CALL mysql.MYVECTOR_INDEX_STATUS('bench.stress_knn.vec');")
+    m = re.search(r'Current Rows\s*:\s*(\d+)', out)
+    actual_rows_str = m.group(1) if m else ""
     checks["index_row_count_stable"] = (actual_rows_str == str(setup_info["knn_rows"]))
 
     # 2. KNN top-1 stable
@@ -320,7 +318,7 @@ def run_stress(mysql_version: str, build: str, artifact_dir: str,
     dim = wp['dim']
     vectors = _synthetic_vectors(wp.get('rows', 10000), dim)
 
-    with Container(mysql_version, image=image) as c:
+    with Container(mysql_version) as c:
         if build == "component":
             install_component(c, artifact_dir)
         elif artifact_dir:
@@ -364,7 +362,7 @@ def run_stress(mysql_version: str, build: str, artifact_dir: str,
         # ── measurement ─────────────────────────────────────────────────────
         print(f"  Measuring {duration_s}s ...")
         stop_event = threading.Event()
-        next_id = [setup_info["write_base_id"] + warmup_id[0]]
+        next_id = [warmup_id[0]]
         id_lock = threading.Lock()
         t0 = time.time()
         fknn, fwrite, fann, execs = _run_pools(
@@ -382,8 +380,7 @@ def run_stress(mysql_version: str, build: str, artifact_dir: str,
         res_ann: list = []
         all_clean = _drain(fknn, fwrite, fann, execs, res_knn, res_write, res_ann)
 
-        write_inserted = next_id[0] - (setup_info["write_base_id"] + warmup_id[0])
-        checks = _run_consistency_checks(c, setup_info, knn_before, write_inserted, all_clean)
+        checks = _run_consistency_checks(c, setup_info, knn_before, all_clean)
 
     pools: dict = {
         "knn_readers": _aggregate(res_knn, actual_duration),
