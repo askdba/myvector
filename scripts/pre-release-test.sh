@@ -463,3 +463,209 @@ for VER in "${VERSIONS[@]}"; do
   cleanup_container
   echo ""
 done
+
+# ── Phase 3: Component lifecycle regression ───────────────────────────────────
+
+run_lifecycle_install_timing() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Lifecycle 3.1] Cold INSTALL timing ($VER)"
+  cleanup_container
+  start_container "$VER"
+  install_component "$COMP_DIR"
+  # Measure only the INSTALL COMPONENT statement, not container startup.
+  mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
+  local T0 T1 ELAPSED
+  T0=$(date +%s)
+  mq -e "INSTALL COMPONENT 'file://myvector';"
+  T1=$(date +%s)
+  ELAPSED=$(( T1 - T0 ))
+  if [[ "$ELAPSED" -lt 5 ]]; then
+    pass "install_time_s=${ELAPSED} < 5s"
+  else
+    fail "install_time_s=${ELAPSED} >= 5s (myvector_component_init regression)"
+  fi
+  cleanup_container
+}
+
+run_lifecycle_uninstall_under_load() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Lifecycle 3.2] UNINSTALL under load — ERROR 3540 guard ($VER)"
+  cleanup_container
+  start_container "$VER"
+  install_component "$COMP_DIR"
+
+  # Build a 1000-row HNSW index so there is something to query.
+  mq -e "
+    CREATE DATABASE IF NOT EXISTS lc;
+    CREATE TABLE lc.unload_t (
+      id  INT PRIMARY KEY,
+      vec VARBINARY(256)
+        COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=1000,m=16,ef=50,idcol=id,dist=L2'
+    );
+  " 2>/dev/null
+  local i
+  for i in $(seq 0 9); do
+    local VALS=""
+    local j
+    for j in $(seq 0 99); do
+      local ROW=$(( i * 100 + j ))
+      VALS="${VALS}(${ROW}, myvector_construct('[$(( RANDOM % 100 )).0,$(( RANDOM % 100 )).0,$(( RANDOM % 100 )).0]')),"
+    done
+    VALS="${VALS%,}"
+    mq -D lc -e "INSERT INTO lc.unload_t (id, vec) VALUES ${VALS};" 2>/dev/null || true
+  done
+  mq -D lc -e "CALL mysql.MYVECTOR_INDEX_BUILD('lc.unload_t.vec', 'id');" 2>/dev/null \
+    || { fail "INDEX_BUILD failed for unload_t" ; cleanup_container ; return 1 ; }
+
+  # Start 5 background KNN query loops (30s timeout each).
+  local -a BG_PIDS=()
+  for i in $(seq 1 5); do
+    (
+      local STOP=$(( $(date +%s) + 30 ))
+      while [[ $(date +%s) -lt $STOP ]]; do
+        mq -D lc -e \
+          "SELECT id FROM lc.unload_t ORDER BY myvector_distance(vec, myvector_construct('[1.0,0.0,0.0]'), 'L2') LIMIT 5;" \
+          >/dev/null 2>&1 || true
+      done
+    ) &
+    BG_PIDS+=($!)
+  done
+  sleep 1  # ensure workers have issued at least one query before UNINSTALL fires
+
+  local T0 T1 ELAPSED
+  local UNINSTALL_RC=0
+  T0=$(date +%s)
+  local UNINSTALL_OUT
+  UNINSTALL_OUT=$(mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>&1) || UNINSTALL_RC=$?
+  T1=$(date +%s)
+  ELAPSED=$(( T1 - T0 ))
+
+  # Terminate background loops
+  for pid in "${BG_PIDS[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+  wait "${BG_PIDS[@]}" 2>/dev/null || true
+
+  if echo "$UNINSTALL_OUT" | grep -q "3540"; then
+    fail "UNINSTALL returned ERROR 3540 (myvector_unload_notify regression): $UNINSTALL_OUT"
+  elif [[ "$UNINSTALL_RC" -ne 0 ]]; then
+    fail "UNINSTALL failed unexpectedly (rc=$UNINSTALL_RC): $UNINSTALL_OUT"
+  elif [[ "$ELAPSED" -ge 12 ]]; then
+    fail "UNINSTALL took ${ELAPSED}s >= 12s (teardown timeout regression)"
+  else
+    pass "UNINSTALL under load: no ERROR 3540, elapsed=${ELAPSED}s < 12s"
+  fi
+  cleanup_container
+}
+
+run_lifecycle_reload_persistence() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Lifecycle 3.3] Reload cycle index persistence ($VER)"
+  cleanup_container
+  start_container "$VER"
+  install_component "$COMP_DIR"
+
+  # Build a 500-row HNSW index.
+  mq -e "
+    CREATE DATABASE IF NOT EXISTS lc;
+    CREATE TABLE lc.reload_t (
+      id  INT PRIMARY KEY,
+      vec VARBINARY(516)
+        COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=500,m=16,ef=50,idcol=id,dist=L2'
+    );
+  " 2>/dev/null
+  local i
+  for i in $(seq 0 4); do
+    local VALS=""
+    local j
+    for j in $(seq 0 99); do
+      local ROW=$(( i * 100 + j ))
+      VALS="${VALS}(${ROW}, myvector_construct('[$(( j % 10 )).$(( RANDOM % 9 )),$(( j % 5 )).$(( RANDOM % 9 )),$(( j % 7 )).$(( RANDOM % 9 ))']')),"
+    done
+    VALS="${VALS%,}"
+    mq -D lc -e "INSERT INTO lc.reload_t (id, vec) VALUES ${VALS};" 2>/dev/null || true
+  done
+  mq -D lc -e "CALL mysql.MYVECTOR_INDEX_BUILD('lc.reload_t.vec', 'id');" 2>/dev/null
+
+  # Record top-3 KNN results for a fixed query vector before UNINSTALL.
+  local BEFORE_RESULT
+  BEFORE_RESULT=$(mq -N -D lc -e \
+    "SELECT id FROM lc.reload_t ORDER BY myvector_distance(vec, myvector_construct('[1.0,2.0,3.0]'), 'L2') LIMIT 3;" \
+    2>/dev/null | LC_ALL=C tr -s '[:space:]' ',' | sed 's/^,//;s/,$//')
+
+  if [[ -z "$BEFORE_RESULT" ]]; then
+    fail "reload persistence: could not retrieve top-3 KNN before UNINSTALL"
+    cleanup_container
+    return 0
+  fi
+
+  # UNINSTALL then INSTALL + load persisted index from disk (not rebuild).
+  mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
+  install_component "$COMP_DIR"
+  mq -D lc -e "CALL mysql.MYVECTOR_INDEX_LOAD('lc.reload_t.vec', 'id');" 2>/dev/null \
+    || { fail "MYVECTOR_INDEX_LOAD failed: on-disk index not preserved across UNINSTALL/INSTALL" ; cleanup_container ; return 1 ; }
+
+  local AFTER_RESULT
+  AFTER_RESULT=$(mq -N -D lc -e \
+    "SELECT id FROM lc.reload_t ORDER BY myvector_distance(vec, myvector_construct('[1.0,2.0,3.0]'), 'L2') LIMIT 3;" \
+    2>/dev/null | LC_ALL=C tr -s '[:space:]' ',' | sed 's/^,//;s/,$//')
+
+  if [[ "$BEFORE_RESULT" == "$AFTER_RESULT" ]]; then
+    pass "reload cycle: top-3 KNN identical before/after UNINSTALL+INSTALL"
+  else
+    fail "reload cycle: top-3 KNN changed after reload (before='$BEFORE_RESULT' after='$AFTER_RESULT')"
+  fi
+  cleanup_container
+}
+
+run_lifecycle_binlog_cleanup() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Lifecycle 3.4] Binlog thread cleanup ($VER)"
+  cleanup_container
+  start_container "$VER"
+  install_component "$COMP_DIR"
+  # install_component writes myvector.cnf AFTER INSTALL COMPONENT, so the binlog
+  # listener starts without config on the first install. Reinstall so the component
+  # reads the now-present cnf and starts binlog monitoring.
+  mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
+  mq -e "INSTALL COMPONENT 'file://myvector';"
+
+  # Verify a binlog connection (slave/replica) appears after component install.
+  sleep 2
+  local PROC_BEFORE
+  PROC_BEFORE=$(mq -N -e "SHOW PROCESSLIST;" 2>/dev/null | grep -iE "binlog|slave|replica" | wc -l | LC_ALL=C tr -d '[:space:]')
+  if [[ "$PROC_BEFORE" -eq 0 ]]; then
+    skip "binlog cleanup: no binlog listener in PROCESSLIST before UNINSTALL (binlog may be disabled on this container)"
+    cleanup_container
+    return 0
+  fi
+
+  mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
+
+  # Poll up to 8s for binlog connections to disappear.
+  local DEADLINE=$(( $(date +%s) + 8 ))
+  local REMAINING=1
+  while [[ $(date +%s) -lt $DEADLINE ]]; do
+    REMAINING=$(mq -N -e "SHOW PROCESSLIST;" 2>/dev/null \
+      | grep -iE "binlog|slave|replica" | wc -l | LC_ALL=C tr -d '[:space:]')
+    [[ "$REMAINING" -eq 0 ]] && break
+    sleep 0.5
+  done
+
+  if [[ "$REMAINING" -eq 0 ]]; then
+    pass "binlog thread cleaned up within 8s of UNINSTALL"
+  else
+    fail "binlog thread still present after 8s (stop_binlog_monitoring regression)"
+  fi
+  cleanup_container
+}
+
+for VER in "${VERSIONS[@]}"; do
+  DIR="${COMPONENT_DIRS[$VER]}"
+  echo "--- Phase 3 Lifecycle ($VER) ---"
+  run_lifecycle_install_timing  "$VER" "$DIR"
+  run_lifecycle_uninstall_under_load "$VER" "$DIR"
+  run_lifecycle_reload_persistence   "$VER" "$DIR"
+  run_lifecycle_binlog_cleanup       "$VER" "$DIR"
+  echo ""
+done
