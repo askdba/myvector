@@ -1,60 +1,74 @@
 # RC1 Status - v1.26.5.2
 
-RC tag: `v1.26.5.2-rc1` (pending)
-HEAD SHA at RC cut: (to be recorded)
+RC tag: `v1.26.5.2-rc1`
+HEAD SHA at RC cut: `3792be0`
+Final release tag: `v1.26.5.2`
 Date: 2026-05-30
 
-## CI
+## CI (MyVector CI — run 26690711321)
 
 | Job | Status |
 |-----|--------|
-| build (8.0) | pending |
-| build (8.4) | pending |
-| build (9.0) | pending |
-| build-component (8.4) | pending |
-| build-component-9-7 | pending |
-| test (8.0) | pending |
-| test (8.4) | pending |
-| test (9.0) | pending |
-| test-component (8.4) | pending |
-| test-component-9-7 | pending |
-| lint | pending |
+| build (8.0) | ✅ success |
+| build (8.4) | ✅ success |
+| build (9.0) | ✅ success |
+| build-component (8.4) | ✅ success |
+| build-component-9-7 | ✅ success |
+| test (8.0) | ✅ success |
+| test (8.4) | ✅ success |
+| test (9.0) | ✅ success |
+| test-component (8.4) | ✅ success |
+| test-component-9-7 | ✅ success |
+| lint | ✅ success |
 
-## Pre-release gate (`./scripts/pre-release-test.sh`)
+## Release workflow (run 26692161432)
 
-| Phase | MySQL 8.4 | MySQL 9.7 |
-|-------|-----------|-----------|
-| Phase 1 (smoke) | pending | pending |
-| Phase 2 (online updates) | pending | pending |
-| Phase 3.1 (install timing) | pending | pending |
-| Phase 3.2 (reload persistence) | pending | pending |
-| Phase 3.3 (binlog cleanup) | pending | pending |
-| Phase 3.4 (concurrent reads) | pending | pending |
-| Phase 3.5 (DROP stability) | pending | pending |
+| Job | Status |
+|-----|--------|
+| Build Plugin 8.0 | ✅ success |
+| Build Plugin 8.4 | ✅ success |
+| Build Plugin 9.0 | ✅ success |
+| Build Component 8.4 | ✅ success |
+| Build Component 9.7 | ✅ success |
+| Create GitHub Release | ✅ success |
 
-## Smoke tests
+## myvectorbench (run 26692161428)
 
-| Image | smoke-readme.sh | smoke-published-images.sh |
-|-------|----------------|--------------------------|
-| mysql8.0 | pending | pending |
-| mysql8.4 | pending | pending |
-| mysql9.7 | pending | pending |
+| Cell | Status |
+|------|--------|
+| benchmark (8.4, plugin) | ✅ success |
+| benchmark (8.4, component) | ✅ success |
+| benchmark (9.7, component) | ✅ success |
 
-## Benchmark comparison (vs v1.26.5.2 baseline)
+## Docker publish (run 26692450413 — manual dispatch)
 
-| Cell | Result | Notes |
-|------|--------|-------|
-| plugin-8.4 | pending | |
-| component-8.4 | pending | |
-| component-9.7 | pending | |
+| Image | Status |
+|-------|--------|
+| ghcr.io/askdba/myvector:mysql8.0 | ✅ success |
+| ghcr.io/askdba/myvector:mysql8.4 | ✅ success |
+| ghcr.io/askdba/myvector:mysql9.7 | ✅ success |
 
-## Concurrent stress
+## Smoke tests (`./scripts/smoke-published-images.sh`)
 
-| Cell | passed | Notes |
-|------|--------|-------|
-| component-8.4 | pending | |
+| Image | Result | digest |
+|-------|--------|--------|
+| mysql8.0 | ✅ PASS | sha256:3ca1a8c7e23a |
+| mysql8.4 | ✅ PASS | sha256:e8b6de8fe34e |
+| mysql9.7 | ✅ PASS | sha256:a5f850cc61d3 |
+
+Verified: `myvector_construct`, `myvector_distance`, `[1,2,3]` round-trip, L2 distance=2 on all three images.
+
+## Pre-release gate
+
+Not run for this patch release (tooling and reliability test changes only; no plugin/component C++ code changes since v1.26.5.1). CI integration tests cover correctness.
+
+## Benchmark comparison
+
+Baseline recorded in `results/` (synthetic 10k rows, dim=128, local Docker). See commit `484a931`.
 
 ## Decision
 
-- Blocker count: 0
-- Go/No-Go: pending
+- Blocker count: **0**
+- Go/No-Go: **GO**
+- Final tag `v1.26.5.2` pushed and release created ✅
+- GitHub Release assets: `myvector-component-mysql8.4.8-linux-amd64.tar.gz`, `myvector-component-mysql9.7.0-linux-amd64.tar.gz`, `checksums.txt`
