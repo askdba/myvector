@@ -1,0 +1,29 @@
+{
+  "git_ref": "v1.26.5.2-rc1",
+  "mysql_version": "8.4",
+  "build_path": "plugin",
+  "timestamp": "2026-05-30T17:51:18Z",
+  "runner": "GitHub Actions 1000007855",
+  "dataset": "synthetic",
+  "workload_params": {
+    "rows": 10000,
+    "dim": 128,
+    "M": 16,
+    "ef_construction": 200,
+    "knn_queries": 200,
+    "knn_ann_queries": 200,
+    "recall_queries": 50
+  },
+  "metrics": {
+    "index_build_time_s": 0.06978082656860352,
+    "insert_qps": 4565.71883524044,
+    "knn_qps": 14.48849909337724,
+    "knn_p50_ms": 68.66192817687988,
+    "knn_p99_ms": 77.16989517211914,
+    "knn_ann_qps": 15.791149066189146,
+    "knn_ann_p50_ms": 62.984585762023926,
+    "knn_ann_p99_ms": 72.5240707397461,
+    "ann_rewrite_active": true,
+    "recall_at_10": 0.0
+  }
+}
