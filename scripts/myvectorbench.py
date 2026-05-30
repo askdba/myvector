@@ -312,25 +312,37 @@ def _resolve_artifact_dir(artifact_key: str) -> str:
         return str(local)
 
     with tempfile.TemporaryDirectory() as dl_dir:
-        r = subprocess.run(
-            ["gh", "release", "download", "--pattern", f"{artifact_key}.tar.gz",
-             "--dir", dl_dir],
-            capture_output=True, text=True,
-        )
+        try:
+            r = subprocess.run(
+                ["gh", "release", "download", "--pattern", f"{artifact_key}.tar.gz",
+                 "--dir", dl_dir],
+                capture_output=True, text=True,
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "gh CLI not found. Install it from https://cli.github.com "
+                "or use --artifact-dir to specify a local path."
+            )
         if r.returncode != 0:
             raise RuntimeError(
-                f"gh release download failed for {artifact_key}.tar.gz:\n{r.stderr.strip()}"
+                f"gh release download failed for {artifact_key}.tar.gz:\n{r.stderr.strip()}\n"
+                "Tip: release assets are named myvector-component-mysql<ver>-linux-<arch>.tar.gz; "
+                "use --artifact-dir dist/<key> after running the build script locally."
             )
         archives = list(Path(dl_dir).glob(f"{artifact_key}.tar.gz"))
         if not archives:
             raise RuntimeError(
-                f"Archive not found after gh release download: {artifact_key}.tar.gz"
+                f"Archive not found after gh release download: {artifact_key}.tar.gz\n"
+                "Tip: use --artifact-dir dist/<key> instead of --artifact for local builds."
             )
         local.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["tar", "-xzf", str(archives[0]), "-C", str(local)],
-            check=True,
-        )
+        try:
+            subprocess.run(
+                ["tar", "-xzf", str(archives[0]), "-C", str(local)],
+                check=True,
+            )
+        except FileNotFoundError:
+            raise RuntimeError("tar not found; install it or use --artifact-dir.")
 
     if not (local / "libmyvector_component.so").exists():
         raise RuntimeError(
@@ -791,8 +803,9 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
             libstdcxx_src = libstdcxx_files[-1]
             # Detect the versioned filename the image's libstdc++.so.6 symlink resolves to,
             # so the mount target stays correct across MySQL patch versions.
+            probe_image = image or f"mysql:{mysql_version}"
             r = subprocess.run(
-                ["docker", "run", "--rm", f"mysql:{mysql_version}",
+                ["docker", "run", "--rm", probe_image,
                  "readlink", "-f", "/lib64/libstdc++.so.6"],
                 capture_output=True, text=True,
             )
@@ -802,7 +815,7 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
             else:
                 print(
                     "  Warning: could not resolve /lib64/libstdc++.so.6 inside "
-                    f"mysql:{mysql_version}; skipping bundled libstdc++ mount"
+                    f"{probe_image}; skipping bundled libstdc++ mount"
                 )
 
     with Container(mysql_version, extra_volumes=extra_volumes, image=image) as c:
