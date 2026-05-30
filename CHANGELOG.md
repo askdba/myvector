@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `scripts/bench-concurrent-stress.py` — RFC-004 concurrent stress harness.
+  Runs three worker pools simultaneously (KNN readers, online writers, ANN
+  readers) against a Dockerized MySQL instance and checks post-stress
+  consistency: index row-count stability, KNN top-1 stability, InnoDB
+  deadlock counter, and clean thread exit. Emits a JSON result with
+  per-pool QPS, p50/p99 latency, error counts, and a `passed` verdict.
+  CLI flags: `--mysql-version`, `--build`, `--artifact-dir`, `--artifact`,
+  `--image`, `--threads-knn/write/ann`, `--duration`, `--config`, `--output`.
+  Unit tests: `tests/test_bench_concurrent_stress.py`.
+- `scripts/pre-release-test.sh`: Phase 3 lifecycle regression gate — 5 subtests
+  covering install timing, index reload persistence after uninstall/reinstall,
+  binlog cleanup on component removal, concurrent reads during install, and
+  DROP INDEX stability under load.
+- `scripts/myvectorbench.py`: `--artifact` flag and `_resolve_artifact_dir`
+  for auto-downloading component artifacts from GitHub Releases by key
+  (e.g. `component-8.4`). Handles `gh` CLI not-found and release asset
+  naming mismatches with actionable error messages.
+
+### Fixed
+- `scripts/myvectorbench.py`: libstdc++ probe now uses the custom `--image`
+  when provided, so the probe matches the actual runtime library.
+- `scripts/pre-release-test.sh`: `install_component` wrote `myvector.cnf`
+  *after* `INSTALL COMPONENT`, so the binlog listener started without its
+  config and never monitored the binary log. The lifecycle binlog-cleanup
+  test now performs an UNINSTALL + INSTALL cycle after the initial install
+  so the component reads the config at startup.
+
 ## [1.26.5.1] - 2026-05-20
 
 ### Fixed

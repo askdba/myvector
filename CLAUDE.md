@@ -73,7 +73,51 @@ bash scripts/smoke-readme.sh ghcr.io/askdba/myvector:mysql8.4
 ```
 Exit 0 = safe to tag. Exit 1 = do not tag.
 
+The suite includes **Phase 3 lifecycle regression tests**: install timing,
+index reload persistence after uninstall/reinstall, binlog cleanup on
+component removal, concurrent reads during install, and DROP stability.
+
 Docker images are only pushed to GHCR on `v*` git tags or published releases. PR builds build but do not push.
+
+**ANN benchmark (QPS / recall / latency baseline):**
+
+```bash
+# Run benchmark against a pre-built component artifact:
+python3 scripts/myvectorbench.py \
+    --mysql-version 8.4 --build component \
+    --artifact-dir dist/component-8.4
+
+# Auto-resolve artifact from latest GitHub Release:
+python3 scripts/myvectorbench.py \
+    --mysql-version 8.4 --build component \
+    --artifact component-8.4
+
+# Compare results against a saved baseline:
+python3 scripts/myvectorbench-compare.py \
+    --baseline results/baseline.json --current results/latest.json
+```
+
+Benchmark config lives in `myvectorbench.yml`. Results are written as JSON.
+
+**RFC-004 concurrent stress test (KNN readers + online writers + ANN readers):**
+
+```bash
+python3 scripts/bench-concurrent-stress.py \
+    --mysql-version 8.4 --build component \
+    --artifact-dir dist/component-8.4 \
+    --threads-knn 50 --threads-write 50 --threads-ann 20 \
+    --duration 60 --output stress-result.json
+
+# Full RFC-004 scenario (200+100+100 threads, 120s):
+python3 scripts/bench-concurrent-stress.py \
+    --mysql-version 9.7 --build component \
+    --artifact component-9.7 \
+    --threads-knn 200 --threads-write 100 --threads-ann 100 \
+    --duration 120
+```
+
+Exit 0 = passed all consistency checks. Exit 1 = failure (see JSON for details).
+Checks: index row-count stable, KNN top-1 stable, no InnoDB deadlocks, all threads clean exit.
 
 ## Architecture
 

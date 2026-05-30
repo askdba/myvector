@@ -93,8 +93,10 @@ Minimum stress scenarios:
 
 Recommended tooling:
 
-- sysbench custom Lua script
-- MySQL debug build (`-DWITH_DEBUG=1`)
+- `scripts/bench-concurrent-stress.py` — built-in RFC-004 harness; runs KNN
+  readers, online writers, and ANN readers concurrently, then validates
+  index consistency and emits a JSON result (`--duration`, `--threads-knn/write/ann`).
+- MySQL debug build (`-DWITH_DEBUG=1`) for `DBUG_EXECUTE_IF` crash injection
 - ThreadSanitizer (TSAN)
 - Valgrind Helgrind
 
