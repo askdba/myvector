@@ -7,33 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.5.2] - 2026-05-30
+
 ### Added
-- `scripts/bench-concurrent-stress.py` — RFC-004 concurrent stress harness.
-  Runs three worker pools simultaneously (KNN readers, online writers, ANN
-  readers) against a Dockerized MySQL instance and checks post-stress
-  consistency: index row-count stability, KNN top-1 stability, InnoDB
-  deadlock counter, and clean thread exit. Emits a JSON result with
-  per-pool QPS, p50/p99 latency, error counts, and a `passed` verdict.
-  CLI flags: `--mysql-version`, `--build`, `--artifact-dir`, `--artifact`,
-  `--image`, `--threads-knn/write/ann`, `--duration`, `--config`, `--output`.
+- **`scripts/myvectorbench.py`** — full ANN benchmarking pipeline (PR #94).
+  Runs index-build, insert-throughput, KNN-search, KNN-ANN, and recall
+  workloads against a Dockerized MySQL instance; emits structured JSON
+  results. Configurable via `myvectorbench.yml` (dataset, workload params,
+  regression thresholds).
+- **`scripts/myvectorbench-compare.py`** — baseline comparison tool; reads
+  two result JSON files and checks all metrics against configured thresholds
+  (`+25%`, `-25%`, `±0.05 recall`). Exit 0 = no breach, exit 1 = breach.
+- **`scripts/myvectorbench.py`: `knn_ann` workload** (PR #96) — measures QPS
+  and latency for `MYVECTOR_IS_ANN` query-rewrite path; emits
+  `knn_ann_qps`, `knn_ann_p50_ms`, `knn_ann_p99_ms`, and
+  `ann_rewrite_active` fields.
+- **`scripts/myvectorbench.py`: `--artifact` flag** (PR #99) —
+  `_resolve_artifact_dir` auto-resolves component artifacts from `dist/`
+  or downloads from GitHub Releases by key (e.g. `component-8.4`). Handles
+  `gh` CLI not-found and release asset naming mismatches with actionable
+  error messages.
+- **`scripts/bench-concurrent-stress.py`** — RFC-004 concurrent stress
+  harness (PR #101). Runs KNN readers, online writers, and ANN readers
+  simultaneously; validates post-stress consistency (index row-count,
+  KNN top-1, InnoDB deadlock counter, clean thread exit); emits JSON with
+  per-pool QPS, p50/p99, error counts, and `passed` verdict.
   Unit tests: `tests/test_bench_concurrent_stress.py`.
-- `scripts/pre-release-test.sh`: Phase 3 lifecycle regression gate — 5 subtests
-  covering install timing, index reload persistence after uninstall/reinstall,
-  binlog cleanup on component removal, concurrent reads during install, and
-  DROP INDEX stability under load.
-- `scripts/myvectorbench.py`: `--artifact` flag and `_resolve_artifact_dir`
-  for auto-downloading component artifacts from GitHub Releases by key
-  (e.g. `component-8.4`). Handles `gh` CLI not-found and release asset
-  naming mismatches with actionable error messages.
+- **`scripts/pre-release-test.sh`: Phase 3 lifecycle regression gate**
+  (PR #100) — 5 subtests: install timing, index reload persistence after
+  uninstall/reinstall, binlog cleanup on component removal, concurrent reads
+  during install, DROP INDEX stability under load.
+- **`results/`** — v1.26.5.2 benchmark baseline (synthetic 10k rows,
+  dim=128, local Docker): plugin-8.4, component-8.4, component-9.7.
 
 ### Fixed
-- `scripts/myvectorbench.py`: libstdc++ probe now uses the custom `--image`
-  when provided, so the probe matches the actual runtime library.
-- `scripts/pre-release-test.sh`: `install_component` wrote `myvector.cnf`
-  *after* `INSTALL COMPONENT`, so the binlog listener started without its
-  config and never monitored the binary log. The lifecycle binlog-cleanup
-  test now performs an UNINSTALL + INSTALL cycle after the initial install
-  so the component reads the config at startup.
+- **HNSW type dispatch case-insensitivity** (PR #98, closes #92) —
+  `VectorIndexCollection::open` and `rewriteMyVectorColumnDef` now compare
+  index type upper-cased; previously `HNSW` vs `hnsw` in the COMMENT string
+  could silently produce a brute-force index instead of HNSW.
+- **`cast toupper` UB on signed-char platforms** (PR #98) — `toupper` argument
+  now cast to `unsigned char` to avoid undefined behaviour.
+- **recall_at_10 metric** (PR #98) — now computes live brute-force vs
+  `MYVECTOR_IS_ANN` top-10 overlap; was a `None` stub.
+- **ERROR 3540 on `UNINSTALL COMPONENT`** (PR #97, closes #93) —
+  `myvector_unload_notify` service drains the binlog thread before the
+  component unloads; prevents `ER_COMPONENTS_UNLOAD_CANT_DEINITIALIZE`.
+- **DDL dim enforcement on MySQL 9.7** (PR #97) — `MYVECTOR_IS_ANN`
+  query-rewrite service now uses a derived-table wrapper to avoid
+  `has_subquery()` rejection; fixes `ERROR 1210` on 9.7.
+- **`scripts/myvectorbench.py` runtime bugs** (PR #95) — fixed container
+  startup race, SQL escaping issues, and column reference errors found
+  during first live run.
+- **`scripts/myvectorbench.py`: libstdc++ probe** (PR #99) — now uses the
+  custom `--image` when provided so the probe matches the actual runtime lib.
+- **`scripts/pre-release-test.sh`: binlog listener startup** (PR #100) —
+  `install_component` wrote `myvector.cnf` *after* `INSTALL COMPONENT`, so
+  the binlog listener started without its config. Lifecycle binlog-cleanup
+  test now performs UNINSTALL + INSTALL after the initial install.
+- **`scripts/myvectorbench.py`: permanent plugin re-install** — `install_plugin`
+  now detects `load_option=ON` (plugin-load-add in my.cnf, as used in GHCR
+  images) and skips UNINSTALL/INSTALL to avoid `ER_UDF_EXISTS (1125)`.
+
+### Documentation
+- `CLAUDE.md`: added ANN benchmark and RFC-004 stress test invocation examples;
+  Phase 3 lifecycle gate description in pre-release section.
+- `docs/RFC-004-RELIABILITY.md`: `bench-concurrent-stress.py` listed as
+  primary recommended tooling, replacing sysbench Lua script placeholder.
 
 ## [1.26.5.1] - 2026-05-20
 
