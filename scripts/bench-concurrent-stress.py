@@ -22,13 +22,11 @@ import math
 import os
 import re
 import random
-import statistics
 import subprocess
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 # Import shared helpers from myvectorbench.py without requiring it on PYTHONPATH.
 _script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -42,7 +40,6 @@ _spec.loader.exec_module(_bench_mod)
 Container = _bench_mod.Container
 install_component = _bench_mod.install_component
 _vec_literal = _bench_mod._vec_literal
-_create_bench_table = _bench_mod._create_bench_table
 _synthetic_vectors = _bench_mod._synthetic_vectors
 
 
@@ -425,16 +422,22 @@ def main():
     parser.add_argument("--output", default="stress-result.json")
     args = parser.parse_args()
 
+    if args.image:
+        print(f"WARNING: --image={args.image!r} passed but this branch's Container does not yet support custom images (requires PR #99 merge). Proceeding with default image.", flush=True)
+
     artifact_dir = args.artifact_dir
     if args.artifact:
-        artifact_dir = _bench_mod._resolve_artifact_dir(args.artifact)
+        _resolve = getattr(_bench_mod, '_resolve_artifact_dir', None)
+        if _resolve is None:
+            parser.error("--artifact requires myvectorbench.py with _resolve_artifact_dir (merge PR #99 first)")
+        artifact_dir = _resolve(args.artifact)
     if not artifact_dir and args.build == "component":
         parser.error("--artifact-dir or --artifact is required for component builds")
 
     try:
         import yaml
         with open(args.config) as f:
-            config = yaml.safe_load(f)
+            config = yaml.safe_load(f) or {}
     except FileNotFoundError:
         config = {}
 

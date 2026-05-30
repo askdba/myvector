@@ -103,12 +103,14 @@ def test_result_json_structure():
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         json.dump(result, f)
         tmp = f.name
-    with open(tmp) as f:
-        loaded = json.load(f)
-    os.unlink(tmp)
-    assert loaded["passed"] is True
-    assert loaded["pools"]["knn_readers"]["errors"] == 0
-    assert loaded["workload"] == "concurrent_stress"
+    try:
+        with open(tmp) as f:
+            loaded = json.load(f)
+        assert loaded["passed"] is True
+        assert loaded["pools"]["knn_readers"]["errors"] == 0
+        assert loaded["workload"] == "concurrent_stress"
+    finally:
+        os.unlink(tmp)
 
 
 def test_result_json_fails_on_errors():
