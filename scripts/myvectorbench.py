@@ -304,6 +304,9 @@ def _resolve_artifact_dir(artifact_key: str) -> str:
     downloads <artifact_key>.tar.gz from the latest GitHub release using gh CLI
     and extracts into dist/<artifact_key>/.
     """
+    import re as _re
+    if not _re.fullmatch(r'[A-Za-z0-9._-]+', artifact_key):
+        raise ValueError(f"Invalid artifact_key {artifact_key!r}: only [A-Za-z0-9._-] allowed")
     local = Path(f"dist/{artifact_key}")
     if local.is_dir() and (local / "libmyvector_component.so").exists():
         return str(local)
