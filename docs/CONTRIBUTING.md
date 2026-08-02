@@ -62,6 +62,7 @@ Fixes #42"
 ```
 
 **Commit Message Format:**
+
 ```text
 <type>: <short summary>
 
@@ -88,8 +89,8 @@ cd mysql-server/bld/plugin/myvector
 make
 
 # Run the demo tests
-mysql -u root -p test < demo/stanford50d/create.sql
-mysql -u root -p test < demo/stanford50d/search.sql
+mysql -u root -p test < examples/stanford50d/create.sql
+mysql -u root -p test < examples/stanford50d/search.sql
 ```
 
 **Test Checklist:**
@@ -188,7 +189,7 @@ $$
 
 - 📖 [README.md](https://github.com/askdba/myvector#readme) - Build and installation
 - 🎥 [FOSDEM Talk](https://fosdem.org/2025/schedule/event/fosdem-2025-4230-boosting-mysql-with-vector-search-introducing-the-myvector-plugin/) - Overview and demos
-- 💬 [GitHub Issues](https://github.com/pulbdb-ai/myvector/issues) - Questions and discussions
+- 💬 [GitHub Issues](https://github.com/askdba/myvector/issues) - Questions and discussions
 
 ## License
 

@@ -13,6 +13,12 @@ docker run -d \
   ghcr.io/askdba/myvector:mysql8.4
 ```
 
+!!! warning "Local trial only"
+    This uses a fixed, publicly-known password with the port bound to all
+    interfaces — fine for trying MyVector out on your own machine, but don't
+    run it this way on a shared or internet-facing host. Use a real secret
+    and bind to `127.0.0.1:3306:3306` for anything beyond local testing.
+
 ## 2. Connect to MySQL
 
 ```bash
@@ -23,19 +29,26 @@ mysql -h 127.0.0.1 -u root -pmyvector vectordb
 
 Let's use a simple example with 50-dimensional word vectors.
 
+Use the native `MYVECTOR` column type (not a `COMMENT`-based declaration) so
+the plugin can rewrite the table's DDL correctly:
+
 ```sql
 -- Create a table for our word vectors
 CREATE TABLE words50d (
-  wordid INT PRIMARY KEY,
-  word VARCHAR(50),
-  wordvec VARBINARY(200) COMMENT 'MYVECTOR(type=HNSW,dim=50,size=100000,dist=L2)'
+  wordid INT AUTO_INCREMENT PRIMARY KEY,
+  word VARCHAR(200),
+  wordvec MYVECTOR(type=HNSW,dim=50,size=400000,dist=L2,m=64,ef=100)
 );
+```
 
--- Download and insert the data (from the examples/stanford50d directory)
--- In a real-world scenario, you would generate your own vectors.
--- wget https://raw.githubusercontent.com/askdba/myvector/main/examples/stanford50d/insert50d.sql.gz
--- gunzip insert50d.sql.gz
--- mysql -h 127.0.0.1 -u root -pmyvector vectordb < insert50d.sql
+Download and load the sample vectors (50-dimensional GloVe word vectors, from
+the [`examples/stanford50d`](https://github.com/askdba/myvector/tree/main/examples/stanford50d)
+directory). In a real-world scenario, you would generate your own vectors.
+
+```bash
+curl -L -o /tmp/insert50d.sql.gz \
+  https://raw.githubusercontent.com/askdba/myvector/main/examples/stanford50d/insert50d.sql.gz
+gunzip -c /tmp/insert50d.sql.gz | mysql -h 127.0.0.1 -u root -pmyvector vectordb
 ```
 
 ## 4. Build the Vector Index
@@ -51,10 +64,12 @@ Find words similar to "school":
 ```sql
 SET @school_vec = (SELECT wordvec FROM words50d WHERE word = 'school');
 
-SELECT word, myvector_row_distance() as distance
+SELECT word, myvector_row_distance(wordid) AS distance
 FROM words50d
 WHERE MYVECTOR_IS_ANN('vectordb.words50d.wordvec', 'wordid', @school_vec, 10);
 ```
+
+`myvector_row_distance()` requires the row's id column as its argument.
 
 You should see results like "university," "student," "teacher," etc. It's
 that easy!
@@ -65,7 +80,7 @@ If you are running your own MySQL instance (not using the Docker images), instal
 
 ```bash
 mysql -u root -p -e "INSTALL PLUGIN myvector SONAME 'myvector.so';"
-mysql -u root -p < sql/install_functions.sql
+mysql -u root -p < sql/myvectorplugin.sql
 ```
 
 !!! note "Plugin vs. Component"

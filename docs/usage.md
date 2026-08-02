@@ -38,6 +38,8 @@ SET @my_vector = myvector_construct('[1.2, 3.4, 5.6]');
 **Calculate Distance:**
 
 ```sql
+SET @vec1 = myvector_construct('[1.2, 3.4, 5.6]');
+SET @vec2 = myvector_construct('[1.0, 3.0, 5.0]');
 SELECT myvector_distance(@vec1, @vec2, 'L2');
 ```
 
@@ -48,6 +50,11 @@ SELECT myvector_display(wordvec) FROM words50d LIMIT 1;
 ```
 
 ## Docker Compose
+
+!!! warning "Local trial only"
+    As with the [Quick Start](quickstart.md), this uses a fixed password with
+    the port bound to all interfaces. Fine for local trial use; use a real
+    secret and bind to `127.0.0.1` for anything beyond that.
 
 ```yaml
 version: '3.8'
