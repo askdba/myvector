@@ -1,0 +1,47 @@
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #0b1120;
+  --md-primary-fg-color--light: #19e2dc;
+  --md-primary-fg-color--dark: #071122;
+  --md-primary-bg-color: #ffffff;
+
+  --md-accent-fg-color: #d939e0;
+  --md-accent-fg-color--transparent: #d939e01a;
+  --md-accent-bg-color: #ffffff;
+
+  --md-default-bg-color: #0b1120;
+  --md-default-fg-color: #e6edf3;
+  --md-default-fg-color--light: #9aa7b5;
+  --md-default-fg-color--lighter: #6b7787;
+
+  --md-typeset-a-color: #19e2dc;
+}
+
+.md-header {
+  background: linear-gradient(90deg, #071122 0%, #0b1120 100%);
+}
+
+.md-tabs {
+  background: #071122;
+}
+
+.md-typeset a:hover {
+  color: #d939e0;
+}
+
+.myvector-hero {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.myvector-hero img {
+  max-width: 100%;
+  border-radius: 8px;
+}
+
+.myvector-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: center;
+  margin: 1rem 0 2rem;
+}

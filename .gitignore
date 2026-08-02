@@ -59,3 +59,6 @@ docs/ISSUE_*_CLOSE_COMMENT.md
 
 # git worktrees
 .worktrees/
+
+# Local docs build output
+/site/
