@@ -1,0 +1,71 @@
+site_name: MyVector
+site_description: Native vector similarity search plugin for MySQL
+site_url: https://myvector.online/
+repo_url: https://github.com/askdba/myvector
+repo_name: askdba/myvector
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  logo: assets/logo.png
+  favicon: assets/logo.png
+  palette:
+    - scheme: slate
+      primary: custom
+      accent: custom
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+exclude_docs: |
+  COMPONENT_MIGRATION_PLAN.md
+  RELEASE_CANDIDATE_PLAN_MAR_2026.md
+  RFC-004-RELIABILITY.md
+  ISSUE_79_BENCHMARK_BASELINE.md
+  superpowers/
+
+nav:
+  - Home: index.md
+  - Docs:
+      - Quick Start: quickstart.md
+      - Demo: DEMO.md
+      - Configuration: CONFIGURATION.md
+      - Usage & API: usage.md
+      - Docker Images: DOCKER_IMAGES.md
+      - Build Modes: BUILD_MODES.md
+      - Building on macOS: BUILDING_MACOS.md
+      - Online Index Updates: ONLINE_INDEX_UPDATES.md
+      - Benchmarks: ANN_BENCHMARKS.md
+      - Structure: STRUCTURE.md
+      - Security: SECURITY.md
+  - Community:
+      - Code of Conduct: CODE_OF_CONDUCT.md
+      - Contributing: CONTRIBUTING.md
+  - GitHub: https://github.com/askdba/myvector

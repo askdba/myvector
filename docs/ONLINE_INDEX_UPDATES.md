@@ -223,6 +223,6 @@ For Docker, ensure `myvector.cnf` has `myvector_host=127.0.0.1` and `myvector_po
 
 ## Related Documentation
 
-- [DEMO.md](DEMO.md) — Full demo with embeddings
-- [README.md](../README.md) — Quick start and architecture
-- [COMPONENT_MIGRATION_PLAN.md](COMPONENT_MIGRATION_PLAN.md) — Technical details on binlog monitoring
+- [Demo](DEMO.md) — Full demo with embeddings
+- [README](https://github.com/askdba/myvector#readme) — Quick start and architecture
+- [COMPONENT_MIGRATION_PLAN.md](https://github.com/askdba/myvector/blob/main/docs/COMPONENT_MIGRATION_PLAN.md) — Technical details on binlog monitoring
