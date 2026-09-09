@@ -8,6 +8,7 @@ services:
     ports:
       - "3306:3306"
     volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/20-booth.sql:ro
       - myvector-booth-data:/var/lib/mysql
 
   app:
