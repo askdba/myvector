@@ -1,0 +1,29 @@
+services:
+  db:
+    image: ghcr.io/askdba/myvector:mysql8.4
+    container_name: myvector-booth-db
+    environment:
+      MYSQL_ROOT_PASSWORD: myvector
+      MYSQL_DATABASE: vectordb
+    ports:
+      - "3306:3306"
+    volumes:
+      - myvector-booth-data:/var/lib/mysql
+
+  app:
+    build: .
+    container_name: myvector-booth-app
+    depends_on:
+      - db
+    environment:
+      MYSQL_HOST: db
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: myvector
+      MYSQL_DATABASE: vectordb
+      PORT: 8080
+    ports:
+      - "8080:8080"
+
+volumes:
+  myvector-booth-data:
