@@ -100,8 +100,13 @@ docker run --rm \
 
     echo "==> Building MyVector component..."
     cd /workspace
-    rm -rf build
-    mkdir -p build
+    # Arch-specific component build dir. OUTPUT_DIR is build/component-${arch};
+    # a shared "build" dir would be wiped by the next architecture in the
+    # docker-publish multi-arch loop, deleting the prior arch output before it is
+    # copied out. Keep the "build" prefix so .dockerignore (build*/) excludes it.
+    COMPONENT_BUILD="build-comp-${ARCH}"
+    rm -rf "$COMPONENT_BUILD"
+    mkdir -p "$COMPONENT_BUILD"
 
     # Prefer the static archive so the component .so has no libmysqlclient.so
     # runtime dependency (the mysql:8.4 Docker test image has no shared client lib).
@@ -117,7 +122,7 @@ docker run --rm \
     MYSQL_LIBDIR=$(dirname "$MYSQLCLIENT_LIB")
     echo "==> libmysqlclient at: $MYSQLCLIENT_LIB"
 
-    cmake -B build -S . \
+    cmake -B "$COMPONENT_BUILD" -S . \
       -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-12/root/usr/bin/gcc \
       -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-12/root/usr/bin/g++ \
       -DCMAKE_BUILD_TYPE=Release \
@@ -125,16 +130,16 @@ docker run --rm \
       -DMYSQL_BUILD_DIR="$MYSQL_BLD" \
       -DMYSQL_DIR="$MYSQL_LIBDIR" \
       -DMYSQLCLIENT_LIBRARY="$MYSQLCLIENT_LIB"
-    make -C build -j$(nproc) VERBOSE=1
+    make -C "$COMPONENT_BUILD" -j$(nproc) VERBOSE=1
 
     echo "==> Packaging artifact..."
     mkdir -p "/workspace/$OUTPUT_DIR"
-    cp build/libmyvector_component.so "/workspace/$OUTPUT_DIR/"
+    cp "$COMPONENT_BUILD/libmyvector_component.so" "/workspace/$OUTPUT_DIR/"
     cp src/component_src/myvector.json "/workspace/$OUTPUT_DIR/"
     echo "==> Built: /workspace/$OUTPUT_DIR/libmyvector_component.so"
 
     # Restore host ownership so runner can use the result and cache can save the source.
     chown -R "${HOST_UID}:${HOST_GID}" "/workspace/mysql-server-${MYSQL_TAG}" 2>/dev/null || true
-    chown -R "${HOST_UID}:${HOST_GID}" "/workspace/build" 2>/dev/null || true
+    chown -R "${HOST_UID}:${HOST_GID}" "/workspace/$COMPONENT_BUILD" 2>/dev/null || true
     chown -R "${HOST_UID}:${HOST_GID}" "/workspace/${OUTPUT_DIR}" 2>/dev/null || true
   '
