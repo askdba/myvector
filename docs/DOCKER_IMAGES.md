@@ -11,15 +11,32 @@ the link above). They are built on top of community MySQL Docker images from:
 
 ## What is in the docker image?
 
-Pre-built MyVector plugin (myvector.so) and installation script (myvectorplugin.sql)
+This depends on the image tag's install mechanism (see the
+[Versions](#versions) table for which tag is which):
+
+**Plugin images** (`mysql8.0`, `mysql8.4`, `mysql9.7`, `latest`) — pre-built
+MyVector plugin (`myvector.so`) and the plugin installer (`myvectorplugin.sql`):
 
 ```bash
 - /usr/lib/mysql/plugin/myvector.so
 - /docker-entrypoint-initdb.d/myvectorplugin.sql
 ```
 
-NOTE: The MySQL image entrypoint will run the SQL script automatically on first
-startup. If you need to re-run it manually, use:
+**Component images** (`mysql8.4-component`, `mysql9.7-component`, `mysql26.7`) —
+the component library (still installed as `myvector.so`) plus the component
+install/uninstall scripts, which use `INSTALL COMPONENT` rather than
+`INSTALL PLUGIN`:
+
+```bash
+- /usr/lib/mysql/plugin/myvector.so
+- /usr/lib/mysql/plugin/myvector.json
+- /docker-entrypoint-initdb.d/myvector_install_component.sql
+```
+
+NOTE: The MySQL image entrypoint runs the initdb SQL script automatically on
+first startup. To re-run it manually, source the file matching your image —
+`myvectorplugin.sql` for plugin images, `myvector_install_component.sql` for
+component images, e.g.:
 `mysql -u root -p < /docker-entrypoint-initdb.d/myvectorplugin.sql`
 
 ## Quick Start (MySQL 8.4)
