@@ -107,6 +107,7 @@ jobs:
           cp build/component/libmyvector_component.so "$PACK_DIR/myvector.so"
           cp build/component/libmyvector_component.so "$PACK_DIR/libmyvector_component.so"
           cp build/component/myvector.json "$PACK_DIR/"
+          # These are component artifacts (myvector.so is the component library,
           # installed via INSTALL COMPONENT). Bundle the component install/uninstall
           # scripts, NOT myvectorplugin.sql — that script's first statement is
           # INSTALL PLUGIN, which cannot load a component and would leave the
