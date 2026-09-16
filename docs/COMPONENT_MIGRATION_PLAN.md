@@ -113,8 +113,14 @@ Copy both the shared library and manifest to the MySQL plugin directory:
 `PLUGIN_DIR=$(mysql -N -e "SELECT @@plugin_dir;")`
 `cp build/component/libmyvector_component.so "$PLUGIN_DIR/myvector.so"`
 `cp build/component/myvector.json "$PLUGIN_DIR/myvector.json"` (or copy myvector.json to `$(mysql -N -e "SELECT @@component_dir;")/` if your MySQL version uses a separate component_dir).
-Then connect and run `INSTALL COMPONENT 'file://myvector';`, verify UDFs
-(e.g. `SELECT myvector_display(myvector_construct('[1,2,3]'));`), then `UNINSTALL COMPONENT 'file://myvector';`.
+Then install with `mysql -u root -p < sql/myvector_install_component.sql` — this runs
+`INSTALL COMPONENT` **and** registers the supplemental UDFs, the `MYVECTOR_INDEX_*`
+procedures, and the `myvector_columns` view. Running a bare `INSTALL COMPONENT
+'file://myvector';` registers only the core UDFs and leaves the index-build / ANN
+workflows non-functional. Verify (e.g.
+`SELECT myvector_display(myvector_construct('[1,2,3]'));`), then tear down cleanly
+with `mysql -u root -p < sql/myvector_uninstall_component.sql` (a bare `UNINSTALL
+COMPONENT` leaves the supplemental UDFs, procedures, and view behind).
 
 ### **Implementation Decisions**
 

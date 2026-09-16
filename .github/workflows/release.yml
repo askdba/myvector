@@ -96,7 +96,12 @@ jobs:
           ARTIFACT_NAME="myvector-component-mysql${{ matrix.mysql-version }}-linux-${ARCH}"
           PACK_DIR="release/${ARTIFACT_NAME}"
           mkdir -p "$PACK_DIR"
+          # Ship both names: myvector.so is the deployed plugin-dir filename
+          # (used by the install docs / Docker image), while
+          # libmyvector_component.so is what scripts/myvectorbench.py's
+          # _resolve_artifact_dir expects at the archive root.
           cp build/component/libmyvector_component.so "$PACK_DIR/myvector.so"
+          cp build/component/libmyvector_component.so "$PACK_DIR/libmyvector_component.so"
           cp build/component/myvector.json "$PACK_DIR/"
           # These are component artifacts (myvector.so is the component library,
           # installed via INSTALL COMPONENT). Bundle the component install/uninstall

@@ -47,10 +47,13 @@
 
 USE mysql;
 
--- sqlfluff: disable=PRS
-INSTALL COMPONENT 'file://myvector';
--- sqlfluff: enable=PRS
-
+-- Create the myvector_columns view BEFORE installing the component. The
+-- component's binlog thread runs OpenAllOnlineVectorIndexes() on its first
+-- connection (src/component_src/myvector_binlog_service.cc), which queries
+-- mysql.myvector_columns. Installing the component first opens a race where
+-- that thread can query the view before it exists and skip registering
+-- existing online=Y indexes. The view depends only on INFORMATION_SCHEMA, not
+-- on the component, so it is safe to create first.
 DROP VIEW IF EXISTS myvector_columns;
 
 CREATE VIEW myvector_columns
@@ -60,6 +63,10 @@ SELECT TABLE_SCHEMA as db, TABLE_NAME as tbl, COLUMN_NAME as col,
 FROM INFORMATION_SCHEMA.COLUMNS
 WHERE COLUMN_COMMENT LIKE 'MYVECTOR%'
 ORDER BY db,tbl,col;
+
+-- sqlfluff: disable=PRS
+INSTALL COMPONENT 'file://myvector';
+-- sqlfluff: enable=PRS
 
 -- Supplemental UDFs. These are defined in myvector.so but are NOT registered
 -- by the component's own register_udfs(), so create them explicitly by SONAME.

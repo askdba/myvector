@@ -258,6 +258,10 @@ jobs:
         # teardown script must, leaving mysql.func clean.
         UDF_LEFT=$($MYSQL_CMD -s -N -e "SELECT COUNT(*) FROM mysql.func WHERE name IN ('myvector_row_distance','myvector_is_valid','myvector_search_open_udf');")
         [ "$UDF_LEFT" = "0" ] || { echo "Supplemental UDFs still in mysql.func after uninstall: $UDF_LEFT"; exit 1; }
+        PROC_LEFT=$($MYSQL_CMD -s -N -e "SELECT COUNT(*) FROM information_schema.routines WHERE routine_schema='mysql' AND routine_name LIKE 'MYVECTOR_INDEX%';")
+        [ "$PROC_LEFT" = "0" ] || { echo "MYVECTOR_INDEX_* procedures still present after uninstall: $PROC_LEFT"; exit 1; }
+        VIEW_LEFT=$($MYSQL_CMD -s -N -e "SELECT COUNT(*) FROM information_schema.views WHERE table_schema='mysql' AND table_name='myvector_columns';")
+        [ "$VIEW_LEFT" = "0" ] || { echo "myvector_columns view still present after uninstall: $VIEW_LEFT"; exit 1; }
 
         echo "=== Reinstall test (install script -> verify -> uninstall script) ==="
         $MYSQL_CMD < sql/myvector_install_component.sql
@@ -328,6 +332,10 @@ jobs:
         docker exec -i myv97 mysql -uroot -proot -h 127.0.0.1 < sql/myvector_uninstall_component.sql
         UDF_LEFT=$($MYQ -s -N -e "SELECT COUNT(*) FROM mysql.func WHERE name IN ('myvector_row_distance','myvector_is_valid','myvector_search_open_udf');")
         [ "$UDF_LEFT" = "0" ] || { echo "Supplemental UDFs still in mysql.func after uninstall: $UDF_LEFT"; exit 1; }
+        PROC_LEFT=$($MYQ -s -N -e "SELECT COUNT(*) FROM information_schema.routines WHERE routine_schema='mysql' AND routine_name LIKE 'MYVECTOR_INDEX%';")
+        [ "$PROC_LEFT" = "0" ] || { echo "MYVECTOR_INDEX_* procedures still present after uninstall: $PROC_LEFT"; exit 1; }
+        VIEW_LEFT=$($MYQ -s -N -e "SELECT COUNT(*) FROM information_schema.views WHERE table_schema='mysql' AND table_name='myvector_columns';")
+        [ "$VIEW_LEFT" = "0" ] || { echo "myvector_columns view still present after uninstall: $VIEW_LEFT"; exit 1; }
 
         echo "=== Reinstall test (install script -> verify -> uninstall script) ==="
         docker exec -i myv97 mysql -uroot -proot -h 127.0.0.1 < sql/myvector_install_component.sql
