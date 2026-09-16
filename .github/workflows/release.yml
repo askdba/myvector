@@ -53,9 +53,11 @@ jobs:
           - mysql-version: '9.7.0'
             mysql-tag: 'mysql-9.7.0'
             continue-on-error: true
-          - mysql-version: '26.7.0'
-            mysql-tag: 'mysql-26.7.0'
-            continue-on-error: true
+          # 26.7 (Innovation) is validated in CI (build-component-26-7 /
+          # test-component-26-7) but intentionally kept OUT of the release
+          # matrix until its component build is proven end-to-end. Adding it
+          # here (even with continue-on-error) would let create-release publish
+          # a GitHub Release with no usable 26.7 archive. Re-add once proven.
 
     steps:
       - name: Checkout code
@@ -68,14 +70,14 @@ jobs:
 
       - name: Cache MySQL source
         id: cache-mysql
-        if: matrix.mysql-version != '9.7.0' && matrix.mysql-version != '26.7.0'
+        if: matrix.mysql-version != '9.7.0'
         uses: actions/cache@v4
         with:
           path: mysql-server
           key: release-mysql-${{ matrix.mysql-tag }}-v1
 
       - name: Clone MySQL source
-        if: matrix.mysql-version != '9.7.0' && matrix.mysql-version != '26.7.0' && steps.cache-mysql.outputs.cache-hit != 'true'
+        if: matrix.mysql-version != '9.7.0' && steps.cache-mysql.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --branch ${{ matrix.mysql-tag }} \
             https://github.com/mysql/mysql-server.git mysql-server
@@ -84,7 +86,6 @@ jobs:
         run: |
           case "${{ matrix.mysql-version }}" in
             9.7.0)  ./scripts/build-component-9.7-docker.sh  "${{ matrix.mysql-tag }}" ;;
-            26.7.0) ./scripts/build-component-26.7-docker.sh "${{ matrix.mysql-tag }}" ;;
             *)      ./scripts/build-component.sh "${{ matrix.mysql-tag }}" "$(pwd)/mysql-server" ;;
           esac
 
@@ -101,10 +102,14 @@ jobs:
           mkdir -p "$PACK_DIR"
           cp build/component/libmyvector_component.so "$PACK_DIR/myvector.so"
           cp build/component/myvector.json "$PACK_DIR/"
-          if [ -f sql/myvectorplugin.sql ]; then
-            cp sql/myvectorplugin.sql "$PACK_DIR/" || { echo "Error: failed to copy sql/myvectorplugin.sql (check permissions/disk)"; exit 1; }
+          # These are component artifacts (myvector.so is the component library,
+          # installed via INSTALL COMPONENT). Bundle the component installer, NOT
+          # myvectorplugin.sql — that script's first statement is INSTALL PLUGIN,
+          # which cannot load a component and would leave the artifact unusable.
+          if [ -f sql/myvector_install_component.sql ]; then
+            cp sql/myvector_install_component.sql "$PACK_DIR/" || { echo "Error: failed to copy sql/myvector_install_component.sql (check permissions/disk)"; exit 1; }
           else
-            echo "warning: sql/myvectorplugin.sql missing, release may be incomplete"
+            echo "Error: sql/myvector_install_component.sql missing, cannot package a usable component artifact"; exit 1
           fi
           tar -czf "release/${ARTIFACT_NAME}.tar.gz" -C release "$ARTIFACT_NAME"
           echo "Created release/${ARTIFACT_NAME}.tar.gz"

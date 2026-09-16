@@ -192,7 +192,14 @@ jobs:
   # a "-component" tag suffix; mysql26.7 has no plugin equivalent to collide with
   # (component-only), so it gets the plain tag.
   build-and-publish-component:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # Publish only from a successful upstream workflow_run, or from a manual
+    # dispatch that targets a version TAG. Without the tag guard, a
+    # workflow_dispatch off any branch would push that branch's build to the
+    # mutable public component tags (mysql8.4-component / mysql9.7-component /
+    # mysql26.7).
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag')
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false

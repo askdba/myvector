@@ -71,11 +71,15 @@ docker run --rm \
         https://github.com/mysql/mysql-server.git "$MYSQL_WORKSPACE"
     fi
     MYSQL_SRC="$MYSQL_WORKSPACE"
+    # Per-architecture MySQL build dir. docker-publish builds amd64 then arm64
+    # sequentially in the same mounted repo; a shared bld/ would let the second
+    # arch reuse the CMake cache and generated headers of the first (wrong ABI).
+    MYSQL_BLD="${MYSQL_SRC}/bld-${ARCH}"
 
     echo "==> Configuring MySQL (generate headers)..."
-    mkdir -p "$MYSQL_SRC/bld"
-    if [ ! -f "$MYSQL_SRC/bld/CMakeCache.txt" ]; then
-      cd "$MYSQL_SRC/bld"
+    mkdir -p "$MYSQL_BLD"
+    if [ ! -f "$MYSQL_BLD/CMakeCache.txt" ]; then
+      cd "$MYSQL_BLD"
       cmake .. \
         -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc \
         -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++ \
@@ -117,7 +121,7 @@ docker run --rm \
       -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++ \
       -DCMAKE_BUILD_TYPE=Release \
       -DMYSQL_SOURCE_DIR="$MYSQL_SRC" \
-      -DMYSQL_BUILD_DIR="$MYSQL_SRC/bld" \
+      -DMYSQL_BUILD_DIR="$MYSQL_BLD" \
       -DMYSQL_DIR="$MYSQL_LIBDIR" \
       -DMYSQLCLIENT_LIBRARY="$MYSQLCLIENT_LIB"
     make -C build -j$(nproc) VERBOSE=1
