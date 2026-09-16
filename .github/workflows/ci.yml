@@ -311,6 +311,8 @@ jobs:
         $MYQ -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';"
         UDF_COUNT=$($MYQ -s -N -e "SELECT COUNT(*) FROM mysql.func WHERE name IN ('myvector_row_distance','myvector_is_valid','myvector_search_open_udf');")
         [ "$UDF_COUNT" = "3" ] || { echo "Expected 3 supplemental UDFs, got $UDF_COUNT"; exit 1; }
+        PROC_COUNT=$($MYQ -s -N -e "SELECT COUNT(*) FROM information_schema.routines WHERE routine_schema='mysql' AND routine_name LIKE 'MYVECTOR_INDEX%';")
+        [ "$PROC_COUNT" = "6" ] || { echo "Expected 6 MYVECTOR_INDEX_* procedures, got $PROC_COUNT"; exit 1; }
         $MYQ -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
         $MYQ -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'));"
 
