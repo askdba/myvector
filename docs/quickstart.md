@@ -85,8 +85,9 @@ mysql -u root -p < sql/myvectorplugin.sql
 
 !!! note "Plugin vs. Component"
     The **plugin** (`INSTALL PLUGIN`) is the current stable path and supports MySQL 8.0, 8.4, and 9.0.
-    The **component** (`INSTALL COMPONENT`) is the forward path for MySQL 8.4 and 9.7 (LTS).
+    The **component** (`INSTALL COMPONENT`) is the forward path for MySQL 8.4, 9.7 (LTS), and 26.7 (Innovation).
     MySQL 8.0 plugin support will be maintained through MySQL 8.0 EOL; no component build is planned for 8.0.
+    MySQL 26.7 is component-only — newer MySQL releases break the legacy plugin ABI.
 
 See [Docker Images](DOCKER_IMAGES.md) for the full list of available image tags.
 

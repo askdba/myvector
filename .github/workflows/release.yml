@@ -53,6 +53,9 @@ jobs:
           - mysql-version: '9.7.0'
             mysql-tag: 'mysql-9.7.0'
             continue-on-error: true
+          - mysql-version: '26.7.0'
+            mysql-tag: 'mysql-26.7.0'
+            continue-on-error: true
 
     steps:
       - name: Checkout code
@@ -65,25 +68,25 @@ jobs:
 
       - name: Cache MySQL source
         id: cache-mysql
-        if: matrix.mysql-version != '9.7.0'
+        if: matrix.mysql-version != '9.7.0' && matrix.mysql-version != '26.7.0'
         uses: actions/cache@v4
         with:
           path: mysql-server
           key: release-mysql-${{ matrix.mysql-tag }}-v1
 
       - name: Clone MySQL source
-        if: matrix.mysql-version != '9.7.0' && steps.cache-mysql.outputs.cache-hit != 'true'
+        if: matrix.mysql-version != '9.7.0' && matrix.mysql-version != '26.7.0' && steps.cache-mysql.outputs.cache-hit != 'true'
         run: |
           git clone --depth 1 --branch ${{ matrix.mysql-tag }} \
             https://github.com/mysql/mysql-server.git mysql-server
 
       - name: Build component
         run: |
-          if [ "${{ matrix.mysql-version }}" = "9.7.0" ]; then
-            ./scripts/build-component-9.7-docker.sh "${{ matrix.mysql-tag }}"
-          else
-            ./scripts/build-component.sh "${{ matrix.mysql-tag }}" "$(pwd)/mysql-server"
-          fi
+          case "${{ matrix.mysql-version }}" in
+            9.7.0)  ./scripts/build-component-9.7-docker.sh  "${{ matrix.mysql-tag }}" ;;
+            26.7.0) ./scripts/build-component-26.7-docker.sh "${{ matrix.mysql-tag }}" ;;
+            *)      ./scripts/build-component.sh "${{ matrix.mysql-tag }}" "$(pwd)/mysql-server" ;;
+          esac
 
       - name: Package component artifact
         run: |

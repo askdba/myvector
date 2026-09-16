@@ -37,6 +37,9 @@ jobs:
           - mysql_version: "9.7"
             mysql_tag: "mysql-9.7.0"
             build_path: component
+          - mysql_version: "26.7"
+            mysql_tag: "mysql-26.7.0"
+            build_path: component
 
     steps:
       - name: Filter by workflow_dispatch inputs
@@ -77,6 +80,15 @@ jobs:
         run: |
           chmod +x scripts/build-component-9.7-docker.sh
           ./scripts/build-component-9.7-docker.sh "${{ matrix.mysql_tag }}" dist/component-${{ matrix.mysql_version }}
+
+      - name: Build component (26.7)
+        if: >
+          steps.filter.outputs.skip != 'true' &&
+          matrix.build_path == 'component' &&
+          matrix.mysql_version == '26.7'
+        run: |
+          chmod +x scripts/build-component-26.7-docker.sh
+          ./scripts/build-component-26.7-docker.sh "${{ matrix.mysql_tag }}" dist/component-${{ matrix.mysql_version }}
 
       - name: Install build dependencies (plugin)
         if: >
@@ -183,6 +195,8 @@ jobs:
           - mysql_version: "8.4"
             build_path: component
           - mysql_version: "9.7"
+            build_path: component
+          - mysql_version: "26.7"
             build_path: component
 
     steps:

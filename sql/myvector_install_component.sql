@@ -1,0 +1,1 @@
+INSTALL COMPONENT 'file://myvector';

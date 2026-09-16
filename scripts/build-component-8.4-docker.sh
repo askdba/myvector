@@ -16,6 +16,7 @@ HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
 docker run --rm \
+  ${DOCKER_PLATFORM:+--platform "$DOCKER_PLATFORM"} \
   -v "$REPO_ROOT:/workspace:rw" \
   -w /workspace \
   -e MYSQL_TAG="$MYSQL_TAG" \

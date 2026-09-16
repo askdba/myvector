@@ -188,4 +188,16 @@ instructions in the main README:
 
 ## Versions
 
-Docker images for MySQL 8.0.x, 8.4.x, and 9.0.x are available.
+| Tag | MySQL Version | Install mechanism |
+| :--- | :--- | :--- |
+| `ghcr.io/askdba/myvector:mysql8.0` | 8.0.x | Plugin (`INSTALL PLUGIN`) |
+| `ghcr.io/askdba/myvector:mysql8.4` | 8.4.x (Recommended) | Plugin (`INSTALL PLUGIN`) |
+| `ghcr.io/askdba/myvector:mysql8.4-component` | 8.4.x | Component (`INSTALL COMPONENT`) |
+| `ghcr.io/askdba/myvector:mysql9.7` | 9.7.x (LTS) | Plugin (`INSTALL PLUGIN`) |
+| `ghcr.io/askdba/myvector:mysql9.7-component` | 9.7.x (LTS) | Component (`INSTALL COMPONENT`) |
+| `ghcr.io/askdba/myvector:mysql26.7` | 26.7.x (Innovation) | Component only (`INSTALL COMPONENT`) |
+| `ghcr.io/askdba/myvector:latest` | 8.0.x | Plugin (`INSTALL PLUGIN`) |
+
+Component images (`INSTALL COMPONENT`) contain `/usr/lib/mysql/plugin/myvector.so` +
+`myvector.json` and `/docker-entrypoint-initdb.d/myvector_install_component.sql`,
+rather than the plugin's `myvectorplugin.sql`.

@@ -8,7 +8,7 @@
 #   ./scripts/smoke-component.sh [mysql-version] [rows]
 #
 # Args:
-#   mysql-version  8.4 (default) or 9.7
+#   mysql-version  8.4 (default), 9.7, or 26.7
 #   rows           Stanford 50d rows to load; default 50000, max ~400000
 #
 # Env overrides:
@@ -59,6 +59,7 @@ echo ""
     die "Component .so not found at $COMPONENT_DIR/libmyvector_component.so. Build first:
   MySQL 8.4: ./scripts/build-component-8.4-docker.sh mysql-8.4.8
   MySQL 9.7: ./scripts/build-component-9.7-docker.sh mysql-9.7.0
+  MySQL 26.7: ./scripts/build-component-26.7-docker.sh mysql-26.7.0
   macOS/local: ./scripts/build-component.sh mysql-8.4.8 <mysql-source-dir>"
 
 [[ -f "$COMPONENT_DIR/myvector.json" ]] || \
