@@ -101,12 +101,12 @@ make install
 
 1.  **Build:** Compile the project using `cmake` and `make`.
 2.  **Installation:** In a test MySQL 8.0+ instance, place the compiled `myvector_component.so` and `myvector.json` in the appropriate directories.
-3.  **Activation:** Connect to MySQL and run `INSTALL COMPONENT 'file://myvector'`. Verify success by checking the MySQL error log and querying the `mysql.component` table.
+3.  **Activation:** Connect to MySQL and run `mysql -u root -p < sql/myvector_install_component.sql` (runs `INSTALL COMPONENT 'file://myvector'` plus the supplemental UDFs, `MYVECTOR_INDEX_*` procedures, and `myvector_columns` view). Verify success by checking the MySQL error log and querying the `mysql.component` table.
 4.  **Functional Verification:**
     *   Execute SQL queries to test each registered UDF.
     *   Test the query rewriting by running `CREATE TABLE` and `SELECT` statements with `MYVECTOR` annotations.
     *   Test the binlog service by creating a table with an `online=Y` index, performing DML, and querying the index to verify it was updated.
-5.  **Deactivation:** Run `UNINSTALL COMPONENT 'file://myvector'` and confirm that the component is cleanly unloaded and all UDFs are deregistered.
+5.  **Deactivation:** Run `mysql -u root -p < sql/myvector_uninstall_component.sql` (drops the procedures/view/supplemental UDFs, then runs `UNINSTALL COMPONENT 'file://myvector'`) and confirm that the component is cleanly unloaded and all objects are deregistered.
 
 **Manual Step 5 (local):** Build the component (e.g. `./scripts/build-component.sh mysql-8.4.8 /path/to/mysql-server`).
 Copy both the shared library and manifest to the MySQL plugin directory:
