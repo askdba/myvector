@@ -96,13 +96,25 @@ jobs:
           ARTIFACT_NAME="myvector-component-mysql${{ matrix.mysql-version }}-linux-${ARCH}"
           PACK_DIR="release/${ARTIFACT_NAME}"
           mkdir -p "$PACK_DIR"
+          # Ship both names: myvector.so is the deployed plugin-dir filename
+          # (used by the install docs / Docker image), while
+          # libmyvector_component.so is what scripts/myvectorbench.py's
+          # _resolve_artifact_dir expects at the archive root.
           cp build/component/libmyvector_component.so "$PACK_DIR/myvector.so"
+          cp build/component/libmyvector_component.so "$PACK_DIR/libmyvector_component.so"
           cp build/component/myvector.json "$PACK_DIR/"
-          if [ -f sql/myvectorplugin.sql ]; then
-            cp sql/myvectorplugin.sql "$PACK_DIR/" || { echo "Error: failed to copy sql/myvectorplugin.sql (check permissions/disk)"; exit 1; }
-          else
-            echo "warning: sql/myvectorplugin.sql missing, release may be incomplete"
-          fi
+          # These are component artifacts (myvector.so is the component library,
+          # installed via INSTALL COMPONENT). Bundle the component install/uninstall
+          # scripts, NOT myvectorplugin.sql — that script's first statement is
+          # INSTALL PLUGIN, which cannot load a component and would leave the
+          # artifact unusable.
+          for sql_file in myvector_install_component.sql myvector_uninstall_component.sql; do
+            if [ -f "sql/${sql_file}" ]; then
+              cp "sql/${sql_file}" "$PACK_DIR/" || { echo "Error: failed to copy sql/${sql_file} (check permissions/disk)"; exit 1; }
+            else
+              echo "Error: sql/${sql_file} missing, cannot package a usable component artifact"; exit 1
+            fi
+          done
           tar -czf "release/${ARTIFACT_NAME}.tar.gz" -C release "$ARTIFACT_NAME"
           echo "Created release/${ARTIFACT_NAME}.tar.gz"
 

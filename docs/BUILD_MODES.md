@@ -12,9 +12,9 @@ This document describes the two build modes (plugin and component) and their beh
 
 | Aspect | Plugin | Component |
 |--------|--------|-----------|
-| **Activation** | `INSTALL PLUGIN myvector SONAME 'myvector.so'` | `INSTALL COMPONENT 'file://myvector'` |
-| **UDF registration** | Manual `CREATE FUNCTION ... SONAME 'myvector.so'` per UDF | Automatic on component init |
-| **Deactivation** | `UNINSTALL PLUGIN myvector` (drops UDFs) | `UNINSTALL COMPONENT 'file://myvector'` |
+| **Activation** | `mysql < sql/myvectorplugin.sql` (`INSTALL PLUGIN` + UDFs + procedures) | `mysql < sql/myvector_install_component.sql` (`INSTALL COMPONENT` + supplemental UDFs + procedures + view) |
+| **UDF registration** | Manual `CREATE FUNCTION ... SONAME 'myvector.so'` per UDF | Core UDFs automatic on component init; supplemental UDFs (`myvector_row_distance`, `myvector_is_valid`, `myvector_search_open_udf`) + `MYVECTOR_INDEX_*` procedures + view created by the install script |
+| **Deactivation** | `UNINSTALL PLUGIN myvector` (drops UDFs) | `mysql < sql/myvector_uninstall_component.sql` (drops procedures/view/supplemental UDFs, then `UNINSTALL COMPONENT`) |
 | **Init timing** | Plugin load hooks | Component service init |
 | **Binlog Events** | Simple queue; no `request_shutdown()`/`clear_shutdown()` | Full shutdown/restart support via `request_shutdown()` and `clear_shutdown()` |
 
