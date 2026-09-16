@@ -210,9 +210,17 @@ jobs:
         sudo mkdir -p "$PLUGIN_DIR"
         sudo cp ./component/myvector.json "$PLUGIN_DIR/myvector.json"
 
-        $MYSQL_CMD -e "INSTALL COMPONENT 'file://myvector';"
+        # Install via the shipped component installer (registers the core UDFs +
+        # supplemental SONAME UDFs + MYVECTOR_INDEX_* procedures + view).
+        $MYSQL_CMD < sql/myvector_install_component.sql
 
         $MYSQL_CMD -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';"
+
+        echo "=== Verify installer registered supplemental UDFs + procedures ==="
+        UDF_COUNT=$($MYSQL_CMD -s -N -e "SELECT COUNT(*) FROM mysql.func WHERE name IN ('myvector_row_distance','myvector_is_valid','myvector_search_open_udf');")
+        [ "$UDF_COUNT" = "3" ] || { echo "Expected 3 supplemental UDFs, got $UDF_COUNT"; exit 1; }
+        PROC_COUNT=$($MYSQL_CMD -s -N -e "SELECT COUNT(*) FROM information_schema.routines WHERE routine_schema='mysql' AND routine_name LIKE 'MYVECTOR_INDEX%';")
+        [ "$PROC_COUNT" = "6" ] || { echo "Expected 6 MYVECTOR_INDEX_* procedures, got $PROC_COUNT"; exit 1; }
 
         echo "=== Testing myvector_construct UDF ==="
         $MYSQL_CMD -e "SELECT LENGTH(myvector_construct('[1.0, 2.0, 3.0]'));"
@@ -233,7 +241,9 @@ jobs:
           FROM words50d ORDER BY dist LIMIT 5;
         "
 
-        $MYSQL_CMD -e "UNINSTALL COMPONENT 'file://myvector';"
+        # Uninstall via the shipped teardown script (drops procedures, view,
+        # supplemental UDFs, then UNINSTALL COMPONENT).
+        $MYSQL_CMD < sql/myvector_uninstall_component.sql
         set +e
         output=$($MYSQL_CMD -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';" -s -N 2>&1)
         mysql_exit=$?
@@ -244,11 +254,15 @@ jobs:
         if [[ -n "$output" ]]; then
           echo "Component still registered: $output"; exit 1
         fi
+        # Copilot C2: UNINSTALL COMPONENT does not remove SONAME UDFs; the
+        # teardown script must, leaving mysql.func clean.
+        UDF_LEFT=$($MYSQL_CMD -s -N -e "SELECT COUNT(*) FROM mysql.func WHERE name IN ('myvector_row_distance','myvector_is_valid','myvector_search_open_udf');")
+        [ "$UDF_LEFT" = "0" ] || { echo "Supplemental UDFs still in mysql.func after uninstall: $UDF_LEFT"; exit 1; }
 
-        echo "=== Reinstall test (UNINSTALL -> INSTALL -> verify UDFs) ==="
-        $MYSQL_CMD -e "INSTALL COMPONENT 'file://myvector';"
+        echo "=== Reinstall test (install script -> verify -> uninstall script) ==="
+        $MYSQL_CMD < sql/myvector_install_component.sql
         $MYSQL_CMD -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
-        $MYSQL_CMD -e "UNINSTALL COMPONENT 'file://myvector';"
+        $MYSQL_CMD < sql/myvector_uninstall_component.sql
         set +e
         output=$($MYSQL_CMD -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';" -s -N 2>&1)
         mysql_exit=$?
@@ -292,8 +306,11 @@ jobs:
         docker cp ./component/libmyvector_component.so myv97:"$PLUGIN_DIR/myvector.so"
         docker cp ./component/myvector.json myv97:"$PLUGIN_DIR/myvector.json"
 
-        $MYQ -e "INSTALL COMPONENT 'file://myvector';"
+        # Install via the shipped component installer.
+        docker exec -i myv97 mysql -uroot -proot -h 127.0.0.1 < sql/myvector_install_component.sql
         $MYQ -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';"
+        UDF_COUNT=$($MYQ -s -N -e "SELECT COUNT(*) FROM mysql.func WHERE name IN ('myvector_row_distance','myvector_is_valid','myvector_search_open_udf');")
+        [ "$UDF_COUNT" = "3" ] || { echo "Expected 3 supplemental UDFs, got $UDF_COUNT"; exit 1; }
         $MYQ -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
         $MYQ -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'));"
 
@@ -305,12 +322,15 @@ jobs:
           FROM words50d ORDER BY dist LIMIT 5;
         "
 
-        $MYQ -e "UNINSTALL COMPONENT 'file://myvector';"
+        # Uninstall via the shipped teardown script.
+        docker exec -i myv97 mysql -uroot -proot -h 127.0.0.1 < sql/myvector_uninstall_component.sql
+        UDF_LEFT=$($MYQ -s -N -e "SELECT COUNT(*) FROM mysql.func WHERE name IN ('myvector_row_distance','myvector_is_valid','myvector_search_open_udf');")
+        [ "$UDF_LEFT" = "0" ] || { echo "Supplemental UDFs still in mysql.func after uninstall: $UDF_LEFT"; exit 1; }
 
-        echo "=== Reinstall test (UNINSTALL -> INSTALL -> verify UDFs) ==="
-        $MYQ -e "INSTALL COMPONENT 'file://myvector';"
+        echo "=== Reinstall test (install script -> verify -> uninstall script) ==="
+        docker exec -i myv97 mysql -uroot -proot -h 127.0.0.1 < sql/myvector_install_component.sql
         $MYQ -e "SELECT myvector_display(myvector_construct('[1.0, 2.0, 3.0]'));"
-        $MYQ -e "UNINSTALL COMPONENT 'file://myvector';"
+        docker exec -i myv97 mysql -uroot -proot -h 127.0.0.1 < sql/myvector_uninstall_component.sql
         set +e
         output=$($MYQ -N -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';" 2>/dev/null)
         mysql_exit=$?
