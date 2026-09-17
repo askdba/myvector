@@ -12,6 +12,10 @@ RUN mkdir -p /usr/lib64/mysql/plugin && \
 COPY myvector.json /usr/lib/mysql/plugin/myvector.json
 RUN cp /usr/lib/mysql/plugin/myvector.json /usr/lib64/mysql/plugin/myvector.json
 COPY myvector_install_component.sql /docker-entrypoint-initdb.d/
+# Teardown script: shipped for manual use only. It must NOT go in
+# /docker-entrypoint-initdb.d/ — that directory is auto-executed on first
+# startup, which would uninstall the component immediately after install.
+COPY myvector_uninstall_component.sql /usr/share/myvector/
 
 # checkov:skip=CKV_DOCKER_3:MySQL entrypoint needs root for initialization
 HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD \

@@ -193,13 +193,13 @@ jobs:
   # (component-only), so it gets the plain tag.
   build-and-publish-component:
     # Publish only from a successful upstream workflow_run, or from a manual
-    # dispatch that targets a version TAG. Without the tag guard, a
-    # workflow_dispatch off any branch would push that branch's build to the
-    # mutable public component tags (mysql8.4-component / mysql9.7-component /
-    # mysql26.7).
+    # dispatch that targets a VERSION tag (refs/tags/v*). Without the version-tag
+    # guard, a workflow_dispatch off any branch — or any non-version tag — would
+    # push that ref's build to the mutable public component tags
+    # (mysql8.4-component / mysql9.7-component / mysql26.7).
     if: >-
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
-      (github.event_name == 'workflow_dispatch' && github.ref_type == 'tag')
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -243,6 +243,7 @@ jobs:
           cp build/component-arm64/libmyvector_component.so myvector-component-arm64.so
           cp build/component-amd64/myvector.json myvector.json
           cp sql/myvector_install_component.sql myvector_install_component.sql
+          cp sql/myvector_uninstall_component.sql myvector_uninstall_component.sql
 
       - name: Smoke test component artifact
         run: |
@@ -261,7 +262,7 @@ jobs:
               .
             docker run --rm --platform "linux/${arch}" \
               "myvector-component-smoke:${{ matrix.mysql-version }}-${arch}" \
-              /bin/sh -c "test -f /usr/lib/mysql/plugin/myvector.so && test -f /usr/lib/mysql/plugin/myvector.json && test -f /docker-entrypoint-initdb.d/myvector_install_component.sql"
+              /bin/sh -c "test -f /usr/lib/mysql/plugin/myvector.so && test -f /usr/lib/mysql/plugin/myvector.json && test -f /docker-entrypoint-initdb.d/myvector_install_component.sql && test -f /usr/share/myvector/myvector_uninstall_component.sql"
           done
 
       - name: Smoke test README examples

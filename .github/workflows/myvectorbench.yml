@@ -22,6 +22,10 @@ jobs:
   # ── Job 1: build artifacts ───────────────────────────────────────────────────
   build-artifacts:
     runs-on: ubuntu-22.04
+    # 26.7 is unproven; keep its build failure from failing the job (and thus
+    # blocking the downstream benchmark for 8.4/9.7). Mirrors the release/CI
+    # continue-on-error treatment for 26.7.
+    continue-on-error: ${{ matrix.mysql_version == '26.7' }}
     permissions:
       contents: read
     strategy:
@@ -184,6 +188,8 @@ jobs:
   benchmark:
     runs-on: ubuntu-22.04
     needs: build-artifacts
+    # Keep an unproven 26.7 benchmark failure from failing the workflow.
+    continue-on-error: ${{ matrix.mysql_version == '26.7' }}
     permissions:
       contents: write
     strategy:

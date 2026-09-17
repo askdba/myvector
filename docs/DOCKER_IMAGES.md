@@ -30,14 +30,20 @@ install/uninstall scripts, which use `INSTALL COMPONENT` rather than
 ```bash
 - /usr/lib/mysql/plugin/myvector.so
 - /usr/lib/mysql/plugin/myvector.json
-- /docker-entrypoint-initdb.d/myvector_install_component.sql
+- /docker-entrypoint-initdb.d/myvector_install_component.sql   # auto-run on first start
+- /usr/share/myvector/myvector_uninstall_component.sql          # manual teardown only
 ```
 
+The uninstall script is deliberately kept out of `/docker-entrypoint-initdb.d/`
+(everything there auto-runs on first startup, which would immediately undo the
+install). Run it by hand only when tearing the component down.
+
 NOTE: The MySQL image entrypoint runs the initdb SQL script automatically on
-first startup. To re-run it manually, source the file matching your image —
-`myvectorplugin.sql` for plugin images, `myvector_install_component.sql` for
-component images, e.g.:
-`mysql -u root -p < /docker-entrypoint-initdb.d/myvectorplugin.sql`
+first startup. To re-run installation manually, source the install script for
+your image variant:
+- Plugin image: `mysql -u root -p < /docker-entrypoint-initdb.d/myvectorplugin.sql`
+- Component image: `mysql -u root -p < /docker-entrypoint-initdb.d/myvector_install_component.sql`
+  (clean teardown: `mysql -u root -p < /usr/share/myvector/myvector_uninstall_component.sql`)
 
 ## Quick Start (MySQL 8.4)
 
