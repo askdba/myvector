@@ -12,8 +12,13 @@ permissions:
 
 jobs:
   build-and-publish:
-    # Run when the Release workflow succeeded, or triggered manually.
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # Publish plugin images from a successful upstream Release workflow_run, or
+    # from a manual dispatch that targets a VERSION tag (refs/tags/v*). The
+    # version-tag guard stops a branch / non-version-tag dispatch from
+    # overwriting the mutable public plugin tags (mysql8.0/8.4/9.7/latest).
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
