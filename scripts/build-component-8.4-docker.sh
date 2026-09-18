@@ -36,14 +36,23 @@ docker run --rm \
     # Strip "mysql-" prefix (e.g. mysql-8.4.8 -> 8.4.8) and append distro suffix.
     MYSQL_VER="${MYSQL_TAG#mysql-}"
     MYSQL_MINOR="${MYSQL_VER%.*}"   # e.g. 8.4
-    BASE="https://cdn.mysql.com/Downloads/MySQL-${MYSQL_MINOR}"
     VER="${MYSQL_VER}-1.el9"
-    dnf install -y --nodocs \
-      "${BASE}/mysql-community-common-${VER}.${ARCH}.rpm" \
-      "${BASE}/mysql-community-client-plugins-${VER}.${ARCH}.rpm" \
-      "${BASE}/mysql-community-libs-${VER}.${ARCH}.rpm" \
-      "${BASE}/mysql-community-devel-${VER}.${ARCH}.rpm" \
-      >/dev/null 2>&1
+    # MySQL keeps only the latest point release on the main CDN path and moves
+    # older ones to the archive path (e.g. 8.4.8 moved once a newer 8.4.x shipped).
+    # Try the main Downloads path, then fall back to the archive path so a pinned
+    # point release keeps installing. Note the case: MySQL-X.Y vs mysql-X.Y.
+    install_mysql_rpms() {
+      local base="$1"
+      dnf install -y --nodocs \
+        "${base}/mysql-community-common-${VER}.${ARCH}.rpm" \
+        "${base}/mysql-community-client-plugins-${VER}.${ARCH}.rpm" \
+        "${base}/mysql-community-libs-${VER}.${ARCH}.rpm" \
+        "${base}/mysql-community-devel-${VER}.${ARCH}.rpm"
+    }
+    if ! install_mysql_rpms "https://cdn.mysql.com/Downloads/MySQL-${MYSQL_MINOR}" >/dev/null 2>&1; then
+      echo "==> MySQL ${MYSQL_VER} not on main CDN path; using archive"
+      install_mysql_rpms "https://cdn.mysql.com/archives/mysql-${MYSQL_MINOR}"
+    fi
 
     dnf install -y --nodocs \
       gcc gcc-c++ cmake make git bison pkg-config rpcgen \
