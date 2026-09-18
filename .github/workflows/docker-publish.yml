@@ -5,6 +5,12 @@ on:
     workflows: ["Release MyVector (Plugin + Component)"]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + smoke-test the component pipeline without pushing (safe to run from a branch)."
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -204,7 +210,8 @@ jobs:
     # (mysql8.4-component / mysql9.7-component / mysql26.7).
     if: >-
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
-      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.dry_run)
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -290,7 +297,8 @@ jobs:
           context: .
           file: Dockerfile.component
           platforms: linux/amd64,linux/arm64
-          push: true
+          # Never push on a dry_run dispatch — build only, to prove the pipeline.
+          push: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
           tags: ghcr.io/${{ github.repository }}:${{ matrix.image-tag }}
           build-args: |
             MYSQL_VERSION=${{ matrix.mysql-version }}
