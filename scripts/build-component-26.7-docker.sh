@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Build MyVector component for MySQL 8.4 LTS inside an oraclelinux:9 container.
-# Installs mysql-community-devel from MySQL CDN (version-pinned, no repo setup).
-# Prefers the static archive (libmysqlclient.a) so the resulting .so has no
-# libmysqlclient runtime dependency when deployed into the mysql:8.4 Docker image.
+# Build MyVector component for MySQL 26.7 Innovation release inside an oraclelinux:9 container.
+# Installs mysql-community-devel from MySQL CDN (direct RPM, version-pinned, no repo setup).
+# Uses gcc-toolset-14 as required by MySQL 26.7 cmake on OracleLinux 9.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-MYSQL_TAG="${1:-mysql-8.4.8}"
+MYSQL_TAG="${1:-mysql-26.7.0}"
 OUTPUT_DIR="${2:-build/component}"
 
 echo "==> Building MyVector component for $MYSQL_TAG"
@@ -32,10 +31,10 @@ docker run --rm \
     dnf install -y oraclelinux-developer-release-el9 dnf-plugins-core >/dev/null 2>&1
     dnf config-manager --enable ol9_codeready_builder >/dev/null 2>&1
 
-    # Install MySQL 8.4 devel RPMs from CDN — version derived from MYSQL_TAG.
-    # Strip "mysql-" prefix (e.g. mysql-8.4.8 -> 8.4.8) and append distro suffix.
+    # Install MySQL 26.7 devel RPMs from CDN — version derived from MYSQL_TAG.
+    # Strip "mysql-" prefix (e.g. mysql-26.7.0 -> 26.7.0) and append distro suffix.
     MYSQL_VER="${MYSQL_TAG#mysql-}"
-    MYSQL_MINOR="${MYSQL_VER%.*}"   # e.g. 8.4
+    MYSQL_MINOR="${MYSQL_VER%.*}"   # e.g. 26.7
     VER="${MYSQL_VER}-1.el9"
     # MySQL keeps only the latest point release on the main CDN path and moves
     # older ones to the archive path (e.g. 8.4.8 moved once a newer 8.4.x shipped).
@@ -94,7 +93,7 @@ docker run --rm \
         -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc \
         -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++ \
         -DDOWNLOAD_BOOST=1 \
-        -DWITH_BOOST=/tmp/boost_mysql84 \
+        -DWITH_BOOST=/tmp/boost_mysql267 \
         -DWITH_UNIT_TESTS=OFF \
         -DWITH_ROUTER=OFF \
         -DWITH_RAPID=OFF \
@@ -118,7 +117,7 @@ docker run --rm \
     mkdir -p "$COMPONENT_BUILD"
 
     # Prefer the static archive so the component .so has no libmysqlclient.so
-    # runtime dependency (the mysql:8.4 Docker test image has no shared client lib).
+    # runtime dependency (the mysql:26.7 Docker test image has no shared client lib).
     MYSQLCLIENT_LIB=$(find /usr/lib64 /usr/lib -name "libmysqlclient.a" 2>/dev/null | head -1)
     if [ -z "$MYSQLCLIENT_LIB" ]; then
       MYSQLCLIENT_LIB=$(find /usr/lib64 /usr/lib -name "libmysqlclient.so" 2>/dev/null | head -1)
@@ -147,7 +146,8 @@ docker run --rm \
     cp src/component_src/myvector.json "/workspace/$OUTPUT_DIR/"
     echo "==> Built: /workspace/$OUTPUT_DIR/libmyvector_component.so"
 
-    # Restore host ownership so runner can use the result and cache can save the source.
+    # Restore host ownership of the MySQL source workspace so the runner user
+    # can save it via actions/cache@v4 (container runs as root).
     chown -R "${HOST_UID}:${HOST_GID}" "/workspace/mysql-server-${MYSQL_TAG}" 2>/dev/null || true
     chown -R "${HOST_UID}:${HOST_GID}" "/workspace/$COMPONENT_BUILD" 2>/dev/null || true
     chown -R "${HOST_UID}:${HOST_GID}" "/workspace/${OUTPUT_DIR}" 2>/dev/null || true

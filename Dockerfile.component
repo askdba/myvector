@@ -1,0 +1,26 @@
+ARG MYSQL_VERSION=8.4
+
+FROM mysql:${MYSQL_VERSION}
+ARG TARGETARCH
+
+# MyVector component is statically linked against libstdc++/libgcc (CMakeLists.txt)
+# and built inside oraclelinux:9, matching this image's base OS (Oracle Linux 9) —
+# unlike the plugin Dockerfiles, no libstdc++ shim is needed here.
+COPY myvector-component-${TARGETARCH}.so /usr/lib/mysql/plugin/myvector.so
+RUN mkdir -p /usr/lib64/mysql/plugin && \
+    cp /usr/lib/mysql/plugin/myvector.so /usr/lib64/mysql/plugin/
+COPY myvector.json /usr/lib/mysql/plugin/myvector.json
+RUN cp /usr/lib/mysql/plugin/myvector.json /usr/lib64/mysql/plugin/myvector.json
+COPY myvector_install_component.sql /docker-entrypoint-initdb.d/
+# Teardown script: shipped for manual use only. It must NOT go in
+# /docker-entrypoint-initdb.d/ — that directory is auto-executed on first
+# startup, which would uninstall the component immediately after install.
+COPY myvector_uninstall_component.sql /usr/share/myvector/
+
+# checkov:skip=CKV_DOCKER_3:MySQL entrypoint needs root for initialization
+HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD \
+  if [ -n "$MYSQL_RANDOM_ROOT_PASSWORD" ] && [ -z "${MYSQL_ROOT_PASSWORD:-}" ]; then exit 0; fi; \
+  if [ -n "${MYSQL_ROOT_PASSWORD:-}" ]; then mysqladmin ping -uroot -p"$MYSQL_ROOT_PASSWORD" --silent; \
+  else mysqladmin ping -uroot --silent; fi
+
+# The rest will be handled by the default MySQL entrypoint

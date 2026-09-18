@@ -11,16 +11,39 @@ the link above). They are built on top of community MySQL Docker images from:
 
 ## What is in the docker image?
 
-Pre-built MyVector plugin (myvector.so) and installation script (myvectorplugin.sql)
+This depends on the image tag's install mechanism (see the
+[Versions](#versions) table for which tag is which):
+
+**Plugin images** (`mysql8.0`, `mysql8.4`, `mysql9.7`, `latest`) — pre-built
+MyVector plugin (`myvector.so`) and the plugin installer (`myvectorplugin.sql`):
 
 ```bash
 - /usr/lib/mysql/plugin/myvector.so
 - /docker-entrypoint-initdb.d/myvectorplugin.sql
 ```
 
-NOTE: The MySQL image entrypoint will run the SQL script automatically on first
-startup. If you need to re-run it manually, use:
-`mysql -u root -p < /docker-entrypoint-initdb.d/myvectorplugin.sql`
+**Component images** (`mysql8.4-component`, `mysql9.7-component`, `mysql26.7`) —
+the component library (still installed as `myvector.so`) plus the component
+install/uninstall scripts, which use `INSTALL COMPONENT` rather than
+`INSTALL PLUGIN`:
+
+```bash
+- /usr/lib/mysql/plugin/myvector.so
+- /usr/lib/mysql/plugin/myvector.json
+- /docker-entrypoint-initdb.d/myvector_install_component.sql   # auto-run on first start
+- /usr/share/myvector/myvector_uninstall_component.sql          # manual teardown only
+```
+
+The uninstall script is deliberately kept out of `/docker-entrypoint-initdb.d/`
+(everything there auto-runs on first startup, which would immediately undo the
+install). Run it by hand only when tearing the component down.
+
+NOTE: The MySQL image entrypoint runs the initdb SQL script automatically on
+first startup. To re-run installation manually, source the install script for
+your image variant:
+- Plugin image: `mysql -u root -p < /docker-entrypoint-initdb.d/myvectorplugin.sql`
+- Component image: `mysql -u root -p < /docker-entrypoint-initdb.d/myvector_install_component.sql`
+  (clean teardown: `mysql -u root -p < /usr/share/myvector/myvector_uninstall_component.sql`)
 
 ## Quick Start (MySQL 8.4)
 
@@ -188,4 +211,16 @@ instructions in the main README:
 
 ## Versions
 
-Docker images for MySQL 8.0.x, 8.4.x, and 9.0.x are available.
+| Tag | MySQL Version | Install mechanism |
+| :--- | :--- | :--- |
+| `ghcr.io/askdba/myvector:mysql8.0` | 8.0.x | Plugin (`INSTALL PLUGIN`) |
+| `ghcr.io/askdba/myvector:mysql8.4` | 8.4.x (Recommended) | Plugin (`INSTALL PLUGIN`) |
+| `ghcr.io/askdba/myvector:mysql8.4-component` | 8.4.x | Component (`INSTALL COMPONENT`) |
+| `ghcr.io/askdba/myvector:mysql9.7` | 9.7.x (LTS) | Plugin (`INSTALL PLUGIN`) |
+| `ghcr.io/askdba/myvector:mysql9.7-component` | 9.7.x (LTS) | Component (`INSTALL COMPONENT`) |
+| `ghcr.io/askdba/myvector:mysql26.7` | 26.7.x (Innovation) | Component only (`INSTALL COMPONENT`) |
+| `ghcr.io/askdba/myvector:latest` | 8.0.x | Plugin (`INSTALL PLUGIN`) |
+
+Component images (`INSTALL COMPONENT`) contain `/usr/lib/mysql/plugin/myvector.so` +
+`myvector.json` and `/docker-entrypoint-initdb.d/myvector_install_component.sql`,
+rather than the plugin's `myvectorplugin.sql`.

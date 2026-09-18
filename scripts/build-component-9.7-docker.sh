@@ -15,6 +15,7 @@ HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
 docker run --rm \
+  ${DOCKER_PLATFORM:+--platform "$DOCKER_PLATFORM"} \
   -v "$REPO_ROOT:/workspace:rw" \
   -w /workspace \
   -e MYSQL_TAG="$MYSQL_TAG" \
@@ -34,14 +35,23 @@ docker run --rm \
     # Strip "mysql-" prefix (e.g. mysql-9.7.0 -> 9.7.0) and append distro suffix.
     MYSQL_VER="${MYSQL_TAG#mysql-}"
     MYSQL_MINOR="${MYSQL_VER%.*}"   # e.g. 9.7
-    BASE="https://cdn.mysql.com/Downloads/MySQL-${MYSQL_MINOR}"
     VER="${MYSQL_VER}-1.el9"
-    dnf install -y --nodocs \
-      "${BASE}/mysql-community-common-${VER}.${ARCH}.rpm" \
-      "${BASE}/mysql-community-client-plugins-${VER}.${ARCH}.rpm" \
-      "${BASE}/mysql-community-libs-${VER}.${ARCH}.rpm" \
-      "${BASE}/mysql-community-devel-${VER}.${ARCH}.rpm" \
-      >/dev/null 2>&1
+    # MySQL keeps only the latest point release on the main CDN path and moves
+    # older ones to the archive path (e.g. 8.4.8 moved once a newer 8.4.x shipped).
+    # Try the main Downloads path, then fall back to the archive path so a pinned
+    # point release keeps installing. Note the case: MySQL-X.Y vs mysql-X.Y.
+    install_mysql_rpms() {
+      local base="$1"
+      dnf install -y --nodocs \
+        "${base}/mysql-community-common-${VER}.${ARCH}.rpm" \
+        "${base}/mysql-community-client-plugins-${VER}.${ARCH}.rpm" \
+        "${base}/mysql-community-libs-${VER}.${ARCH}.rpm" \
+        "${base}/mysql-community-devel-${VER}.${ARCH}.rpm"
+    }
+    if ! install_mysql_rpms "https://cdn.mysql.com/Downloads/MySQL-${MYSQL_MINOR}" >/dev/null 2>&1; then
+      echo "==> MySQL ${MYSQL_VER} not on main CDN path; using archive"
+      install_mysql_rpms "https://cdn.mysql.com/archives/mysql-${MYSQL_MINOR}"
+    fi
 
     dnf install -y --nodocs \
       gcc gcc-c++ cmake make git bison pkg-config rpcgen \
@@ -70,11 +80,15 @@ docker run --rm \
         https://github.com/mysql/mysql-server.git "$MYSQL_WORKSPACE"
     fi
     MYSQL_SRC="$MYSQL_WORKSPACE"
+    # Per-architecture MySQL build dir. docker-publish builds amd64 then arm64
+    # sequentially in the same mounted repo; a shared bld/ would let the second
+    # arch reuse the CMake cache and generated headers of the first (wrong ABI).
+    MYSQL_BLD="${MYSQL_SRC}/bld-${ARCH}"
 
     echo "==> Configuring MySQL (generate headers)..."
-    mkdir -p "$MYSQL_SRC/bld"
-    if [ ! -f "$MYSQL_SRC/bld/CMakeCache.txt" ]; then
-      cd "$MYSQL_SRC/bld"
+    mkdir -p "$MYSQL_BLD"
+    if [ ! -f "$MYSQL_BLD/CMakeCache.txt" ]; then
+      cd "$MYSQL_BLD"
       cmake .. \
         -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc \
         -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++ \
@@ -94,8 +108,13 @@ docker run --rm \
 
     echo "==> Building MyVector component..."
     cd /workspace
-    rm -rf build
-    mkdir -p build
+    # Arch-specific component build dir. OUTPUT_DIR is build/component-${arch};
+    # a shared "build" dir would be wiped by the next architecture in the
+    # docker-publish multi-arch loop, deleting the prior arch output before it is
+    # copied out. Keep the "build" prefix so .dockerignore (build*/) excludes it.
+    COMPONENT_BUILD="build-comp-${ARCH}"
+    rm -rf "$COMPONENT_BUILD"
+    mkdir -p "$COMPONENT_BUILD"
 
     # Prefer the static archive so the component .so has no libmysqlclient.so
     # runtime dependency (the mysql:9.7 Docker test image has no shared client lib).
@@ -111,25 +130,25 @@ docker run --rm \
     MYSQL_LIBDIR=$(dirname "$MYSQLCLIENT_LIB")
     echo "==> libmysqlclient at: $MYSQLCLIENT_LIB"
 
-    cmake -B build -S . \
+    cmake -B "$COMPONENT_BUILD" -S . \
       -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc \
       -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++ \
       -DCMAKE_BUILD_TYPE=Release \
       -DMYSQL_SOURCE_DIR="$MYSQL_SRC" \
-      -DMYSQL_BUILD_DIR="$MYSQL_SRC/bld" \
+      -DMYSQL_BUILD_DIR="$MYSQL_BLD" \
       -DMYSQL_DIR="$MYSQL_LIBDIR" \
       -DMYSQLCLIENT_LIBRARY="$MYSQLCLIENT_LIB"
-    make -C build -j$(nproc) VERBOSE=1
+    make -C "$COMPONENT_BUILD" -j$(nproc) VERBOSE=1
 
     echo "==> Packaging artifact..."
     mkdir -p "/workspace/$OUTPUT_DIR"
-    cp build/libmyvector_component.so "/workspace/$OUTPUT_DIR/"
+    cp "$COMPONENT_BUILD/libmyvector_component.so" "/workspace/$OUTPUT_DIR/"
     cp src/component_src/myvector.json "/workspace/$OUTPUT_DIR/"
     echo "==> Built: /workspace/$OUTPUT_DIR/libmyvector_component.so"
 
     # Restore host ownership of the MySQL source workspace so the runner user
     # can save it via actions/cache@v4 (container runs as root).
     chown -R "${HOST_UID}:${HOST_GID}" "/workspace/mysql-server-${MYSQL_TAG}" 2>/dev/null || true
-    chown -R "${HOST_UID}:${HOST_GID}" "/workspace/build" 2>/dev/null || true
+    chown -R "${HOST_UID}:${HOST_GID}" "/workspace/$COMPONENT_BUILD" 2>/dev/null || true
     chown -R "${HOST_UID}:${HOST_GID}" "/workspace/${OUTPUT_DIR}" 2>/dev/null || true
   '

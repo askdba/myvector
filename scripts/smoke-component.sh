@@ -8,7 +8,7 @@
 #   ./scripts/smoke-component.sh [mysql-version] [rows]
 #
 # Args:
-#   mysql-version  8.4 (default) or 9.7
+#   mysql-version  8.4 (default), 9.7, or 26.7
 #   rows           Stanford 50d rows to load; default 50000, max ~400000
 #
 # Env overrides:
@@ -59,6 +59,7 @@ echo ""
     die "Component .so not found at $COMPONENT_DIR/libmyvector_component.so. Build first:
   MySQL 8.4: ./scripts/build-component-8.4-docker.sh mysql-8.4.8
   MySQL 9.7: ./scripts/build-component-9.7-docker.sh mysql-9.7.0
+  MySQL 26.7: ./scripts/build-component-26.7-docker.sh mysql-26.7.0
   macOS/local: ./scripts/build-component.sh mysql-8.4.8 <mysql-source-dir>"
 
 [[ -f "$COMPONENT_DIR/myvector.json" ]] || \
@@ -322,8 +323,13 @@ gunzip -c "$STANFORD_DIR/insert50d.sql.gz" \
     | mq_stdin -D "$DB" 2>/dev/null
 PIPE_STATUSES=("${PIPESTATUS[@]}")
 set -o pipefail
-# gunzip SIGPIPE (141) is expected when awk exits early — treat as ok; other errors are not
-[[ ${PIPE_STATUSES[0]} -eq 0 || ${PIPE_STATUSES[0]} -eq 141 ]] || \
+# awk exits early (see above), so gunzip's consumer closes the pipe before EOF.
+# Depending on the environment, gunzip is either killed by SIGPIPE (exit 141) or
+# — when SIGPIPE is ignored, as on GitHub Actions runners — catches the broken
+# pipe as an EPIPE write error and exits 1. Both mean "consumer closed early",
+# not a decompression failure. The real data-load check is the row-count
+# assertion below, so tolerate 0/1/141 here.
+[[ ${PIPE_STATUSES[0]} -eq 0 || ${PIPE_STATUSES[0]} -eq 1 || ${PIPE_STATUSES[0]} -eq 141 ]] || \
     die "gunzip failed (exit ${PIPE_STATUSES[0]})"
 [[ ${PIPE_STATUSES[1]} -eq 0 ]] || die "awk failed (exit ${PIPE_STATUSES[1]})"
 [[ ${PIPE_STATUSES[2]} -eq 0 ]] || die "mysql load failed (exit ${PIPE_STATUSES[2]})"

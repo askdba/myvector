@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Pre-release gate: smoke + RFC-004 + edge cases for MySQL 8.4 and 9.7.
+# Pre-release gate: smoke + RFC-004 + edge cases for MySQL 8.4, 9.7, and 26.7.
 # Run before tagging a release. Exit 0 = safe to tag. Exit 1 = do not tag.
 #
 # Usage:
-#   ./scripts/pre-release-test.sh          # both 8.4 and 9.7
+#   ./scripts/pre-release-test.sh          # 8.4 and 9.7 (26.7 is opt-in; see below)
 #   ./scripts/pre-release-test.sh 8.4      # 8.4 only
 #   ./scripts/pre-release-test.sh 9.7      # 9.7 only
+#   ./scripts/pre-release-test.sh 26.7     # 26.7 only
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,15 +15,20 @@ cd "$REPO_ROOT"
 
 VERSION_ARG="${1:-all}"
 case "$VERSION_ARG" in
-  8.4)  VERSIONS=("8.4") ;;
-  9.7)  VERSIONS=("9.7") ;;
-  all)  VERSIONS=("8.4" "9.7") ;;
-  *)    echo "Usage: $0 [8.4|9.7]" >&2; exit 1 ;;
+  8.4)   VERSIONS=("8.4") ;;
+  9.7)   VERSIONS=("9.7") ;;
+  26.7)  VERSIONS=("26.7") ;;
+  # 26.7 is a brand-new Innovation release; keep it opt-in rather than part of the
+  # default gate until it has an established track record (mirrors continue-on-error
+  # treatment of 26.7 elsewhere in CI).
+  all)   VERSIONS=("8.4" "9.7") ;;
+  *)     echo "Usage: $0 [8.4|9.7|26.7]" >&2; exit 1 ;;
 esac
 
 declare -A COMPONENT_DIRS=(
   ["8.4"]="dist/component-8.4"
   ["9.7"]="dist/component-9.7"
+  ["26.7"]="dist/component-26.7"
 )
 
 # ── counters ──────────────────────────────────────────────────────────────────
@@ -74,8 +80,9 @@ for VER in "${VERSIONS[@]}"; do
   if [[ ! -f "$DIR/libmyvector_component.so" || ! -f "$DIR/myvector.json" ]]; then
     die "Artifact missing in $DIR/ (need libmyvector_component.so + myvector.json)
 Build it first:
-  MySQL 8.4: ./scripts/build-component-8.4-docker.sh mysql-8.4.8 dist/component-8.4
-  MySQL 9.7: ./scripts/build-component-9.7-docker.sh mysql-9.7.0 dist/component-9.7"
+  MySQL 8.4:  ./scripts/build-component-8.4-docker.sh mysql-8.4.8 dist/component-8.4
+  MySQL 9.7:  ./scripts/build-component-9.7-docker.sh mysql-9.7.0 dist/component-9.7
+  MySQL 26.7: ./scripts/build-component-26.7-docker.sh mysql-26.7.0 dist/component-26.7"
   fi
 done
 

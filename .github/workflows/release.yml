@@ -53,6 +53,11 @@ jobs:
           - mysql-version: '9.7.0'
             mysql-tag: 'mysql-9.7.0'
             continue-on-error: true
+          # 26.7 (Innovation) is validated in CI (build-component-26-7 /
+          # test-component-26-7) but intentionally kept OUT of the release
+          # matrix until its component build is proven end-to-end. Adding it
+          # here (even with continue-on-error) would let create-release publish
+          # a GitHub Release with no usable 26.7 archive. Re-add once proven.
 
     steps:
       - name: Checkout code
@@ -79,11 +84,10 @@ jobs:
 
       - name: Build component
         run: |
-          if [ "${{ matrix.mysql-version }}" = "9.7.0" ]; then
-            ./scripts/build-component-9.7-docker.sh "${{ matrix.mysql-tag }}"
-          else
-            ./scripts/build-component.sh "${{ matrix.mysql-tag }}" "$(pwd)/mysql-server"
-          fi
+          case "${{ matrix.mysql-version }}" in
+            9.7.0)  ./scripts/build-component-9.7-docker.sh  "${{ matrix.mysql-tag }}" ;;
+            *)      ./scripts/build-component.sh "${{ matrix.mysql-tag }}" "$(pwd)/mysql-server" ;;
+          esac
 
       - name: Package component artifact
         run: |
