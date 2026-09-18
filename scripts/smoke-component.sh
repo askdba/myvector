@@ -323,8 +323,13 @@ gunzip -c "$STANFORD_DIR/insert50d.sql.gz" \
     | mq_stdin -D "$DB" 2>/dev/null
 PIPE_STATUSES=("${PIPESTATUS[@]}")
 set -o pipefail
-# gunzip SIGPIPE (141) is expected when awk exits early — treat as ok; other errors are not
-[[ ${PIPE_STATUSES[0]} -eq 0 || ${PIPE_STATUSES[0]} -eq 141 ]] || \
+# awk exits early (see above), so gunzip's consumer closes the pipe before EOF.
+# Depending on the environment, gunzip is either killed by SIGPIPE (exit 141) or
+# — when SIGPIPE is ignored, as on GitHub Actions runners — catches the broken
+# pipe as an EPIPE write error and exits 1. Both mean "consumer closed early",
+# not a decompression failure. The real data-load check is the row-count
+# assertion below, so tolerate 0/1/141 here.
+[[ ${PIPE_STATUSES[0]} -eq 0 || ${PIPE_STATUSES[0]} -eq 1 || ${PIPE_STATUSES[0]} -eq 141 ]] || \
     die "gunzip failed (exit ${PIPE_STATUSES[0]})"
 [[ ${PIPE_STATUSES[1]} -eq 0 ]] || die "awk failed (exit ${PIPE_STATUSES[1]})"
 [[ ${PIPE_STATUSES[2]} -eq 0 ]] || die "mysql load failed (exit ${PIPE_STATUSES[2]})"

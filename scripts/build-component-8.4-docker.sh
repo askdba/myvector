@@ -50,9 +50,9 @@ docker run --rm \
       libtirpc-devel openldap-devel cyrus-sasl-devel \
       libcurl-devel protobuf-devel protobuf-compiler \
       zlib-devel openssl-devel ncurses-devel \
-      gcc-toolset-12-gcc gcc-toolset-12-gcc-c++ \
-      gcc-toolset-12-binutils \
-      gcc-toolset-12-annobin-annocheck gcc-toolset-12-annobin-plugin-gcc \
+      gcc-toolset-14-gcc gcc-toolset-14-gcc-c++ \
+      gcc-toolset-14-binutils \
+      gcc-toolset-14-annobin-annocheck gcc-toolset-14-annobin-plugin-gcc \
       >/dev/null 2>&1
 
     echo "==> Cloning MySQL source ($MYSQL_TAG)..."
@@ -82,8 +82,8 @@ docker run --rm \
     if [ ! -f "$MYSQL_BLD/CMakeCache.txt" ]; then
       cd "$MYSQL_BLD"
       cmake .. \
-        -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-12/root/usr/bin/gcc \
-        -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-12/root/usr/bin/g++ \
+        -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc \
+        -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++ \
         -DDOWNLOAD_BOOST=1 \
         -DWITH_BOOST=/tmp/boost_mysql84 \
         -DWITH_UNIT_TESTS=OFF \
@@ -123,8 +123,8 @@ docker run --rm \
     echo "==> libmysqlclient at: $MYSQLCLIENT_LIB"
 
     cmake -B "$COMPONENT_BUILD" -S . \
-      -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-12/root/usr/bin/gcc \
-      -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-12/root/usr/bin/g++ \
+      -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc \
+      -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++ \
       -DCMAKE_BUILD_TYPE=Release \
       -DMYSQL_SOURCE_DIR="$MYSQL_SRC" \
       -DMYSQL_BUILD_DIR="$MYSQL_BLD" \
