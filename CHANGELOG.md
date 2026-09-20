@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `UNINSTALL COMPONENT` no longer fails with ERROR 3538 (binlog service stop
   path returned non-zero on success).
+- `UNINSTALL COMPONENT` refused while a UDF is in use (ERROR 3538) now leaves the
+  component fully functional instead of half torn down, and a retry succeeds (PR #107).
+- Pre-release Phase 3 lifecycle tests can now run to completion (3.3/3.4 script
+  bugs fixed; new 3.5 refused-unload test) (PR #107).
 - Published `*-component` images now expose the full UDF/procedure surface.
 - `release.yml` bundles the component install SQL with the component artifact.
 

@@ -44,6 +44,17 @@ It also completes the component install/uninstall SQL and fixes
   returned non-zero on success, which `myvector_component_deinit()`
   propagated as a failure whenever the binlog thread had been running.
   It now returns 0.
+- **`UNINSTALL COMPONENT` under load left the component half torn down** (PR #107):
+  deinit stopped the binlog thread and then unregistered the UDFs; MySQL refuses
+  to unregister a UDF a running statement is using, so it failed with ERROR 3538
+  after removing the other UDFs and stopping the binlog listener, and every later
+  `UNINSTALL` failed too. Deinit now unregisters the UDFs first and, if refused,
+  restores them and returns before touching the binlog thread, so a refused
+  unload leaves the component fully functional and a retry succeeds.
+- **Pre-release Phase 3 could never complete** (PR #107): three test-script bugs
+  (3.3 malformed row literal and missing `MYVECTOR_INDEX_LOAD`; 3.4 `grep`
+  no-match aborting the suite under `set -e`) meant subtests after 3.4 and Phase 3
+  on later MySQL versions never ran. New subtest 3.5 covers refused unload.
 - **Component images missing SQL surface**: published `*-component` images
   previously exposed only auto-registered core UDFs; HNSW index build and ANN
   workflows failed. Fixed by the expanded install SQL above.

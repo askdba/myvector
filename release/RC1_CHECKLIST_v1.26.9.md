@@ -46,6 +46,7 @@ must be run explicitly. Both invocations are required for this RC.
 - [ ] Phase 3 (lifecycle regression): PASS on 8.4
 - [ ] Phase 3 (lifecycle regression): PASS on 9.7
 - [ ] Phase 3 (lifecycle regression): PASS on 26.7 (**blocking**)
+- [ ] Phase 3 subtests 3.1-3.5 all executed on every version (3.5 = refused UNINSTALL leaves component intact); none aborted.
 - [ ] Exit 0 on all three invocations.
 
 ## 5) Functional validation
