@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.26.9] - TBD
+
+### Added
+- **MySQL 26.7 Innovation support** (component only) — build script, CI jobs,
+  release/benchmark wiring, and opt-in `pre-release-test.sh 26.7` (PR #104).
+- **Component Docker images** — `Dockerfile.component` and a
+  `build-and-publish-component` job publishing `mysql8.4-component`,
+  `mysql9.7-component` and `mysql26.7` (PR #104).
+- **`sql/myvector_install_component.sql` / `myvector_uninstall_component.sql`** —
+  full component install (supplemental UDFs, `MYVECTOR_INDEX_*` procedures,
+  `myvector_columns` view) and uninstall (PR #104, #105).
+- **`DOCKER_PLATFORM`** option on component build scripts for multi-arch builds.
+- **Docs site** (MkDocs Material) and `docs/CONTRIBUTING.md` (PR #102).
+
+### Changed
+- Component build scripts fall back to the MySQL CDN archive for pinned point
+  releases.
+- Publish workflow: `v*` version-tag guard on plugin and component jobs;
+  `dry_run` input for the component publish.
+
+### Fixed
+- `UNINSTALL COMPONENT` no longer fails with ERROR 3538 (binlog service stop
+  path returned non-zero on success).
+- Published `*-component` images now expose the full UDF/procedure surface.
+- `release.yml` bundles the component install SQL with the component artifact.
+
 ## [1.26.5.2] - 2026-05-30
 
 ### Added
