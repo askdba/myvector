@@ -662,7 +662,7 @@ run_lifecycle_binlog_cleanup() {
   # Verify a binlog connection (slave/replica) appears after component install.
   sleep 2
   local PROC_BEFORE
-  PROC_BEFORE=$(mq -N -e "SHOW PROCESSLIST;" 2>/dev/null | grep -iE "binlog|slave|replica" | wc -l | LC_ALL=C tr -d '[:space:]')
+  PROC_BEFORE=$(mq -N -e "SHOW PROCESSLIST;" 2>/dev/null | { grep -iE "binlog|slave|replica" || true; } | wc -l | LC_ALL=C tr -d '[:space:]')
   if [[ "$PROC_BEFORE" -eq 0 ]]; then
     skip "binlog cleanup: no binlog listener in PROCESSLIST before UNINSTALL (binlog may be disabled on this container)"
     cleanup_container
@@ -676,7 +676,7 @@ run_lifecycle_binlog_cleanup() {
   local REMAINING=1
   while [[ $(date +%s) -lt $DEADLINE ]]; do
     REMAINING=$(mq -N -e "SHOW PROCESSLIST;" 2>/dev/null \
-      | grep -iE "binlog|slave|replica" | wc -l | LC_ALL=C tr -d '[:space:]')
+      | { grep -iE "binlog|slave|replica" || true; } | wc -l | LC_ALL=C tr -d '[:space:]')
     [[ "$REMAINING" -eq 0 ]] && break
     sleep 0.5
   done
