@@ -5,6 +5,12 @@ on:
     workflows: ["Release MyVector (Plugin + Component)"]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build + smoke-test the component pipeline without pushing (safe to run from a branch)."
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -12,8 +18,13 @@ permissions:
 
 jobs:
   build-and-publish:
-    # Run when the Release workflow succeeded, or triggered manually.
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # Publish plugin images from a successful upstream Release workflow_run, or
+    # from a manual dispatch that targets a VERSION tag (refs/tags/v*). The
+    # version-tag guard stops a branch / non-version-tag dispatch from
+    # overwriting the mutable public plugin tags (mysql8.0/8.4/9.7/latest).
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -183,5 +194,111 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/${{ github.repository }}:latest
+          build-args: |
+            MYSQL_VERSION=${{ matrix.mysql-version }}
+
+  # Component-based images (INSTALL COMPONENT), distinct from the legacy plugin
+  # images built above. mysql8.4/mysql9.7 already ship as plugin images with
+  # existing users depending on them, so component images for those versions get
+  # a "-component" tag suffix; mysql26.7 has no plugin equivalent to collide with
+  # (component-only), so it gets the plain tag.
+  build-and-publish-component:
+    # Publish only from a successful upstream workflow_run, or from a manual
+    # dispatch that targets a VERSION tag (refs/tags/v*). Without the version-tag
+    # guard, a workflow_dispatch off any branch — or any non-version tag — would
+    # push that ref's build to the mutable public component tags
+    # (mysql8.4-component / mysql9.7-component / mysql26.7).
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.dry_run)
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mysql-tag: 'mysql-8.4.8'
+            mysql-version: '8.4'
+            build-script: scripts/build-component-8.4-docker.sh
+            image-tag: 'mysql8.4-component'
+          - mysql-tag: 'mysql-9.7.0'
+            mysql-version: '9.7'
+            build-script: scripts/build-component-9.7-docker.sh
+            image-tag: 'mysql9.7-component'
+          - mysql-tag: 'mysql-26.7.0'
+            mysql-version: '26.7'
+            build-script: scripts/build-component-26.7-docker.sh
+            image-tag: 'mysql26.7'
+    steps:
+      - name: Checkout MyVector Code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build MyVector component (amd64/arm64)
+        run: |
+          set -euo pipefail
+          chmod +x ${{ matrix.build-script }}
+          for arch in amd64 arm64; do
+            platform="linux/${arch}"
+            DOCKER_PLATFORM="$platform" ${{ matrix.build-script }} \
+              "${{ matrix.mysql-tag }}" "build/component-${arch}"
+          done
+          # .dockerignore excludes build*/, so stage artifacts at the repo root.
+          cp build/component-amd64/libmyvector_component.so myvector-component-amd64.so
+          cp build/component-arm64/libmyvector_component.so myvector-component-arm64.so
+          cp build/component-amd64/myvector.json myvector.json
+          cp sql/myvector_install_component.sql myvector_install_component.sql
+          cp sql/myvector_uninstall_component.sql myvector_uninstall_component.sql
+
+      - name: Smoke test component artifact
+        run: |
+          chmod +x scripts/smoke-component.sh
+          COMPONENT_DIR=build/component-amd64 ./scripts/smoke-component.sh "${{ matrix.mysql-version }}"
+
+      - name: Smoke test image contents
+        run: |
+          for arch in amd64 arm64; do
+            docker buildx build \
+              --platform "linux/${arch}" \
+              --file Dockerfile.component \
+              --build-arg MYSQL_VERSION=${{ matrix.mysql-version }} \
+              -t "myvector-component-smoke:${{ matrix.mysql-version }}-${arch}" \
+              --load \
+              .
+            docker run --rm --platform "linux/${arch}" \
+              "myvector-component-smoke:${{ matrix.mysql-version }}-${arch}" \
+              /bin/sh -c "test -f /usr/lib/mysql/plugin/myvector.so && test -f /usr/lib/mysql/plugin/myvector.json && test -f /docker-entrypoint-initdb.d/myvector_install_component.sql && test -f /usr/share/myvector/myvector_uninstall_component.sql"
+          done
+
+      - name: Smoke test README examples
+        run: |
+          for arch in amd64 arm64; do
+            DOCKER_DEFAULT_PLATFORM="linux/${arch}" \
+              bash scripts/smoke-readme.sh "myvector-component-smoke:${{ matrix.mysql-version }}-${arch}"
+          done
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.component
+          platforms: linux/amd64,linux/arm64
+          # Never push on a dry_run dispatch — build only, to prove the pipeline.
+          push: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+          tags: ghcr.io/${{ github.repository }}:${{ matrix.image-tag }}
           build-args: |
             MYSQL_VERSION=${{ matrix.mysql-version }}

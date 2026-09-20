@@ -11,6 +11,10 @@ matrix:
       build: component
       image: "mysql:9.7"
       artifact: "component-9.7"
+    - mysql: "26.7"
+      build: component
+      image: "mysql:26.7"
+      artifact: "component-26.7"
 
 workload:
   dataset: synthetic        # synthetic | glove50 | glove300 | /path/to/custom.tsv

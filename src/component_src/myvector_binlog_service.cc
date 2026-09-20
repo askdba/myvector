@@ -1494,7 +1494,12 @@ public:
             std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
             persist_state_snapshot(currentBinlogFile, currentBinlogPos);
         }
-        return 1;  // 1 = thread was running and has been stopped
+        // Success. Return 0 (the component framework convention: 0 = success,
+        // non-zero = failure). This value is propagated by
+        // myvector_component_deinit(); returning non-zero here made
+        // UNINSTALL COMPONENT report ERROR 3538 whenever the binlog thread had
+        // been running. No caller depends on distinguishing "was running".
+        return 0;
     }
 
 private:
