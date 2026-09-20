@@ -502,6 +502,21 @@ run_lifecycle_install_timing() {
   cleanup_container
 }
 
+# Retry UNINSTALL COMPONENT until it succeeds or $1 seconds (default 15) pass. Used
+# after a legitimate ERROR 3538 refusal, to wait for in-flight statements to drain.
+# Sets the caller's RETRY_OUT / RETRY_RC to the result of the last attempt.
+uninstall_retry() {
+  local DEADLINE=$(( $(date +%s) + ${1:-15} ))
+  while :; do
+    RETRY_RC=0
+    RETRY_OUT=$(mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>&1) || RETRY_RC=$?
+    if [[ "$RETRY_RC" -eq 0 || $(date +%s) -ge $DEADLINE ]]; then
+      break
+    fi
+    sleep 1
+  done
+}
+
 run_lifecycle_uninstall_under_load() {
   local VER="$1" COMP_DIR="$2"
   echo "  [Lifecycle 3.2] UNINSTALL under load — ERROR 3540 guard ($VER)"
@@ -569,8 +584,7 @@ run_lifecycle_uninstall_under_load() {
     # stays intact and unloads cleanly once the queries have drained (see 3.5).
     local RETRY_OUT RETRY_RC=0
     if echo "$UNINSTALL_OUT" | grep -q "3538"; then
-      sleep 2   # let in-flight statements from the killed loops finish
-      RETRY_OUT=$(mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>&1) || RETRY_RC=$?
+      uninstall_retry 15   # poll until statements from the killed loops drain
       if [[ "$RETRY_RC" -eq 0 ]]; then
         pass "UNINSTALL under load: refused once (3538) while UDFs were in use, succeeded after load drained"
       else
@@ -735,9 +749,11 @@ run_lifecycle_uninstall_inflight_udf() {
     # The server let the component unload despite a running UDF; nothing to assert
     # about a refused unload.
     skip "in-flight UDF: UNINSTALL succeeded on MySQL $VER, no refusal to verify"
+  elif ! echo "$UNINSTALL_OUT" | grep -q "3538"; then
+    fail "UNINSTALL failed for an unexpected reason (expected ERROR 3538): ${UNINSTALL_OUT}"
   else
-    # UNINSTALL was refused (expected). A refused unload must leave the component
-    # fully functional: every UDF still registered and usable.
+    # UNINSTALL was refused with 3538 (expected). A refused unload must leave the
+    # component fully functional: every UDF still registered and usable.
     local FUNC_OUT
     FUNC_OUT=$(mq -N -D lc -e "SELECT myvector_display(myvector_construct('[1.0,2.0,3.0]')),
                                 myvector_distance(myvector_construct('[1.0,2.0,3.0]'),
@@ -751,10 +767,21 @@ run_lifecycle_uninstall_inflight_udf() {
 
   # Once the query is gone the component must unload cleanly.
   mq -e "KILL QUERY ${QID};" 2>/dev/null || true
+  # Wait (bounded) for the statement to leave the PROCESSLIST rather than a bare
+  # `wait`, which would hang if the KILL had not taken effect.
+  local GONE_BY=$(( $(date +%s) + 20 ))
+  while [[ $(date +%s) -lt $GONE_BY ]]; do
+    if [[ -z "$(mq -N -e "SELECT id FROM information_schema.processlist WHERE id=${QID};" 2>/dev/null \
+                 | LC_ALL=C tr -d '[:space:]')" ]]; then
+      break
+    fi
+    sleep 0.5
+  done
+  kill "$QUERY_PID" 2>/dev/null || true   # reap the background client if still around
   wait "$QUERY_PID" 2>/dev/null || true
   if [[ "$UNINSTALL_RC" -ne 0 ]]; then
     local RETRY_OUT RETRY_RC=0
-    RETRY_OUT=$(mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>&1) || RETRY_RC=$?
+    uninstall_retry 15
     if [[ "$RETRY_RC" -eq 0 ]]; then
       pass "UNINSTALL succeeds once the in-flight UDF query has ended"
     else
