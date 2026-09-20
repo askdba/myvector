@@ -187,6 +187,7 @@ DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_INTERNAL;
 DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_STATUS;
 DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_DROP;
 DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_BUILD;
+DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_LOAD;
 
 DELIMITER //
 
@@ -230,6 +231,13 @@ BEGIN
   END IF;
   SET status = MYVECTOR_SEARCH_OPEN_UDF(myvectorcolumn, colinfo, pkidcolumn, action, extra);
   SELECT status AS Status;
+END //
+
+CREATE PROCEDURE MYVECTOR_INDEX_LOAD(IN myvectorcolumn VARCHAR(256))
+BEGIN
+  DECLARE extra VARCHAR(1024); DECLARE pkid VARCHAR(1024);
+  SET extra = ''; SET pkid = '';
+  CALL MYVECTOR_INDEX_INTERNAL(myvectorcolumn, pkid, 'load', extra);
 END //
 
 CREATE PROCEDURE MYVECTOR_INDEX_BUILD(
@@ -494,6 +502,21 @@ run_lifecycle_install_timing() {
   cleanup_container
 }
 
+# Retry UNINSTALL COMPONENT until it succeeds or $1 seconds (default 15) pass. Used
+# after a legitimate ERROR 3538 refusal, to wait for in-flight statements to drain.
+# Sets the caller's RETRY_OUT / RETRY_RC to the result of the last attempt.
+uninstall_retry() {
+  local DEADLINE=$(( $(date +%s) + ${1:-15} ))
+  while :; do
+    RETRY_RC=0
+    RETRY_OUT=$(mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>&1) || RETRY_RC=$?
+    if [[ "$RETRY_RC" -eq 0 || $(date +%s) -ge $DEADLINE ]]; then
+      break
+    fi
+    sleep 1
+  done
+}
+
 run_lifecycle_uninstall_under_load() {
   local VER="$1" COMP_DIR="$2"
   echo "  [Lifecycle 3.2] UNINSTALL under load — ERROR 3540 guard ($VER)"
@@ -556,7 +579,20 @@ run_lifecycle_uninstall_under_load() {
   if echo "$UNINSTALL_OUT" | grep -q "3540"; then
     fail "UNINSTALL returned ERROR 3540 (myvector_unload_notify regression): $UNINSTALL_OUT"
   elif [[ "$UNINSTALL_RC" -ne 0 ]]; then
-    fail "UNINSTALL failed unexpectedly (rc=$UNINSTALL_RC): $UNINSTALL_OUT"
+    # MySQL refuses to unload while a statement is executing one of our UDFs
+    # (ERROR 3538). That refusal is legitimate under load, provided the component
+    # stays intact and unloads cleanly once the queries have drained (see 3.5).
+    local RETRY_OUT RETRY_RC=0
+    if echo "$UNINSTALL_OUT" | grep -q "3538"; then
+      uninstall_retry 15   # poll until statements from the killed loops drain
+      if [[ "$RETRY_RC" -eq 0 ]]; then
+        pass "UNINSTALL under load: refused once (3538) while UDFs were in use, succeeded after load drained"
+      else
+        fail "UNINSTALL still fails after load drained: $RETRY_OUT"
+      fi
+    else
+      fail "UNINSTALL failed unexpectedly (rc=$UNINSTALL_RC): $UNINSTALL_OUT"
+    fi
   elif [[ "$ELAPSED" -ge 12 ]]; then
     fail "UNINSTALL took ${ELAPSED}s >= 12s (teardown timeout regression)"
   else
@@ -587,7 +623,7 @@ run_lifecycle_reload_persistence() {
     local j
     for j in $(seq 0 99); do
       local ROW=$(( i * 100 + j ))
-      VALS="${VALS}(${ROW}, myvector_construct('[$(( j % 10 )).$(( RANDOM % 9 )),$(( j % 5 )).$(( RANDOM % 9 )),$(( j % 7 )).$(( RANDOM % 9 ))']')),"
+      VALS="${VALS}(${ROW}, myvector_construct('[$(( j % 10 )).$(( RANDOM % 9 )),$(( j % 5 )).$(( RANDOM % 9 )),$(( j % 7 )).$(( RANDOM % 9 ))]')),"
     done
     VALS="${VALS%,}"
     mq -D lc -e "INSERT INTO lc.reload_t (id, vec) VALUES ${VALS};" 2>/dev/null || true
@@ -609,7 +645,7 @@ run_lifecycle_reload_persistence() {
   # UNINSTALL then INSTALL + load persisted index from disk (not rebuild).
   mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
   install_component "$COMP_DIR"
-  mq -D lc -e "CALL mysql.MYVECTOR_INDEX_LOAD('lc.reload_t.vec', 'id');" 2>/dev/null \
+  mq -D lc -e "CALL mysql.MYVECTOR_INDEX_LOAD('lc.reload_t.vec');" 2>/dev/null \
     || { fail "MYVECTOR_INDEX_LOAD failed: on-disk index not preserved across UNINSTALL/INSTALL" ; cleanup_container ; return 1 ; }
 
   local AFTER_RESULT
@@ -640,7 +676,7 @@ run_lifecycle_binlog_cleanup() {
   # Verify a binlog connection (slave/replica) appears after component install.
   sleep 2
   local PROC_BEFORE
-  PROC_BEFORE=$(mq -N -e "SHOW PROCESSLIST;" 2>/dev/null | grep -iE "binlog|slave|replica" | wc -l | LC_ALL=C tr -d '[:space:]')
+  PROC_BEFORE=$(mq -N -e "SHOW PROCESSLIST;" 2>/dev/null | { grep -iE "binlog|slave|replica" || true; } | wc -l | LC_ALL=C tr -d '[:space:]')
   if [[ "$PROC_BEFORE" -eq 0 ]]; then
     skip "binlog cleanup: no binlog listener in PROCESSLIST before UNINSTALL (binlog may be disabled on this container)"
     cleanup_container
@@ -654,7 +690,7 @@ run_lifecycle_binlog_cleanup() {
   local REMAINING=1
   while [[ $(date +%s) -lt $DEADLINE ]]; do
     REMAINING=$(mq -N -e "SHOW PROCESSLIST;" 2>/dev/null \
-      | grep -iE "binlog|slave|replica" | wc -l | LC_ALL=C tr -d '[:space:]')
+      | { grep -iE "binlog|slave|replica" || true; } | wc -l | LC_ALL=C tr -d '[:space:]')
     [[ "$REMAINING" -eq 0 ]] && break
     sleep 0.5
   done
@@ -667,6 +703,94 @@ run_lifecycle_binlog_cleanup() {
   cleanup_container
 }
 
+run_lifecycle_uninstall_inflight_udf() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Lifecycle 3.5] UNINSTALL refused while a UDF is in use leaves the component intact ($VER)"
+  cleanup_container
+  start_container "$VER"
+  install_component "$COMP_DIR"
+
+  mq -e "CREATE DATABASE IF NOT EXISTS lc;
+         CREATE TABLE lc.inflight_t (id INT PRIMARY KEY, vec VARBINARY(256));" 2>/dev/null
+  local i j VALS
+  for i in $(seq 0 9); do
+    VALS=""
+    for j in $(seq 0 99); do
+      VALS="${VALS}($(( i * 100 + j )), myvector_construct('[$(( RANDOM % 100 )).0,$(( RANDOM % 100 )).0,$(( RANDOM % 100 )).0]')),"
+    done
+    mq -D lc -e "INSERT INTO lc.inflight_t (id, vec) VALUES ${VALS%,};" 2>/dev/null || true
+  done
+
+  # One long-running statement (1000^3 distance evaluations) keeps myvector_distance
+  # in use for the whole test. The marker comment lets us find and KILL it later.
+  ( mq -D lc -e "SELECT /* inflight_probe */ SUM(myvector_distance(a.vec, b.vec, 'L2'))
+                 FROM lc.inflight_t a JOIN lc.inflight_t b JOIN lc.inflight_t c;" \
+      >/dev/null 2>&1 || true ) &
+  local QUERY_PID=$!
+  local QID=""
+  local DEADLINE=$(( $(date +%s) + 15 ))
+  while [[ -z "$QID" && $(date +%s) -lt $DEADLINE ]]; do
+    QID=$(mq -N -e "SELECT id FROM information_schema.processlist
+                    WHERE info LIKE '%inflight_probe%' AND info NOT LIKE '%processlist%' LIMIT 1;" 2>/dev/null \
+          | LC_ALL=C tr -d '[:space:]')
+    [[ -z "$QID" ]] && sleep 0.5
+  done
+  if [[ -z "$QID" ]]; then
+    fail "in-flight UDF probe query never appeared in PROCESSLIST"
+    kill "$QUERY_PID" 2>/dev/null || true
+    cleanup_container
+    return 0
+  fi
+
+  local UNINSTALL_OUT UNINSTALL_RC=0
+  UNINSTALL_OUT=$(mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>&1) || UNINSTALL_RC=$?
+
+  if [[ "$UNINSTALL_RC" -eq 0 ]]; then
+    # The server let the component unload despite a running UDF; nothing to assert
+    # about a refused unload.
+    skip "in-flight UDF: UNINSTALL succeeded on MySQL $VER, no refusal to verify"
+  elif ! echo "$UNINSTALL_OUT" | grep -q "3538"; then
+    fail "UNINSTALL failed for an unexpected reason (expected ERROR 3538): ${UNINSTALL_OUT}"
+  else
+    # UNINSTALL was refused with 3538 (expected). A refused unload must leave the
+    # component fully functional: every UDF still registered and usable.
+    local FUNC_OUT
+    FUNC_OUT=$(mq -N -D lc -e "SELECT myvector_display(myvector_construct('[1.0,2.0,3.0]')),
+                                myvector_distance(myvector_construct('[1.0,2.0,3.0]'),
+                                                  myvector_construct('[1.0,2.0,3.0]'), 'L2');" 2>&1) || true
+    if echo "$FUNC_OUT" | grep -qE "ERROR|does not exist"; then
+      fail "UNINSTALL refused (${UNINSTALL_OUT}) but left the component half torn down: ${FUNC_OUT}"
+    else
+      pass "refused UNINSTALL left all UDFs registered and usable"
+    fi
+  fi
+
+  # Once the query is gone the component must unload cleanly.
+  mq -e "KILL QUERY ${QID};" 2>/dev/null || true
+  # Wait (bounded) for the statement to leave the PROCESSLIST rather than a bare
+  # `wait`, which would hang if the KILL had not taken effect.
+  local GONE_BY=$(( $(date +%s) + 20 ))
+  while [[ $(date +%s) -lt $GONE_BY ]]; do
+    if [[ -z "$(mq -N -e "SELECT id FROM information_schema.processlist WHERE id=${QID};" 2>/dev/null \
+                 | LC_ALL=C tr -d '[:space:]')" ]]; then
+      break
+    fi
+    sleep 0.5
+  done
+  kill "$QUERY_PID" 2>/dev/null || true   # reap the background client if still around
+  wait "$QUERY_PID" 2>/dev/null || true
+  if [[ "$UNINSTALL_RC" -ne 0 ]]; then
+    local RETRY_OUT RETRY_RC=0
+    uninstall_retry 15
+    if [[ "$RETRY_RC" -eq 0 ]]; then
+      pass "UNINSTALL succeeds once the in-flight UDF query has ended"
+    else
+      fail "UNINSTALL still fails after the in-flight query ended: ${RETRY_OUT}"
+    fi
+  fi
+  cleanup_container
+}
+
 for VER in "${VERSIONS[@]}"; do
   DIR="${COMPONENT_DIRS[$VER]}"
   echo "--- Phase 3 Lifecycle ($VER) ---"
@@ -674,5 +798,6 @@ for VER in "${VERSIONS[@]}"; do
   run_lifecycle_uninstall_under_load "$VER" "$DIR"
   run_lifecycle_reload_persistence   "$VER" "$DIR"
   run_lifecycle_binlog_cleanup       "$VER" "$DIR"
+  run_lifecycle_uninstall_inflight_udf "$VER" "$DIR"
   echo ""
 done
