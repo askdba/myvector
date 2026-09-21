@@ -1,0 +1,78 @@
+---
+name: Pre-release gate
+
+# Runs scripts/pre-release-test.sh (Phase 1 smoke, Phase 2 RFC-004 / edge cases,
+# Phase 3 lifecycle regression) against a freshly built component for each MySQL
+# version. The gate was previously run by hand before a release tag, so regressions
+# in it (and in what it covers) were found late.
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "include/**"
+      - "sql/**"
+      - "scripts/pre-release-test.sh"
+      - "scripts/smoke-component.sh"
+      - "scripts/build-component*"
+      - "CMakeLists.txt"
+      - ".github/workflows/pre-release-gate.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "include/**"
+      - "sql/**"
+      - "scripts/pre-release-test.sh"
+      - "scripts/smoke-component.sh"
+      - "scripts/build-component*"
+      - "CMakeLists.txt"
+      - ".github/workflows/pre-release-gate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pre-release-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: gate (${{ matrix.mysql-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Non-blocking until the gate has shown it is stable on shared runners (#116).
+    # 26.7 stays non-blocking, like the rest of CI, until release tags.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mysql-version: "8.4"
+            mysql-tag: "mysql-8.4.8"
+            build-script: "scripts/build-component-8.4-docker.sh"
+          - mysql-version: "9.7"
+            mysql-tag: "mysql-9.7.0"
+            build-script: "scripts/build-component-9.7-docker.sh"
+          - mysql-version: "26.7"
+            mysql-tag: "mysql-26.7.0"
+            build-script: "scripts/build-component-26.7-docker.sh"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build component
+        env:
+          BUILD_SCRIPT: ${{ matrix.build-script }}
+          MYSQL_TAG: ${{ matrix.mysql-tag }}
+          MYSQL_VERSION: ${{ matrix.mysql-version }}
+        run: |
+          chmod +x "$BUILD_SCRIPT"
+          "$BUILD_SCRIPT" "$MYSQL_TAG" "dist/component-$MYSQL_VERSION"
+
+      - name: Run pre-release gate
+        env:
+          MYSQL_VERSION: ${{ matrix.mysql-version }}
+        run: ./scripts/pre-release-test.sh "$MYSQL_VERSION"
