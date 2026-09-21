@@ -30,7 +30,13 @@ for tag in "${TAGS[@]}"; do
 	echo ">>> Pull ${full}"
 	docker pull "${full}"
 	echo ">>> Smoke ${full}"
-	bash "${REPO_ROOT}/scripts/smoke-readme.sh" "${full}"
+	# The Stanford demo declares its column with the plugin's MYVECTOR(...) DDL rewrite.
+	# The component images do not have it, and on MySQL 9.x the docs use the native
+	# VECTOR(n) type with a COMMENT instead, so run the demo only on the 8.x plugin images.
+	case "${tag}" in
+	mysql8.0 | mysql8.4) bash "${REPO_ROOT}/scripts/smoke-readme.sh" "${full}" ;;
+	*) MYVECTOR_SMOKE_STANFORD=0 bash "${REPO_ROOT}/scripts/smoke-readme.sh" "${full}" ;;
+	esac
 	echo ""
 done
 

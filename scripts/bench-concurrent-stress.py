@@ -373,7 +373,6 @@ def run_stress(mysql_version: str, build: str, artifact_dir: str,
         top1_before = int(lines0[-1]) if lines0 and lines0[-1].isdigit() else -1
         knn_before = [{"query": q0, "top1": top1_before}]
 
-        WARMUP_S = 30
         container_name = c.name
         root_pw = c.root_pw
 

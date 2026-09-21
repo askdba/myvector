@@ -69,7 +69,7 @@ cat >"$MYSQL_CONF_DIR/custom.cnf" <<EOF
 [mysqld]
 binlog_format=ROW
 log_bin=mysql-bin
-myvector_config_file=/tmp/myvector.cnf
+loose_myvector_config_file=/tmp/myvector.cnf
 EOF
 
 docker run -d --name "$CONTAINER" \
