@@ -1,0 +1,29 @@
+{
+  "git_ref": "d597399",
+  "mysql_version": "9.7",
+  "build_path": "component",
+  "timestamp": "2026-09-21T14:23:39Z",
+  "runner": "GitHub Actions 1000008971",
+  "dataset": "synthetic",
+  "workload_params": {
+    "rows": 10000,
+    "dim": 128,
+    "M": 16,
+    "ef_construction": 200,
+    "knn_queries": 200,
+    "knn_ann_queries": 200,
+    "recall_queries": 50
+  },
+  "metrics": {
+    "index_build_time_s": 2.6710212230682373,
+    "insert_qps": 3844.408257931015,
+    "knn_qps": 5.670714651460266,
+    "knn_p50_ms": 175.42541027069092,
+    "knn_p99_ms": 191.72406196594238,
+    "knn_ann_qps": 0.0,
+    "knn_ann_p50_ms": null,
+    "knn_ann_p99_ms": null,
+    "ann_rewrite_active": false,
+    "recall_at_10": null
+  }
+}
