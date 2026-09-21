@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.26.9] - TBD
 
 ### Added
+- `docs/LIMITATIONS.md`: known limitations, linked from the README, the docs nav and the
+  release notes (PR #134).
 - Pre-release gate in CI (`pre-release-gate.yml`, non-blocking) and stronger gate checks
   (PRs #121, #125); benchmark baselines on the `benchmarks` branch.
 - **MySQL 26.7 Innovation support** (component only) — build script, CI jobs,
@@ -34,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dry_run` input for the component publish.
 
 ### Fixed
+- The RFC-004 stress harness, the Stanford 50d smoke and the online-updates test now run
+  (a constant re-assigned inside `run_stress`, a `gzip | head` SIGPIPE under `pipefail`, a
+  plugin variable unknown at `--initialize`, and a demo `create.sql` reformatted so the DDL
+  rewrite no longer matched it) (PR #129).
+- `build-docker-local.sh` targets arm64 on Linux `aarch64` (PR #135).
 - HNSW index builds no longer crash mysqld on the component build; `type=hnsw` comments without
   the `|` marker now build HNSW instead of silently using KNN (PR #117).
 - Benchmark harness configures the plugin and fails when the index build fails, so

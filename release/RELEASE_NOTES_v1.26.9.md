@@ -11,6 +11,10 @@ and turns Docker publishing into a proper component pipeline, so the
 It also completes the component install/uninstall SQL and fixes
 `UNINSTALL COMPONENT` failing with ERROR 3538.
 
+**rc3 note:** `v1.26.9-rc3` ships the same source as rc2 (no change to `src/`, `include/`,
+`sql/`, the Dockerfiles or the workflows). It adds the Known limitations page and repairs three
+broken test scripts and one build script (see below).
+
 **rc2 note:** `v1.26.9-rc1` should not be used for HNSW on the component build. Its tests
 silently exercised KNN (a `type=hnsw` column comment written without the `|` marker never
 parsed as HNSW), and a real HNSW index build crashed mysqld on the component build. Both are
