@@ -454,6 +454,14 @@ run_index_save_failure_check() {
   else
     fail "failed index save was reported as success: ${OUT}"
   fi
+
+  # The explicit "save" action must report a failed save too, not "SUCCESS".
+  OUT=$(mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_INTERNAL('prerel.save_fail_t.vec', 'id', 'save', '');" 2>&1) || true
+  if echo "$OUT" | grep -q "ERROR"; then
+    pass "explicit index save failure reported as an error"
+  else
+    fail "explicit index save failure was reported as success: ${OUT}"
+  fi
 }
 
 run_edge_cases() {

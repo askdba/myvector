@@ -2224,7 +2224,10 @@ void myvector_open_index_impl(char* vecid,
     }
 
     if (!strcmp(action, "save")) {
-        vi->saveIndex(myvector_index_dir);
+        if (!vi->saveIndex(myvector_index_dir))
+            strcpy(result,
+                   "ERROR: index could not be saved to disk"
+                   " (see the server log)");
     } else if (!strcmp(action, "status")) {
         string s = vi->getStatus();
         strcpy(result, s.c_str());
