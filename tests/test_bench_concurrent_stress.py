@@ -125,3 +125,19 @@ def test_result_json_fails_on_errors():
               "no_deadlock": True, "all_threads_clean_exit": True}
     result = mod._build_result("9.7", "component", 60.0, False, pools, checks)
     assert result["passed"] is False
+
+
+def test_run_stress_does_not_shadow_module_constants():
+    """A module-level constant re-assigned inside run_stress becomes a local for the whole
+    function, so reading it before the assignment raises UnboundLocalError. WARMUP_S did
+    exactly that, which meant the stress harness crashed on every run."""
+    import symtable
+    path = os.path.join(os.path.dirname(__file__), '..', 'scripts', 'bench-concurrent-stress.py')
+    with open(path) as f:
+        top = symtable.symtable(f.read(), path, 'exec')
+    module_constants = {s.get_name() for s in top.get_symbols()
+                        if s.is_assigned() and s.get_name().isupper()}
+    fn = next(c for c in top.get_children() if c.get_name() == 'run_stress')
+    shadowed = sorted(s.get_name() for s in fn.get_symbols()
+                      if s.is_local() and s.get_name() in module_constants)
+    assert shadowed == [], f"run_stress re-assigns module constants: {shadowed}"

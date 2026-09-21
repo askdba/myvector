@@ -87,7 +87,10 @@ if [ "$SMOKE_STANFORD" = "1" ] && [ -d "$STANFORD_DIR" ]; then
 	fi
 
 	tmpdir="$(mktemp -d)"
-	gzip -cd "$STANFORD_DIR/insert50d.sql.gz" | head -n "$STANFORD_LINES" >"$tmpdir/insert50d_subset.sql"
+	# head closes the pipe early, so gzip gets SIGPIPE (141) and pipefail would abort the
+	# script: tolerate that, but fail clearly if nothing was extracted.
+	{ gzip -cd "$STANFORD_DIR/insert50d.sql.gz" || true; } | head -n "$STANFORD_LINES" >"$tmpdir/insert50d_subset.sql"
+	[ -s "$tmpdir/insert50d_subset.sql" ] || { echo "Stanford subset is empty (gzip -cd failed?)" >&2; exit 1; }
 	cp "$STANFORD_DIR/create.sql" "$tmpdir/create.sql"
 
 	docker cp "$tmpdir/create.sql" "$CONTAINER_NAME":/tmp/create.sql
