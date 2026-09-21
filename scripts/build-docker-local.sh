@@ -25,7 +25,15 @@ HOST_ARM64=0
 [ "$HOST_ARM64" -eq 0 ] && [ "$(uname -s)" = "Darwin" ] &&
 	[ "$(sysctl -in hw.optional.arm64 2>/dev/null || echo 0)" = "1" ] && HOST_ARM64=1
 TARGET_ARCH="${MYVECTOR_ARCH:-}"
-[ -z "$TARGET_ARCH" ] && { [ "$HOST_ARM64" -eq 1 ] && TARGET_ARCH="arm64" || TARGET_ARCH="amd64"; }
+# Linux reports 64-bit ARM as "aarch64" (macOS says "arm64"), so check both. HOST_ARM64 stays
+# Apple-Silicon-only because it also switches the compiler to clang.
+if [ -z "$TARGET_ARCH" ]; then
+	if [ "$HOST_ARM64" -eq 1 ] || [ "$ARCH" = "aarch64" ]; then
+		TARGET_ARCH="arm64"
+	else
+		TARGET_ARCH="amd64"
+	fi
+fi
 PLATFORM="linux/${TARGET_ARCH}"
 # arm64: use -j1 for clearer errors; amd64 can parallelize
 MAKE_JOBS=4
