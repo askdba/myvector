@@ -25,12 +25,13 @@ Use the sections below for details, tags, and optional **online updates** tests.
 
 ## 1) When images are available on GHCR
 
-Per `.github/workflows/docker-publish.yml`, images are **pushed** only when:
+Images are **pushed** only for `v*` release tags. Pushing the tag runs `release.yml`, whose
+`publish-images` job dispatches `.github/workflows/docker-publish.yml` on the tag once the
+release is created. If that job did not start the publish (check the **Publish Docker Image**
+runs), start it by hand: `gh workflow run docker-publish.yml --ref <tag>`. The workflow refuses
+to publish from a branch or a non-version tag.
 
-- A **git tag** matching `v*` is pushed, or
-- A **GitHub Release** is published.
-
-**Pull requests** still build and smoke-test images inside CI, but they **do not** push to `ghcr.io`. If you only merged the RC PR without tagging, pull the images **after** you push the release tag (or publish the release) that triggers the publish workflow.
+**Pull requests** still build and smoke-test images inside CI, but they **do not** push to `ghcr.io`. If you only merged the RC PR without tagging, pull the images **after** you push the release tag and its publish run has finished.
 
 Tags published (multi-arch `linux/amd64`, `linux/arm64`):
 
