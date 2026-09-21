@@ -746,55 +746,82 @@ void myvector_hamming_distance_deinit(UDF_INIT* initid) {
 }
 
 
+namespace {
+
+/* The UDFs this component registers with the server. */
+struct UdfDef {
+    const char* name;
+    Item_result return_type;
+    Udf_func_any func;
+    Udf_func_init init;
+    Udf_func_deinit deinit;
+};
+
+// udf_register(name, return_type, func, init_func, deinit_func); func is cast to Udf_func_any
+const UdfDef kUdfs[] = {
+    {"myvector_ann_set", STRING_RESULT,
+     reinterpret_cast<Udf_func_any>(myvector_ann_set),
+     myvector_ann_set_init, myvector_ann_set_deinit},
+    {"myvector_construct", STRING_RESULT,
+     reinterpret_cast<Udf_func_any>(myvector_construct),
+     myvector_construct_init, myvector_construct_deinit},
+    {"myvector_display", STRING_RESULT,
+     reinterpret_cast<Udf_func_any>(myvector_display),
+     myvector_display_init, myvector_display_deinit},
+    {"myvector_distance", REAL_RESULT,
+     reinterpret_cast<Udf_func_any>(myvector_distance),
+     myvector_distance_init, myvector_distance_deinit},
+    {"myvector_construct_binaryvector", STRING_RESULT,
+     reinterpret_cast<Udf_func_any>(myvector_construct_binaryvector),
+     myvector_construct_binaryvector_init, myvector_construct_binaryvector_deinit},
+    {"myvector_hamming_distance", REAL_RESULT,
+     reinterpret_cast<Udf_func_any>(myvector_hamming_distance),
+     myvector_hamming_distance_init, myvector_hamming_distance_deinit},
+};
+constexpr size_t kUdfCount = sizeof(kUdfs) / sizeof(kUdfs[0]);
+
+/* Returns 0 on success. */
+int register_udf(SERVICE_TYPE(udf_registration)* reg, const UdfDef& d) {
+    return reg->udf_register(d.name, d.return_type, d.func, d.init, d.deinit) ? 1 : 0;
+}
+
+}  // namespace
+
 class MyVectorUdfServiceImpl : public MyVectorUdfService {
 public:
     int register_udfs(SERVICE_TYPE(udf_registration)* udf_registration_service) override {
         int ret = 0;
-
-        // udf_register(name, return_type, func, init_func, deinit_func); func is cast to Udf_func_any
-        ret |= udf_registration_service->udf_register(
-            "myvector_ann_set", STRING_RESULT,
-            reinterpret_cast<Udf_func_any>(myvector_ann_set),
-            myvector_ann_set_init, myvector_ann_set_deinit) ? 1 : 0;
-
-        ret |= udf_registration_service->udf_register(
-            "myvector_construct", STRING_RESULT,
-            reinterpret_cast<Udf_func_any>(myvector_construct),
-            myvector_construct_init, myvector_construct_deinit) ? 1 : 0;
-
-        ret |= udf_registration_service->udf_register(
-            "myvector_display", STRING_RESULT,
-            reinterpret_cast<Udf_func_any>(myvector_display),
-            myvector_display_init, myvector_display_deinit) ? 1 : 0;
-
-        ret |= udf_registration_service->udf_register(
-            "myvector_distance", REAL_RESULT,
-            reinterpret_cast<Udf_func_any>(myvector_distance),
-            myvector_distance_init, myvector_distance_deinit) ? 1 : 0;
-
-        ret |= udf_registration_service->udf_register(
-            "myvector_construct_binaryvector", STRING_RESULT,
-            reinterpret_cast<Udf_func_any>(myvector_construct_binaryvector),
-            myvector_construct_binaryvector_init, myvector_construct_binaryvector_deinit) ? 1 : 0;
-
-        ret |= udf_registration_service->udf_register(
-            "myvector_hamming_distance", REAL_RESULT,
-            reinterpret_cast<Udf_func_any>(myvector_hamming_distance),
-            myvector_hamming_distance_init, myvector_hamming_distance_deinit) ? 1 : 0;
-
+        for (const UdfDef& d : kUdfs)
+            ret |= register_udf(udf_registration_service, d);
         return ret;
     }
 
-    int deregister_udfs(SERVICE_TYPE(udf_registration)* udf_registration_service) override {
+    int deregister_udfs(SERVICE_TYPE(udf_registration)* udf_registration_service,
+                        bool rollback_on_failure) override {
         int ret = 0;
-        int was_present = 0;
+        bool removed[kUdfCount] = {};
 
-        ret |= udf_registration_service->udf_unregister("myvector_ann_set", &was_present) ? 1 : 0;
-        ret |= udf_registration_service->udf_unregister("myvector_construct", &was_present) ? 1 : 0;
-        ret |= udf_registration_service->udf_unregister("myvector_display", &was_present) ? 1 : 0;
-        ret |= udf_registration_service->udf_unregister("myvector_distance", &was_present) ? 1 : 0;
-        ret |= udf_registration_service->udf_unregister("myvector_construct_binaryvector", &was_present) ? 1 : 0;
-        ret |= udf_registration_service->udf_unregister("myvector_hamming_distance", &was_present) ? 1 : 0;
+        for (size_t i = 0; i < kUdfCount; i++) {
+            int was_present = 0;
+            if (udf_registration_service->udf_unregister(kUdfs[i].name, &was_present))
+                ret = 1;
+            else
+                removed[i] = (was_present != 0);
+        }
+
+        if (ret && rollback_on_failure) {
+            /* MySQL refuses to unregister a UDF a running statement is using. Put back
+             * exactly the UDFs this call removed (not the ones that were never removed,
+             * whose re-registration would only report a duplicate) so the component
+             * that stays loaded is fully functional. */
+            for (size_t i = 0; i < kUdfCount; i++) {
+                if (removed[i] && register_udf(udf_registration_service, kUdfs[i]))
+                    MYVEC_LOG_ERROR(
+                        "could not restore UDF %s after a refused unload; "
+                        "the component is left without it",
+                        kUdfs[i].name);
+            }
+        }
 
         return ret;
     }
