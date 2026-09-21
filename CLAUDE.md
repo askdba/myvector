@@ -77,7 +77,7 @@ The suite includes **Phase 3 lifecycle regression tests**: install timing,
 index reload persistence after uninstall/reinstall, binlog cleanup on
 component removal, concurrent reads during install, and DROP stability.
 
-Docker images are only pushed to GHCR on `v*` git tags or published releases. PR builds build but do not push.
+Docker images are only pushed to GHCR for `v*` release tags: `release.yml` (job `publish-images`) dispatches `docker-publish.yml` on the tag after the release is created. It can also be run by hand on a tag: `gh workflow run docker-publish.yml --ref <tag>`. PR builds build but do not push.
 
 **ANN benchmark (QPS / recall / latency baseline):**
 
@@ -150,7 +150,7 @@ MySQL Server
 
 Workflows under `.github/workflows/`:
 - **ci.yml** — builds against MySQL 8.0, 8.4, 9.0 and runs integration tests
-- **docker-publish.yml** — builds and pushes multi-arch Docker images on `v*` tags
+- **docker-publish.yml** — builds and pushes multi-arch Docker images; `workflow_dispatch` only, started by `release.yml` on `v*` tags (dispatching on a non-version ref is refused by its guard)
 - **linter.yml** — actionlint only (no super-linter); see lessons below
 - **release.yml** — release automation
 

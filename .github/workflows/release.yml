@@ -161,3 +161,20 @@ jobs:
             artifacts/**/*.tar.gz
             artifacts/checksums.txt
           generate_release_notes: true
+
+  # Start the Docker image publish. docker-publish.yml used to listen for this workflow
+  # via workflow_run, but that trigger has never fired for a release tag, so images had
+  # to be published by hand. workflow_dispatch is one of the few events GITHUB_TOKEN may
+  # create, and dispatching on the tag ref satisfies the version-tag guard in
+  # docker-publish.yml (refs/tags/v*).
+  publish-images:
+    name: Dispatch Docker image publish
+    runs-on: ubuntu-latest
+    needs: [create-release]
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch docker-publish.yml on the release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run docker-publish.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"

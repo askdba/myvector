@@ -1,9 +1,8 @@
 name: Publish Docker Image
 
 on:
-  workflow_run:
-    workflows: ["Release MyVector (Plugin + Component)"]
-    types: [completed]
+  # Started by the "Dispatch Docker image publish" job of release.yml on a release tag
+  # (a workflow_run trigger on the release workflow never fired), or by hand.
   workflow_dispatch:
     inputs:
       dry_run:
@@ -18,13 +17,11 @@ permissions:
 
 jobs:
   build-and-publish:
-    # Publish plugin images from a successful upstream Release workflow_run, or
-    # from a manual dispatch that targets a VERSION tag (refs/tags/v*). The
-    # version-tag guard stops a branch / non-version-tag dispatch from
-    # overwriting the mutable public plugin tags (mysql8.0/8.4/9.7/latest).
-    if: >-
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
-      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
+    # Publish plugin images only from a dispatch that targets a VERSION tag
+    # (refs/tags/v*). The version-tag guard stops a branch / non-version-tag
+    # dispatch from overwriting the mutable public plugin tags
+    # (mysql8.0/8.4/9.7/latest).
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -46,7 +43,7 @@ jobs:
       - name: Checkout MyVector Code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.sha }}
 
       - name: Cache Boost
         uses: actions/cache@v4
@@ -203,13 +200,11 @@ jobs:
   # a "-component" tag suffix; mysql26.7 has no plugin equivalent to collide with
   # (component-only), so it gets the plain tag.
   build-and-publish-component:
-    # Publish only from a successful upstream workflow_run, or from a manual
-    # dispatch that targets a VERSION tag (refs/tags/v*). Without the version-tag
-    # guard, a workflow_dispatch off any branch — or any non-version tag — would
+    # Publish only from a dispatch that targets a VERSION tag (refs/tags/v*).
+    # Without the version-tag guard, a workflow_dispatch off any branch — or any non-version tag — would
     # push that ref's build to the mutable public component tags
     # (mysql8.4-component / mysql9.7-component / mysql26.7).
     if: >-
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
       (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) ||
       (github.event_name == 'workflow_dispatch' && inputs.dry_run)
     runs-on: ubuntu-22.04
@@ -233,7 +228,7 @@ jobs:
       - name: Checkout MyVector Code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.sha }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
