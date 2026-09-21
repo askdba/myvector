@@ -687,6 +687,12 @@ HNSWMemoryIndex::HNSWMemoryIndex(const string& name, const string& options)
     m_ef_search = m_ef_construction;
     m_M = m_optionsMap.getIntOption("M", 16, &valid);
     m_type = m_optionsMap.getOption("type");  // Supports HNSW and HNSW_BV
+    /* getSpace() matches the type exactly. VectorIndexCollection::open() accepts it
+     * in any case, so a lower-case "hnsw" used to reach here unmatched, getSpace()
+     * returned nullptr and the first use of the null space crashed mysqld. */
+    transform(m_type.begin(), m_type.end(), m_type.begin(), [](unsigned char c) {
+        return static_cast<char>(toupper(c));
+    });
     m_incrUpdates = m_optionsMap.getOption("online") == "Y";
     m_incrRefresh = m_optionsMap.getOption("track").length() > 0;
 
@@ -778,7 +784,7 @@ bool HNSWMemoryIndex::saveIndex(const string& path, const string& option) {
     MYVEC_LOG_DEBUG(
         "HNSWemoryIndex::saveIndex %s %s.", path.c_str(), option.c_str());
 
-    string filename = path + "/" + m_name + ".hnsw.index";
+    string filename = MyVectorIndexBase(path, m_name) + ".hnsw.index";
 
     string checkPointStr;
     getCheckPointString(checkPointStr);
@@ -793,12 +799,23 @@ bool HNSWMemoryIndex::saveIndex(const string& path, const string& option) {
         dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw);
     alg_hnsw->setCheckPointId(checkPointStr);
 
-    if (option == "build") {
-        // hnswlib method for full write/rewrite. Expect 10GB to take 10 secs.
-        alg_hnsw->saveIndex(filename);
-    } else {
-        // "refresh" or "checkpoint" - special MyVector incremental persistence.
-        alg_hnsw->doCheckPoint(filename);
+    /* hnswlib reports I/O errors (unwritable directory, disk full, ...) by throwing
+     * std::runtime_error. Letting one escape into mysqld aborts the whole server
+     * (std::terminate), so turn it into a failed save that the caller can report. */
+    try {
+        if (option == "build") {
+            // hnswlib method for full write/rewrite. Expect 10GB to take 10 secs.
+            alg_hnsw->saveIndex(filename);
+        } else {
+            // "refresh" or "checkpoint" - special MyVector incremental persistence.
+            alg_hnsw->doCheckPoint(filename);
+        }
+    } catch (const std::exception& e) {
+        MYVEC_LOG_ERROR("HNSWMemoryIndex::saveIndex (%s) failed writing %s: %s",
+                        m_name.c_str(),
+                        filename.c_str(),
+                        e.what());
+        return false;
     }
 
     m_isDirty = false;
@@ -822,7 +839,7 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
 
     m_space = getSpace(m_dim);
 
-    string indexfile = path + "/" + m_name + ".hnsw.index";
+    string indexfile = MyVectorIndexBase(path, m_name) + ".hnsw.index";
 
     MYVEC_LOG_DEBUG(
         "Loading HNSW index %s from %s", m_name.c_str(), indexfile.c_str());
@@ -870,13 +887,14 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
 
 bool HNSWMemoryIndex::dropIndex(const string& path) {
     /* Force drop index - delete files and free memory */
-    string indexfile = path + "/" + m_name + ".hnsw.index";
+    const string base = MyVectorIndexBase(path, m_name);
+    string indexfile = base + ".hnsw.index";
     myvector_unlink(indexfile.c_str());
-    string linksfile = path + "/" + m_name + ".hnsw.index.links";
+    string linksfile = base + ".hnsw.index.links";
     myvector_unlink(linksfile.c_str());
-    string linksdatafile = path + "/" + m_name + ".hnsw.index.links.data";
+    string linksdatafile = base + ".hnsw.index.links.data";
     myvector_unlink(linksdatafile.c_str());
-    string statusfile = path + "/" + m_name + ".hnsw.index.status";
+    string statusfile = base + ".hnsw.index.status";
     myvector_unlink(statusfile.c_str());
 
     if (m_alg_hnsw)
@@ -2206,7 +2224,10 @@ void myvector_open_index_impl(char* vecid,
     }
 
     if (!strcmp(action, "save")) {
-        vi->saveIndex(myvector_index_dir);
+        if (!vi->saveIndex(myvector_index_dir))
+            strcpy(result,
+                   "ERROR: index could not be saved to disk"
+                   " (see the server log)");
     } else if (!strcmp(action, "status")) {
         string s = vi->getStatus();
         strcpy(result, s.c_str());
@@ -2272,7 +2293,10 @@ void myvector_open_index_impl(char* vecid,
             strcat(result, timebuf);
         }
 
-        vi->saveIndex(myvector_index_dir, action);
+        if (!vi->saveIndex(myvector_index_dir, action))
+            strcpy(result,
+                   "ERROR: index built but could not be saved to disk"
+                   " (see the server log)");
     }
     return;
 }

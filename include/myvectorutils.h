@@ -1,4 +1,5 @@
 #pragma once
+#include <cctype>
 #include <cstring>
 #include <regex>
 #include <string>
@@ -29,11 +30,43 @@ inline void split(const std::string& str, std::vector<std::string>& out) {
     }
 }
 
+/* Base path (without extension) of an index's on-disk files: <dir>/<name>.
+ * An empty dir means "not configured" (the component has no way to set
+ * myvector_index_dir), and is taken relative to the server's working directory,
+ * which is its datadir, the same way binlog_state.json is located. Joining an
+ * empty dir naively gives "/<name>" in the filesystem root, which mysqld cannot
+ * write to. */
+inline std::string MyVectorIndexBase(const std::string& dir,
+                                     const std::string& name) {
+    std::string base = dir.empty() ? std::string(".") : dir;
+    if (base.back() != '/')
+        base.push_back('/');
+    return base + name;
+}
+
 /* Helper class to manage vector index options as k-v map.
  * e.g type=HNSW,dim=1536,size=1000000,M=64,ef=100
  */
 class MyVectorOptions {
 private:
+    /* Skip a leading "MYVECTOR COLUMN" (any case) that has no '|' start marker, so
+     * that "MYVECTOR COLUMN type=hnsw,dim=3" parses like "type=hnsw,dim=3". Without
+     * this the first key becomes "MYVECTOR COLUMN type", the type reads as empty and
+     * the index silently falls back to KNN. The prefix must be followed by a space so
+     * a longer key is never truncated. Returns line unchanged if it does not match. */
+    static const char* skipColumnPrefix(const char* line) {
+        static const char prefix[] = "MYVECTOR COLUMN";
+        const size_t n = sizeof(prefix) - 1;
+        const char* p = line;
+        while (*p == ' ')
+            p++;
+        for (size_t i = 0; i < n; i++) {
+            if (!p[i] || std::toupper(static_cast<unsigned char>(p[i])) != prefix[i])
+                return line;
+        }
+        return (p[n] == ' ') ? p + n : line;
+    }
+
     /* Returns true on success, false on format error */
     bool parseKV(const char* line) {
         /* e.g options list-MYVECTOR(type=hnsw,dim=50,size=4000000,M=64,ef=100)
@@ -43,6 +76,8 @@ private:
         {
             ptr1 = std::strchr(line, '|');
             ptr1++;
+        } else {
+            ptr1 = skipColumnPrefix(line);
         }
         std::string sline(ptr1);
         std::vector<std::string> listoptions;
