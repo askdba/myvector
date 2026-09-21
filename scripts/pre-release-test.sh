@@ -716,6 +716,18 @@ run_lifecycle_reload_persistence() {
   mq -D lc -e "CALL mysql.MYVECTOR_INDEX_LOAD('lc.reload_t.vec');" 2>/dev/null \
     || { fail "MYVECTOR_INDEX_LOAD failed: on-disk index not preserved across UNINSTALL/INSTALL" ; cleanup_container ; return 1 ; }
 
+  # The KNN comparison below is a brute-force scan over the table and would pass even
+  # if nothing were reloaded. MYVECTOR_INDEX_LOAD replaces the in-memory index with the
+  # one on disk (a load with no index files leaves it empty), so the row count STATUS
+  # reports afterwards is the real evidence that the persisted index came back.
+  local STATUS_OUT
+  STATUS_OUT=$(mq -D lc -e "CALL mysql.MYVECTOR_INDEX_STATUS('lc.reload_t.vec');" 2>&1) || true
+  if echo "$STATUS_OUT" | grep -q "Type : HNSW" && echo "$STATUS_OUT" | grep -q "Current Rows : 500"; then
+    pass "reload cycle: persisted HNSW index reloaded from disk (500 rows)"
+  else
+    fail "reload cycle: index not restored from disk (expected Type : HNSW, Current Rows : 500): ${STATUS_OUT}"
+  fi
+
   local AFTER_RESULT
   AFTER_RESULT=$(mq -N -D lc -e \
     "SELECT id FROM lc.reload_t ORDER BY myvector_distance(vec, myvector_construct('[1.0,2.0,3.0]'), 'L2') LIMIT 3;" \
