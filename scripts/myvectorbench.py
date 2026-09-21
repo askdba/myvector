@@ -215,25 +215,39 @@ def _ensure_libmysqlclient(container: Container):
         print("  WARNING: libmysqlclient CDN install failed", file=sys.stderr)
 
 
-def install_component(container: Container, comp_dir: str):
-    """Install MyVector component build into the container."""
-    _ensure_libmysqlclient(container)
-    plugin_dir = container.plugin_dir()
-    data_dir = container.data_dir()
+def check_index_build_result(output: str, what: str = "MYVECTOR_INDEX_BUILD") -> None:
+    """Raise unless MYVECTOR_INDEX_BUILD reported SUCCESS.
 
-    container.cp(f"{comp_dir}/libmyvector_component.so", f"{plugin_dir}/myvector.so")
-    container.cp(f"{comp_dir}/myvector.json", f"{plugin_dir}/myvector.json")
-    container.sql("INSTALL COMPONENT 'file://myvector';")
+    The procedure reports failures (no connection back to the server, index not saved
+    to disk) as a result row, not as an SQL error. Without this check a failed build
+    leaves an empty index and the benchmark carries on to report meaningless numbers
+    (recall_at_10 = 0.0, ANN as slow as brute-force KNN).
+    """
+    if "SUCCESS" not in output:
+        raise RuntimeError(f"{what}: MYVECTOR_INDEX_BUILD did not report SUCCESS: "
+                           f"{output.strip()!r}")
 
-    owner = container.exec("stat", "-c", "%U", data_dir).stdout.strip() or "mysql"
-    cnf = (
+
+def myvector_cnf(root_pw: str) -> str:
+    """Contents of myvector.cnf: how the index build connects back to the server."""
+    return (
         f"myvector_host=127.0.0.1\n"
         f"myvector_user_id=root\n"
-        f"myvector_user_password={container.root_pw}\n"
+        f"myvector_user_password={root_pw}\n"
         f"myvector_port=3306\n"
     )
+
+
+def _configure_myvector(container: Container):
+    """Write myvector.cnf and point the index directory at the datadir.
+
+    Needed by both the plugin and the component: without the cnf the index build
+    cannot connect back to the server and leaves an empty index.
+    """
+    data_dir = container.data_dir()
+    owner = container.exec("stat", "-c", "%U", data_dir).stdout.strip() or "mysql"
     with tempfile.NamedTemporaryFile(mode='w', suffix='.cnf', delete=False) as tmp:
-        tmp.write(cnf)
+        tmp.write(myvector_cnf(container.root_pw))
         tmp_path = tmp.name
     try:
         container.cp(tmp_path, f"{data_dir}myvector.cnf")
@@ -247,7 +261,19 @@ def install_component(container: Container, comp_dir: str):
     try:
         container.sql(f"SET GLOBAL myvector_index_dir='{data_dir}';")
     except RuntimeError:
-        pass  # sysvar not available on all versions
+        pass  # sysvar not available on all versions (the component has none)
+
+
+def install_component(container: Container, comp_dir: str):
+    """Install MyVector component build into the container."""
+    _ensure_libmysqlclient(container)
+    plugin_dir = container.plugin_dir()
+
+    container.cp(f"{comp_dir}/libmyvector_component.so", f"{plugin_dir}/myvector.so")
+    container.cp(f"{comp_dir}/myvector.json", f"{plugin_dir}/myvector.json")
+    container.sql("INSTALL COMPONENT 'file://myvector';")
+
+    _configure_myvector(container)
     # myvector_distance is auto-registered by the component framework (dynamic UDF).
     # myvector_row_distance / myvector_is_valid / myvector_search_open_udf are NOT
     # auto-registered — they must be added via CREATE FUNCTION ... SONAME.
@@ -267,7 +293,6 @@ def install_component(container: Container, comp_dir: str):
 def install_plugin(container: Container, plugin_so: str):
     """Install MyVector plugin build into the container."""
     plugin_dir = container.plugin_dir()
-    data_dir = container.data_dir()
     container.cp(plugin_so, f"{plugin_dir}/myvector.so")
     # Check if the plugin is already active (e.g. loaded via plugin-load-add in my.cnf
     # on pre-built GHCR images). If load_option=ON it cannot be uninstalled while the
@@ -301,10 +326,10 @@ def install_plugin(container: Container, plugin_so: str):
         " CREATE FUNCTION myvector_search_open_udf RETURNS STRING  SONAME 'myvector.so';",
         "mysql",
     )
-    try:
-        container.sql(f"SET GLOBAL myvector_index_dir='{data_dir}';")
-    except RuntimeError:
-        pass  # sysvar not available on all versions
+    # The plugin needs myvector.cnf too: without it the index build cannot connect back
+    # to the server ("Can't connect to local MySQL server through socket ''"), leaves
+    # an empty index and every ANN query returns nothing.
+    _configure_myvector(container)
     container.sql_stdin(INSTALL_PROCS_SQL, "mysql")
     print("  Plugin installed.")
 
@@ -500,8 +525,9 @@ def bench_index_build(container: Container, vectors: list, wp: dict) -> float:
         container.sql_stdin(f"INSERT INTO bench.build_t (id, vec) VALUES {vals};", "bench")
 
     t0 = time.time()
-    container.sql("CALL mysql.MYVECTOR_INDEX_BUILD('bench.build_t.vec', 'id');")
+    out = container.sql("CALL mysql.MYVECTOR_INDEX_BUILD('bench.build_t.vec', 'id');")
     elapsed = time.time() - t0
+    check_index_build_result(out, "bench.build_t")
     print(f"    index_build_time_s = {elapsed:.2f}")
     return elapsed
 
