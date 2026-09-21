@@ -44,7 +44,7 @@ mq_stdin() {  # mq_stdin [-D db] < file.sql
 die() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
 
-cleanup() { docker rm -f "$CONTAINER" 2>/dev/null || true; }
+cleanup() { docker rm -fv "$CONTAINER" 2>/dev/null || true; }
 trap cleanup EXIT
 
 # ── pre-flight ───────────────────────────────────────────────────────────────

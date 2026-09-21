@@ -10,7 +10,7 @@ STANFORD_LINES="${MYVECTOR_SMOKE_STANFORD_LINES:-2000}"
 STANFORD_DIR="examples/stanford50d"
 
 cleanup() {
-	docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+	docker rm -fv "$CONTAINER_NAME" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
