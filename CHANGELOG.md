@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.26.9] - TBD
 
 ### Added
+- Pre-release gate in CI (`pre-release-gate.yml`, non-blocking) and stronger gate checks
+  (PRs #121, #125); benchmark baselines on the `benchmarks` branch.
 - **MySQL 26.7 Innovation support** (component only) — build script, CI jobs,
   release/benchmark wiring, and opt-in `pre-release-test.sh 26.7` (PR #104).
 - **Component Docker images** — `Dockerfile.component` and a
@@ -22,12 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Docs site** (MkDocs Material) and `docs/CONTRIBUTING.md` (PR #102).
 
 ### Changed
+- `release.yml` dispatches the Docker publish (the `workflow_run` trigger never fired) (PR #122).
+- Test scripts remove containers with `-v` to stop leaking Docker volumes (PR #120).
+- Behaviour change: `MYVECTOR COLUMN type=hnsw,...` without the `|` marker now builds HNSW
+  (it used to fall back to KNN silently).
 - Component build scripts fall back to the MySQL CDN archive for pinned point
   releases.
 - Publish workflow: `v*` version-tag guard on plugin and component jobs;
   `dry_run` input for the component publish.
 
 ### Fixed
+- HNSW index builds no longer crash mysqld on the component build; `type=hnsw` comments without
+  the `|` marker now build HNSW instead of silently using KNN (PR #117).
+- Benchmark harness configures the plugin and fails when the index build fails, so
+  `recall_at_10` is meaningful (0.978 on plugin 8.4) (PR #123).
+- Deinit restores exactly the UDFs a refused unload removed (PR #126).
 - `UNINSTALL COMPONENT` no longer fails with ERROR 3538 (binlog service stop
   path returned non-zero on success).
 - `UNINSTALL COMPONENT` refused while a UDF is in use (ERROR 3538) now leaves the

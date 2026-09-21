@@ -11,8 +11,22 @@ and turns Docker publishing into a proper component pipeline, so the
 It also completes the component install/uninstall SQL and fixes
 `UNINSTALL COMPONENT` failing with ERROR 3538.
 
+**rc2 note:** `v1.26.9-rc1` should not be used for HNSW on the component build. Its tests
+silently exercised KNN (a `type=hnsw` column comment written without the `|` marker never
+parsed as HNSW), and a real HNSW index build crashed mysqld on the component build. Both are
+fixed in rc2, whose gate, smoke tests and benchmarks now exercise real HNSW.
+
 ## Added
 
+- **Pre-release gate in CI** (PR #125, closes #116): `pre-release-gate.yml` builds the
+  component for 8.4 / 9.7 / 26.7 and runs `pre-release-test.sh` on PRs and `main`
+  (path-filtered, non-blocking for now). New gate checks: index type is HNSW for both comment
+  formats, a failed save keeps the server up and reports an error, 3.3 asserts the index is
+  reloaded from disk (PR #121, closes #112), 3.5 asserts all six UDFs survive a refused unload.
+- **Benchmark baselines** (closes #114): promoted on the `benchmarks` branch from a run with
+  the fixed harness (plugin 8.4, component 8.4 / 9.7 / 26.7).
+- `tests/test_myvector_options.cc` (parser and index-path unit test) and
+  `tests/test_myvectorbench_build.py`.
 - **MySQL 26.7 Innovation support** (component only): new
   `scripts/build-component-26.7-docker.sh`, CI jobs `build-component-26-7` /
   `test-component-26-7`, and wiring in `release.yml`, `myvectorbench.yml`,
@@ -32,6 +46,11 @@ It also completes the component install/uninstall SQL and fixes
 
 ## Changed
 
+- **Docker publish is started by the release workflow** (PR #122, closes #109): the
+  `workflow_run` trigger never fired, so `release.yml` now dispatches `docker-publish.yml` on
+  the tag after the release is created. Manual dispatch remains as a fallback.
+- **Test scripts remove containers with `-v`** (PR #120, closes #110): they no longer leak one
+  Docker volume per test container.
 - Component build scripts fall back to the MySQL CDN archive for pinned point
   releases that are no longer on the primary download path.
 - Docker publish jobs apply a `v*` version-tag guard to both the plugin and
@@ -40,6 +59,20 @@ It also completes the component install/uninstall SQL and fixes
 
 ## Fixed
 
+- **HNSW index builds no longer crash mysqld on the component build** (PR #117, closes #111
+  and #118). `MYVECTOR COLUMN type=hnsw,...` (no `|` marker) parsed with an empty type and
+  silently fell back to KNN. Making it parse exposed two crashes in the real HNSW path:
+  a SIGSEGV (the type was kept lower case while the distance-space lookup matches `HNSW`
+  exactly) and an abort (the component's index directory was empty, so files were written to
+  `/<name>`, and hnswlib's exception escaped into mysqld). The type is now upper-cased, an
+  empty index directory is relative to the datadir, and a failed save is reported as an
+  `ERROR` (build and explicit `save`) instead of aborting the server.
+- **Benchmark harness never built a plugin index** (PR #123, closes #113): the plugin path did
+  not write `myvector.cnf`, so `MYVECTOR_INDEX_BUILD` could not connect back to the server,
+  the failure was ignored, and `recall_at_10` read 0.0. The harness is configured and now
+  fails when the build does not report `SUCCESS` (plugin recall@10 is now 0.978).
+- **Deinit rollback is exact** (PR #126, closes #115): only the UDFs a refused unload removed
+  are restored, and a failed binlog stop restores them too.
 - **`UNINSTALL COMPONENT` ERROR 3538**: the binlog service's stop path
   returned non-zero on success, which `myvector_component_deinit()`
   propagated as a failure whenever the binlog thread had been running.
@@ -71,7 +104,10 @@ It also completes the component install/uninstall SQL and fixes
 
 ## Upgrade / migration notes
 
-- No migration action required for existing plugin or component users.
+- **Behaviour change:** a column comment written as `MYVECTOR COLUMN type=hnsw,...` (no `|`
+  marker) used to fall back to a KNN index silently. It now builds an HNSW index, as the
+  `type` says. Indexes on such columns will be HNSW after they are rebuilt.
+- No other migration action required for existing plugin or component users.
 - MySQL 26.7 is component-only; there is no plugin build for 26.7.
 - Component installs require `myvector.cnf` to be present before
   `INSTALL COMPONENT` (the binlog listener reads it at startup); see the
@@ -82,4 +118,6 @@ It also completes the component install/uninstall SQL and fixes
 - MySQL 26.7 is a new Innovation release with a short track record. Its
   `pre-release-test.sh` run is opt-in by default but is a **blocking** gate
   for this release.
-- No 26.7 benchmark baseline exists yet; the RC1 run establishes it.
+- `dist=cosine` (lower case) silently becomes L2 for HNSW indexes; use `dist=Cosine` (#119).
+- Benchmark QPS/latency are dominated by `docker exec` overhead (~67 ms per query), so they
+  are weak regression signals; recall and build time are meaningful (#124).
