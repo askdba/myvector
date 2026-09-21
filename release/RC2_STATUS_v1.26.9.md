@@ -37,7 +37,9 @@ _TBD_
 
 ## Benchmark (first run compared against the promoted baselines)
 
-_TBD_
+Baselines and how to read them: [`BENCHMARK_v1.26.9.md`](BENCHMARK_v1.26.9.md).
+
+_Tag-run comparison: TBD_
 
 ## Known issues / follow-ups
 
