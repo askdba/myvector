@@ -398,6 +398,64 @@ SQL
   fi
 }
 
+# The index type must come from the column comment for BOTH documented forms: with
+# the '|' start marker and without it ("MYVECTOR COLUMN type=..."). A type that is
+# not recognised silently falls back to KNN, which would make every HNSW test in
+# this suite exercise brute-force search instead.
+run_index_type_check() {
+  echo "  [Index type] type=hnsw yields an HNSW index for both comment formats"
+  mq -D prerel -e "
+    DROP TABLE IF EXISTS itype_nopipe, itype_pipe;
+    CREATE TABLE itype_nopipe (id INT PRIMARY KEY, vec VARBINARY(256)
+      COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
+    CREATE TABLE itype_pipe (id INT PRIMARY KEY, vec VARBINARY(256)
+      COMMENT 'MYVECTOR Column |type=HNSW,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
+    INSERT INTO itype_nopipe VALUES (1, myvector_construct('[1.0,2.0,3.0]')),
+                                    (2, myvector_construct('[4.0,5.0,6.0]'));
+    INSERT INTO itype_pipe SELECT * FROM itype_nopipe;
+  " 2>/dev/null
+  local T OUT
+  for T in itype_nopipe itype_pipe; do
+    mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_BUILD('prerel.${T}.vec', 'id');" >/dev/null 2>&1 || true
+    OUT=$(mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_STATUS('prerel.${T}.vec');" 2>&1) || true
+    if echo "$OUT" | grep -q "Type : HNSW"; then
+      pass "index type HNSW for ${T}"
+    else
+      fail "index type is not HNSW for ${T} (silent KNN fallback?): ${OUT}"
+    fi
+  done
+}
+
+# A failure while writing the index to disk must surface as an error from the build,
+# never as an uncaught C++ exception that aborts mysqld. A directory is created where
+# the index status file is written, so the open() in the save fails with EISDIR.
+run_index_save_failure_check() {
+  echo "  [Index save failure] a failed index save reports an error and keeps the server up"
+  local DATADIR
+  DATADIR=$(mq -N -e "SELECT @@datadir;" 2>/dev/null | LC_ALL=C tr -d '[:space:]')
+  mq -D prerel -e "
+    DROP TABLE IF EXISTS save_fail_t;
+    CREATE TABLE save_fail_t (id INT PRIMARY KEY, vec VARBINARY(256)
+      COMMENT 'MYVECTOR Column |type=HNSW,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
+    INSERT INTO save_fail_t VALUES (1, myvector_construct('[1.0,2.0,3.0]')),
+                                   (2, myvector_construct('[4.0,5.0,6.0]'));
+  " 2>/dev/null
+  docker exec "$CONTAINER" mkdir -p "${DATADIR}prerel.save_fail_t.vec.hnsw.index.status"
+
+  local OUT
+  OUT=$(mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_BUILD('prerel.save_fail_t.vec', 'id');" 2>&1) || true
+  if ! mq -e "SELECT 1;" >/dev/null 2>&1; then
+    fail "server crashed on a failed index save (uncaught exception): ${OUT}"
+    return 0
+  fi
+  pass "server survived a failed index save"
+  if echo "$OUT" | grep -q "ERROR"; then
+    pass "failed index save reported as an error"
+  else
+    fail "failed index save was reported as success: ${OUT}"
+  fi
+}
+
 run_edge_cases() {
   echo "  [Edge cases]"
 
@@ -472,6 +530,8 @@ for VER in "${VERSIONS[@]}"; do
 
   run_rfc004_zero_vector
   run_rfc004_max_dim "$VER"
+  run_index_type_check
+  run_index_save_failure_check
   run_edge_cases
   run_rfc004_crash_injection
 
