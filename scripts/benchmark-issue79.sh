@@ -26,7 +26,7 @@ DIM="${BENCH_DIM:-768}"
 echo "=== Issue #79 Benchmark (rows=$ROWS, dim=$DIM, runs=$RUNS) ==="
 
 cleanup() {
-	docker rm -f "$CONTAINER" 2>/dev/null || true
+	docker rm -fv "$CONTAINER" 2>/dev/null || true
 }
 trap cleanup EXIT
 

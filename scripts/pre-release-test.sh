@@ -52,7 +52,7 @@ CONTAINER=""
 ROOT_PW="prerelroot"
 
 cleanup_container() {
-  [[ -n "$CONTAINER" ]] && docker rm -f "$CONTAINER" 2>/dev/null || true
+  [[ -n "$CONTAINER" ]] && docker rm -fv "$CONTAINER" 2>/dev/null || true
   CONTAINER=""
 }
 

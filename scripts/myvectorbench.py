@@ -79,7 +79,7 @@ class Container:
 
     def stop(self):
         if self._running:
-            subprocess.run(["docker", "rm", "-f", self.name], capture_output=True)
+            subprocess.run(["docker", "rm", "-fv", self.name], capture_output=True)
             self._running = False
 
     def __enter__(self):

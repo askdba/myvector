@@ -33,7 +33,7 @@ INIT_DIR="$REPO_ROOT/.myvector-test-init"
 rm -rf "$INIT_DIR" && mkdir -p "$INIT_DIR"
 MYSQL_CONF_DIR=""
 cleanup() {
-	docker rm -f "$CONTAINER" 2>/dev/null || true
+	docker rm -fv "$CONTAINER" 2>/dev/null || true
 	[ -n "$INIT_DIR" ] && rm -rf "$INIT_DIR"
 	[ -n "$MYSQL_CONF_DIR" ] && rm -rf "$MYSQL_CONF_DIR"
 }
@@ -222,7 +222,7 @@ SEARCH_OUT=$(docker exec "$CONTAINER" mysql "${MYSQL_ARGS[@]}" "$DB" -N -e "
 " 2>/dev/null)
 if echo "$SEARCH_OUT" | grep -qE '^2[[:space:]]'; then
 	echo "FAIL: id=2 found in results after DELETE (online update should have removed it)"
-	docker rm -f "$CONTAINER" 2>/dev/null || true
+	docker rm -fv "$CONTAINER" 2>/dev/null || true
 	exit 1
 fi
 echo "PASS: id=2 correctly absent after DELETE"
