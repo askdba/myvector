@@ -843,6 +843,22 @@ run_lifecycle_uninstall_inflight_udf() {
     else
       pass "refused UNINSTALL left all UDFs registered and usable"
     fi
+
+    # The rollback must restore exactly the UDFs the failed unload removed, so check
+    # all six: called with no arguments a registered UDF answers "Incorrect arguments",
+    # an unregistered one "does not exist".
+    local UDF MISSING=""
+    for UDF in myvector_ann_set myvector_construct myvector_display myvector_distance \
+               myvector_construct_binaryvector myvector_hamming_distance; do
+      if mq -N -D lc -e "SELECT ${UDF}();" 2>&1 | grep -q "does not exist"; then
+        MISSING="${MISSING} ${UDF}"
+      fi
+    done
+    if [[ -n "$MISSING" ]]; then
+      fail "refused UNINSTALL left UDFs unregistered:${MISSING}"
+    else
+      pass "refused UNINSTALL restored all six UDFs"
+    fi
   fi
 
   # Once the query is gone the component must unload cleanly.

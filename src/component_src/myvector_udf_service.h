@@ -17,7 +17,11 @@ public:
 
     // Custom methods for registering/deregistering UDFs (uses udf_registration service)
     virtual int register_udfs(SERVICE_TYPE(udf_registration)* udf_registration_service) = 0;
-    virtual int deregister_udfs(SERVICE_TYPE(udf_registration)* udf_registration_service) = 0;
+    /* Unregisters every UDF; returns non-zero if any could not be removed (for example
+     * because a running statement is using it). With rollback_on_failure the UDFs that
+     * were removed are registered again, so a failed call leaves the set unchanged. */
+    virtual int deregister_udfs(SERVICE_TYPE(udf_registration)* udf_registration_service,
+                                bool rollback_on_failure = false) = 0;
 
 protected:
     ~MyVectorUdfService() noexcept override = default;

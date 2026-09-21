@@ -46,19 +46,22 @@ static int myvector_component_init() {
 static int myvector_component_deinit() {
   // Unregister the UDFs first: MySQL refuses to unregister a UDF that a running
   // statement is using. A failed deinit leaves the component loaded, so it must
-  // stay fully functional. Restore any UDF already removed (register_udfs tries
-  // every UDF; those still registered just report a duplicate, ignored here) and
-  // return before touching the binlog thread.
+  // stay fully functional: with rollback_on_failure the UDFs already removed are
+  // registered again, and we return before touching the binlog thread.
   if (mysql_service_udf_registration) {
     if (myvector_component::s_udf_service.deregister_udfs(
-            mysql_service_udf_registration) != 0) {
-      myvector_component::s_udf_service.register_udfs(
-          mysql_service_udf_registration);
+            mysql_service_udf_registration, true) != 0) {
       return 1;
     }
   }
 
   int ret = myvector_component::get_binlog_service().stop_binlog_monitoring();
+  if (ret != 0 && mysql_service_udf_registration) {
+    // The UDFs are already gone; put them back so the loaded component keeps working.
+    myvector_component::s_udf_service.register_udfs(mysql_service_udf_registration);
+    return ret;
+  }
+
   myvector_component_udf_metadata = nullptr;
   return ret;
 }
