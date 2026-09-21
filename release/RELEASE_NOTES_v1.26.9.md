@@ -115,9 +115,16 @@ fixed in rc2, whose gate, smoke tests and benchmarks now exercise real HNSW.
 
 ## Known issues
 
+The full list of limitations is in [`docs/LIMITATIONS.md`](../docs/LIMITATIONS.md). The ones
+most likely to matter for this release:
+
 - MySQL 26.7 is a new Innovation release with a short track record. Its
   `pre-release-test.sh` run is opt-in by default but is a **blocking** gate
   for this release.
 - `dist=cosine` (lower case) silently becomes L2 for HNSW indexes; use `dist=Cosine` (#119).
 - Benchmark QPS/latency are dominated by `docker exec` overhead (~67 ms per query), so they
   are weak regression signals; recall and build time are meaningful (#124).
+- `MYVECTOR_IS_ANN(...)` is plugin-only; the component builds have no ANN query path.
+- There is no filtered search; extra `WHERE` predicates apply after the k ANN candidates.
+- The `MYVECTOR(...)` DDL form is matched literally (upper case, no space); a
+  `COMMENT 'MYVECTOR(...)'` string has been seen to fail on the plugin image (#130).

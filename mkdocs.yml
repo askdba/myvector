@@ -63,6 +63,7 @@ nav:
       - Building on macOS: BUILDING_MACOS.md
       - Online Index Updates: ONLINE_INDEX_UPDATES.md
       - Benchmarks: ANN_BENCHMARKS.md
+      - Known Limitations: LIMITATIONS.md
       - Structure: STRUCTURE.md
       - Security: SECURITY.md
   - Community:
