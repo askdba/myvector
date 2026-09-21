@@ -37,7 +37,8 @@ embeddings to complex image and audio analysis.
 supported for building and running MyVector. **Microsoft Windows is not a
 supported build target at this time** — use Linux containers or a Unix-like
 host for production builds and deployments. See `docs/BUILDING_MACOS.md` for
-macOS notes.
+macOS notes. For what MyVector does not do today (ANN on components, filtered
+search, option matching rules, and more), see [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md).
 
 ---
 
