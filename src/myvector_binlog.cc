@@ -823,6 +823,12 @@ void BuildMyVectorIndexSQL(const char* db,
 
     mysql_free_result(result);
 
+    // Save outside the binlog mutex: this write can take seconds on a large index
+    // (the caller's own comment: "expect 10GB to take 10 secs"), and holding
+    // binlog_stream_mutex_ for that long would stall the binlog listener thread for
+    // every other online-tracked index, not just this one.
+    bool saved = vi->saveIndex(myvector_index_dir, "build");
+
     // Get binlog coordinates, set checkpoint id and flush
 
     {
@@ -830,18 +836,15 @@ void BuildMyVectorIndexSQL(const char* db,
 
         vi->setLastUpdateCoordinates(currentBinlogFile, currentBinlogPos);
 
-        snprintf(errorbuf,
-                 MYVECTOR_BUFF_SIZE,
-                 "SUCCESS: Index created & saved at (%s %lu)"
-                 ", rows : %lu.",
-                 currentBinlogFile.c_str(),
-                 currentBinlogPos,
-                 nRows);
-
-        if (!vi->saveIndex(myvector_index_dir, "build")) {
-            // errorbuf above already claimed SUCCESS; the save that message describes
-            // just failed, so replace it rather than report a build that was not
-            // actually persisted to disk.
+        if (saved) {
+            snprintf(errorbuf,
+                     MYVECTOR_BUFF_SIZE,
+                     "SUCCESS: Index created & saved at (%s %lu)"
+                     ", rows : %lu.",
+                     currentBinlogFile.c_str(),
+                     currentBinlogPos,
+                     nRows);
+        } else {
             snprintf(errorbuf,
                      MYVECTOR_BUFF_SIZE,
                      "ERROR: index built but could not be saved to disk"

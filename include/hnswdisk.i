@@ -829,9 +829,15 @@
         while (1) {
           ssize_t ret = write(hnswFile, &data_level0_memory_[wrc], wc);
           if (ret < 0) {
+            int write_errno = errno;
             std::stringstream ss;
             ss << "Error writing " << wc << " bytes to " << hnswFileName
-               << " at line " << __LINE__ << ",rc = " << ret << ",errno = " << errno;
+               << " at line " << __LINE__ << ",rc = " << ret << ",errno = " << write_errno;
+            // Best-effort close: hnswFile was never handed to Close() on this path, so
+            // it would otherwise leak on every failed write (e.g. every checkpoint
+            // retry while the disk stays full). Ignore close()'s own result so a
+            // second failure here does not mask the original write error.
+            close(hnswFile);
             throw std::runtime_error(ss.str());
           }
           wrc += ret;

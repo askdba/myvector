@@ -2364,7 +2364,7 @@ PLUGIN_EXPORT char* myvector_search_save_udf(UDF_INIT*,
     if (!g_indexes.get(vecid)) {
         MYVEC_LOG_ERROR("Index %s is not opened for build/refresh.", vecid);
         strcpy(result, "FAILED");
-        *length = 7;
+        *length = 6;  // "FAILED" is 6 characters; 7 would read one byte past the NUL
         return result;
     }
 
