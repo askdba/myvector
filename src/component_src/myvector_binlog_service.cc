@@ -1170,6 +1170,11 @@ void BuildMyVectorIndexSQL(const char* db,
     strcpy(errorbuf, "SUCCESS");
     readConfigFile(myvector_config_file);
     size_t nRows = 0;
+    // Declared here (before every `goto cleanup;` below, with no non-trivial
+    // initializer) so the later plain assignment does not cross those jumps the way
+    // a declaration-with-initializer at that point would ("jump crosses
+    // initialization"). Only meaningful once assigned further down.
+    bool saved = false;
     MYSQL mysql;
     MYSQL* conn = mysql_init(&mysql);
     if (conn == nullptr) {
@@ -1358,16 +1363,34 @@ void BuildMyVectorIndexSQL(const char* db,
             &mysql, db, table, idcol, veccol, idcolpos, veccolpos);
         vc = VectorIndexColumnInfo{veccol, idcolpos, veccolpos};
     }
-    vi->saveIndex(myvector_index_dir, "build");
+    // Save outside the mutex: it can take seconds on a large index, and holding
+    // binlog_stream_mutex_ that long would stall the listener thread for every other
+    // online-tracked index, not just this one. `saved` is a plain assignment to the
+    // variable declared (uninitialized) near the top of this function, before every
+    // `goto cleanup;` above -- a declaration with an initializer here instead would
+    // be ill-formed ("jump crosses initialization").
+    saved = vi->saveIndex(myvector_index_dir, "build");
     {
+        // One critical section for the outcome message, the online-index
+        // registration and UNLOCK TABLES: a separate lock_guard per step would open a
+        // window where the listener thread could see this table's build as "done"
+        // (via errorbuf) before g_OnlineVectorIndexes actually contains it, and could
+        // then skip a concurrent row event for it.
         std::lock_guard<std::mutex> binlogMutex(binlog_stream_mutex_);
-        snprintf(errorbuf,
-                 MYVECTOR_BUFF_SIZE,
-                 "SUCCESS: Index created & saved at (%s %lu)"
-                 ", rows : %lu.",
-                 savedBinlogFile.c_str(),
-                 (unsigned long)savedBinlogPos,
-                 nRows);
+        if (saved) {
+            snprintf(errorbuf,
+                     MYVECTOR_BUFF_SIZE,
+                     "SUCCESS: Index created & saved at (%s %lu)"
+                     ", rows : %lu.",
+                     savedBinlogFile.c_str(),
+                     (unsigned long)savedBinlogPos,
+                     nRows);
+        } else {
+            snprintf(errorbuf,
+                     MYVECTOR_BUFF_SIZE,
+                     "ERROR: index built but could not be saved to disk"
+                     " (see the server log)");
+        }
         if (supportsIncr) {
             // Replace any existing entry for this column; don't duplicate.
             auto& cols = g_OnlineVectorIndexes[key];

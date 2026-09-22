@@ -816,12 +816,29 @@
 
         // This write() could do GBs of data write. All vectors & all level0
         // links are written to disk by this single Write() call.
+        //
+        // This loop bypasses the Write() helper above (which throws on any failed or
+        // short write) because a multi-GB write can legitimately return a short count
+        // without error and needs to resume, not fail. A negative return (e.g. ENOSPC
+        // partway through) used to just `break`, silently leaving the file truncated
+        // while the caller went on to Fsync/Close/mark the checkpoint complete as if
+        // the write had succeeded. Throw instead, matching every other write in this
+        // file, so a real I/O failure is never mistaken for a successful save.
         size_t xx = cur_element_count;
         size_t wrc = 0, wc = (cur_element_count * size_data_per_element_);
         while (1) {
           ssize_t ret = write(hnswFile, &data_level0_memory_[wrc], wc);
           if (ret < 0) {
-            break;
+            int write_errno = errno;
+            std::stringstream ss;
+            ss << "Error writing " << wc << " bytes to " << hnswFileName
+               << " at line " << __LINE__ << ",rc = " << ret << ",errno = " << write_errno;
+            // Best-effort close: hnswFile was never handed to Close() on this path, so
+            // it would otherwise leak on every failed write (e.g. every checkpoint
+            // retry while the disk stays full). Ignore close()'s own result so a
+            // second failure here does not mask the original write error.
+            close(hnswFile);
+            throw std::runtime_error(ss.str());
           }
           wrc += ret;
           wc -= ret;
