@@ -1,6 +1,6 @@
 # Release Notes - v1.26.9
 
-Release date: TBD
+Release date: 2026-09-22
 Previous release: v1.26.5.2
 
 ## Summary
@@ -11,14 +11,10 @@ and turns Docker publishing into a proper component pipeline, so the
 It also completes the component install/uninstall SQL and fixes
 `UNINSTALL COMPONENT` failing with ERROR 3538.
 
-**rc3 note:** `v1.26.9-rc3` ships the same source as rc2 (no change to `src/`, `include/`,
-`sql/`, the Dockerfiles or the workflows). It adds the Known limitations page and repairs three
-broken test scripts and one build script (see below).
-
-**rc2 note:** `v1.26.9-rc1` should not be used for HNSW on the component build. Its tests
-silently exercised KNN (a `type=hnsw` column comment written without the `|` marker never
-parsed as HNSW), and a real HNSW index build crashed mysqld on the component build. Both are
-fixed in rc2, whose gate, smoke tests and benchmarks now exercise real HNSW.
+This release went through three release candidates (`v1.26.9-rc1`, `-rc2`, `-rc3`); see
+`release/RC1_STATUS_v1.26.9.md` through `RC3_STATUS_v1.26.9.md` for that history. rc1's tests
+silently exercised KNN instead of HNSW on the component build (fixed in rc2, see Fixed below);
+do not use rc1 for HNSW on components.
 
 ## Added
 
@@ -63,6 +59,15 @@ fixed in rc2, whose gate, smoke tests and benchmarks now exercise real HNSW.
 
 ## Fixed
 
+- **Index save/checkpoint failures are now surfaced instead of lost silently** (PR #139): the
+  bulk HNSW write path could fail (disk full) without throwing, so a build could report
+  `SUCCESS` with a truncated index file on disk; a failed batch flush was never cleared,
+  growing on every later checkpoint retry; the binlog listener's periodic checkpoint advanced
+  its tracked position before checking whether the save actually succeeded; two online-build
+  paths formatted a `SUCCESS` message before calling save, ignoring its result. All five now
+  check and report the real outcome. Also fixes an fd leak on a failed write and restores a
+  lock's atomicity in the component's online-build path (a race introduced while fixing an
+  unrelated compile error in the same area).
 - **HNSW index builds no longer crash mysqld on the component build** (PR #117, closes #111
   and #118). `MYVECTOR COLUMN type=hnsw,...` (no `|` marker) parsed with an empty type and
   silently fell back to KNN. Making it parse exposed two crashes in the real HNSW path:

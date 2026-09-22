@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.26.9] - TBD
+## [1.26.9] - 2026-09-22
 
 ### Added
 - `docs/LIMITATIONS.md`: known limitations, linked from the README, the docs nav and the
@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dry_run` input for the component publish.
 
 ### Fixed
+- Index save/checkpoint failures are now surfaced instead of lost silently: the bulk HNSW
+  write path could fail without throwing (truncated file reported as `SUCCESS`); a failed
+  batch flush was never cleared, growing on every later checkpoint; the binlog listener's
+  checkpoint advanced its tracked position before checking the save result; two online-build
+  paths ignored it entirely. Also fixes an fd leak on a failed write and a lock-atomicity
+  regression in the component's online-build path (PR #139).
 - The RFC-004 stress harness, the Stanford 50d smoke and the online-updates test now run
   (a constant re-assigned inside `run_stress`, a `gzip | head` SIGPIPE under `pipefail`, a
   plugin variable unknown at `--initialize`, and a demo `create.sql` reformatted so the DDL
