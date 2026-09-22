@@ -838,7 +838,15 @@ void BuildMyVectorIndexSQL(const char* db,
                  currentBinlogPos,
                  nRows);
 
-        vi->saveIndex(myvector_index_dir, "build");
+        if (!vi->saveIndex(myvector_index_dir, "build")) {
+            // errorbuf above already claimed SUCCESS; the save that message describes
+            // just failed, so replace it rather than report a build that was not
+            // actually persisted to disk.
+            snprintf(errorbuf,
+                     MYVECTOR_BUFF_SIZE,
+                     "ERROR: index built but could not be saved to disk"
+                     " (see the server log)");
+        }
 
         string key = string(db) + "." + string(table);
 

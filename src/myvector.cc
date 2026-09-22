@@ -779,6 +779,10 @@ bool HNSWMemoryIndex::saveIndex(const string& path, const string& option) {
 
     if (m_isParallelBuild) {
         flushBatchSerial();  // last batch, maybe small
+        // The pending batch is now in the in-memory graph; this is a distinct,
+        // already-completed step from the on-disk write below, so it must not be
+        // repeated on a later call just because that write happens to fail.
+        m_isParallelBuild = false;
     }
 
     MYVEC_LOG_DEBUG(
@@ -819,7 +823,6 @@ bool HNSWMemoryIndex::saveIndex(const string& path, const string& option) {
     }
 
     m_isDirty = false;
-    m_isParallelBuild = false;
 
     return true;
 }
@@ -1064,6 +1067,12 @@ bool HNSWMemoryIndex::flushBatchSerial() {
         m_alg_hnsw->addPoint((void*)&(m_batch[i * m_space->get_data_size()]),
                              m_batchkeys[i]);
     }
+    // Mirror flushBatchParallel(): once the pending rows are in the in-memory graph,
+    // this batch is consumed regardless of whether the caller's later on-disk save
+    // succeeds. Leaving it unset caused saveIndex() to re-add the same stale rows on
+    // every subsequent save after a failed one (they were never cleared here).
+    m_batch.clear();
+    m_batchkeys.clear();
     return true;
 }
 
@@ -2360,7 +2369,13 @@ PLUGIN_EXPORT char* myvector_search_save_udf(UDF_INIT*,
     }
 
     AbstractVectorIndex* vi = g_indexes.get(vecid);
-    vi->saveIndex(myvector_index_dir, action);
+    if (!vi->saveIndex(myvector_index_dir, action)) {
+        strcpy(result, "FAILED");
+        *length = 6;
+        return result;
+    }
+    strcpy(result, "SUCCESS");
+    *length = 7;
     return result;
 }
 
@@ -2585,7 +2600,17 @@ void myvector_checkpoint_index(const string& dbtable,
                     binlogPos);
         if (isAfter(binlogFile, binlogPos, binlogfileold, binlogposold)) {
             vi->setLastUpdateCoordinates(binlogFile, binlogPos);
-            vi->saveIndex(myvector_index_dir, "checkpoint");
+            if (!vi->saveIndex(myvector_index_dir, "checkpoint")) {
+                // The tracked position was already advanced above so the checkpoint ID
+                // embedded in this save attempt was correct; on failure roll it back so
+                // isAfter() and the next checkpoint retry from the last position that
+                // was actually persisted, instead of silently skipping it forever.
+                MYVEC_LOG_ERROR(
+                    "Checkpoint save failed for %s at (%s %lu); binlog position not "
+                    "persisted, will retry",
+                    vecid.c_str(), binlogFile.c_str(), binlogPos);
+                vi->setLastUpdateCoordinates(binlogfileold, binlogposold);
+            }
         }
     }
 }

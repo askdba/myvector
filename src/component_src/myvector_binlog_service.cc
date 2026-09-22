@@ -1358,8 +1358,18 @@ void BuildMyVectorIndexSQL(const char* db,
             &mysql, db, table, idcol, veccol, idcolpos, veccolpos);
         vc = VectorIndexColumnInfo{veccol, idcolpos, veccolpos};
     }
-    vi->saveIndex(myvector_index_dir, "build");
-    {
+    // Not stored in a named local: a goto earlier in this function jumps to the
+    // cleanup label below, and a variable with a non-trivial initializer declared
+    // between that goto and its label is ill-formed ("jump crosses initialization").
+    // The index was already built in memory either way, so the online-index
+    // registration and UNLOCK TABLES below must still run on a failed save.
+    if (!vi->saveIndex(myvector_index_dir, "build")) {
+        std::lock_guard<std::mutex> binlogMutex(binlog_stream_mutex_);
+        snprintf(errorbuf,
+                 MYVECTOR_BUFF_SIZE,
+                 "ERROR: index built but could not be saved to disk"
+                 " (see the server log)");
+    } else {
         std::lock_guard<std::mutex> binlogMutex(binlog_stream_mutex_);
         snprintf(errorbuf,
                  MYVECTOR_BUFF_SIZE,
@@ -1368,6 +1378,9 @@ void BuildMyVectorIndexSQL(const char* db,
                  savedBinlogFile.c_str(),
                  (unsigned long)savedBinlogPos,
                  nRows);
+    }
+    {
+        std::lock_guard<std::mutex> binlogMutex(binlog_stream_mutex_);
         if (supportsIncr) {
             // Replace any existing entry for this column; don't duplicate.
             auto& cols = g_OnlineVectorIndexes[key];
