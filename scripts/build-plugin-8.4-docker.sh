@@ -8,9 +8,10 @@
 # (superbuild) and builds the in-tree "myvector" plugin target via
 # MYSQL_ADD_PLUGIN (the `if(COMMAND MYSQL_ADD_PLUGIN)` branch at the top of
 # CMakeLists.txt) — the same recipe already proven by the "build" job in
-# .github/workflows/ci.yml. The resulting myvector.so is the OLDER, still-
-# published distribution form (`INSTALL PLUGIN myvector SONAME
-# 'myvector.so'`, e.g. ghcr.io/askdba/myvector:mysql8.4) and is the only
+# .github/workflows/ci.yml. The resulting myvector.so is the classic/
+# original distribution form (still the default published tags: `INSTALL
+# PLUGIN myvector SONAME 'myvector.so'`, e.g. ghcr.io/askdba/myvector:mysql8.4,
+# mysql8.0, mysql9.7, and latest) and is the only
 # form that supports query rewrite: the inline `col MYVECTOR(...)` DDL
 # annotation and `WHERE MYVECTOR_IS_ANN(...)`, via the classic Audit Plugin
 # pre-parse hook in src/myvector_plugin.cc.
@@ -78,6 +79,14 @@ docker run --rm \
     echo "==> Cloning MySQL source ($MYSQL_TAG)..."
     MYSQL_WORKSPACE="/workspace/mysql-server-${MYSQL_TAG}"
     NEED_CLONE=true
+    # The repo tree is bind-mounted from the host, owned by the host UID, but
+    # this container runs as root — git refuses to touch a repo it does not
+    # own ("dubious ownership in repository") unless told otherwise. Without
+    # this, the "describe"/"rev-parse" reuse-detection below silently fails,
+    # CURRENT_TAG stays empty, NEED_CLONE stays true, and the "rm -rf
+    # $MYSQL_WORKSPACE" further down destroys the entire shared checkout
+    # (including bld-${ARCH}, used by the component build) on every run.
+    git config --global --add safe.directory "$MYSQL_WORKSPACE"
     if [ -d "$MYSQL_WORKSPACE/.git" ]; then
       CURRENT_TAG="$(git -C "$MYSQL_WORKSPACE" describe --tags --exact-match 2>/dev/null \
         || git -C "$MYSQL_WORKSPACE" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
