@@ -92,9 +92,10 @@ component:
   `sql/myvectorplugin.sql`) into `OUTPUT_DIR`, matching the component
   scripts' `dist/plugin-8.4/` output convention.
 - **Verify end-to-end in a fresh `mysql:8.4` container** (same pattern as
-  this session's manual container tests): `INSTALL PLUGIN myvector SONAME
-  'myvector.so';`, run `sql/myvectorplugin.sql` (or the relevant subset),
-  then confirm BOTH of these succeed:
+  this session's manual container tests): run `sql/myvectorplugin.sql`
+  against it (it does its own `INSTALL PLUGIN` — don't run that separately
+  first, or the script's own `INSTALL PLUGIN` fails as a duplicate), then
+  confirm BOTH of these succeed:
   1. `CREATE TABLE ... (id INT PRIMARY KEY, v MYVECTOR(type=HNSW,dim=3,size=100,m=16,ef=50))` —
      the inline DDL annotation.
   2. A `WHERE MYVECTOR_IS_ANN(...)` query against a built index returns a

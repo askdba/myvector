@@ -192,17 +192,23 @@ docker exec myv-manual bash -c '
   rpm -ivh --nodeps "${BASE}/mysql-community-libs-${VER}.${ARCH}.rpm" 2>/dev/null
 '
 
-# 3a. Component: copy the .so + json into plugin_dir and INSTALL COMPONENT
+# 3a. Component: copy the .so + json into plugin_dir, then run the full
+#     installer script -- INSTALL COMPONENT alone only auto-registers the
+#     core UDFs (myvector_construct, myvector_display, myvector_distance,
+#     ...); sql/myvector_install_component.sql also adds the supplemental
+#     UDFs and MYVECTOR_INDEX_* procedures that index build/status/search
+#     actually need.
 PLUGIN_DIR=$(docker exec myv-manual mysql -uroot -pmyvector -N -s -e "SELECT @@plugin_dir;")
 docker cp dist/component-8.4/libmyvector_component.so myv-manual:"$PLUGIN_DIR/myvector.so"
 docker cp dist/component-8.4/myvector.json             myv-manual:"$PLUGIN_DIR/myvector.json"
-docker exec myv-manual mysql -uroot -pmyvector -e "INSTALL COMPONENT 'file://myvector';"
+docker exec -i myv-manual mysql -uroot -pmyvector < sql/myvector_install_component.sql
 
-# 3b. OR plugin: copy myvector.so and INSTALL PLUGIN, then load the SQL
-#     that registers UDFs/procedures
+# 3b. OR plugin: copy myvector.so, then load the SQL script -- it does its
+#     own INSTALL PLUGIN (sql/myvectorplugin.sql line 32) as well as
+#     registering UDFs/procedures, so don't INSTALL PLUGIN separately first
+#     (that would just make the script's own INSTALL PLUGIN fail as a dup).
 docker cp dist/plugin-8.4/myvector.so myv-manual:"$PLUGIN_DIR/myvector.so"
 docker exec myv-manual chmod 755 "$PLUGIN_DIR/myvector.so"
-docker exec myv-manual mysql -uroot -pmyvector -e "INSTALL PLUGIN myvector SONAME 'myvector.so';"
 docker cp dist/plugin-8.4/myvectorplugin.sql myv-manual:/tmp/myvectorplugin.sql
 docker exec myv-manual bash -c "mysql -uroot -pmyvector < /tmp/myvectorplugin.sql"
 
