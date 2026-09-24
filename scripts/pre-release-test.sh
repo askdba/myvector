@@ -463,7 +463,12 @@ run_dist_case_insensitive() {
   fi
 
   STATUS_CI=$(mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_STATUS('prerel.dist_ci.vec');" 2>&1) || true
-  if echo "$STATUS_CI" | grep -q "Distance : Cosine"; then
+  # Exact match up to the field's own "\n" separator (the status string embeds
+  # literal newlines, which the mysql client's tab output renders as a literal
+  # backslash-n, not a real line break) -- a plain substring grep for
+  # "Distance : Cosine" would also match "Distance : CosineNorm", which is a
+  # different, valid metric this same index type supports.
+  if echo "$STATUS_CI" | grep -qE 'Distance : Cosine(\\n|$)'; then
     pass "dist=cosine (lower case) resolves to Cosine (exact-case match on resolved metric)"
   else
     fail "dist=cosine (lower case): MYVECTOR_INDEX_STATUS did not resolve to Cosine (got: $STATUS_CI)"

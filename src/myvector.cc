@@ -962,7 +962,11 @@ string HNSWMemoryIndex::getStatus() {
     ss << "Vector Index : " << m_name << endl;
     ss << "Type : " << m_type << endl;
     ss << "Dimension : " << m_dim << endl;
-    ss << "Distance : " << m_dist << endl;
+    /* HNSW_BV always searches with Hamming distance (see getSpace()),
+     * independent of m_dist/the "dist" option -- report that, not the
+     * generic (and here misleading, since it's never actually used)
+     * m_dist default of "L2". */
+    ss << "Distance : " << (m_type == "HNSW_BV" ? "Hamming" : m_dist) << endl;
     ss << "Max. Capacity : " << m_size << endl;
     ss << "M = " << m_M << endl;
 
