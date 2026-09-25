@@ -15,6 +15,7 @@ import json
 import math
 import os
 import random
+import re
 import shutil
 import statistics
 import subprocess
@@ -112,6 +113,55 @@ class Container:
                            input=sql.encode(), capture_output=True)
         if r.returncode != 0:
             raise RuntimeError(f"SQL (stdin) failed (rc={r.returncode}): {r.stderr.decode().strip()}")
+
+    def sql_batch_timed(self, queries: list, db: str = "") -> list:
+        """Run many one-shot SQL statements over a single persistent mysql
+        client session (one docker exec, not one per query) and return each
+        statement's server-observed latency in milliseconds.
+
+        docker exec + a fresh mysql client process is ~67ms of pure overhead
+        per call on a typical dev host (myvector#124) -- dwarfing the actual
+        query time and making QPS/latency benchmarks measure process-spawn
+        cost, not MyVector. Bracketing each query with `SELECT NOW(6)`
+        markers and measuring the gap between them gives the query's real
+        round-trip time over an already-open connection, with none of that
+        per-query overhead, while still preserving per-query granularity
+        (so p50/p99 remain meaningful, not just a batch average).
+        """
+        script_lines = []
+        for q in queries:
+            q = q.rstrip()
+            if not q.endswith(";"):
+                q += ";"
+            script_lines.append("SELECT NOW(6);")
+            script_lines.append(q)
+            script_lines.append("SELECT NOW(6);")
+        script = "\n".join(script_lines) + "\n"
+
+        r = subprocess.run(self._base_cmd(db, interactive=True),
+                           input=script.encode(), capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"SQL batch failed (rc={r.returncode}): {r.stderr.decode().strip()}")
+
+        ts_re = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+$")
+        markers = []
+        for line in r.stdout.decode().splitlines():
+            line = line.strip()
+            if ts_re.match(line):
+                markers.append(datetime.strptime(line, "%Y-%m-%d %H:%M:%S.%f"))
+
+        expected = 2 * len(queries)
+        if len(markers) != expected:
+            raise RuntimeError(
+                f"SQL batch timing markers mismatch: expected {expected}, found "
+                f"{len(markers)} -- a query's own output may resemble a timestamp, "
+                f"or the batch didn't run to completion"
+            )
+
+        return [
+            (markers[2 * i + 1] - markers[2 * i]).total_seconds() * 1000
+            for i in range(len(queries))
+        ]
 
     def scalar(self, sql: str, db: str = "") -> str:
         """Return last non-empty line of sql() output."""
@@ -563,15 +613,12 @@ def bench_knn_search(container: Container, vectors: list, wp: dict) -> dict:
     rng = random.Random(99)
     query_vectors = [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n_queries)]
 
-    latencies_ms = []
-    for q in query_vectors:
-        sql = (
-            f"SELECT id FROM bench.build_t"
-            f" ORDER BY myvector_distance(vec, {_vec_literal(q)}, 'L2') LIMIT 10;"
-        )
-        t0 = time.time()
-        container.sql(sql)
-        latencies_ms.append((time.time() - t0) * 1000)
+    queries = [
+        f"SELECT id FROM bench.build_t"
+        f" ORDER BY myvector_distance(vec, {_vec_literal(q)}, 'L2') LIMIT 10;"
+        for q in query_vectors
+    ]
+    latencies_ms = container.sql_batch_timed(queries)
 
     latencies_ms.sort()
     p50 = statistics.median(latencies_ms)
@@ -627,17 +674,14 @@ def bench_knn_ann(container: Container, vectors: list, wp: dict,
     rng = random.Random(77)
     query_vectors = [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n_queries)]
 
-    latencies_ms = []
-    for q in query_vectors:
-        sql = (
-            f"SELECT id, myvector_row_distance(id) AS dist"
-            f" FROM bench.build_t"
-            f" WHERE MYVECTOR_IS_ANN('bench.build_t.vec', 'id', {_vec_literal(q)})"
-            f" ORDER BY dist LIMIT 10;"
-        )
-        t0 = time.time()
-        container.sql(sql)
-        latencies_ms.append((time.time() - t0) * 1000)
+    queries = [
+        f"SELECT id, myvector_row_distance(id) AS dist"
+        f" FROM bench.build_t"
+        f" WHERE MYVECTOR_IS_ANN('bench.build_t.vec', 'id', {_vec_literal(q)})"
+        f" ORDER BY dist LIMIT 10;"
+        for q in query_vectors
+    ]
+    latencies_ms = container.sql_batch_timed(queries)
 
     latencies_ms.sort()
     p50 = statistics.median(latencies_ms)
