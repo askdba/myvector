@@ -426,6 +426,78 @@ run_index_type_check() {
   done
 }
 
+# Regression test for issue #119: dist=cosine (lower case, as used throughout
+# this very script) must actually resolve to the cosine metric, not silently
+# fall back to L2 because the option match was case-sensitive.
+#
+# MYVECTOR_INDEX_STATUS now reports the *resolved* metric (m_dist), not the
+# raw as-typed option string, so "Distance : Cosine" (exact case) only
+# appears when the case-insensitive match in the index constructor actually
+# fired; on the pre-fix code this line prints the raw option text verbatim
+# ("Distance : cosine", lower case) regardless of which metric was really
+# used, so the exact-case comparison below is deliberate -- a case-INsensitive
+# grep would pass even on the buggy build and prove nothing.
+#
+# On MySQL 9.0+ (where the MYVECTOR_IS_ANN query rewrite is compiled in) we
+# additionally prove it end-to-end: q=[1.0,0.0] is cosine-nearest to row A
+# [2.0,0.0] (cosine distance 0) but L2-nearest to row B [1.0,0.5] (L2
+# distance 0.5 vs A's 1.0) -- the two metrics disagree, so a silent L2
+# fallback is caught by asserting the ANN top-1 is A (id=1), not B (id=2).
+run_dist_case_insensitive() {
+  local VER="$1"
+  echo "  [Issue #119] dist=cosine (lower case) resolves to cosine, not L2"
+  mq -D prerel -e "
+    DROP TABLE IF EXISTS dist_ci;
+    CREATE TABLE dist_ci (
+      id  INT PRIMARY KEY,
+      vec VARBINARY(256) COMMENT 'MYVECTOR COLUMN type=hnsw,dim=2,size=100,m=16,ef=50,idcol=id,dist=cosine'
+    );
+    INSERT INTO dist_ci VALUES (1, myvector_construct('[2.0,0.0]'));
+    INSERT INTO dist_ci VALUES (2, myvector_construct('[1.0,0.5]'));
+  " 2>/dev/null
+  BUILD_CI=$(mq -D prerel -e \
+    "CALL mysql.MYVECTOR_INDEX_BUILD('prerel.dist_ci.vec', 'id');" 2>&1 || true)
+  if echo "$BUILD_CI" | grep -qE "^ERROR [0-9]"; then
+    fail "dist=cosine (lower case) index build: unexpected error: $BUILD_CI"
+    return 0
+  fi
+
+  STATUS_CI=$(mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_STATUS('prerel.dist_ci.vec');" 2>&1) || true
+  # Exact match up to the field's own "\n" separator (the status string embeds
+  # literal newlines, which the mysql client's tab output renders as a literal
+  # backslash-n, not a real line break) -- a plain substring grep for
+  # "Distance : Cosine" would also match "Distance : CosineNorm", which is a
+  # different, valid metric this same index type supports.
+  if echo "$STATUS_CI" | grep -qE 'Distance : Cosine(\\n|$)'; then
+    pass "dist=cosine (lower case) resolves to Cosine (exact-case match on resolved metric)"
+  else
+    fail "dist=cosine (lower case): MYVECTOR_INDEX_STATUS did not resolve to Cosine (got: $STATUS_CI)"
+  fi
+
+  # MYVECTOR_IS_ANN depends on the query-rewrite pre-parse service, which
+  # (like the DDL rewrite tested elsewhere in this file) is not reliably
+  # active on every MySQL version/build -- smoke-component.sh treats the
+  # same condition as a non-fatal warning rather than a hard failure. Only
+  # a real *wrong-answer* (L2 fallback) is a regression here; "the rewrite
+  # didn't fire at all" is a pre-existing, separately-tracked limitation.
+  ANN_OUT=$(mq -D prerel -N -e "
+    SELECT id FROM dist_ci
+    WHERE MYVECTOR_IS_ANN('prerel.dist_ci.vec', 'id', myvector_construct('[1.0,0.0]'), 1);
+  " 2>&1) || true
+  if echo "$ANN_OUT" | grep -qiE "ERROR|error in"; then
+    skip "dist=cosine ANN ordering check: MYVECTOR_IS_ANN rewrite not active on $VER ($ANN_OUT)"
+  else
+    ANN_TOP1=$(echo "$ANN_OUT" | tr -d '[:space:]')
+    if [[ "$ANN_TOP1" == "1" ]]; then
+      pass "dist=cosine (lower case) ANN top-1 is the cosine-nearest row (id=1), not the L2-nearest (id=2)"
+    else
+      fail "dist=cosine (lower case): expected ANN top-1 id=1 (cosine-nearest), got '$ANN_TOP1' (L2 fallback?)"
+    fi
+  fi
+
+  mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_DROP('prerel.dist_ci.vec');" 2>/dev/null || true
+}
+
 # A failure while writing the index to disk must surface as an error from the build,
 # never as an uncaught C++ exception that aborts mysqld. A directory is created where
 # the index status file is written, so the open() in the save fails with EISDIR.
@@ -539,6 +611,7 @@ for VER in "${VERSIONS[@]}"; do
   run_rfc004_zero_vector
   run_rfc004_max_dim "$VER"
   run_index_type_check
+  run_dist_case_insensitive "$VER"
   run_index_save_failure_check
   run_edge_cases
   run_rfc004_crash_injection

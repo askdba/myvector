@@ -432,6 +432,13 @@ private:
     unsigned long m_updateTs;
     MyVectorOptions m_optionsMap;
 
+    /* Resolved (matched, canonical-case) distance metric name -- what the
+     * index actually uses, as opposed to m_optionsMap.getOption("dist")
+     * which is the raw, as-typed option value. getStatus() must report
+     * this one; see issue #119 ("MYVECTOR_INDEX_STATUS prints the raw
+     * option ... which hides the mismatch"). */
+    string m_dist;
+
     string m_binlogFile;
     size_t m_binlogPosition{0};
 
@@ -451,11 +458,19 @@ KNNIndex::KNNIndex(const string& name, const string& options)
     m_dim = m_optionsMap.getIntOption("dim", 0);
 
     m_distfn = computeL2Distance;
-    if (m_optionsMap.getOption("dist").size()) {
-        if (m_optionsMap.getOption("dist") == "Cosine")
+    m_dist = "L2";
+    string distOpt = m_optionsMap.getOption("dist");
+    if (distOpt.size()) {
+        if (!myvector_strcasecmp(distOpt.c_str(), "Cosine")) {
             m_distfn = computeCosineDistance;
-        else if (m_optionsMap.getOption("dist") == "IP")
+            m_dist = "Cosine";
+        } else if (!myvector_strcasecmp(distOpt.c_str(), "IP")) {
             m_distfn = computeIPDistance;
+            m_dist = "IP";
+        } else if (myvector_strcasecmp(distOpt.c_str(), "L2"))
+            MYVEC_LOG_ERROR(
+                "MyVector unknown dist option '%s' for index %s, using L2",
+                distOpt.c_str(), name.c_str());
     } else {
         m_optionsMap.setOption("dist", "L2");
     }
@@ -568,7 +583,7 @@ string KNNIndex::getStatus() {
     ss << "Vector Index : " << m_name << endl;
     ss << "Type : KNN" << endl;
     ss << "Dimension : " << m_dim << endl;
-    ss << "Distance : " << m_optionsMap.getOption("dist") << endl;
+    ss << "Distance : " << m_dist << endl;
     ss << "Rows Inserted : " << m_n_rows << endl;
     ss << "Searches : " << m_n_searches << endl;
 
@@ -698,12 +713,19 @@ HNSWMemoryIndex::HNSWMemoryIndex(const string& name, const string& options)
 
     m_dist = "L2";
 
-    if (m_optionsMap.getOption("dist") == "Cosine")
-        m_dist = "Cosine";
-    else if (m_optionsMap.getOption("dist") == "CosineNorm")
-        m_dist = "CosineNorm";
-    else if (m_optionsMap.getOption("dist") == "Angular")
-        m_dist = "Angular";
+    {
+        string distOpt = m_optionsMap.getOption("dist");
+        if (!myvector_strcasecmp(distOpt.c_str(), "Cosine"))
+            m_dist = "Cosine";
+        else if (!myvector_strcasecmp(distOpt.c_str(), "CosineNorm"))
+            m_dist = "CosineNorm";
+        else if (!myvector_strcasecmp(distOpt.c_str(), "Angular"))
+            m_dist = "Angular";
+        else if (distOpt.size() && myvector_strcasecmp(distOpt.c_str(), "L2"))
+            MYVEC_LOG_ERROR(
+                "MyVector unknown dist option '%s' for index %s, using L2",
+                distOpt.c_str(), name.c_str());
+    }
 
     if (m_optionsMap.getOption("ef_search").length())
         m_ef_search = m_optionsMap.getIntOption("ef_search", m_ef_construction);
@@ -940,7 +962,11 @@ string HNSWMemoryIndex::getStatus() {
     ss << "Vector Index : " << m_name << endl;
     ss << "Type : " << m_type << endl;
     ss << "Dimension : " << m_dim << endl;
-    ss << "Distance : " << m_optionsMap.getOption("dist") << endl;
+    /* HNSW_BV always searches with Hamming distance (see getSpace()),
+     * independent of m_dist/the "dist" option -- report that, not the
+     * generic (and here misleading, since it's never actually used)
+     * m_dist default of "L2". */
+    ss << "Distance : " << (m_type == "HNSW_BV" ? "Hamming" : m_dist) << endl;
     ss << "Max. Capacity : " << m_size << endl;
     ss << "M = " << m_M << endl;
 
@@ -1303,6 +1329,25 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery,
             MYVEC_LOG_ERROR("%s.", error_msg.c_str());
             error = true;
             break;
+        }
+
+        /* dist is matched case-insensitively by the index implementations
+         * (see HNSWMemoryIndex / KNNIndex constructors); reject anything
+         * they wouldn't recognize here instead of letting it silently fall
+         * back to L2 at index-build/open time. */
+        string distOpt = vo.getOption("dist");
+        if (distOpt.length()) {
+            string distUpper = distOpt;
+            transform(distUpper.begin(), distUpper.end(), distUpper.begin(),
+                      [](unsigned char c) { return static_cast<char>(toupper(c)); });
+            if (distUpper != "L2" && distUpper != "EUCLIDEAN" &&
+                distUpper != "COSINE" && distUpper != "COSINENORM" &&
+                distUpper != "ANGULAR" && distUpper != "IP") {
+                error_msg = "MYVECTOR column dist option invalid: " + distOpt;
+                MYVEC_LOG_ERROR("%s.", error_msg.c_str());
+                error = true;
+                break;
+            }
         }
 
         size_t varblength = 0;
