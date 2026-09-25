@@ -64,6 +64,9 @@ bash scripts/smoke-readme.sh ghcr.io/askdba/myvector:mysql8.4
 ./scripts/build-component-8.4-docker.sh mysql-8.4.8 dist/component-8.4
 ./scripts/build-component-9.7-docker.sh mysql-9.7.0 dist/component-9.7
 
+# Cross-build for a different architecture (e.g. from an amd64 host):
+DOCKER_PLATFORM=linux/arm64 ./scripts/build-component-8.4-docker.sh mysql-8.4.8 dist/component-8.4
+
 # Run full pre-release suite (both versions):
 ./scripts/pre-release-test.sh
 
@@ -153,6 +156,10 @@ Workflows under `.github/workflows/`:
 - **docker-publish.yml** — builds and pushes multi-arch Docker images; `workflow_dispatch` only, started by `release.yml` on `v*` tags (dispatching on a non-version ref is refused by its guard)
 - **linter.yml** — actionlint only (no super-linter); see lessons below
 - **release.yml** — release automation
+- **pre-release-gate.yml** — runs `scripts/pre-release-test.sh` (Phase 1 smoke, Phase 2 RFC-004/edge cases, Phase 3 lifecycle regression) against a freshly built component per MySQL version, on push/PR to `main` touching `src/`, `include/`, `sql/`, or the build scripts; non-blocking, catches regressions before a release tag instead of only at manual pre-release-gate time
+- **myvectorbench.yml** — runs the ANN benchmark (`scripts/myvectorbench.py`) on `v*` tags, or manually via `workflow_dispatch`
+- **deploy-docs.yml** — builds the MkDocs Material site and deploys it to GitHub Pages on push to `main` touching `docs/**` or `mkdocs.yml`
+- **benchmark-issue79.yml** — legacy, scoped to the old `fix/issue-79` branch only; not part of the general CI surface
 
 After a release tag, follow `release/POST_RC_DOCKER_SMOKE_PLAN.md` and record results in the corresponding `release/RC*_STATUS_*.md` file.
 
