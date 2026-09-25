@@ -25,6 +25,14 @@ workload:
   knn_queries: 200
   knn_ann_queries: 200
   recall_queries: 50
+  # ann-benchmarks-style recall/throughput tradeoff sweep (myvector#131).
+  # Only meaningful on cells where MYVECTOR_IS_ANN's query rewrite is active
+  # (plugin cells today; see #144 for the component-side gap) -- skipped
+  # elsewhere. Kept on the fast synthetic dataset for CI; point `dataset` at
+  # glove50/glove300 above for a sweep against a real dataset with ground
+  # truth instead.
+  ef_search_sweep: [10, 20, 50, 100, 200]
+  ef_search_sweep_queries: 50
 
 thresholds:
   index_build_time_s: +25%
