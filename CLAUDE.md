@@ -40,6 +40,8 @@ mysql -u root -p < sql/install_functions.sql
 
 Integration tests run against a live MySQL server. There is no unit test runner — correctness is validated through SQL smoke tests.
 
+See docs/DEV_TEST_ENVIRONMENT.md for a from-scratch host setup.
+
 **Smoke test (Docker images from GHCR — do this after any release tag):**
 ```bash
 ./scripts/smoke-published-images.sh

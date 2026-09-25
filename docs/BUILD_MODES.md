@@ -17,6 +17,7 @@ This document describes the two build modes (plugin and component) and their beh
 | **Deactivation** | `UNINSTALL PLUGIN myvector` (drops UDFs) | `mysql < sql/myvector_uninstall_component.sql` (drops procedures/view/supplemental UDFs, then `UNINSTALL COMPONENT`) |
 | **Init timing** | Plugin load hooks | Component service init |
 | **Binlog Events** | Simple queue; no `request_shutdown()`/`clear_shutdown()` | Full shutdown/restart support via `request_shutdown()` and `clear_shutdown()` |
+| **Query rewrite** (inline `MYVECTOR(...)` DDL, `WHERE MYVECTOR_IS_ANN(...)`) | Yes | No — see issue [#144](https://github.com/askdba/myvector/issues/144) and `docs/DEV_TEST_ENVIRONMENT.md` |
 
 ## Reinstall Behavior (Going-Forward Plan)
 
