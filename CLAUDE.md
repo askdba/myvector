@@ -32,9 +32,10 @@ cppcheck --enable=warning,style,performance -I include src/
 
 **Install plugin into a running MySQL instance:**
 ```bash
-mysql -u root -p -e "INSTALL PLUGIN myvector SONAME 'myvector.so';"
-mysql -u root -p < sql/install_functions.sql
+mysql -u root -p < sql/myvectorplugin.sql
 ```
+(This does its own `INSTALL PLUGIN` plus UDF/procedure registration — don't run
+`INSTALL PLUGIN` separately first, or its own `INSTALL PLUGIN` fails as a duplicate.)
 
 ## Testing
 
