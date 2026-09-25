@@ -369,6 +369,55 @@ run_rfc004_max_dim() {
   fi
 }
 
+# Regression test for issue #130: rewriteMyVectorColumnDef() used to search
+# for the literal text "MYVECTOR(" anywhere in the query, including inside a
+# quoted string, so the README-documented
+#   wordvec VARBINARY(200) COMMENT 'MYVECTOR(type=HNSW,dim=50,size=100000)'
+# form -- already complete, valid SQL on its own -- was mistaken for the
+# inline MYVECTOR(...) DDL annotation and mangled into invalid SQL
+# (ERROR 1064). Same MySQL 9.0+ / query-rewrite-service gate as
+# run_rfc004_max_dim above; this uses the same control DDL to detect it.
+run_ddl_rewrite_comment_string() {
+  local VER="$1"
+  echo "  [Issue #130] MYVECTOR( inside a COMMENT string literal is left alone"
+
+  CONTROL_CREATE=$(mq -D prerel -e "
+    DROP TABLE IF EXISTS ddl_ctrl_t;
+    CREATE TABLE ddl_ctrl_t (
+      id  INT PRIMARY KEY,
+      vec MYVECTOR(type=hnsw,dim=3,size=10,m=16,ef=50,idcol=id,dist=L2)
+    );" 2>&1 || true)
+  if echo "$CONTROL_CREATE" | grep -qiE "ERROR"; then
+    skip "MYVECTOR DDL rewrite not available on MySQL $VER component (see run_rfc004_max_dim); issue #130 regression test skipped"
+    return 0
+  fi
+  mq -D prerel -e "DROP TABLE IF EXISTS ddl_ctrl_t;" 2>/dev/null || true
+
+  # The exact issue #130 repro.
+  CREATE_COMMENT_FORM=$(mq -D prerel -e "
+    DROP TABLE IF EXISTS ddl_comment_t;
+    CREATE TABLE ddl_comment_t (
+      id  INT PRIMARY KEY,
+      v VARBINARY(64) COMMENT 'MYVECTOR(type=HNSW,dim=3,size=100)'
+    );" 2>&1 || true)
+  if echo "$CREATE_COMMENT_FORM" | grep -qiE "ERROR"; then
+    fail "issue #130: README's VARBINARY(...) COMMENT 'MYVECTOR(...)' form was rejected: $CREATE_COMMENT_FORM"
+    return 0
+  fi
+
+  COMMENT_AFTER=$(mq -D prerel -N -e "
+    SELECT column_comment FROM information_schema.columns
+    WHERE table_schema='prerel' AND table_name='ddl_comment_t' AND column_name='v';
+  " 2>/dev/null)
+  if [[ "$COMMENT_AFTER" == "MYVECTOR(type=HNSW,dim=3,size=100)" ]]; then
+    pass "issue #130: COMMENT-string MYVECTOR(...) left untouched, not mistaken for the DDL annotation"
+  else
+    fail "issue #130: COMMENT-string MYVECTOR(...) was mangled by the rewrite (got: '$COMMENT_AFTER')"
+  fi
+
+  mq -D prerel -e "DROP TABLE IF EXISTS ddl_comment_t;" 2>/dev/null || true
+}
+
 run_rfc004_crash_injection() {
   echo "  [RFC-004] Crash injection"
   # Detect debug build: SET SESSION debug='' succeeds only in debug builds
@@ -610,6 +659,7 @@ for VER in "${VERSIONS[@]}"; do
 
   run_rfc004_zero_vector
   run_rfc004_max_dim "$VER"
+  run_ddl_rewrite_comment_string "$VER"
   run_index_type_check
   run_dist_case_insensitive "$VER"
   run_index_save_failure_check

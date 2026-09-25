@@ -1256,6 +1256,47 @@ extern ulong myvector_max_vector_dim;  // defined in myvector_component_config.c
 ulong myvector_max_vector_dim = 4096;
 #endif
 
+/* findUnquotedMyVectorColumn() - find the first *unquoted* occurrence of
+ * MYVECTOR_COLUMN_A ("MYVECTOR(") in a SQL statement: scans left to right,
+ * tracking single-quote ('...'), double-quote ("...") and backtick (`...`)
+ * delimited regions -- doubling the quote char ('' / "" / ``) is the escape
+ * form inside all three, and a backslash also escapes the next char inside
+ * '...'/"..." per MySQL's default sql_mode -- and only matches outside all
+ * of them.
+ *
+ * Without this, a literal "MYVECTOR(" typed inside a quoted string, e.g.
+ * the documented `wordvec VARBINARY(200) COMMENT 'MYVECTOR(type=HNSW,...)'`
+ * column form (README.md), is mistaken for the inline MYVECTOR(...) DDL
+ * annotation and rewritten into invalid SQL (ERROR 1064). See issue #130.
+ */
+static size_t findUnquotedMyVectorColumn(const string& s) {
+    char inQuote = '\0';  // '\0' = not inside a quoted region, else the opening quote char
+    for (size_t i = 0; i < s.size(); i++) {
+        char c = s[i];
+        if (inQuote) {
+            if (c == '\\' && inQuote != '`' && i + 1 < s.size()) {
+                i++;  // backslash-escaped char inside '...' / "..." -- skip it too
+                continue;
+            }
+            if (c == inQuote) {
+                if (i + 1 < s.size() && s[i + 1] == inQuote) {
+                    i++;  // doubled quote char ('' / "" / ``) -- still inside the region
+                    continue;
+                }
+                inQuote = '\0';  // end of quoted region
+            }
+            continue;
+        }
+        if (c == '\'' || c == '"' || c == '`') {
+            inQuote = c;
+            continue;
+        }
+        if (s.compare(i, MYVECTOR_COLUMN_A.length(), MYVECTOR_COLUMN_A) == 0)
+            return i;
+    }
+    return string::npos;
+}
+
 /* rewriteMyVectorColumnDef() - rewrite the MYVECTOR(...) annotation in
  * CREATE TABLE & ALTER TABLE.
  */
@@ -1266,7 +1307,7 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery,
     bool error = false;
 
     newQuery = query;
-    while ((pos = newQuery.find(MYVECTOR_COLUMN_A)) != string::npos) {
+    while ((pos = findUnquotedMyVectorColumn(newQuery)) != string::npos) {
         size_t spos = pos + MYVECTOR_COLUMN_A.length();
         size_t epos = newQuery.find_first_of(')', pos);
 
