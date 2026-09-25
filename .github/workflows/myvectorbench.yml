@@ -350,6 +350,24 @@ jobs:
           if [ -f compare-output.txt ]; then
             cat compare-output.txt >> "$GITHUB_STEP_SUMMARY"
           fi
+          # ef_search_sweep isn't a threshold-gated metric (myvectorbench-compare.py
+          # doesn't touch it), so it never appears in compare-output.txt -- render it
+          # here directly from result.json, same as the no-baseline path below.
+          python3 -c "
+          import json
+          r = json.load(open('result.json'))
+          sweep = r.get('metrics', {}).get('ef_search_sweep')
+          if sweep:
+              print()
+              print('### ef_search sweep (recall / throughput tradeoff)')
+              print()
+              print('| ef_search | recall@10 | QPS | p50 (ms) | p99 (ms) |')
+              print('|-----------|-----------|-----|----------|----------|')
+              for pt in sweep:
+                  r10 = pt['recall_at_10']
+                  r10s = f'{r10:.3f}' if r10 is not None else 'N/A'
+                  print(f'| {pt[\"ef_search\"]} | {r10s} | {pt[\"qps\"]:.0f} | {pt[\"p50_ms\"]:.1f} | {pt[\"p99_ms\"]:.1f} |')
+          " >> "$GITHUB_STEP_SUMMARY"
 
       - name: Post job summary (no baseline)
         if: >
@@ -366,10 +384,21 @@ jobs:
           import json, sys
           r = json.load(open('result.json'))
           m = r.get('metrics', {})
+          sweep = m.pop('ef_search_sweep', None)
           print('| Metric | Value |')
           print('|--------|-------|')
           for k, v in m.items():
               print(f'| {k} | {v if v is not None else \"N/A\"} |')
+          if sweep:
+              print()
+              print('### ef_search sweep (recall / throughput tradeoff)')
+              print()
+              print('| ef_search | recall@10 | QPS | p50 (ms) | p99 (ms) |')
+              print('|-----------|-----------|-----|----------|----------|')
+              for pt in sweep:
+                  r10 = pt['recall_at_10']
+                  r10s = f'{r10:.3f}' if r10 is not None else 'N/A'
+                  print(f'| {pt[\"ef_search\"]} | {r10s} | {pt[\"qps\"]:.0f} | {pt[\"p50_ms\"]:.1f} | {pt[\"p99_ms\"]:.1f} |')
           "
           } >> "$GITHUB_STEP_SUMMARY"
 
