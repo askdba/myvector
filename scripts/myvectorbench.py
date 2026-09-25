@@ -163,6 +163,48 @@ class Container:
             for i in range(len(queries))
         ]
 
+    def sql_batch_results(self, queries: list, db: str = "") -> list:
+        """Run many one-shot SQL statements over a single persistent mysql
+        client session (one docker exec, not one per query) and return each
+        statement's own output as a separate list of lines.
+
+        Same per-query-exec-overhead motivation as sql_batch_timed(), but for
+        callers that need the actual result set (e.g. computing recall)
+        rather than just timing. A sentinel SELECT after each query marks
+        where one result block ends and the next begins.
+        """
+        sentinel = "___MYVECTORBENCH_QEND___"
+        script_lines = []
+        for q in queries:
+            q = q.rstrip()
+            if not q.endswith(";"):
+                q += ";"
+            script_lines.append(q)
+            script_lines.append(f"SELECT '{sentinel}';")
+        script = "\n".join(script_lines) + "\n"
+
+        r = subprocess.run(self._base_cmd(db, interactive=True),
+                           input=script.encode(), capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"SQL batch failed (rc={r.returncode}): {r.stderr.decode().strip()}")
+
+        blocks = []
+        current: list = []
+        for line in r.stdout.decode().splitlines():
+            if line.strip() == sentinel:
+                blocks.append(current)
+                current = []
+            else:
+                current.append(line)
+
+        if len(blocks) != len(queries):
+            raise RuntimeError(
+                f"SQL batch result mismatch: expected {len(queries)} blocks, found "
+                f"{len(blocks)} -- a query's own output may have collided with the "
+                f"sentinel, or the batch didn't run to completion"
+            )
+        return blocks
+
     def scalar(self, sql: str, db: str = "") -> str:
         """Return last non-empty line of sql() output."""
         out = self.sql(sql, db).strip()
@@ -726,29 +768,32 @@ def bench_recall(container: Container, vectors: list, wp: dict) -> dict:
     rng = random.Random(42)
     query_vectors = [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n_queries)]
 
+    # Ground truth: brute-force top-10 by distance, and the ANN top-10 via
+    # query rewrite, each batched over a single persistent session (not one
+    # docker exec per query -- same motivation as sql_batch_timed/#124).
+    knn_queries = [
+        f"SELECT id FROM bench.build_t"
+        f" ORDER BY myvector_distance(vec, {_vec_literal(q)}, 'L2') LIMIT 10;"
+        for q in query_vectors
+    ]
+    ann_queries = [
+        f"SELECT id FROM bench.build_t"
+        f" WHERE MYVECTOR_IS_ANN('bench.build_t.vec', 'id', {_vec_literal(q)})"
+        f" ORDER BY myvector_row_distance(id) LIMIT 10;"
+        for q in query_vectors
+    ]
+    knn_blocks = container.sql_batch_results(knn_queries)
+    ann_blocks = container.sql_batch_results(ann_queries)
+
     recalls = []
-    for q in query_vectors:
-        # Ground truth: brute-force top-10 by distance.
-        knn_sql = (
-            f"SELECT id FROM bench.build_t"
-            f" ORDER BY myvector_distance(vec, {_vec_literal(q)}, 'L2') LIMIT 10;"
-        )
-        knn_out = container.sql(knn_sql)
-        knn_ids = {
-            int(line) for line in knn_out.strip().splitlines()[1:] if line.strip()
-        }
-
-        # ANN top-10 via query rewrite.
-        ann_sql = (
-            f"SELECT id FROM bench.build_t"
-            f" WHERE MYVECTOR_IS_ANN('bench.build_t.vec', 'id', {_vec_literal(q)})"
-            f" ORDER BY myvector_row_distance(id) LIMIT 10;"
-        )
-        ann_out = container.sql(ann_sql)
-        ann_ids = {
-            int(line) for line in ann_out.strip().splitlines()[1:] if line.strip()
-        }
-
+    for knn_block, ann_block in zip(knn_blocks, ann_blocks):
+        # mysql --batch --silent prints no column-header row (verified
+        # empirically), just the raw values -- no line to skip here. The
+        # pre-batching version of this function used to skip line 1 assuming
+        # a header was present, which silently dropped each set's true first
+        # id and computed recall over 9-vs-9 candidates instead of 10-vs-10.
+        knn_ids = {int(line) for line in knn_block if line.strip()}
+        ann_ids = {int(line) for line in ann_block if line.strip()}
         if knn_ids:
             recalls.append(len(knn_ids & ann_ids) / len(knn_ids))
 
@@ -756,6 +801,96 @@ def bench_recall(container: Container, vectors: list, wp: dict) -> dict:
     if recall is not None:
         print(f"    recall_at_10={recall:.3f}")
     return {"recall_at_10": recall}
+
+
+def bench_ef_search_sweep(container: Container, vectors: list, wp: dict) -> dict:
+    """Sweep ef_search and record recall@10 + QPS/latency at each point
+    (ann-benchmarks style), so the actual accuracy/throughput tradeoff --
+    not just whatever ef_search the index happened to build with -- is
+    visible and comparable across runs and datasets (myvector#131).
+
+    Returns {"ef_search_sweep": []} when no sweep is configured
+    (wp['ef_search_sweep'] empty/absent) or MYVECTOR_IS_ANN is inactive
+    (same probe used by bench_knn_ann/bench_recall).
+    """
+    sweep_points = wp.get('ef_search_sweep') or []
+    if not sweep_points:
+        return {"ef_search_sweep": []}
+
+    n_queries = min(wp.get('ef_search_sweep_queries', 50), len(vectors))
+    print(f"  [ef_search_sweep] ef_search={sweep_points} x {n_queries} queries, dim={wp['dim']}")
+
+    probe_supported = True
+    probe_vec = "[" + ",".join(["0.0"] * wp['dim']) + "]"
+    try:
+        container.sql(
+            f"SELECT MYVECTOR_IS_ANN('bench.build_t.vec', 'id',"
+            f" myvector_construct('{probe_vec}'))"
+            f" FROM bench.build_t LIMIT 0;",
+            db="bench",
+        )
+    except RuntimeError as e:
+        if "does not exist" in str(e) and "FUNCTION" in str(e):
+            probe_supported = False
+
+    if not probe_supported:
+        print("    ⚠ MYVECTOR_IS_ANN not supported — ef_search_sweep skipped")
+        return {"ef_search_sweep": []}
+
+    # Same query sample at every sweep point, so points are directly
+    # comparable to each other and not just to their own sampling noise.
+    rng = random.Random(55)
+    query_vectors = [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n_queries)]
+
+    # Ground truth (brute-force top-10) doesn't depend on ef_search; compute
+    # once and reuse across every sweep point.
+    knn_queries = [
+        f"SELECT id FROM bench.build_t"
+        f" ORDER BY myvector_distance(vec, {_vec_literal(q)}, 'L2') LIMIT 10;"
+        for q in query_vectors
+    ]
+    knn_blocks = container.sql_batch_results(knn_queries)
+    # mysql --batch --silent prints no column-header row; nothing to skip.
+    ground_truth = [
+        {int(line) for line in block if line.strip()} for block in knn_blocks
+    ]
+
+    sweep = []
+    for ef in sweep_points:
+        opts = f"nn=10,ef_search={ef}"
+        ann_queries = [
+            f"SELECT id FROM bench.build_t"
+            f" WHERE MYVECTOR_IS_ANN('bench.build_t.vec', 'id', {_vec_literal(q)}, '{opts}')"
+            f" ORDER BY myvector_row_distance(id) LIMIT 10;"
+            for q in query_vectors
+        ]
+
+        ann_blocks = container.sql_batch_results(ann_queries)
+        recalls = []
+        for truth, block in zip(ground_truth, ann_blocks):
+            ann_ids = {int(line) for line in block if line.strip()}
+            if truth:
+                recalls.append(len(truth & ann_ids) / len(truth))
+        recall = sum(recalls) / len(recalls) if recalls else None
+
+        latencies_ms = container.sql_batch_timed(ann_queries)
+        latencies_ms.sort()
+        p50 = statistics.median(latencies_ms)
+        p99 = latencies_ms[max(0, math.ceil(len(latencies_ms) * 0.99) - 1)]
+        qps = n_queries / (sum(latencies_ms) / 1000) if latencies_ms else 0.0
+
+        sweep.append({
+            "ef_search": ef,
+            "recall_at_10": recall,
+            "qps": qps,
+            "p50_ms": p50,
+            "p99_ms": p99,
+        })
+        recall_str = f"{recall:.3f}" if recall is not None else "N/A"
+        print(f"    ef_search={ef:<4} recall@10={recall_str}  qps={qps:.0f}  "
+              f"p50={p50:.1f}ms  p99={p99:.1f}ms")
+
+    return {"ef_search_sweep": sweep}
 
 
 def run_workloads(container: Container, vectors: list, wp: dict,
@@ -767,6 +902,7 @@ def run_workloads(container: Container, vectors: list, wp: dict,
     metrics.update(bench_knn_search(container, vectors, wp))
     metrics.update(bench_knn_ann(container, vectors, wp, ann_gate=ann_gate))
     metrics.update(bench_recall(container, vectors, wp))
+    metrics.update(bench_ef_search_sweep(container, vectors, wp))
     return metrics
 
 
