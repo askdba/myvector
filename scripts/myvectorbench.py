@@ -741,8 +741,10 @@ def bench_knn_ann(container: Container, vectors: list, wp: dict,
 def bench_recall(container: Container, vectors: list, wp: dict) -> dict:
     """Measure recall@10: fraction of true KNN top-10 found by ANN, averaged over queries.
 
-    Returns recall_at_10=None when MYVECTOR_IS_ANN is inactive (plugin path or
-    component without query rewrite service).
+    Returns recall_at_10=None when MYVECTOR_IS_ANN is inactive -- currently
+    always true on component builds (no version has the query-rewrite
+    service compiled in; see #144), and not expected on plugin builds
+    (verified active there this session).
     """
     n_queries = min(wp.get('recall_queries', 50), len(vectors))
     print(f"  [recall] {n_queries} queries, dim={wp['dim']}")
@@ -865,6 +867,11 @@ def bench_ef_search_sweep(container: Container, vectors: list, wp: dict) -> dict
             for q in query_vectors
         ]
 
+        # Two separate batched passes over the same ann_queries -- one for
+        # results (recall), one for timing (QPS/latency) -- rather than one
+        # combined pass, since HNSW search is deterministic for a fixed
+        # graph/ef_search (no randomness at query time), so this costs one
+        # extra docker exec per sweep point but not a different answer.
         ann_blocks = container.sql_batch_results(ann_queries)
         recalls = []
         for truth, block in zip(ground_truth, ann_blocks):
