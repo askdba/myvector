@@ -4,6 +4,9 @@
 #include "myvector.h"
 #include "myvector_binlog_service.h"
 #include "myvector_udf_service.h"
+#ifdef MYVECTOR_HAS_EVENT_TRACKING_PARSE_SERVICE
+#include <mysql/components/util/event_tracking/event_tracking_parse_consumer_helper.h>
+#endif
 
 /* Required services: populated by framework when component loads */
 REQUIRES_SERVICE_PLACEHOLDER(udf_registration);
@@ -66,8 +69,14 @@ static int myvector_component_deinit() {
   return ret;
 }
 
-/* Component provides no external services (UDF registration is internal) */
+/* Component provides the Event Tracking Parse service (pre-parse query
+ * rewrite: inline MYVECTOR(...) DDL, MYVECTOR_IS_ANN) when the running
+ * MySQL version has it -- see myvector_query_rewrite_service.cc and
+ * myvector#144. UDF registration is internal, not a provided service. */
 BEGIN_COMPONENT_PROVIDES(myvector)
+#ifdef MYVECTOR_HAS_EVENT_TRACKING_PARSE_SERVICE
+PROVIDES_SERVICE_EVENT_TRACKING_PARSE(myvector_event_tracking_parse),
+#endif
 END_COMPONENT_PROVIDES();
 
 /* Dependencies */
