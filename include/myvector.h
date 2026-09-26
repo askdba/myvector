@@ -26,6 +26,7 @@
 
 #define MYVECTOR_PLUGIN_VERSION "1.0.2-rc3"
 
+#include <limits>
 #include <map>
 #include <mutex>
 #include <shared_mutex>
@@ -61,7 +62,7 @@ typedef void* VectorPtr;
 /* parseKeyList - parse a list of row keys, as returned by e.g.
  * JSON_ARRAYAGG(id) ("[1, 2, 3]"), into 'keys'. Brackets, commas, spaces and
  * double quotes are separators. Returns false on any other character
- * (e.g. a negative or non-integer key).
+ * (e.g. a negative or non-integer key) or a key too large for KeyTypeInteger.
  */
 inline bool parseKeyList(const char* s,
                          size_t len,
@@ -71,7 +72,10 @@ inline bool parseKeyList(const char* s,
     for (size_t i = 0; i < len; i++) {
         char c = s[i];
         if (c >= '0' && c <= '9') {
-            cur = cur * 10 + (c - '0');
+            KeyTypeInteger d = (KeyTypeInteger)(c - '0');
+            if (cur > (std::numeric_limits<KeyTypeInteger>::max() - d) / 10)
+                return false;  /// key does not fit in KeyTypeInteger
+            cur = cur * 10 + d;
             indigit = true;
         } else if (c == '[' || c == ']' || c == ',' || c == ' ' || c == '"' ||
                    c == '\t' || c == '\n' || c == '\r') {

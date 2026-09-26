@@ -1019,7 +1019,10 @@ bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec,
 
     auto* disk_hnsw =
         dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw);
-    if (allowed && disk_hnsw &&
+    /* HNSW_BV stores dim/8 bytes per vector, so it cannot be read back as
+     * FP32 values: it always takes the graph path below.
+     */
+    if (allowed && disk_hnsw && m_type == "HNSW" &&
         allowed->size() <= MYVECTOR_FILTER_EXACT_THRESHOLD) {
         /* Few allowed rows: an exact scan over just those rows is cheap, and
          * a graph walk that must skip most nodes loses recall.

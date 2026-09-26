@@ -26,6 +26,7 @@ Exit 0 = pass, 1 = fail.
 import argparse
 import os
 import random
+import re
 import subprocess
 import sys
 import time
@@ -122,6 +123,17 @@ def install_component(srv, component_dir):
             f"chown mysql:mysql {path}"])
 
 
+def check_index_type(srv, index, expected, failures):
+    """Fail if the index was built as another type (e.g. a silent KNN fallback),
+    which would test the wrong search path."""
+    status = srv.sql(f"CALL mysql.myvector_index_status('{index}');")[0][0]
+    m = re.search(r"Type : (\w+)", status.replace("\\n", "\n"))
+    got = m.group(1) if m else "?"
+    print(f"index type {index}: {got}")
+    if got != expected:
+        failures.append(f"{index}: index type {got}, expected {expected}")
+
+
 def vec_literal(v):
     return "'[" + ",".join(f"{x:.5f}" for x in v) + "]'"
 
@@ -150,10 +162,11 @@ def main():
         if component:
             install_component(srv, args.component_dir)
             # No DDL rewrite on components: declare the index in a comment.
+            # Keep the comment on one line: a line break after "MYVECTOR
+            # COLUMN" loses the type option and silently builds a KNN index.
             srv.sql(f"""CREATE TABLE t (id INT PRIMARY KEY, cat INT NOT NULL,
-                v VARBINARY({DIM * 4 + 64}) COMMENT 'MYVECTOR COLUMN
-                type=hnsw,dim={DIM},size={args.rows + 1000},m=16,ef=100,idcol=id,dist=L2'
-                );""")
+                v VARBINARY({DIM * 4 + 64}) COMMENT 'MYVECTOR COLUMN """
+                    f"""type=hnsw,dim={DIM},size={args.rows + 1000},m=16,ef=100,idcol=id,dist=L2');""")
         else:
             install_plugin(srv, args.plugin_dir)
             srv.sql(f"""CREATE TABLE t (id INT PRIMARY KEY, cat INT NOT NULL,
@@ -170,6 +183,7 @@ def main():
 
         out = srv.sql("CALL mysql.myvector_index_build('vtest.t.v','id');")
         print("index build:", out)
+        check_index_type(srv, "vtest.t.v", "HNSW", failures)
 
         filters = {
             # name: (WHERE predicate, expected path)
@@ -221,6 +235,78 @@ def main():
                 failures.append(f"{name}: recall {recall:.3f} < {args.min_recall}")
 
         q = vec_literal([rnd.uniform(-1, 1) for _ in range(DIM)])
+        # HNSW_BV (binary vectors, Hamming distance). The stored vectors are
+        # dim/8 bytes, not FP32, so this checks the filtered path reads them
+        # correctly. Hamming distances are computed here from the same bytes.
+        bv_dim = 64
+        bv_rows = 5000
+        if component:
+            srv.sql(f"""CREATE TABLE tb (id INT PRIMARY KEY, cat INT NOT NULL,
+                v VARBINARY({bv_dim // 8 + 64}) COMMENT 'MYVECTOR COLUMN """
+                    f"""type=hnsw_bv,dim={bv_dim},size={bv_rows + 1000},m=16,ef=100,idcol=id');""")
+        else:
+            srv.sql(f"""CREATE TABLE tb (id INT PRIMARY KEY, cat INT NOT NULL,
+                v MYVECTOR(type=HNSW_BV,dim={bv_dim},size={bv_rows + 1000},M=16,ef=100));""")
+
+        def rand_bytes():
+            return [rnd.randrange(256) for _ in range(bv_dim // 8)]
+
+        def bv_literal(b):
+            # 'i=string,o=bv' takes one byte value (0-255) per 8 dimensions.
+            return "'[" + ",".join(map(str, b)) + "]'"
+
+        def hamming(a, b):
+            return sum(bin(x ^ y).count("1") for x, y in zip(a, b))
+
+        bvecs = {}
+        batch = []
+        for i in range(1, bv_rows + 1):
+            bvecs[i] = rand_bytes()
+            batch.append(f"({i},{i % 1000},myvector_construct("
+                         f"{bv_literal(bvecs[i])},'i=string,o=bv'))")
+            if len(batch) == 1000:
+                srv.sql("INSERT INTO tb VALUES " + ",".join(batch) + ";")
+                batch = []
+        print("bv index build:",
+              srv.sql("CALL mysql.myvector_index_build('vtest.tb.v','id');"))
+        check_index_type(srv, "vtest.tb.v", "HNSW_BV", failures)
+        bv_filters = {
+            "bv 0.1%": lambda i: i % 1000 == 7,
+            "bv 10%": lambda i: i % 1000 < 100,
+            "bv 90%": lambda i: i % 1000 >= 100,
+        }
+        bv_preds = {"bv 0.1%": "cat = 7", "bv 10%": "cat < 100",
+                    "bv 90%": "cat >= 100"}
+        for name, allowed_fn in bv_filters.items():
+            pred = bv_preds[name]
+            allowed = [i for i in bvecs if allowed_fn(i)]
+            hits = total = 0
+            for _ in range(args.queries):
+                qb = rand_bytes()
+                r = srv.sql(f"""
+                    SET @q = myvector_construct({bv_literal(qb)}, 'i=string,o=bv');
+                    SELECT myvector_ann_set('vtest.tb.v', 'id', @q, 'nn={K}',
+                      (SELECT JSON_ARRAYAGG(id) FROM tb WHERE {pred}));""")
+                ids = [int(x) for x in r[0][0].strip("[]").split(",") if x]
+                expect_n = min(K, len(allowed))
+                if len(ids) != expect_n:
+                    failures.append(f"{name}: got {len(ids)} rows, "
+                                    f"expected {expect_n}")
+                outside = [i for i in ids if not allowed_fn(i)]
+                if outside:
+                    failures.append(f"{name}: {len(outside)} rows fail the filter")
+                # Hamming distances tie often: a returned row counts as a hit
+                # if it is no farther than the k-th exact distance.
+                exact = sorted(hamming(qb, bvecs[i]) for i in allowed)[:K]
+                kth = exact[-1] if exact else 0
+                hits += sum(1 for i in ids
+                            if allowed_fn(i) and hamming(qb, bvecs[i]) <= kth)
+                total += len(exact)
+            recall = hits / total if total else 1.0
+            print(f"{name:20s} matching={len(allowed):6d} recall@{K}={recall:.3f}")
+            if recall < args.min_recall:
+                failures.append(f"{name}: recall {recall:.3f} < {args.min_recall}")
+
         # MYVECTOR_IS_ANN with a bare integer k (plugin only: the rewrite
         # turns k into 'nn=k'), without and with a filter.
         bare_k = {
