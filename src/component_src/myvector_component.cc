@@ -69,6 +69,17 @@ static int myvector_component_deinit() {
   return ret;
 }
 
+/* Defines the service-implementation struct (a plain global, named by
+ * SERVICE_IMPLEMENTATION(component, service)) that
+ * PROVIDES_SERVICE_EVENT_TRACKING_PARSE below takes the address of -- must
+ * be in the same translation unit as that reference. The actual rewrite
+ * logic (Event_tracking_parse_implementation::callback/filtered_sub_events)
+ * lives in myvector_query_rewrite_service.cc; this just wires it up as the
+ * component's provided service. */
+#ifdef MYVECTOR_HAS_EVENT_TRACKING_PARSE_SERVICE
+IMPLEMENTS_SERVICE_EVENT_TRACKING_PARSE(myvector_event_tracking_parse);
+#endif
+
 /* Component provides the Event Tracking Parse service (pre-parse query
  * rewrite: inline MYVECTOR(...) DDL, MYVECTOR_IS_ANN) when the running
  * MySQL version has it -- see myvector_query_rewrite_service.cc and

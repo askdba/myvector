@@ -36,6 +36,7 @@
 #include <string>
 
 #include "my_inttypes.h"
+#include "my_sys.h"  /* MY_WME */
 #include "myvector.h"
 
 extern bool myvector_query_rewrite(const std::string& original_query,
@@ -73,4 +74,13 @@ bool Event_tracking_parse_implementation::callback(
 
 }  // namespace Event_tracking_implementation
 
-IMPLEMENTS_SERVICE_EVENT_TRACKING_PARSE(myvector_event_tracking_parse);
+/* IMPLEMENTS_SERVICE_EVENT_TRACKING_PARSE(myvector_event_tracking_parse) --
+ * i.e. the definition of the service-implementation struct this callback
+ * backs -- lives in myvector_component.cc, in the same translation unit as
+ * the BEGIN_COMPONENT_PROVIDES block that takes its address via
+ * PROVIDES_SERVICE_EVENT_TRACKING_PARSE. A plain `extern` declaration here
+ * would work too, but MySQL's own documented consumer example
+ * (event_tracking_parse_consumer_helper.h) keeps callback logic and the
+ * component's service-provides wiring in one file; splitting them still
+ * needs the IMPLEMENTS_SERVICE_* macro co-located with its use, so it's
+ * only the callback/filter definitions that live here. */
