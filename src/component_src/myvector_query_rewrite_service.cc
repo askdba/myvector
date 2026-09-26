@@ -27,6 +27,20 @@
  * pattern: include/mysql/components/util/event_tracking/
  * event_tracking_parse_consumer_helper.h (see the
  * EVENT_TRACKING_PARSE_CONSUMER_EXAMPLE in its header comment).
+ *
+ * KNOWN LIMITATION (myvector#155): once this service is registered,
+ * `UNINSTALL COMPONENT` fails with ERROR 3540 ("Unregistration of service
+ * implementation ... failed") whenever any `online=Y` index exists -- i.e.
+ * whenever the binlog listener (myvector_binlog_service.cc) has an active
+ * "Binlog Dump" replication connection open, even if it has never
+ * processed a real event. The binlog listener's own shutdown path is
+ * correct (mysql_binlog_close()+mysql_close() on every exit path,
+ * synchronously joined before deinit returns) -- this looks like a gap in
+ * how MySQL's replication-thread lifecycle interacts with the Event
+ * Tracking service registry's reference counting, not a bug in the
+ * shutdown sequence here. See #155 for the full investigation, ruled-out
+ * causes, and next steps. Workaround: DROP online=Y indexes before
+ * UNINSTALL COMPONENT.
  */
 #include <mysql/components/component_implementation.h>
 #include <mysql/components/util/event_tracking/event_tracking_parse_consumer_helper.h>
