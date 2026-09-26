@@ -26,11 +26,13 @@
 
 #define MYVECTOR_PLUGIN_VERSION "1.0.2-rc3"
 
+#include <limits>
 #include <map>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 bool myvector_query_rewrite(const std::string& query,
@@ -56,6 +58,39 @@ typedef size_t KeyTypeInteger;
 typedef float FP32;
 
 typedef void* VectorPtr;
+
+/* parseKeyList - parse a list of row keys, as returned by e.g.
+ * JSON_ARRAYAGG(id) ("[1, 2, 3]"), into 'keys'. Brackets, commas, spaces and
+ * double quotes are separators. Returns false on any other character
+ * (e.g. a negative or non-integer key) or a key too large for KeyTypeInteger.
+ */
+inline bool parseKeyList(const char* s,
+                         size_t len,
+                         std::unordered_set<KeyTypeInteger>& keys) {
+    KeyTypeInteger cur = 0;
+    bool indigit = false;
+    for (size_t i = 0; i < len; i++) {
+        char c = s[i];
+        if (c >= '0' && c <= '9') {
+            KeyTypeInteger d = (KeyTypeInteger)(c - '0');
+            if (cur > (std::numeric_limits<KeyTypeInteger>::max() - d) / 10)
+                return false;  /// key does not fit in KeyTypeInteger
+            cur = cur * 10 + d;
+            indigit = true;
+        } else if (c == '[' || c == ']' || c == ',' || c == ' ' || c == '"' ||
+                   c == '\t' || c == '\n' || c == '\r') {
+            if (indigit)
+                keys.insert(cur);
+            cur = 0;
+            indigit = false;
+        } else {
+            return false;
+        }
+    }
+    if (indigit)
+        keys.insert(cur);
+    return true;
+}
 
 /* using namespace std; - Removed for code quality */
 
@@ -103,11 +138,16 @@ public:
 
     virtual bool closeIndex() = 0;
 
-    /* searchVectorNN - search and return 'n' Nearest Neighbours */
-    virtual bool searchVectorNN(VectorPtr qvec,
-                                int dim,
-                                std::vector<KeyTypeInteger>& nnkeys,
-                                int n) = 0;
+    /* searchVectorNN - search and return 'n' Nearest Neighbours. If 'allowed'
+     * is not null, only rows whose key is in that set are returned (filtered
+     * search).
+     */
+    virtual bool searchVectorNN(
+        VectorPtr qvec,
+        int dim,
+        std::vector<KeyTypeInteger>& nnkeys,
+        int n,
+        const std::unordered_set<KeyTypeInteger>* allowed = nullptr) = 0;
 
     /* insertVectortor - insert a vector into the index */
     virtual bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id) = 0;

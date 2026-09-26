@@ -49,6 +49,43 @@ SELECT myvector_distance(@vec1, @vec2, 'L2');
 SELECT myvector_display(wordvec) FROM words50d LIMIT 1;
 ```
 
+## Vector Search
+
+**Nearest neighbours (ANN):** `MYVECTOR_IS_ANN(index, key column, query vector, k)`
+returns the `k` rows nearest to the query vector (plugin builds only, see
+[Known limitations](LIMITATIONS.md)).
+
+```sql
+SET @q = myvector_construct('[1.2, 3.4, 5.6]');
+SELECT id FROM t WHERE MYVECTOR_IS_ANN('db.t.v', 'id', @q, 10);
+```
+
+**Filtered search:** pass the keys of the rows that may be returned as a fifth
+argument, usually a `JSON_ARRAYAGG` subquery. The search returns the `k` nearest rows
+among those keys, so it returns `k` rows whenever at least `k` rows match.
+
+```sql
+SELECT id FROM t
+WHERE MYVECTOR_IS_ANN('db.t.v', 'id', @q, 10,
+      (SELECT JSON_ARRAYAGG(id) FROM t WHERE category = 'books'));
+```
+
+If the filter matches no rows, the result is empty. For an HNSW index with 10,000 or
+fewer matching keys, MyVector computes exact distances over just those rows. For more
+matching keys, it walks the HNSW graph and skips rows that are not in the list.
+
+Do **not** put the filter next to `MYVECTOR_IS_ANN` in the `WHERE` clause instead
+(`WHERE category = 'books' AND MYVECTOR_IS_ANN(..., 10)`). That form finds the 10
+nearest rows first and filters them afterwards, so it can return fewer than 10 rows.
+
+On component builds, which have no `MYVECTOR_IS_ANN` rewrite, call the function
+directly. It returns a JSON array of keys:
+
+```sql
+SELECT myvector_ann_set('db.t.v', 'id', @q, 'nn=10',
+       (SELECT JSON_ARRAYAGG(id) FROM t WHERE category = 'books'));
+```
+
 ## Docker Compose
 
 !!! warning "Local trial only"
