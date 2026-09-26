@@ -84,6 +84,9 @@ Update relevant documentation:
 ### 4. Check Tests
 
 ```bash
+# Run lint (and, with MYSQL_SOURCE_DIR set, the component build) before opening a PR:
+./scripts/pre-pr.sh
+
 # Build the plugin
 cd mysql-server/bld/plugin/myvector
 make
