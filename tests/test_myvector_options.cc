@@ -76,6 +76,49 @@ int main() {
         CHECK_EQ(o.getOption("type"), "KNN", "similar-looking key: type");
     }
     {
+        // #158: a line break, tab or CRLF after the prefix (a multi-line COMMENT) must
+        // parse the same as a space. It used to leave the prefix in the first key, so
+        // the type read as empty and the index silently fell back to KNN.
+        const char* forms[][2] = {
+            {"MYVECTOR COLUMN\n    type=hnsw,dim=16,idcol=id,dist=L2", "newline after prefix"},
+            {"MYVECTOR COLUMN\ttype=hnsw,dim=16,idcol=id,dist=L2", "tab after prefix"},
+            {"MYVECTOR COLUMN\r\ntype=hnsw,dim=16,idcol=id,dist=L2", "CRLF after prefix"},
+            {"\n  MYVECTOR COLUMN type=hnsw,dim=16,idcol=id,dist=L2", "leading newline"},
+            {"\t MYVECTOR COLUMN\n type=hnsw,\n dim=16,\n idcol=id,\n dist=L2\n",
+             "whitespace around every option"},
+        };
+        for (auto& f : forms) {
+            MyVectorOptions o(f[0]);
+            std::string what = f[1];
+            CHECK_TRUE(o.isValid(), (what + ": valid").c_str());
+            CHECK_EQ(o.getOption("type"), "hnsw", (what + ": type").c_str());
+            CHECK_EQ(o.getOption("dim"), "16", (what + ": dim").c_str());
+            CHECK_EQ(o.getOption("dist"), "L2", (what + ": dist").c_str());
+        }
+    }
+    {
+        // Pipe marker with a line break after it.
+        MyVectorOptions o("MYVECTOR Column |\n  type=HNSW_BV,dim=64");
+        CHECK_EQ(o.getOption("type"), "HNSW_BV", "pipe marker + newline: type");
+    }
+    {
+        // The prefix must be followed by whitespace: a longer key is not truncated.
+        MyVectorOptions o("MYVECTOR COLUMNX=1,type=KNN");
+        CHECK_EQ(o.getOption("MYVECTOR COLUMNX"), "1", "MYVECTOR COLUMNX key kept whole");
+        CHECK_EQ(o.getOption("type"), "KNN", "MYVECTOR COLUMNX: type");
+    }
+    {
+        // lrtrim trims all whitespace at both ends and still collapses inner space runs.
+        CHECK_EQ(lrtrim(" \t\r\n a  b \n\t"), "a b", "lrtrim: all whitespace");
+        CHECK_EQ(lrtrim("abc"), "abc", "lrtrim: nothing to trim");
+        CHECK_EQ(lrtrim(" \n\t "), "", "lrtrim: whitespace only");
+        std::vector<std::string> parts;
+        split("test.t1,\n 'id',\n\ttest.t1.v", parts);
+        CHECK_TRUE(parts.size() == 3, "split: 3 parts");
+        CHECK_EQ(parts[1], "'id'", "split: newline before element trimmed");
+        CHECK_EQ(parts[2], "test.t1.v", "split: tab before element trimmed");
+    }
+    {
         // Malformed input is still rejected.
         MyVectorOptions o("MYVECTOR COLUMN type");
         CHECK_TRUE(!o.isValid(), "prefix then key without '=': invalid");
