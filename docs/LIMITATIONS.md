@@ -11,10 +11,12 @@ to the issue tracking it. Items marked *(untested)* are not verified by this pro
   is no ANN query path and no recall number for components. The component registers the
   `myvector_ann_set()` function, but this release does not test ANN through SQL on components
   *(untested)*.
-- **No filtered search.** There is no pre-filtering. Because the rewrite turns
-  `MYVECTOR_IS_ANN(...)` into `id IN (<k nearest ids>)`, any other predicate in the same
-  `WHERE` clause is applied to those k candidates afterwards, so a filtered query can return
-  fewer than k rows.
+- **Filtered search takes an explicit key list.** Pass the allowed keys as the fifth
+  argument, e.g. `MYVECTOR_IS_ANN(..., 10, (SELECT JSON_ARRAYAGG(id) FROM t WHERE ...))`
+  (see [Usage](usage.md#vector-search)). A predicate written *next to*
+  `MYVECTOR_IS_ANN(...)` in the same `WHERE` clause is still applied to the k results
+  afterwards, so it can return fewer than k rows. Building the key list costs one scan of
+  the matching rows, which is slow when the filter matches most of a large table.
 - **Approximate results.** HNSW is approximate: recall depends on `ef` / `ef_search`. The
   benchmark's recall@10 (0.978 on plugin 8.4) was measured on synthetic vectors at a single
   setting and is not comparable with published results (#131).

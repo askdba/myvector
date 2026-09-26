@@ -119,10 +119,14 @@ namespace myvector_component {
 // UDF: myvector_ann_set
 bool myvector_ann_set_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
     initid->ptr = nullptr;
-    if (args->arg_count < 3 || args->arg_count > 4) {
+    if (args->arg_count < 3 || args->arg_count > 5) {
         strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
         return true;  // error
     }
+
+    /* Filter key list (5th arg) is read as text, whatever its SQL type */
+    if (args->arg_count == 5)
+        args->arg_type[4] = STRING_RESULT;
 
     if (!args->args[0]) {
         snprintf(message, MYSQL_ERRMSG_SIZE, "Index column not provided");
@@ -170,8 +174,20 @@ char* myvector_ann_set(UDF_INIT* initid,
         return initid->ptr;
     }
 
-    if (args->arg_count == 4)
+    if (args->arg_count >= 4)
         searchoptions = (char*)args->args[3];
+
+    /* Optional 5th arg: keys of the rows that may be returned (filtered
+     * search). NULL (no matching rows) returns an empty set.
+     */
+    std::unordered_set<KeyTypeInteger> allowed;
+    bool filtered = (args->arg_count == 5);
+    if (filtered && args->args[4] &&
+        !parseKeyList(args->args[4], args->lengths[4], allowed)) {
+        *error = 1;
+        *is_null = 1;
+        return initid->ptr;
+    }
 
     int nn = MYVECTOR_DEFAULT_ANN_RETURN_COUNT;
     int ef_search = 0;
@@ -199,7 +215,9 @@ char* myvector_ann_set(UDF_INIT* initid,
         std::vector<KeyTypeInteger> result_keys;
         if (ef_search)
             vi->setSearchEffort(ef_search);
-        vi->searchVectorNN(searchvec, vi->getDimension(), result_keys, nn);
+        if (!filtered || !allowed.empty())
+            vi->searchVectorNN(searchvec, vi->getDimension(), result_keys, nn,
+                               filtered ? &allowed : nullptr);
 
         ss << "[";
         for (size_t i = 0; i < result_keys.size(); i++) {
