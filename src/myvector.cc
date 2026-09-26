@@ -32,6 +32,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -95,6 +96,7 @@ using std::thread;
 using std::to_string;
 using std::unique_lock;
 using std::unordered_map;
+using std::unordered_set;
 using std::vector;
 
 #include <mysql/components/component_implementation.h>
@@ -170,6 +172,11 @@ static const unsigned int MYVECTOR_COLUMN_EXTRA_LEN = 8;
 
 /* Default number of neighbours to return by myvector_ann_set() */
 static const unsigned int MYVECTOR_DEFAULT_ANN_RETURN_COUNT = 10;
+
+/* Filtered search: up to this many allowed rows, HNSW indexes compute exact
+ * distances over the allowed rows instead of walking the graph.
+ */
+static const size_t MYVECTOR_FILTER_EXACT_THRESHOLD = 10000;
 
 /* Max number of neighbours that can be retrieved in single myvector_ann_set()
  */
@@ -389,7 +396,8 @@ public:
     bool searchVectorNN(VectorPtr qvec,
                         int dim,
                         vector<KeyTypeInteger>& keys,
-                        int n);
+                        int n,
+                        const unordered_set<KeyTypeInteger>* allowed = nullptr);
     bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
 
     bool supportsIncrUpdates() { return true; }
@@ -484,14 +492,17 @@ KNNIndex::KNNIndex(const string& name, const string& options)
 bool KNNIndex::searchVectorNN(VectorPtr qvec,
                               int dim,
                               vector<KeyTypeInteger>& keys,
-                              int n) {
+                              int n,
+                              const unordered_set<KeyTypeInteger>* allowed) {
     std::shared_lock lock(search_insert_mutex_);
 
     priority_queue<pair<FP32, KeyTypeInteger>> pq;
     keys.clear();
 
     /* Use priority queue to find out 'n' neighbours with least distance */
-    for (auto row : m_vectors) {
+    for (auto& row : m_vectors) {
+        if (allowed && !allowed->count(row.second))
+            continue;
         vector<FP32>& a = row.first;
         double dist = m_distfn((FP32*)qvec, a.data(), m_dim);
 
@@ -625,7 +636,8 @@ public:
     bool searchVectorNN(VectorPtr qvec,
                         int dim,
                         vector<KeyTypeInteger>& keys,
-                        int n);
+                        int n,
+                        const unordered_set<KeyTypeInteger>* allowed = nullptr);
 
     bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
 
@@ -985,12 +997,59 @@ string HNSWMemoryIndex::getStatus() {
     return ss.str();
 }
 
+/* KeySetFilter - hnswlib filter that accepts only labels in a key set */
+class KeySetFilter : public hnswlib::BaseFilterFunctor {
+public:
+    explicit KeySetFilter(const unordered_set<KeyTypeInteger>& keys)
+        : m_keys(keys) {}
+    bool operator()(hnswlib::labeltype id) override {
+        return m_keys.count(id) != 0;
+    }
+
+private:
+    const unordered_set<KeyTypeInteger>& m_keys;
+};
+
 bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec,
                                      int dim,
                                      vector<KeyTypeInteger>& keys,
-                                     int n) {
-    priority_queue<pair<FP32, hnswlib::labeltype>> result =
-        m_alg_hnsw->searchKnn(qvec, n);
+                                     int n,
+                                     const unordered_set<KeyTypeInteger>* allowed) {
+    priority_queue<pair<FP32, hnswlib::labeltype>> result;
+
+    auto* disk_hnsw =
+        dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw);
+    /* HNSW_BV stores dim/8 bytes per vector, so it cannot be read back as
+     * FP32 values: it always takes the graph path below.
+     */
+    if (allowed && disk_hnsw && m_type == "HNSW" &&
+        allowed->size() <= MYVECTOR_FILTER_EXACT_THRESHOLD) {
+        /* Few allowed rows: an exact scan over just those rows is cheap, and
+         * a graph walk that must skip most nodes loses recall.
+         */
+        hnswlib::DISTFUNC<float> distfn = m_space->get_dist_func();
+        void* distparam = m_space->get_dist_func_param();
+        for (KeyTypeInteger key : *allowed) {
+            vector<FP32> v;
+            try {
+                v = disk_hnsw->getDataByLabel<FP32>(key);
+            } catch (const std::runtime_error&) {
+                continue;  /// key not in the index (or deleted)
+            }
+            FP32 dist = distfn(qvec, v.data(), distparam);
+            if (result.size() < (size_t)n)
+                result.push({dist, key});
+            else if (dist < result.top().first) {
+                result.pop();
+                result.push({dist, key});
+            }
+        }
+    } else if (allowed) {
+        KeySetFilter filter(*allowed);
+        result = m_alg_hnsw->searchKnn(qvec, n, &filter);
+    } else {
+        result = m_alg_hnsw->searchKnn(qvec, n);
+    }
 
     keys.clear();
     tls_distances->clear();
@@ -1460,14 +1519,15 @@ bool rewriteMyVectorIsANN(const string& query, string& newQuery) {
             break;
         }
 
-        // If last top-level arg is a bare integer k, convert to 'nn=k' options string.
-        // myvector_ann_set expects a string arg; MySQL sets lengths[n]=0 for integers,
-        // causing the options to be silently skipped and JSON_TABLE to fail.
-        // Scan for the last top-level comma (outside parens/brackets/quotes) so that
-        // vector expressions like myvector_construct('[1,2,3]') work correctly —
-        // naive annparams.size()==4 fails when the expression contains inner commas.
+        // If the 4th top-level arg (options) is a bare integer k, convert it to
+        // an 'nn=k' options string. myvector_ann_set expects a string arg; MySQL
+        // sets lengths[n]=0 for integers, causing the options to be silently
+        // skipped and JSON_TABLE to fail. Top-level commas are found outside
+        // parens/brackets/quotes so that vector expressions like
+        // myvector_construct('[1,2,3]') and a 5th filter argument such as
+        // (SELECT JSON_ARRAYAGG(id) FROM t WHERE c IN (1,2)) work correctly.
         {
-            size_t last_top_comma = string::npos;
+            vector<size_t> top_commas;
             int depth = 0;
             bool in_sq = false, in_dq = false;
             for (size_t ci = 0; ci < strparams.size(); ++ci) {
@@ -1477,20 +1537,23 @@ bool rewriteMyVectorIsANN(const string& query, string& newQuery) {
                     else if (ch == ')' || ch == ']') --depth;
                     else if (ch == '\'') in_sq = true;
                     else if (ch == '"') in_dq = true;
-                    else if (ch == ',' && depth == 0) last_top_comma = ci;
+                    else if (ch == ',' && depth == 0) top_commas.push_back(ci);
                 } else if (in_sq && ch == '\'') in_sq = false;
                 else if (in_dq && ch == '"') in_dq = false;
             }
-            if (last_top_comma != string::npos) {
-                string tail = strparams.substr(last_top_comma + 1);
-                size_t s = tail.find_first_not_of(" \t\r\n");
-                if (s != string::npos) tail = tail.substr(s);
-                size_t e = tail.find_last_not_of(" \t\r\n");
-                if (e != string::npos) tail = tail.substr(0, e + 1);
-                if (!tail.empty() &&
-                    tail.find_first_not_of("0123456789") == string::npos) {
-                    strparams = strparams.substr(0, last_top_comma + 1) +
-                                " 'nn=" + tail + "'";
+            if (top_commas.size() == 3 || top_commas.size() == 4) {
+                size_t abeg = top_commas[2] + 1;
+                size_t aend = (top_commas.size() == 4) ? top_commas[3]
+                                                       : strparams.size();
+                string arg = strparams.substr(abeg, aend - abeg);
+                size_t s = arg.find_first_not_of(" \t\r\n");
+                size_t e = arg.find_last_not_of(" \t\r\n");
+                if (s != string::npos) {
+                    arg = arg.substr(s, e - s + 1);
+                    if (arg.find_first_not_of("0123456789") == string::npos) {
+                        strparams = strparams.substr(0, abeg) + " 'nn=" + arg +
+                                    "'" + strparams.substr(aend);
+                    }
                 }
             }
         }
@@ -1640,10 +1703,14 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT* initid,
                                          UDF_ARGS* args,
                                          char* message) {
     initid->ptr = nullptr;
-    if (args->arg_count < 3 || args->arg_count > 4) {
+    if (args->arg_count < 3 || args->arg_count > 5) {
         strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
         return true;  // error
     }
+
+    /* Filter key list (5th arg) is read as text, whatever its SQL type */
+    if (args->arg_count == 5)
+        args->arg_type[4] = STRING_RESULT;
 
     char* col = args->args[0];
     AbstractVectorIndex* vi = g_indexes.get(col);
@@ -1696,8 +1763,22 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT* initid,
         return initid->ptr;
     }
 
-    if (args->arg_count == 4)
+    if (args->arg_count >= 4)
         searchoptions = args->args[3];
+
+    /* Optional 5th arg: keys of the rows that may be returned, e.g.
+     * (SELECT JSON_ARRAYAGG(id) FROM t WHERE ...). NULL (no matching rows)
+     * returns an empty set.
+     */
+    unordered_set<KeyTypeInteger> allowed;
+    bool filtered = (args->arg_count == 5);
+    if (filtered && args->args[4] &&
+        !parseKeyList(args->args[4], args->lengths[4], allowed)) {
+        *error = 1;
+        *is_null = 1;
+        *length = 0;
+        return initid->ptr;
+    }
 
     int nn = MYVECTOR_DEFAULT_ANN_RETURN_COUNT;
     int ef_search = 0;
@@ -1728,7 +1809,9 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT* initid,
         vector<KeyTypeInteger> result;
         if (ef_search)
             vi->setSearchEffort(ef_search);
-        vi->searchVectorNN(searchvec, vi->getDimension(), result, nn);
+        if (!filtered || !allowed.empty())
+            vi->searchVectorNN(searchvec, vi->getDimension(), result, nn,
+                               filtered ? &allowed : nullptr);
 
         /* simple JSON list of neighbour rows Pkid */
         ss << "[";
