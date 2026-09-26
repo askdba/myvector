@@ -10,9 +10,16 @@ random vectors, builds an HNSW index and checks that filtered ANN queries:
 Filters cover both code paths: few allowed rows (exact scan over the allowed
 rows) and many allowed rows (HNSW graph walk with a filter).
 
+Plugin builds are queried through MYVECTOR_IS_ANN. Component builds have no
+query rewrite (#144), so they are queried through myvector_ann_set directly.
+
 Usage:
   ./scripts/build-plugin-8.4-docker.sh mysql-8.4.8 dist/plugin-8.4
   python3 scripts/test-filtered-ann.py --plugin-dir dist/plugin-8.4
+
+  ./scripts/build-component-9.7-docker.sh mysql-9.7.0 dist/component-9.7
+  python3 scripts/test-filtered-ann.py --component-dir dist/component-9.7 \
+      --image mysql:9.7
 
 Exit 0 = pass, 1 = fail.
 """
@@ -39,7 +46,8 @@ class Server:
     def __init__(self, image, name):
         self.name = name
         sh(["docker", "run", "-d", "--name", name,
-            "-e", f"MYSQL_ROOT_PASSWORD={PW}", image])
+            "-e", f"MYSQL_ROOT_PASSWORD={PW}", "-e", "MYSQL_ROOT_HOST=%",
+            image])
 
     def sql(self, q, db="vtest", check=True):
         args = ["docker", "exec", "-i", self.name, "mysql", "-uroot",
@@ -83,13 +91,47 @@ def install_plugin(srv, plugin_dir):
     srv.sql("SET GLOBAL myvector_config_file='myvector.cnf';", db=None)
 
 
+def install_component(srv, component_dir):
+    # The plain mysql:<ver> image may lack libmysqlclient (see
+    # scripts/smoke-component.sh); install it from the MySQL CDN if missing.
+    sh(["docker", "exec", srv.name, "bash", "-c", """
+        ldconfig -p | grep -q libmysqlclient && exit 0
+        V=$(mysqld --version | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+' | head -1)
+        B="https://cdn.mysql.com/Downloads/MySQL-${V%.*}"; A=$(uname -m)
+        for p in common client-plugins libs; do
+          rpm -ivh --nodeps "$B/mysql-community-$p-$V-1.el9.$A.rpm" || true
+        done
+        ldconfig"""], check=False)
+    pdir = srv.sql("SELECT @@plugin_dir;", db=None)[0][0]
+    sh(["docker", "cp", os.path.join(component_dir, "libmyvector_component.so"),
+        f"{srv.name}:{pdir}/myvector.so"])
+    sh(["docker", "cp", os.path.join(component_dir, "myvector.json"),
+        f"{srv.name}:{pdir}/myvector.json"])
+    # The installer does INSTALL COMPONENT and registers the supplemental UDFs
+    # and MYVECTOR_INDEX_* procedures.
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(repo, "sql", "myvector_install_component.sql")) as f:
+        srv.sql(f.read(), db="mysql")
+    # The component reads myvector.cnf relative to mysqld's working directory.
+    datadir = srv.sql("SELECT @@datadir;", db=None)[0][0]
+    cnf = (f"myvector_host=127.0.0.1\\nmyvector_port=3306\\n"
+           f"myvector_user_id=root\\nmyvector_user_password={PW}\\n")
+    for path in (f"{datadir}myvector.cnf", "/myvector.cnf"):
+        sh(["docker", "exec", srv.name, "bash", "-c",
+            f"printf '{cnf}' > {path} && chmod 600 {path} && "
+            f"chown mysql:mysql {path}"])
+
+
 def vec_literal(v):
     return "'[" + ",".join(f"{x:.5f}" for x in v) + "]'"
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--plugin-dir", default="dist/plugin-8.4")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--plugin-dir", default="dist/plugin-8.4")
+    mode.add_argument("--component-dir",
+                      help="test a component build instead of the plugin")
     ap.add_argument("--image", default="mysql:8.4")
     ap.add_argument("--rows", type=int, default=20000)
     ap.add_argument("--queries", type=int, default=5)
@@ -104,10 +146,18 @@ def main():
     try:
         srv.wait_ready()
         srv.sql("CREATE DATABASE vtest;", db=None)
-        install_plugin(srv, args.plugin_dir)
-
-        srv.sql(f"""CREATE TABLE t (id INT PRIMARY KEY, cat INT NOT NULL,
-            v MYVECTOR(type=HNSW,dim={DIM},size={args.rows + 1000},M=16,ef=100));""")
+        component = bool(args.component_dir)
+        if component:
+            install_component(srv, args.component_dir)
+            # No DDL rewrite on components: declare the index in a comment.
+            srv.sql(f"""CREATE TABLE t (id INT PRIMARY KEY, cat INT NOT NULL,
+                v VARBINARY({DIM * 4 + 64}) COMMENT 'MYVECTOR COLUMN
+                type=hnsw,dim={DIM},size={args.rows + 1000},m=16,ef=100,idcol=id,dist=L2'
+                );""")
+        else:
+            install_plugin(srv, args.plugin_dir)
+            srv.sql(f"""CREATE TABLE t (id INT PRIMARY KEY, cat INT NOT NULL,
+                v MYVECTOR(type=HNSW,dim={DIM},size={args.rows + 1000},M=16,ef=100));""")
         batch = []
         for i in range(1, args.rows + 1):
             v = [rnd.uniform(-1, 1) for _ in range(DIM)]
@@ -133,11 +183,21 @@ def main():
             hits = total = 0
             for _ in range(args.queries):
                 q = vec_literal([rnd.uniform(-1, 1) for _ in range(DIM)])
-                ann = srv.sql(f"""
-                    SET @q = myvector_construct({q});
-                    SELECT id, cat FROM t
-                    WHERE MYVECTOR_IS_ANN('vtest.t.v', 'id', @q, 'nn={K}',
-                          (SELECT JSON_ARRAYAGG(id) FROM t WHERE {pred}));""")
+                keys = f"(SELECT JSON_ARRAYAGG(id) FROM t WHERE {pred})"
+                if component:
+                    ann = srv.sql(f"""
+                        SET @q = myvector_construct({q});
+                        SELECT myvecid FROM
+                          (SELECT myvector_ann_set('vtest.t.v', 'id', @q,
+                                  'nn={K}', {keys}) AS js) src,
+                          JSON_TABLE(src.js, '$[*]'
+                                     COLUMNS(myvecid BIGINT PATH '$')) jt;""")
+                else:
+                    ann = srv.sql(f"""
+                        SET @q = myvector_construct({q});
+                        SELECT id FROM t
+                        WHERE MYVECTOR_IS_ANN('vtest.t.v', 'id', @q, 'nn={K}',
+                              {keys});""")
                 exact = srv.sql(f"""
                     SET @q = myvector_construct({q});
                     SELECT id FROM t WHERE {pred}
@@ -160,21 +220,20 @@ def main():
             if recall < args.min_recall:
                 failures.append(f"{name}: recall {recall:.3f} < {args.min_recall}")
 
-        # Unfiltered query still works (4 args, bare integer k).
         q = vec_literal([rnd.uniform(-1, 1) for _ in range(DIM)])
-        n = len(srv.sql(f"""SET @q = myvector_construct({q});
-            SELECT id FROM t WHERE MYVECTOR_IS_ANN('vtest.t.v','id',@q,{K});"""))
-        print(f"unfiltered bare-k   rows={n}")
-        if n != K:
-            failures.append(f"unfiltered: got {n} rows, expected {K}")
-
-        # Filter with a bare integer k.
-        n = len(srv.sql(f"""SET @q = myvector_construct({q});
-            SELECT id FROM t WHERE MYVECTOR_IS_ANN('vtest.t.v','id',@q,{K},
-              (SELECT JSON_ARRAYAGG(id) FROM t WHERE cat IN (1,2)));"""))
-        print(f"filtered bare-k     rows={n}")
-        if n != K:
-            failures.append(f"filtered bare-k: got {n} rows, expected {K}")
+        # MYVECTOR_IS_ANN with a bare integer k (plugin only: the rewrite
+        # turns k into 'nn=k'), without and with a filter.
+        bare_k = {
+            "unfiltered bare-k": "",
+            "filtered bare-k": ", (SELECT JSON_ARRAYAGG(id) FROM t WHERE cat IN (1,2))",
+        }
+        for name, extra in ({} if component else bare_k).items():
+            n = len(srv.sql(f"""SET @q = myvector_construct({q});
+                SELECT id FROM t
+                WHERE MYVECTOR_IS_ANN('vtest.t.v','id',@q,{K}{extra});"""))
+            print(f"{name:20s} rows={n}")
+            if n != K:
+                failures.append(f"{name}: got {n} rows, expected {K}")
 
         # Direct UDF call (works on component builds too).
         r = srv.sql(f"""SET @q = myvector_construct({q});
