@@ -105,7 +105,14 @@ if(DEFINED BOOST_INCLUDE_DIR)
 endif()
 
 # Source files for the MyVector component (exclude plugin entry and plugin binlog).
-# query_rewrite service header exists in MySQL 9.0+ only; omit for 8.0/8.4.
+# The pre-parse query-rewrite hook (inline MYVECTOR(...) DDL, MYVECTOR_IS_ANN)
+# needs the Event Tracking Parse service, present in MySQL 8.4/9.7/26.7's
+# source (include/mysql/components/services/event_tracking_parse_service.h) --
+# omit only if a future/older tree genuinely lacks it. This replaces an old
+# guard on mysql/components/services/query_rewrite.h, a header that never
+# existed in real MySQL source on any version this project builds against
+# (see myvector#144); that guard was always false, so
+# myvector_query_rewrite_service.cc was never compiled into any real build.
 set(MYVECTOR_COMPONENT_SRCS
   src/component_src/myvector_component.cc
   src/component_src/myvector_component_config.cc
@@ -115,9 +122,9 @@ set(MYVECTOR_COMPONENT_SRCS
   src/myvectorutils.cc
 )
 set(MYVECTOR_COMPONENT_DEFS "")
-if(EXISTS "${MYSQL_SOURCE_DIR}/include/mysql/components/services/query_rewrite.h")
+if(EXISTS "${MYSQL_SOURCE_DIR}/include/mysql/components/services/event_tracking_parse_service.h")
   list(APPEND MYVECTOR_COMPONENT_SRCS src/component_src/myvector_query_rewrite_service.cc)
-  list(APPEND MYVECTOR_COMPONENT_DEFS MYVECTOR_HAS_QUERY_REWRITE_SERVICE)
+  list(APPEND MYVECTOR_COMPONENT_DEFS MYVECTOR_HAS_EVENT_TRACKING_PARSE_SERVICE)
 endif()
 
 # C++17 required for component and MySQL headers (shared_mutex, destroy_at, etc.)
