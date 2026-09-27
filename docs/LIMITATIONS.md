@@ -23,7 +23,10 @@ to the issue tracking it. Items marked *(untested)* are not verified by this pro
   another query. When the predicate is so selective that 10,000 candidates hold fewer than
   k matches, it builds the key list after all: it then does the key list's work plus the
   rounds of candidates before it. It uses the session variables `@_myvector_sql`,
-  `@_myvector_js` and `@_myvector_n`, and sets them to NULL when it is done.
+  `@_myvector_js` and `@_myvector_n`, and sets them to NULL when it is done. It also uses
+  the prepared statement name `_myvector_stmt`, which replaces a statement of the same
+  name in the session. A row written between its last round and its final query can make
+  it return fewer than k rows.
 - **Approximate results.** HNSW is approximate: recall depends on `ef` / `ef_search`. The
   benchmark's recall@10 (0.978 on plugin 8.4) was measured on synthetic vectors at a single
   setting and is not comparable with published results (#131).

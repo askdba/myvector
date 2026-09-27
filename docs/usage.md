@@ -224,10 +224,11 @@ table, that step costs more than the search. For those filters, use
 `MYVECTOR_ANN_FILTERED` (next section).
 
 **Broad filters: `MYVECTOR_ANN_FILTERED`.** This stored procedure takes the filter as a
-`WHERE` predicate instead of a key list. It works on plugin and component builds:
+`WHERE` predicate instead of a key list. It works on plugin and component builds.
+Signature (not runnable SQL):
 
-```sql
-CALL mysql.MYVECTOR_ANN_FILTERED(index, key column, query vector, k, predicate);
+```text
+CALL mysql.MYVECTOR_ANN_FILTERED(index, key column, query vector, k, predicate)
 ```
 
 For example, the 10 nearest documents that are not archived, where most documents are
