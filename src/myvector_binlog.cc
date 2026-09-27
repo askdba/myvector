@@ -679,8 +679,16 @@ void OpenAllOnlineVectorIndexes(MYSQL* hnd) {
             char empty[1024];
             char action[] = "load";
             char vecid[1024];
+            char result[1024] = {0};
             snprintf(vecid, sizeof(vecid), "%s.%s.%s", dbname, tbl, col);
-            myvector_open_index_impl(vecid, info, empty, action, empty, empty);
+            myvector_open_index_impl(vecid, info, empty, action, empty, result);
+            /* A successful load writes nothing to result. On an error (e.g. a
+             * missing or unknown index type) there is no index to keep up to
+             * date, so do not register the column for online updates. */
+            if (result[0]) {
+                error_print("Online index %s not loaded: %s", vecid, result);
+                continue;
+            }
 
             snprintf(vecid, sizeof(vecid), "%s.%s", dbname, tbl);
             VectorIndexColumnInfo vc{col, idcolpos, veccolpos};

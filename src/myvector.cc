@@ -205,7 +205,10 @@ static thread_local unordered_map<KeyTypeInteger, double> tls_distances_map;
 static thread_local unordered_map<KeyTypeInteger, double>* tls_distances =
     &tls_distances_map;
 
-inline bool isValidIndexType(const string& indextype) {
+/* isValidIndexType - KNN, HNSW or HNSW_BV, in any case */
+inline bool isValidIndexType(string indextype) {
+    transform(indextype.begin(), indextype.end(), indextype.begin(),
+              [](unsigned char c) { return static_cast<char>(toupper(c)); });
     return (MYVECTOR_INDEX_TYPES.find(indextype) != MYVECTOR_INDEX_TYPES.end());
 }
 
@@ -1219,14 +1222,22 @@ AbstractVectorIndex* VectorIndexCollection::open(const string& name,
     transform(itype.begin(), itype.end(), itype.begin(),
               [](unsigned char c) { return static_cast<char>(toupper(c)); });
 
-    if (itype == "HNSW" || itype == "HNSW_BV") {
-        hnewindex = new HNSWMemoryIndex(name, options);
-    } else if (itype == "KNN") {
-        hnewindex = new KNNIndex(name, options);
-    } else {
-        MYVEC_LOG_ERROR("MyVector unknown index type for %s options = %s, using KNN",
+    /* A missing or unknown type is an error, not a silent KNN index: a typo
+     * such as type=hnws, or a comment the parser could not read (#158), used
+     * to build brute-force KNN and report SUCCESS.
+     */
+    if (!isValidIndexType(itype)) {
+        MYVEC_LOG_ERROR("MyVector %s index type '%s' for %s, options = %s",
+                        itype.empty() ? "missing" : "unknown",
+                        itype.c_str(),
                         name.c_str(),
                         options.c_str());
+        return nullptr;
+    }
+
+    if (itype == "HNSW" || itype == "HNSW_BV") {
+        hnewindex = new HNSWMemoryIndex(name, options);
+    } else {
         hnewindex = new KNNIndex(name, options);
     }
 
@@ -1404,6 +1415,13 @@ bool rewriteMyVectorColumnDef(const string& query, string& newQuery,
         } else {
             transform(vtype.begin(), vtype.end(), vtype.begin(),
                       [](unsigned char c) { return static_cast<char>(toupper(c)); });
+            if (!isValidIndexType(vtype)) {
+                error_msg = "MYVECTOR column type invalid: " + vo.getOption("type") +
+                            " (use KNN, HNSW or HNSW_BV)";
+                MYVEC_LOG_ERROR("%s.", error_msg.c_str());
+                error = true;
+                break;
+            }
         }
 
         if (vo.getOption("dim") == "") {
@@ -2373,11 +2391,32 @@ void myvector_open_index_impl(char* vecid,
      6. For explicit persist  -> call myvector("save"), needed after "refresh"
     */
 
-    AbstractVectorIndex* vi = g_indexes.get(vecid);
+    /* A missing or unknown type in the column comment is an error, not a KNN
+     * index. build, refresh and load read the comment, so check it even when
+     * the index is already open; status, drop and save do not, so an index
+     * whose comment was later broken can still be dropped.
+     */
+    string itype = MyVectorOptions(details).getOption("type");
+    bool readsComment = !strcmp(action, "build") || !strcmp(action, "refresh") ||
+                        !strcmp(action, "load");
+    AbstractVectorIndex* vi = nullptr;
+    if (!readsComment || isValidIndexType(itype))
+        vi = g_indexes.get(vecid);
     if (!vi) {
-        vi = g_indexes.open(vecid, details, action);
+        if (isValidIndexType(itype))
+            vi = g_indexes.open(vecid, details, action);
         if (!vi) {
-            strcpy(result, "Failed to open index");
+            /* result is at least 255 bytes (MySQL's UDF string buffer) */
+            if (!isValidIndexType(itype))
+                snprintf(result,
+                         255,
+                         "ERROR: %s index type '%.40s' for %.80s."
+                         " Use type=KNN, HNSW or HNSW_BV",
+                         itype.empty() ? "missing" : "unknown",
+                         itype.c_str(),
+                         vecid);
+            else
+                strcpy(result, "Failed to open index");
             return;
         }
         existing = false;
