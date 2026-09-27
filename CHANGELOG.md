@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Filtered vector search** (PR #157). `MYVECTOR_IS_ANN` and `myvector_ann_set` take an
+  optional fifth argument: the keys of the rows that may be returned. The search returns
+  the `k` nearest rows among them, so it returns `k` rows whenever at least `k` rows match.
+  Before, a filter written next to `MYVECTOR_IS_ANN` was applied to the `k` results
+  afterwards, and could return fewer rows or none.
+  ```sql
+  SELECT id FROM docs
+  WHERE MYVECTOR_IS_ANN('db.docs.embedding', 'id', @q, 10,
+        (SELECT JSON_ARRAYAGG(id) FROM docs WHERE category = 'books'));
+  ```
+  HNSW indexes compute exact distances when 10,000 or fewer keys are allowed, and walk the
+  graph with the filter above that. Component builds call `myvector_ann_set(...)` with the
+  same fifth argument. New test: `scripts/test-filtered-ann.py` (plugin and component).
+- **Docs:** a "Declaring a Vector Column" section in `docs/usage.md` covering the plugin and
+  comment forms, index types, type errors and multi-line comments. There are worked
+  filtered-search examples, and a troubleshooting entry for online indexes that fail to
+  load (PR #161).
+- **CI:** a `unit-tests` job runs the option-parser tests
+  (`tests/test_myvector_options.cc`) (PR #159). The plugin `test` job checks that
+  `MYVECTOR(type=<unknown>)` fails at `CREATE TABLE` (PR #161).
+
 ### Changed
 - **Behaviour change: a missing or unknown index `type` is now an error** (PR #160).
   Earlier versions built a brute-force KNN index for any type they did not recognise and
@@ -22,6 +44,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Action on upgrade:** a hand-written column comment with no `type=` must now say
     `type=KNN` explicitly. Correct any bad type with `ALTER TABLE ... MODIFY ... COMMENT`
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
+
+### Fixed
+- **A line break or tab after `MYVECTOR COLUMN`** in a column comment (a multi-line
+  `COMMENT`) silently built a KNN index instead of the requested type. It is now read like
+  a space, on plugin and component builds (PR #159, issue #158). If you built an index from
+  such a comment on an earlier version, check `Type :` in `MYVECTOR_INDEX_STATUS` and
+  rebuild it.
 
 ## [1.26.9] - 2026-09-22
 
