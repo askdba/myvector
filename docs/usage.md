@@ -10,9 +10,12 @@ binary column plus a comment:
 
 ```sql
 CREATE TABLE docs (
-  id        INT PRIMARY KEY,
-  category  VARCHAR(32),
-  embedding MYVECTOR(type=HNSW,dim=768,size=100000,dist=Cosine,M=16,ef=100)
+  id           INT PRIMARY KEY,
+  title        VARCHAR(200),
+  category     VARCHAR(32),
+  tenant_id    INT,
+  published_at DATE,
+  embedding    MYVECTOR(type=HNSW,dim=768,size=100000,dist=Cosine,M=16,ef=100)
 );
 ```
 
@@ -21,9 +24,12 @@ rewrite (#144), so declare the options in the column comment yourself:
 
 ```sql
 CREATE TABLE docs (
-  id        INT PRIMARY KEY,
-  category  VARCHAR(32),
-  embedding VARBINARY(3100)
+  id           INT PRIMARY KEY,
+  title        VARCHAR(200),
+  category     VARCHAR(32),
+  tenant_id    INT,
+  published_at DATE,
+  embedding    VARBINARY(3100)
     COMMENT 'MYVECTOR COLUMN type=HNSW,dim=768,size=100000,dist=Cosine,M=16,ef=100,idcol=id'
 );
 ```
@@ -183,8 +189,9 @@ Do **not** put the filter next to `MYVECTOR_IS_ANN` in the `WHERE` clause instea
 (`WHERE category = 'books' AND MYVECTOR_IS_ANN(..., 10)`). That form finds the 10
 nearest rows first and filters them afterwards, so it can return fewer than 10 rows.
 
-**Example: nearest books only.** A `docs` table holds 100,000 rows in 20 categories, and 500
-of them are `books`:
+**Example: nearest books only.** The `docs` table from
+[Declaring a Vector Column](#declaring-a-vector-column) holds 100,000 rows in 20
+categories, and 500 of them are `books`:
 
 ```sql
 SET @q = myvector_construct('[...]');   -- the query embedding
