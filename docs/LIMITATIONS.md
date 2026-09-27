@@ -43,6 +43,11 @@ to the issue tracking it. Items marked *(untested)* are not verified by this pro
 - **`type` is case-insensitive** since v1.26.9-rc2 (`hnsw` and `HNSW` both build HNSW).
   A column comment written without the `|` marker (`MYVECTOR COLUMN type=hnsw,...`) now
   builds HNSW; on earlier versions it silently built a brute-force KNN index.
+- **A misspelled or missing `type` is an error.** `MYVECTOR_INDEX_BUILD` returns
+  `ERROR: unknown index type 'hnws' ...` or `ERROR: missing index type ...` and builds nothing.
+  Earlier versions built a brute-force KNN index and returned `SUCCESS`. A column comment
+  with no `type=` must now say `type=KNN` explicitly. The plugin's `MYVECTOR(...)` DDL still
+  defaults a missing type to KNN, and now rejects an unknown one at `CREATE TABLE`.
 - **A line break or tab after `MYVECTOR COLUMN`** (a multi-line `COMMENT`) is read like a
   space (#158). Before this fix such a comment silently built a KNN index; if you built one
   on an earlier version, check `Type :` in `MYVECTOR_INDEX_STATUS`. The comment must still

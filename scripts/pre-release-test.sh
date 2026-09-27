@@ -485,6 +485,34 @@ run_index_type_check() {
       fail "index type is not HNSW for ${T} (silent KNN fallback?): ${OUT}"
     fi
   done
+
+  # A misspelled or missing type is an error, not a silent KNN index.
+  echo "  [Index type] a misspelled or missing type fails the build instead of building KNN"
+  mq -D prerel -e "
+    DROP TABLE IF EXISTS itype_typo, itype_missing;
+    CREATE TABLE itype_typo (id INT PRIMARY KEY, vec VARBINARY(256)
+      COMMENT 'MYVECTOR COLUMN type=hnws,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
+    CREATE TABLE itype_missing (id INT PRIMARY KEY, vec VARBINARY(256)
+      COMMENT 'MYVECTOR COLUMN dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
+    INSERT INTO itype_typo SELECT * FROM itype_nopipe;
+    INSERT INTO itype_missing SELECT * FROM itype_nopipe;
+  " 2>/dev/null
+  local WANT
+  for T in itype_typo itype_missing; do
+    [[ "$T" == itype_typo ]] && WANT="unknown index type 'hnws'" || WANT="missing index type"
+    OUT=$(mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_BUILD('prerel.${T}.vec', 'id');" 2>&1) || true
+    if echo "$OUT" | grep -q "ERROR: ${WANT}"; then
+      pass "build of ${T} reports: ${WANT}"
+    else
+      fail "build of ${T} did not report '${WANT}': ${OUT}"
+    fi
+    OUT=$(mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_STATUS('prerel.${T}.vec');" 2>&1) || true
+    if echo "$OUT" | grep -q "Type : "; then
+      fail "an index was built for ${T} despite the invalid type: ${OUT}"
+    else
+      pass "no index built for ${T}"
+    fi
+  done
 }
 
 # Regression test for issue #119: dist=cosine (lower case, as used throughout
