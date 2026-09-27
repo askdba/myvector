@@ -192,6 +192,25 @@ If you omit `online=Y`:
 | "Binlog thread failed to connect" | Wrong credentials in config file; user lacks REPLICATION CLIENT |
 | Index not found after restart | Index not saved; ensure `myvector_index_save` or automatic save runs; check `myvector_index_dir` |
 | Wrong database for myvector_columns | The `myvector_columns` view is created in `mysql` by the installation script; ensure it exists and the plugin can query it |
+| Index not loaded at startup; the server log shows `Online index db.t.v not loaded: ERROR: unknown index type 'hnws' ...` (or `missing index type`) | The column comment's `type` is misspelled or missing. The column is not registered for online updates and searches fail with "not open". Correct the comment and rebuild (example below) |
+
+A misspelled or missing type used to build a brute-force KNN index silently. It is now an
+error. To fix a column that shows the log line above:
+
+```sql
+ALTER TABLE products MODIFY embedding VARBINARY(3100)
+  COMMENT 'MYVECTOR COLUMN type=HNSW,dim=768,size=100000,online=Y,idcol=id,dist=L2';
+CALL mysql.myvector_index_build('db.products.embedding', 'id');
+CALL mysql.myvector_index_status('db.products.embedding');   -- Type : HNSW
+```
+
+The rebuild registers the column for online updates again, so rows changed after it
+finishes are applied to the index. To confirm, insert a row and check that `Current Rows`
+in `myvector_index_status` goes up. If it does not, the binlog listener is probably not
+running. It connects using the configuration file (see
+[Configuration File](#4-configuration-file)), and it reads that file when the plugin or
+component starts. If the file was added after that, restart the server, or reinstall the
+component.
 
 ## Testing with Docker
 
