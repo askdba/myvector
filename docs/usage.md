@@ -258,12 +258,19 @@ It returns up to `k` rows, nearest first: the key and the distance that
 
 So it returns `k` rows whenever at least `k` indexed rows match.
 
-When to use which:
+When to use which: the key list costs a read of every matching row (a scan of the whole
+table if no index covers the filter). The procedure costs one or more rounds of candidates.
 
-| The filter matches | Use |
+| The filter | Use |
 |---|---|
-| Most of the table (50%, 90%) | `MYVECTOR_ANN_FILTERED`. One round of candidates is usually enough, and no key list is built. |
-| A small part of the table (a few thousand rows or fewer) | The key list. It computes exact distances over just those rows. |
+| Matches most of the table (50%, 90%) | `MYVECTOR_ANN_FILTERED`. One round of candidates is usually enough. |
+| Is selective and can use an index | The key list. It reads just the matching rows and computes exact distances over them. |
+| Is selective but needs a table scan | Either. Measure on your data. |
+
+For example, on a 300,000-row table with 16-dimensional vectors (k = 10, Docker on
+aarch64, so approximate): at 90% the key list took 179 ms and the procedure 4.5 ms. At 1%
+the key list took 57 ms with a table scan and 5.8 ms with an index on the filter column;
+the procedure took about 25 ms either way.
 
 The predicate is SQL text, like the `WHERE` clause of a view. It can use any column of the
 table, qualified by the table name if you like (`docs.archived = 0`). Write a quote inside

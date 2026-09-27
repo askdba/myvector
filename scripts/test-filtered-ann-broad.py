@@ -304,6 +304,9 @@ def run_bench(srv, args, component, rnd, failures):
     t0 = time.time()
     load_table(srv, "t", args.rows, component, rnd)
     print(f"loaded {args.rows} rows + index in {time.time() - t0:.0f}s")
+    if args.index_filter_column:
+        srv.sql("ALTER TABLE t ADD INDEX (cat);")
+        print("added an index on the filter column (cat)")
     fa.check_index_type(srv, "vtest.t.v", "HNSW", failures)
     filters = {"90%": "cat < 90", "50%": "cat < 50", "1%": "cat = 7"}
     print(f"\n| filter | matching rows | key list (phase 1) ms | "
@@ -360,6 +363,9 @@ def main():
                     help="--bench: runs of each query per timing")
     ap.add_argument("--min-recall", type=float, default=0.9)
     ap.add_argument("--bench", action="store_true")
+    ap.add_argument("--index-filter-column", action="store_true",
+                    help="--bench: index the filter column, so the key list "
+                         "of a selective filter needs no table scan")
     ap.add_argument("--keep", action="store_true",
                     help="keep the container for debugging")
     args = ap.parse_args()
