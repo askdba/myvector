@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Behaviour change: a missing or unknown index `type` is now an error** (PR #160).
+  Earlier versions built a brute-force KNN index for any type they did not recognise and
+  returned `SUCCESS`, so a typo such as `type=hnws` silently gave exact search with none
+  of the HNSW speed.
+  - `MYVECTOR_INDEX_BUILD` and `MYVECTOR_INDEX_STATUS` return
+    `ERROR: unknown index type 'hnws' for db.t.v. Use type=KNN, HNSW or HNSW_BV`
+    (or `ERROR: missing index type for db.t.v. ...`) and build nothing.
+  - The plugin's `MYVECTOR(type=<unknown>, ...)` DDL fails at `CREATE TABLE` with
+    `MYVECTOR column type invalid`. `MYVECTOR(...)` with no type still defaults to KNN.
+  - An `online=Y` column with a bad type is not loaded at startup. The server log shows
+    `Online index <name> not loaded: ERROR: ...`, and searches on it fail.
+  - **Action on upgrade:** a hand-written column comment with no `type=` must now say
+    `type=KNN` explicitly. Correct any bad type with `ALTER TABLE ... MODIFY ... COMMENT`
+    and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
+
 ## [1.26.9] - 2026-09-22
 
 ### Added
