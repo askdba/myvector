@@ -451,20 +451,32 @@ SQL
 # the '|' start marker and without it ("MYVECTOR COLUMN type=..."). A type that is
 # not recognised silently falls back to KNN, which would make every HNSW test in
 # this suite exercise brute-force search instead.
+#
+# Issue #158: a line break or tab right after "MYVECTOR COLUMN" (a multi-line
+# COMMENT) used to leave the prefix in the first key and fall back to KNN too.
+# itype_multiline has a real line break in the comment; itype_tab uses the SQL
+# '\t' escape.
 run_index_type_check() {
-  echo "  [Index type] type=hnsw yields an HNSW index for both comment formats"
+  echo "  [Index type] type=hnsw yields an HNSW index for all comment formats"
   mq -D prerel -e "
-    DROP TABLE IF EXISTS itype_nopipe, itype_pipe;
+    DROP TABLE IF EXISTS itype_nopipe, itype_pipe, itype_multiline, itype_tab;
     CREATE TABLE itype_nopipe (id INT PRIMARY KEY, vec VARBINARY(256)
       COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
     CREATE TABLE itype_pipe (id INT PRIMARY KEY, vec VARBINARY(256)
       COMMENT 'MYVECTOR Column |type=HNSW,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
+    CREATE TABLE itype_multiline (id INT PRIMARY KEY, vec VARBINARY(256)
+      COMMENT 'MYVECTOR COLUMN
+        type=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
+    CREATE TABLE itype_tab (id INT PRIMARY KEY, vec VARBINARY(256)
+      COMMENT 'MYVECTOR COLUMN\ttype=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
     INSERT INTO itype_nopipe VALUES (1, myvector_construct('[1.0,2.0,3.0]')),
                                     (2, myvector_construct('[4.0,5.0,6.0]'));
     INSERT INTO itype_pipe SELECT * FROM itype_nopipe;
+    INSERT INTO itype_multiline SELECT * FROM itype_nopipe;
+    INSERT INTO itype_tab SELECT * FROM itype_nopipe;
   " 2>/dev/null
   local T OUT
-  for T in itype_nopipe itype_pipe; do
+  for T in itype_nopipe itype_pipe itype_multiline itype_tab; do
     mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_BUILD('prerel.${T}.vec', 'id');" >/dev/null 2>&1 || true
     OUT=$(mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_STATUS('prerel.${T}.vec');" 2>&1) || true
     if echo "$OUT" | grep -q "Type : HNSW"; then

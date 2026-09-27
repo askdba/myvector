@@ -9,10 +9,11 @@
 /* A generic key-value map for options */
 typedef std::unordered_map<std::string, std::string> OptionsMap;
 
-/* Trim leading & trailing spaces */
+/* Trim leading & trailing whitespace (spaces, tabs, CR, LF), and collapse
+ * runs of inner spaces to one */
 inline std::string lrtrim(const std::string& str) {
-    std::string ret =
-        std::regex_replace(str, std::regex("^ +| +$|( ) +"), "$1");
+    static const std::regex re("^\\s+|\\s+$|( ) +");
+    std::string ret = std::regex_replace(str, re, "$1");
 
     return ret;
 }
@@ -52,19 +53,21 @@ private:
     /* Skip a leading "MYVECTOR COLUMN" (any case) that has no '|' start marker, so
      * that "MYVECTOR COLUMN type=hnsw,dim=3" parses like "type=hnsw,dim=3". Without
      * this the first key becomes "MYVECTOR COLUMN type", the type reads as empty and
-     * the index silently falls back to KNN. The prefix must be followed by a space so
-     * a longer key is never truncated. Returns line unchanged if it does not match. */
+     * the index silently falls back to KNN. Leading whitespace is skipped, and the
+     * prefix must be followed by whitespace (a space, tab or line break, as in a
+     * multi-line COMMENT, #158) so a longer key is never truncated. Returns line
+     * unchanged if it does not match. */
     static const char* skipColumnPrefix(const char* line) {
         static const char prefix[] = "MYVECTOR COLUMN";
         const size_t n = sizeof(prefix) - 1;
         const char* p = line;
-        while (*p == ' ')
+        while (std::isspace(static_cast<unsigned char>(*p)))
             p++;
         for (size_t i = 0; i < n; i++) {
             if (!p[i] || std::toupper(static_cast<unsigned char>(p[i])) != prefix[i])
                 return line;
         }
-        return (p[n] == ' ') ? p + n : line;
+        return std::isspace(static_cast<unsigned char>(p[n])) ? p + n : line;
     }
 
     /* Returns true on success, false on format error */
