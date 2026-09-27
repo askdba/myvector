@@ -2391,12 +2391,22 @@ void myvector_open_index_impl(char* vecid,
      6. For explicit persist  -> call myvector("save"), needed after "refresh"
     */
 
-    AbstractVectorIndex* vi = g_indexes.get(vecid);
+    /* A missing or unknown type in the column comment is an error, not a KNN
+     * index. build, refresh and load read the comment, so check it even when
+     * the index is already open; status, drop and save do not, so an index
+     * whose comment was later broken can still be dropped.
+     */
+    string itype = MyVectorOptions(details).getOption("type");
+    bool readsComment = !strcmp(action, "build") || !strcmp(action, "refresh") ||
+                        !strcmp(action, "load");
+    AbstractVectorIndex* vi = nullptr;
+    if (!readsComment || isValidIndexType(itype))
+        vi = g_indexes.get(vecid);
     if (!vi) {
-        vi = g_indexes.open(vecid, details, action);
+        if (isValidIndexType(itype))
+            vi = g_indexes.open(vecid, details, action);
         if (!vi) {
             /* result is at least 255 bytes (MySQL's UDF string buffer) */
-            string itype = MyVectorOptions(details).getOption("type");
             if (!isValidIndexType(itype))
                 snprintf(result,
                          255,

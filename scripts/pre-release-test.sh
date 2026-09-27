@@ -513,6 +513,31 @@ run_index_type_check() {
       pass "no index built for ${T}"
     fi
   done
+
+  # An index that is already open is not rebuilt from a comment whose type was
+  # later broken; status and drop still work on it.
+  echo "  [Index type] rebuilding an open index whose comment now has an unknown type fails"
+  mq -D prerel -e "ALTER TABLE itype_nopipe MODIFY vec VARBINARY(256)
+    COMMENT 'MYVECTOR COLUMN type=hnws,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2';" 2>/dev/null
+  OUT=$(mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_BUILD('prerel.itype_nopipe.vec', 'id');" 2>&1) || true
+  if echo "$OUT" | grep -q "ERROR: unknown index type 'hnws'"; then
+    pass "rebuild of an open index with a broken comment reports the type error"
+  else
+    fail "rebuild of an open index with a broken comment did not report the type error: ${OUT}"
+  fi
+  OUT=$(mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_STATUS('prerel.itype_nopipe.vec');" 2>&1) || true
+  if echo "$OUT" | grep -q "Type : HNSW"; then
+    pass "status of the open index still works"
+  else
+    fail "status of the open index failed after its comment was broken: ${OUT}"
+  fi
+  mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_DROP('prerel.itype_nopipe.vec');" >/dev/null 2>&1 || true
+  OUT=$(mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_STATUS('prerel.itype_nopipe.vec');" 2>&1) || true
+  if echo "$OUT" | grep -q "Type : "; then
+    fail "drop of the open index did not remove it: ${OUT}"
+  else
+    pass "drop of the open index works"
+  fi
 }
 
 # Regression test for issue #119: dist=cosine (lower case, as used throughout
