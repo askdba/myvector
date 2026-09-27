@@ -16,7 +16,14 @@ to the issue tracking it. Items marked *(untested)* are not verified by this pro
   (see [Usage](usage.md#vector-search)). A predicate written *next to*
   `MYVECTOR_IS_ANN(...)` in the same `WHERE` clause is still applied to the k results
   afterwards, so it can return fewer than k rows. Building the key list costs one scan of
-  the matching rows, which is slow when the filter matches most of a large table.
+  the matching rows, which is slow when the filter matches most of a large table. For
+  those filters, use `CALL mysql.MYVECTOR_ANN_FILTERED(...)` (see
+  [Usage](usage.md#vector-search)).
+- **`MYVECTOR_ANN_FILTERED` returns a result set.** You cannot join it or use it inside
+  another query. When the predicate is so selective that 10,000 candidates hold fewer than
+  k matches, it builds the key list after all, after several rounds of candidates: then it
+  is slower than the key list alone. It uses the session variables `@_myvector_sql`,
+  `@_myvector_js` and `@_myvector_n`, and sets them to NULL when it is done.
 - **Approximate results.** HNSW is approximate: recall depends on `ef` / `ef_search`. The
   benchmark's recall@10 (0.978 on plugin 8.4) was measured on synthetic vectors at a single
   setting and is not comparable with published results (#131).

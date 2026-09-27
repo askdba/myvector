@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HNSW indexes compute exact distances when 10,000 or fewer keys are allowed, and walk the
   graph with the filter above that. Component builds call `myvector_ann_set(...)` with the
   same fifth argument. New test: `scripts/test-filtered-ann.py` (plugin and component).
+- **Filtered search for broad filters.** A new stored procedure,
+  `mysql.MYVECTOR_ANN_FILTERED(index, key column, query vector, k, predicate)`, on plugin
+  and component builds. It takes the filter as a `WHERE` predicate instead of a key list,
+  so a filter that matches most of a large table no longer needs a `JSON_ARRAYAGG` of
+  millions of keys. It asks the index for candidates, keeps those that pass the predicate,
+  and asks for more until `k` pass. After 10,000 candidates it falls back to the key list,
+  so it still returns `k` rows whenever at least `k` indexed rows match.
+  ```sql
+  CALL mysql.MYVECTOR_ANN_FILTERED('db.docs.embedding', 'id', @q, 10, 'archived = 0');
+  ```
+  The procedure is `SQL SECURITY INVOKER`: the predicate runs with the caller's
+  privileges. New test: `scripts/test-filtered-ann-broad.py`, which has a `--bench` mode.
 - **Docs:** a "Declaring a Vector Column" section in `docs/usage.md` covering the plugin and
   comment forms, index types, type errors and multi-line comments. There are worked
   filtered-search examples, and a troubleshooting entry for online indexes that fail to
@@ -46,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **`myvector_ann_set()` result buffer.** It is now sized for 10,000 keys of any length.
+  The 128,000-byte buffer was too small for 10,000 keys of 12 digits or more. The plugin
+  wrote past its end: `nn=10000` over 13-digit keys crashed `mysqld` (SIGSEGV) on 8.4. The
+  component cut the JSON short.
 - **A line break or tab after `MYVECTOR COLUMN`** in a column comment (a multi-line
   `COMMENT`) silently built a KNN index instead of the requested type. It is now read like
   a space, on plugin and component builds (PR #159, issue #158). If you built an index from

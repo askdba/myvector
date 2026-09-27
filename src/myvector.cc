@@ -182,6 +182,12 @@ static const size_t MYVECTOR_FILTER_EXACT_THRESHOLD = 10000;
  */
 static const unsigned int MYVECTOR_MAX_ANN_RETURN_COUNT = 10000;
 
+/* Buffer for the myvector_ann_set() result: up to MYVECTOR_MAX_ANN_RETURN_COUNT
+ * keys of up to 20 digits, a comma after each, the brackets and a NUL.
+ */
+static const unsigned int MYVECTOR_ANN_SET_MAX_LEN =
+    MYVECTOR_MAX_ANN_RETURN_COUNT * 21 + 3;
+
 /* Basic check for validity of index last update timestamp > '01-01-2024' */
 static const unsigned long MYVECTOR_MIN_VALID_UPDATE_TS = 1704047400;
 
@@ -1738,10 +1744,8 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT* initid,
     }
     SharedLockGuard l(vi);
 
-    /* Users can possibly ask for 100s of neighbours. With buffer of 128000,
-     * about 12800 PK ids can be filled in the return string
-     */
-    initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
+    /* Room for MYVECTOR_MAX_ANN_RETURN_COUNT keys of any size */
+    initid->max_length = MYVECTOR_ANN_SET_MAX_LEN;
     initid->ptr = (char*)malloc(initid->max_length);
 #ifndef MYVECTOR_COMPONENT_BUILD
     (*h_udf_metadata_service)->result_set(initid, "charset", latin1);
