@@ -2407,12 +2407,17 @@ void myvector_open_index_impl(char* vecid,
             vi = g_indexes.open(vecid, details, action);
         if (!vi) {
             /* result is at least 255 bytes (MySQL's UDF string buffer) */
-            if (!isValidIndexType(itype))
+            if (itype.empty())
                 snprintf(result,
                          255,
-                         "ERROR: %s index type '%.40s' for %.80s."
+                         "ERROR: missing index type for %.80s."
                          " Use type=KNN, HNSW or HNSW_BV",
-                         itype.empty() ? "missing" : "unknown",
+                         vecid);
+            else if (!isValidIndexType(itype))
+                snprintf(result,
+                         255,
+                         "ERROR: unknown index type '%.40s' for %.80s."
+                         " Use type=KNN, HNSW or HNSW_BV",
                          itype.c_str(),
                          vecid);
             else

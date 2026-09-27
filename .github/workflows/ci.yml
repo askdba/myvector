@@ -699,4 +699,24 @@ jobs:
         echo "=== Testing myvector_is_valid UDF ==="
         $MYSQL_CMD -e "SELECT myvector_is_valid(myvector_construct('[1.0, 2.0, 3.0]'), 3);"
 
+        # The plugin's DDL rewrite (not available on component builds, #144)
+        # validates the MYVECTOR(...) index type at CREATE TABLE (#160).
+        echo "=== Testing MYVECTOR(...) DDL type validation ==="
+        $MYSQL_CMD -e "CREATE DATABASE IF NOT EXISTS ddltest;"
+        if OUT=$($MYSQL_CMD ddltest -e "CREATE TABLE t_typo (id INT PRIMARY KEY, v MYVECTOR(type=hnws,dim=3,size=10));" 2>&1); then
+          echo "FAIL: MYVECTOR(type=hnws) was accepted"; exit 1
+        fi
+        echo "$OUT"
+        echo "$OUT" | grep -q "MYVECTOR column type invalid: hnws" \
+          || { echo "FAIL: unexpected error for MYVECTOR(type=hnws)"; exit 1; }
+
+        $MYSQL_CMD ddltest -e "CREATE TABLE t_notype (id INT PRIMARY KEY, v MYVECTOR(dim=3,size=10));"
+        $MYSQL_CMD ddltest -e "CREATE TABLE t_hnsw (id INT PRIMARY KEY, v MYVECTOR(type=hnsw,dim=3,size=10,M=16,ef=50));"
+        for spec in "t_notype:type=KNN" "t_hnsw:type=hnsw"; do
+          T=${spec%%:*}; WANT=${spec#*:}
+          COMMENT=$($MYSQL_CMD -s -N -e "SELECT column_comment FROM information_schema.columns WHERE table_schema='ddltest' AND table_name='$T' AND column_name='v';")
+          echo "$T comment: $COMMENT"
+          echo "$COMMENT" | grep -q "$WANT" || { echo "FAIL: $T comment lacks $WANT"; exit 1; }
+        done
+
         echo "=== All basic tests passed! ==="

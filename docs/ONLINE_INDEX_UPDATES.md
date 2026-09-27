@@ -192,6 +192,24 @@ If you omit `online=Y`:
 | "Binlog thread failed to connect" | Wrong credentials in config file; user lacks REPLICATION CLIENT |
 | Index not found after restart | Index not saved; ensure `myvector_index_save` or automatic save runs; check `myvector_index_dir` |
 | Wrong database for myvector_columns | The `myvector_columns` view is created in `mysql` by the installation script; ensure it exists and the plugin can query it |
+| Index not loaded at startup; the server log shows `Online index db.t.v not loaded: ERROR: unknown index type 'hnws' ...` (or `missing index type`) | The column comment's `type` is misspelled or missing. The column is not registered for online updates and searches fail with "not open". Correct the comment and rebuild (example below) |
+
+A misspelled or missing type used to build a brute-force KNN index silently. It is now an
+error. To fix a column that shows the log line above:
+
+```sql
+ALTER TABLE products MODIFY embedding VARBINARY(3100)
+  COMMENT 'MYVECTOR COLUMN type=HNSW,dim=768,size=100000,online=Y,idcol=id,dist=L2';
+CALL mysql.myvector_index_build('db.products.embedding', 'id');
+CALL mysql.myvector_index_status('db.products.embedding');   -- Type : HNSW
+```
+
+After the fix, the column behaves like any newly built online index. In testing on the
+8.4 component, rows inserted right after the rebuild were not added to the index. After a
+restart (or `UNINSTALL COMPONENT` / `INSTALL COMPONENT` followed by
+`myvector_index_load`), new rows were applied. A column that never had a bad type behaved
+the same way. Restart, then insert a row and check that `Current Rows` in
+`myvector_index_status` goes up.
 
 ## Testing with Docker
 
