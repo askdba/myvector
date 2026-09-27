@@ -236,7 +236,14 @@ not archived:
 ```sql
 SET @q = myvector_construct('[...]');
 CALL mysql.MYVECTOR_ANN_FILTERED('db.docs.embedding', 'id', @q, 10, 'archived = 0');
-EXAMPLE_OUTPUT
+-- +-------+------------------------+
+-- | id    | distance               |
+-- +-------+------------------------+
+-- | 91641 | 1.33261132240295400000 |
+-- | 90597 | 1.40075933933258060000 |
+-- | 82027 | 1.57868742942810060000 |
+-- | ...   | ...                    |
+-- +-------+------------------------+
 ```
 
 It returns up to `k` rows, nearest first: the key and the distance that
