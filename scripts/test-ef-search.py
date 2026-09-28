@@ -101,6 +101,13 @@ def main():
             failures.append("an ef_search query returned fewer than k rows")
         if r_high < r_base:
             failures.append(f"ef_search=400 recall {r_high:.3f} < default {r_base:.3f}")
+        # The override must actually take effect: a low effort changes results.
+        n_low_diff = sum(a != b for a, b in zip(low, baseline))
+        print(f"ef_search=10 queries whose results differ from default: "
+              f"{n_low_diff}/{len(queries)}")
+        if n_low_diff == 0:
+            failures.append("ef_search=10 gave the same results as the default "
+                            "for every query (the per-query value is ignored?)")
 
         # After a single low ef_search query, default queries are unchanged.
         ann(srv, queries[0], f"nn={K},ef_search=10")
