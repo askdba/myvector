@@ -220,8 +220,74 @@ WHERE MYVECTOR_IS_ANN('db.docs.embedding', 'id', @q, 10,
 ```
 
 Building the key list reads every matching row. When the filter matches most of a large
-table, that step costs more than the search; there, a plain unfiltered search may be
-the better choice.
+table, that step costs more than the search. For those filters, use
+`MYVECTOR_ANN_FILTERED` (next section).
+
+**Broad filters: `MYVECTOR_ANN_FILTERED`.** This stored procedure takes the filter as a
+`WHERE` predicate instead of a key list. It works on plugin and component builds.
+Signature (not runnable SQL):
+
+```text
+CALL mysql.MYVECTOR_ANN_FILTERED(index, key column, query vector, k, predicate)
+```
+
+For example, the 10 nearest documents that are not archived, where most documents are
+not archived:
+
+```sql
+SET @q = myvector_construct('[...]');
+CALL mysql.MYVECTOR_ANN_FILTERED('db.docs.embedding', 'id', @q, 10, 'archived = 0');
+-- +-------+------------------------+
+-- | id    | distance               |
+-- +-------+------------------------+
+-- | 91641 | 1.33261132240295400000 |
+-- | 90597 | 1.40075933933258060000 |
+-- | 82027 | 1.57868742942810060000 |
+-- | ...   | ...                    |
+-- +-------+------------------------+
+```
+
+It returns up to `k` rows, nearest first: the key and the distance that
+`myvector_row_distance()` reports. It works like this:
+
+1. It asks the index for the nearest candidates: `10 × k`, and at least 100.
+2. It keeps the candidates that pass the predicate.
+3. If fewer than `k` pass, it asks for more candidates and repeats. If 10,000
+   candidates (the most one search returns) still hold fewer than `k` matches, or the
+   index has no more rows to return, it runs the key-list search above with the same
+   predicate.
+
+So it returns `k` rows whenever at least `k` indexed rows match.
+
+When to use which: the key list costs a read of every matching row (a scan of the whole
+table if no index covers the filter). The procedure costs one or more rounds of candidates.
+
+| The filter | Use |
+|---|---|
+| Matches most of the table (50%, 90%) | `MYVECTOR_ANN_FILTERED`. One round of candidates is usually enough. |
+| Is selective and can use an index | The key list. It reads just the matching rows and computes exact distances over them. |
+| Is selective but needs a table scan | Either. Measure on your data. |
+
+For example, on a 300,000-row table with 16-dimensional vectors (k = 10, Docker on
+aarch64, so approximate): at 90% the key list took 179 ms and the procedure 4.5 ms. At 1%
+the key list took 57 ms with a table scan and 5.8 ms with an index on the filter column;
+the procedure took about 25 ms either way.
+
+The predicate is SQL text, like the `WHERE` clause of a view. It can use any column of the
+table, qualified by the table name if you like (`docs.archived = 0`). Write a quote inside
+it as two single quotes:
+
+```sql
+CALL mysql.MYVECTOR_ANN_FILTERED('db.docs.embedding', 'id', @q, 10,
+                                 'category <> ''books'' AND tenant_id = 42');
+```
+
+The procedure is `SQL SECURITY INVOKER`, so the predicate runs with the privileges of the
+user who calls it, like a query that user typed. The caller needs `EXECUTE` on the
+procedure and `SELECT` on the table. Do not build the predicate from untrusted input.
+
+The procedure returns a result set, so you cannot join it or use it inside another query.
+For that, use the key list.
 
 On component builds, which have no `MYVECTOR_IS_ANN` rewrite, call the function
 directly. It returns a JSON array of keys:

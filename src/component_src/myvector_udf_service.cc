@@ -70,6 +70,12 @@ static const unsigned int MYVECTOR_COLUMN_EXTRA_LEN         = 8;
 static const unsigned int MYVECTOR_DEFAULT_ANN_RETURN_COUNT = 10;
 static const unsigned int MYVECTOR_MAX_ANN_RETURN_COUNT     = 10000;
 
+/* Buffer for the myvector_ann_set() result: up to MYVECTOR_MAX_ANN_RETURN_COUNT
+ * keys of up to 20 digits, a comma after each, the brackets and a NUL.
+ */
+static const unsigned int MYVECTOR_ANN_SET_MAX_LEN =
+    MYVECTOR_MAX_ANN_RETURN_COUNT * 21 + 3;
+
 // Helper functions mirror inline definitions in myvector.cc; defined here
 // because inline functions also have internal linkage and cannot be extern'd.
 static inline int MyVectorStorageLength(int dim) {
@@ -140,7 +146,8 @@ bool myvector_ann_set_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
     }
     SharedLockGuard l(vi);
 
-    initid->max_length = MYVECTOR_DISPLAY_MAX_LEN;
+    /* Room for MYVECTOR_MAX_ANN_RETURN_COUNT keys of any size */
+    initid->max_length = MYVECTOR_ANN_SET_MAX_LEN;
     if (myvector_alloc_init_ptr(initid, initid->max_length, message))
         return true;
     if (myvector_component_udf_metadata)

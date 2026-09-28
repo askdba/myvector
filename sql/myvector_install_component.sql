@@ -99,6 +99,8 @@ DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_STATUS;
 
 DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_INTERNAL;
 
+DROP PROCEDURE IF EXISTS MYVECTOR_ANN_FILTERED;
+
 DELIMITER //
 
 
@@ -218,6 +220,140 @@ BEGIN
 
         CALL MYVECTOR_INDEX_INTERNAL(myvectorcolumn, pkidcolumn, 'build', extra);
 
+END
+//
+
+-- MYVECTOR_ANN_FILTERED - the k rows nearest to searchvec among the rows that
+-- pass predicate, for filters that match many rows. Returns a result set of
+-- (<pkidcolumn>, distance), nearest first.
+--
+-- It fetches the nearest candidates from the index ('nn=<fetch>'), keeps the
+-- ones that pass the predicate and, if fewer than k pass, fetches more and
+-- retries. When 10000 candidates (the most myvector_ann_set returns), or all
+-- the index returns, still hold fewer than k matches, it falls back to a search
+-- restricted to the matching keys (SELECT JSON_ARRAYAGG(...) WHERE predicate).
+-- So it returns k rows whenever at least k indexed rows match.
+--
+-- predicate is SQL text, like a view's WHERE clause. It runs with the
+-- privileges of the caller (SQL SECURITY INVOKER), never of the definer.
+CREATE PROCEDURE MYVECTOR_ANN_FILTERED(
+	IN myvectorcolumn VARCHAR(256),
+	IN pkidcolumn     VARCHAR(64),
+	IN searchvec      LONGBLOB,
+	IN k              INT,
+	IN predicate      LONGTEXT)
+SQL SECURITY INVOKER
+BEGIN
+	DECLARE pos      INT;
+	DECLARE temp     VARCHAR(256);
+	DECLARE dbname   VARCHAR(64);
+	DECLARE tname    VARCHAR(64);
+	DECLARE cname    VARCHAR(64);
+	DECLARE colinfo  VARCHAR(1024);
+	DECLARE idfound  INT;
+	DECLARE tbl      VARCHAR(300);
+	DECLARE idq      VARCHAR(200);
+	DECLARE annargs  LONGTEXT;
+	DECLARE pred     LONGTEXT;
+	DECLARE fetchn   INT;
+	DECLARE maxfetch INT DEFAULT 10000;  -- MYVECTOR_MAX_ANN_RETURN_COUNT
+	DECLARE ncand    INT;
+	DECLARE nmatch   INT;
+	DECLARE fallback INT DEFAULT 0;
+	DECLARE done     INT DEFAULT 0;
+	DECLARE CONTINUE HANDLER FOR NOT FOUND SET colinfo = NULL;
+
+	IF k IS NULL OR k < 1 OR k > maxfetch THEN
+	  SIGNAL SQLSTATE '50004' SET MESSAGE_TEXT = 'MYVECTOR_ANN_FILTERED: k must be between 1 and 10000.';
+	END IF;
+	IF searchvec IS NULL THEN
+	  SIGNAL SQLSTATE '50005' SET MESSAGE_TEXT = 'MYVECTOR_ANN_FILTERED: the search vector is NULL.';
+	END IF;
+
+	SET pos    = LOCATE('.', myvectorcolumn);
+	SET dbname = SUBSTR(myvectorcolumn, 1, pos-1);
+	SET temp   = SUBSTR(myvectorcolumn, pos+1);
+	SET pos    = LOCATE('.', temp);
+	SET tname  = SUBSTR(temp, 1, pos-1);
+	SET cname  = SUBSTR(temp, pos+1);
+
+	SELECT column_comment INTO colinfo FROM INFORMATION_SCHEMA.COLUMNS
+	WHERE table_schema = dbname AND table_name = tname AND column_name = cname;
+	IF colinfo IS NULL THEN
+	  SIGNAL SQLSTATE '50001' SET MESSAGE_TEXT = 'Vector column not found. Please use the fully qualified name: <database>.<table>.<column>.';
+	END IF;
+	IF LOCATE("MYVECTOR COLUMN", colinfo) <> 1 THEN
+	  SIGNAL SQLSTATE '50002' SET MESSAGE_TEXT = 'The specified column is not a MYVECTOR column.';
+	END IF;
+	SELECT COUNT(*) INTO idfound FROM INFORMATION_SCHEMA.COLUMNS
+	WHERE table_schema = dbname AND table_name = tname AND column_name = pkidcolumn;
+	IF idfound = 0 THEN
+	  SIGNAL SQLSTATE '50006' SET MESSAGE_TEXT = 'MYVECTOR_ANN_FILTERED: key column not found in the table.';
+	END IF;
+
+	-- Names are quoted as identifiers or string literals, and the vector is
+	-- passed as a hex literal. Only the predicate is inserted as SQL; it gets
+	-- its own lines so a trailing "-- comment" cannot swallow the rest.
+	SET tbl     = CONCAT('`', REPLACE(dbname, '`', '``'), '`.`',
+	                     REPLACE(tname, '`', '``'), '`');
+	SET idq     = CONCAT('`', REPLACE(pkidcolumn, '`', '``'), '`');
+	SET annargs = CONCAT(QUOTE(myvectorcolumn), ', ', QUOTE(pkidcolumn),
+	                     ', X''', HEX(searchvec), '''');
+	SET pred    = CONCAT('(\n', IF(TRIM(IFNULL(predicate, '')) = '', 'TRUE', predicate), '\n)');
+	SET fetchn  = LEAST(maxfetch, GREATEST(100, k * 10));
+
+	WHILE done = 0 DO
+	  SET @_myvector_sql = CONCAT('SELECT myvector_ann_set(', annargs,
+	      ', ''nn=', fetchn, ''') INTO @_myvector_js');
+	  PREPARE _myvector_stmt FROM @_myvector_sql;
+	  EXECUTE _myvector_stmt;
+	  DEALLOCATE PREPARE _myvector_stmt;
+	  SET ncand = IFNULL(JSON_LENGTH(@_myvector_js), 0);
+
+	  SET @_myvector_sql = CONCAT('SELECT COUNT(*) INTO @_myvector_n FROM ', tbl,
+	      ' WHERE ', idq, ' IN (SELECT `myvecid` FROM JSON_TABLE(@_myvector_js,',
+	      ' ''$[*]'' COLUMNS(`myvecid` BIGINT PATH ''$'')) `_mvann`) AND ', pred);
+	  PREPARE _myvector_stmt FROM @_myvector_sql;
+	  EXECUTE _myvector_stmt;
+	  DEALLOCATE PREPARE _myvector_stmt;
+	  SET nmatch = @_myvector_n;
+
+	  IF nmatch >= k THEN
+	    SET done = 1;
+	  ELSEIF ncand < fetchn OR fetchn >= maxfetch THEN
+	    -- The index returned all it has, or the filter is too selective for
+	    -- 10000 candidates: search just the matching keys instead.
+	    SET done = 1;
+	    SET fallback = 1;
+	  ELSEIF nmatch = 0 THEN
+	    SET fetchn = LEAST(maxfetch, fetchn * 4);
+	  ELSE                         -- aim for 1.5x the matches needed
+	    SET fetchn = LEAST(maxfetch,
+	        GREATEST(fetchn * 2, CEIL(fetchn * k * 1.5 / nmatch)));
+	  END IF;
+	END WHILE;
+
+	-- Search again inside the final statement, so that myvector_row_distance()
+	-- sees the distances of this search.
+	IF fallback = 1 THEN
+	  SET annargs = CONCAT(annargs, ', ''nn=', k, ''', (SELECT JSON_ARRAYAGG(',
+	      idq, ') FROM ', tbl, ' WHERE ', pred, ')');
+	ELSE
+	  SET annargs = CONCAT(annargs, ', ''nn=', fetchn, '''');
+	END IF;
+	SET @_myvector_sql = CONCAT('SELECT ', idq, ', myvector_row_distance(', idq,
+	    ') AS `distance` FROM ', tbl, ' WHERE ', idq,
+	    ' IN (SELECT `myvecid` FROM (SELECT myvector_ann_set(', annargs,
+	    ') `_mvjson`) `_mvsrc`, JSON_TABLE(`_mvsrc`.`_mvjson`, ''$[*]''',
+	    ' COLUMNS(`myvecid` BIGINT PATH ''$'')) `_mvann`) AND ', pred,
+	    ' ORDER BY `distance`, ', idq, ' LIMIT ', k);
+	PREPARE _myvector_stmt FROM @_myvector_sql;
+	EXECUTE _myvector_stmt;
+	DEALLOCATE PREPARE _myvector_stmt;
+
+	SET @_myvector_sql = NULL;
+	SET @_myvector_js  = NULL;
+	SET @_myvector_n   = NULL;
 END
 //
 
