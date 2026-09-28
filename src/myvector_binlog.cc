@@ -1060,6 +1060,7 @@ void myvector_binlog_loop(int id) {
          * FORMAT_DESCRIPTION_EVENT declares (CRC32 with the default
          * binlog_checksum). */
         bool eventsHaveChecksum = false;
+        bool backoff = false;
         while (!shutdown_binlog_thread.load()) {
             int fetch_rc = mysql_binlog_fetch(&mysql, &rpl);
             if (fetch_rc != 0) {
@@ -1077,6 +1078,10 @@ void myvector_binlog_loop(int id) {
                                       err.c_str());
                     }
                     lastFetchError = err;
+                    // a server-reported error may repeat on every reconnect
+                    // (e.g. a purged resume file): don't reconnect in a
+                    // tight loop
+                    backoff = (err.length() > 0);
                 }
                 {
                     lock_guard<mutex> binlogMutex(binlog_stream_mutex_);
@@ -1193,6 +1198,8 @@ void myvector_binlog_loop(int id) {
             cnt++;
         }  // while (binlog_fetch)
         close_binlog_mysql();
+        if (backoff && !shutdown_binlog_thread.load())
+            sleep(1);
     }  // while (reconnect)
     info_print("Exiting binlog thread (%d events, %zu rows applied).", cnt, nrows);
 }  // myvector_binlog_loop()
