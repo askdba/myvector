@@ -674,7 +674,6 @@ public:
                                   const size_t& binlogPos);
     void getCheckPointString(string& ckstr);
 
-
 private:
     string m_name;
     string m_type;
