@@ -1028,8 +1028,10 @@ void myvector_binlog_loop(int id) {
             rpl.file_name = startbinlog.c_str();
         rpl.start_position = resumeFile.length() ? resumePos : 4;
         rpl.server_id = 1;
-        // heartbeats keep the connection alive; the client library drops them
-        rpl.flags = MYSQL_RPL_SKIP_HEARTBEAT;
+        /* Heartbeats are returned, not skipped (no MYSQL_RPL_SKIP_HEARTBEAT):
+         * the client library would consume them inside mysql_binlog_fetch()
+         * and never return on an idle server, so this loop could not see
+         * shutdown_binlog_thread and plugin deinit would wait forever. */
         if (mysql_binlog_open(&mysql, &rpl)) {
             error_print("Binlog open failed (%s at %llu): %s",
                         startbinlog.c_str(),
@@ -1151,8 +1153,11 @@ void myvector_binlog_loop(int id) {
                  */
                 const int type_code = static_cast<int>(type);
                 const bool is_fde = (type_code == 15);
-                /* HEARTBEAT_LOG_EVENT (27) / _V2 (41) are not binlog events */
+                /* HEARTBEAT_LOG_EVENT (27) / _V2 (41) are not binlog events;
+                 * they only keep an idle connection alive */
                 const bool is_heartbeat = (type_code == 27 || type_code == 41);
+                if (is_heartbeat)
+                    continue;
                 uint32_t next_pos_hdr = 0;
                 if (!is_fde && !is_heartbeat && event_len >= 17)
                     memcpy(&next_pos_hdr, &event_buf[13], 4);
