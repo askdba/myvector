@@ -58,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
-- **`ef_search` in a search's options now applies to that query only** (PR for #165).
+- **`ef_search` in a search's options now applies to that query only** (PR #167, issue #165).
   Before, `myvector_ann_set(..., 'nn=10,ef_search=N')` stored `N` on the shared index:
   every later query from any session searched with `N` instead of the index setting, and
   the write raced with concurrent searches (undefined behaviour). The effort is now passed
