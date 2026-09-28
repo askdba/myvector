@@ -393,8 +393,9 @@ void parseRowsEvent(const unsigned char* event_buf,
 }
 
 /* parseRotateEvent() : binlog ROTATE event indicates end of current binlog
- * file and start of new binlog file. The offs parameter is to handle quirks
- * in the first ROTATE event.
+ * file and start of new binlog file. offs=true strips the 4-byte CRC32
+ * trailer the event carries when the stream is checksummed (see
+ * eventsHaveChecksum in myvector_binlog_loop()).
  */
 void parseRotateEvent(const unsigned char* event_buf,
                       unsigned int event_len,
@@ -939,155 +940,256 @@ void myvector_binlog_loop(int id) {
         return;
     }
 
-    /* wait till mysql is open to access */
-    while (1) {
-        mysql_init(&mysql);
-        binlog_mysql_conn = &mysql;
-        unsigned int read_timeout_sec = 1;
-        mysql_options(&mysql, MYSQL_OPT_READ_TIMEOUT, &read_timeout_sec);
+    int cnt = 0;
+    size_t nrows = 0;
+    bool firstConnection = true;
+    string resumeFile;
+    unsigned long long resumePos = 0;
+    string lastFetchError;
 
-        if (!mysql_real_connect(
-                &mysql,
-                conn_cfg.host.c_str(),
-                conn_cfg.user_id.c_str(),
-                conn_cfg.password.c_str(),
-                NULL,
-                (conn_cfg.port.length() ? atoi(conn_cfg.port.c_str()) : 0),
-                conn_cfg.socket.c_str(),
-                CLIENT_IGNORE_SIGPIPE)) {
-            /// fprintf(stderr, "real connect failed %s\n",
-            /// mysql_error(&mysql));
+    /* Outer reconnect loop. The binlog connection has a 1-second read timeout
+     * (so shutdown is noticed quickly). Without heartbeats that made
+     * mysql_binlog_fetch() fail whenever the server was idle for a second,
+     * and the listener exited: online=Y indexes stopped updating (#166).
+     * Heartbeats (below) keep an idle connection alive; on any fetch error
+     * that remains (lost connection, killed dump thread, a stall longer than
+     * the timeout), reconnect and resume after the last event processed.
+     */
+    while (!shutdown_binlog_thread.load()) {
+        /* wait till mysql is open to access */
+        while (1) {
+            mysql_init(&mysql);
+            binlog_mysql_conn = &mysql;
+            unsigned int read_timeout_sec = 1;
+            mysql_options(&mysql, MYSQL_OPT_READ_TIMEOUT, &read_timeout_sec);
+
+            if (!mysql_real_connect(
+                    &mysql,
+                    conn_cfg.host.c_str(),
+                    conn_cfg.user_id.c_str(),
+                    conn_cfg.password.c_str(),
+                    NULL,
+                    (conn_cfg.port.length() ? atoi(conn_cfg.port.c_str()) : 0),
+                    conn_cfg.socket.c_str(),
+                    CLIENT_IGNORE_SIGPIPE)) {
+                /// fprintf(stderr, "real connect failed %s\n",
+                /// mysql_error(&mysql));
+                // free the failed handle; mysql_init() runs again on retry
+                string connErr = mysql_error(&mysql);
+                close_binlog_mysql();
+                sleep(1);
+                if (shutdown_binlog_thread
+                        .load()) {  // Check shutdown flag after sleep
+                    // normal on server shutdown: the server ends the dump
+                    // connection before it stops the plugin
+                    info_print(
+                        "Binlog thread shutting down during connect retry.");
+                    close_binlog_mysql();
+                    return;
+                }
+                connect_attempts++;
+                if (connect_attempts > 600) {
+                    error_print("MyVector binlog thread failed to connect (%s)",
+                                connErr.c_str());
+                    return;
+                }
+                continue;
+            }
+            connect_attempts = 0;
+            break;  /// connected
+        }
+
+        /* The heartbeat period (nanoseconds) makes the server send a
+         * heartbeat event every 0.5 s while there is nothing new in the
+         * binlog, so an idle server does not trip the 1 s read timeout and
+         * force a reconnect every second. */
+        std::string initQuery =
+            "SET @master_binlog_checksum = 'NONE', @source_binlog_checksum = "
+            "'NONE',@net_read_timeout = 3000, @replica_net_timeout = 3000, "
+            "@master_heartbeat_period = 500000000, "
+            "@source_heartbeat_period = 500000000;";
+        ret = mysql_real_query(&mysql, initQuery.c_str(), initQuery.length());
+        if (ret)
+            error_print("Binlog session setup failed: %s", mysql_error(&mysql));
+
+        // BinlogPos bp = getMinimumBinlogReadPosition();
+
+        if (firstConnection)
+            OpenAllOnlineVectorIndexes(&mysql);
+
+        string startbinlog = resumeFile.length()
+                                 ? resumeFile
+                                 : myvector_find_earliest_binlog_file();
+
+        MYSQL_RPL rpl;
+        memset(&rpl, 0, sizeof(rpl));
+        rpl.file_name = NULL;
+        if (startbinlog.length())
+            rpl.file_name = startbinlog.c_str();
+        rpl.start_position = resumeFile.length() ? resumePos : 4;
+        rpl.server_id = 1;
+        // heartbeats keep the connection alive; the client library drops them
+        rpl.flags = MYSQL_RPL_SKIP_HEARTBEAT;
+        if (mysql_binlog_open(&mysql, &rpl)) {
+            error_print("Binlog open failed (%s at %llu): %s",
+                        startbinlog.c_str(),
+                        (unsigned long long)rpl.start_position,
+                        mysql_error(&mysql));
+            close_binlog_mysql();
             sleep(1);
-            if (shutdown_binlog_thread
-                    .load()) {  // Check shutdown flag after sleep
-                error_print(
-                    "Binlog thread shutting down during connect retry.");
-                close_binlog_mysql();
-                return;
-            }
-            connect_attempts++;
-            if (connect_attempts > 600) {
-                error_print("MyVector binlog thread failed to connect (%s)",
-                            mysql_error(&mysql));
-                close_binlog_mysql();
-                return;
-            }
             continue;
         }
-        break;  /// connected
-    }
 
-    std::string initQuery =
-        "SET @master_binlog_checksum = 'NONE', @source_binlog_checksum = "
-        "'NONE',@net_read_timeout = 3000, @replica_net_timeout = 3000;";
-    ret = mysql_real_query(&mysql, initQuery.c_str(), initQuery.length());
-    printf("mysql_query ret = %d\n", ret);
+        if (firstConnection) {
+            void vector_q_thread_fn(int id);
+            for (int i = 0; i < myvector_index_bg_threads; i++) {
+                std::thread(vector_q_thread_fn, i).detach();
+            }
+            firstConnection = false;
+        }
 
-    // BinlogPos bp = getMinimumBinlogReadPosition();
-
-    OpenAllOnlineVectorIndexes(&mysql);
-
-    string startbinlog = myvector_find_earliest_binlog_file();
-
-    MYSQL_RPL rpl;
-    memset(&rpl, 0, sizeof(rpl));
-    rpl.file_name = NULL;
-    if (startbinlog.length())
-        rpl.file_name = startbinlog.c_str();
-    rpl.start_position = 4;
-    rpl.server_id = 1;
-    ret = mysql_binlog_open(&mysql, &rpl);
-
-    int cnt = 0;
-
-    void vector_q_thread_fn(int id);
-    for (int i = 0; i < myvector_index_bg_threads; i++) {
-        std::thread(vector_q_thread_fn, i).detach();
-    }
-
-    size_t nrows = 0;
-
-    TableMapEvent tev;
-    while (!shutdown_binlog_thread.load()) {
-        int fetch_rc = mysql_binlog_fetch(&mysql, &rpl);
-        if (fetch_rc != 0) {
-            if (shutdown_binlog_thread.load()) {
+        TableMapEvent tev;
+        /* Whether the events now being sent carry a 4-byte CRC32 trailer.
+         * @source_binlog_checksum='NONE' only affects events the dump thread
+         * generates itself before it has read a file: the first (fake) rotate
+         * event of a connection has no CRC. Events read from a binlog file,
+         * including the real rotate at its end and the fake rotate the server
+         * sends for the next file, keep the checksum that file's
+         * FORMAT_DESCRIPTION_EVENT declares (CRC32 with the default
+         * binlog_checksum). */
+        bool eventsHaveChecksum = false;
+        while (!shutdown_binlog_thread.load()) {
+            int fetch_rc = mysql_binlog_fetch(&mysql, &rpl);
+            if (fetch_rc != 0) {
+                if (shutdown_binlog_thread.load()) {
+                    break;
+                }
+                /* Read timeout or a lost connection: note where to resume and
+                 * reconnect (outer loop). A plain read timeout has no error
+                 * text; log anything else, but only once per distinct
+                 * message so a persistent failure does not flood the log. */
+                {
+                    string err = mysql_error(&mysql);
+                    if (err.length() && err != lastFetchError) {
+                        warning_print("Binlog fetch failed, reconnecting: %s",
+                                      err.c_str());
+                    }
+                    lastFetchError = err;
+                }
+                {
+                    lock_guard<mutex> binlogMutex(binlog_stream_mutex_);
+                    if (currentBinlogFile.length()) {
+                        resumeFile = currentBinlogFile;
+                        resumePos = currentBinlogPos;
+                    }
+                }
                 break;
             }
-            std::string err = mysql_error(&mysql);
-            if (err.find("timed out") != std::string::npos) {
-                continue;
-            }
-            error_print("Binlog fetch failed: %s", err.c_str());
-            break;
-        }
+            lastFetchError.clear();
 #if MYSQL_VERSION_ID >= 80400
-        MYVECTOR_DIAGNOSTIC_PUSH
-        MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS
-        using MyvectorLogEventType = binary_log::Log_event_type;
-        constexpr MyvectorLogEventType kRotateEvent = binary_log::ROTATE_EVENT;
-        constexpr MyvectorLogEventType kTableMapEvent =
-            binary_log::TABLE_MAP_EVENT;
-        constexpr MyvectorLogEventType kWriteRowsEvent =
-            binary_log::WRITE_ROWS_EVENT;
-        MYVECTOR_DIAGNOSTIC_POP
+            MYVECTOR_DIAGNOSTIC_PUSH
+            MYVECTOR_IGNORE_DEPRECATED_DECLARATIONS
+            using MyvectorLogEventType = binary_log::Log_event_type;
+            constexpr MyvectorLogEventType kRotateEvent = binary_log::ROTATE_EVENT;
+            constexpr MyvectorLogEventType kTableMapEvent =
+                binary_log::TABLE_MAP_EVENT;
+            constexpr MyvectorLogEventType kWriteRowsEvent =
+                binary_log::WRITE_ROWS_EVENT;
+            MYVECTOR_DIAGNOSTIC_POP
 #else
-        using MyvectorLogEventType = binary_log::Log_event_type;
-        constexpr MyvectorLogEventType kRotateEvent = binary_log::ROTATE_EVENT;
-        constexpr MyvectorLogEventType kTableMapEvent =
-            binary_log::TABLE_MAP_EVENT;
-        constexpr MyvectorLogEventType kWriteRowsEvent =
-            binary_log::WRITE_ROWS_EVENT;
+            using MyvectorLogEventType = binary_log::Log_event_type;
+            constexpr MyvectorLogEventType kRotateEvent = binary_log::ROTATE_EVENT;
+            constexpr MyvectorLogEventType kTableMapEvent =
+                binary_log::TABLE_MAP_EVENT;
+            constexpr MyvectorLogEventType kWriteRowsEvent =
+                binary_log::WRITE_ROWS_EVENT;
 #endif
 
-        MyvectorLogEventType type = static_cast<MyvectorLogEventType>(
-            rpl.buffer[1 + EVENT_TYPE_OFFSET]);
-        unsigned long event_len = rpl.size - 1;
-        const unsigned char* event_buf = rpl.buffer + 1;
+            MyvectorLogEventType type = static_cast<MyvectorLogEventType>(
+                rpl.buffer[1 + EVENT_TYPE_OFFSET]);
+            unsigned long event_len = rpl.size - 1;
+            const unsigned char* event_buf = rpl.buffer + 1;
 
-        if (type == kRotateEvent) {
-            if (currentBinlogFile.length()) {
-                FlushOnlineVectorIndexes();
+            if (static_cast<int>(type) == 15) {  // FORMAT_DESCRIPTION_EVENT
+                /* checksum algorithm byte precedes the 4 checksum bytes at
+                 * the end of the FDE: 0 = OFF, 1 = CRC32 */
+                eventsHaveChecksum =
+                    (event_len > 5 && event_buf[event_len - 5] == 1);
             }
-            parseRotateEvent(event_buf,
-                             event_len,
-                             currentBinlogFile,
-                             currentBinlogPos,
-                             (currentBinlogFile.length() > 0));
-            continue;
-        }
-        /// fprintf(stderr, "binlog position : %s %lu (%lu)\n",
-        ///        currentBinlogFile.c_str(), currentBinlogPos, currentBinlogPos
-        ///        + event_len);
-        currentBinlogPos += event_len;
-        if (g_OnlineVectorIndexes.size() == 0)
-            continue;  // optimization!
-        if (type == kTableMapEvent) {
-            parseTableMapEvent(event_buf, event_len, tev);
-        } else if (type == kWriteRowsEvent) {
-            string key = tev.dbName + "." + tev.tableName;
-            if (g_OnlineVectorIndexes.find(key) ==
-                g_OnlineVectorIndexes.end()) {
+
+            if (type == kRotateEvent) {
+                /* Every (re)connect starts with a rotate event for the file
+                 * being read, so checkpoint only when the file changes (a real
+                 * rotation), not once per reconnect. */
+                string rotateFile;
+                size_t rotatePos = 0;
+                parseRotateEvent(event_buf,
+                                 event_len,
+                                 rotateFile,
+                                 rotatePos,
+                                 eventsHaveChecksum);
+                if (currentBinlogFile.length() &&
+                    rotateFile != currentBinlogFile) {
+                    FlushOnlineVectorIndexes();
+                }
+                lock_guard<mutex> binlogMutex(binlog_stream_mutex_);
+                currentBinlogFile = rotateFile;
+                currentBinlogPos = rotatePos;
                 continue;
             }
-            int idcolpos = g_OnlineVectorIndexes[key].idColumnPosition;
-            int veccolpos = g_OnlineVectorIndexes[key].vecColumnPosition;
-            vector<VectorIndexUpdateItem*> updates;
-            parseRowsEvent(event_buf,
-                           event_len,
-                           tev,
-                           idcolpos - 1,
-                           veccolpos - 1,
-                           updates);
-            nrows += updates.size();
-            for (auto item : updates) {
-                gqueue_.enqueue(item);
+            /// fprintf(stderr, "binlog position : %s %lu (%lu)\n",
+            ///        currentBinlogFile.c_str(), currentBinlogPos, currentBinlogPos
+            ///        + event_len);
+            {
+                /* Track the position from the event header's next_log_pos
+                 * (bytes 13-16) rather than adding event_len, and skip the
+                 * FORMAT_DESCRIPTION_EVENT (type 15): on a reconnect in the
+                 * middle of a file the server sends that file's FDE, which is
+                 * not part of the stream at the resume position. Adding its
+                 * length would move the resume position past a real event
+                 * boundary on every reconnect. Same as the component.
+                 */
+                const int type_code = static_cast<int>(type);
+                const bool is_fde = (type_code == 15);
+                /* HEARTBEAT_LOG_EVENT (27) / _V2 (41) are not binlog events */
+                const bool is_heartbeat = (type_code == 27 || type_code == 41);
+                uint32_t next_pos_hdr = 0;
+                if (!is_fde && !is_heartbeat && event_len >= 17)
+                    memcpy(&next_pos_hdr, &event_buf[13], 4);
+                if (next_pos_hdr != 0) {
+                    lock_guard<mutex> binlogMutex(binlog_stream_mutex_);
+                    currentBinlogPos = static_cast<size_t>(next_pos_hdr);
+                }
             }
-        }
-        cnt++;
-    }  // while (binlog_fetch)
-    error_print("Exiting binlog func, error %s", mysql_error(&mysql));
-    close_binlog_mysql();
+            if (g_OnlineVectorIndexes.size() == 0)
+                continue;  // optimization!
+            if (type == kTableMapEvent) {
+                parseTableMapEvent(event_buf, event_len, tev);
+            } else if (type == kWriteRowsEvent) {
+                string key = tev.dbName + "." + tev.tableName;
+                if (g_OnlineVectorIndexes.find(key) ==
+                    g_OnlineVectorIndexes.end()) {
+                    continue;
+                }
+                int idcolpos = g_OnlineVectorIndexes[key].idColumnPosition;
+                int veccolpos = g_OnlineVectorIndexes[key].vecColumnPosition;
+                vector<VectorIndexUpdateItem*> updates;
+                parseRowsEvent(event_buf,
+                               event_len,
+                               tev,
+                               idcolpos - 1,
+                               veccolpos - 1,
+                               updates);
+                nrows += updates.size();
+                for (auto item : updates) {
+                    gqueue_.enqueue(item);
+                }
+            }
+            cnt++;
+        }  // while (binlog_fetch)
+        close_binlog_mysql();
+    }  // while (reconnect)
+    info_print("Exiting binlog thread (%d events, %zu rows applied).", cnt, nrows);
 }  // myvector_binlog_loop()
 
 void vector_q_thread_fn(int id) {

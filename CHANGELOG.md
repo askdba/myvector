@@ -58,6 +58,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **Plugin: online indexes stopped updating about a second after the server went idle**
+  (issue #166). The plugin's binlog listener reads with a 1-second timeout. When the server
+  had no new binlog events for a second, the read timed out and the listener logged
+  `Binlog fetch failed:` (with no error text) and exited, so `online=Y` indexes stopped
+  receiving changes, usually within seconds of `INSTALL PLUGIN`. Building a non-online
+  index was not the cause. The listener now asks the server for a heartbeat every 0.5 s,
+  so an idle connection stays open. On any other read error it reconnects and resumes
+  after the last event it processed instead of exiting. A binlog rotation no longer
+  leaves 4 bytes of checksum at the end of the tracked binlog file name, which a resume
+  or checkpoint would otherwise use. Component builds already reconnected and are
+  unchanged. New test: `scripts/test-online-updates-idle.py` (plugin and component).
 - **`myvector_ann_set()` result buffer.** It is now sized for 10,000 keys of any length.
   The 128,000-byte buffer was too small for 10,000 keys of 12 digits or more. The plugin
   wrote past its end: `nn=10000` over 13-digit keys crashed `mysqld` (SIGSEGV) on 8.4. The
