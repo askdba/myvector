@@ -65,10 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   receiving changes, usually within seconds of `INSTALL PLUGIN`. Building a non-online
   index was not the cause. The listener now asks the server for a heartbeat every 0.5 s,
   so an idle connection stays open. On any other read error it reconnects and resumes
-  after the last event it processed instead of exiting. A binlog rotation no longer
-  leaves 4 bytes of checksum at the end of the tracked binlog file name, which a resume
-  or checkpoint would otherwise use. Component builds already reconnected and are
-  unchanged. New test: `scripts/test-online-updates-idle.py` (plugin and component).
+  after the last event it processed instead of exiting. Rotate events are read according
+  to whether the stream carries checksums, so the tracked binlog file name stays correct
+  across reconnects and rotations. Component builds already reconnected and are unchanged
+  by this fix. New test: `scripts/test-online-updates-idle.py` (plugin and
+  component).
 - **`myvector_ann_set()` result buffer.** It is now sized for 10,000 keys of any length.
   The 128,000-byte buffer was too small for 10,000 keys of 12 digits or more. The plugin
   wrote past its end: `nn=10000` over 13-digit keys crashed `mysqld` (SIGSEGV) on 8.4. The

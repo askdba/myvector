@@ -21,6 +21,12 @@ It also checks the server log up to stage 7: no "Binlog fetch failed", no
 exit of the listener, and no checkpoint per idle second ("CheckPoint line" count over an
 idle window stays small).
 
+Component builds (8.4, 9.7, 26.7) currently fail from the first stage after a
+binlog rotation: the component strips no checksum from rotate events, so the
+binlog file name it tracks ends in the event's 4 CRC bytes, and later updates
+are skipped as older than that position. This is a known component issue,
+separate from #166, which is plugin-only.
+
 Usage:
   python3 scripts/test-online-updates-idle.py --plugin-dir dist/plugin-8.4
   python3 scripts/test-online-updates-idle.py \\
