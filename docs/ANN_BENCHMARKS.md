@@ -1,4 +1,12 @@
-# ANN Benchmark - MyVector vs PGVector vs MariaDB
+# ANN Benchmark - MyVector vs MariaDB
+
+> **Looking for current numbers?** Per-release CI baselines are in
+> [`release/BENCHMARK_v1.26.9.md`](https://github.com/askdba/myvector/blob/main/release/BENCHMARK_v1.26.9.md).
+> They use a different dataset, hardware and harness, so don't compare them with this page.
+>
+> This page is a one-off comparison with MariaDB on public
+> [ann-benchmarks](https://github.com/erikbern/ann-benchmarks) datasets (OVH server, 24-core AMD EPYC 9254,
+> 2025-02-23), run before the first tagged release. The exact build isn't recorded.
 
 ## Server
 
@@ -22,7 +30,6 @@ Index Build (Distance : L2/Euclidean)
 | MyVector  | 32  |   800          | 24        | 7m 1s      |
 | MyVector  | 32  |   1200         | 48        | 9m 16s     |
 | MyVector  | 12  |   2000         | 48        | 8m 8s      |
-| PGVector  |     |                |           |            |
 | MariaDB   | 24  |     N.A        | 1         | 120m       |
 
 ## dbpedia-openai-1000k-angular
@@ -35,7 +42,7 @@ Index Build (Distance : Cosine)
 | MyVector  | 24  |   400          | 48        | 13m 1s     |
 | MariaDB   | 24  |     N.A        | 1         | 98m        |
 
-MariaDB does not have a equivalent efconstruction ->
+MariaDB does not have an equivalent efconstruction ->
 <https://lists.mariadb.org/hyperkitty/list/discuss@lists.mariadb.org/thread/PPRJF4JAFE3RIKMEPAFY2IUJJ4RPHPAW/>
 
 ANN Search, k = 10
@@ -49,7 +56,7 @@ ANN Search, k = 10
 |           |     |                | 200       | 0.996      | 338  |
 |           |     |                | 400       | 0.998      | 205  |
 |           |     |                | 800       | 0.999      | 124  |
-| Mariadb   | 24  |   N.A          | 10        | 0.992      | 887  |
+| MariaDB   | 24  |   N.A          | 10        | 0.992      | 887  |
 |           |     |                | 20        | 0.997      | 452  |
 |           |     |                | 40        | 0.998      | 260  |
 |           |     |                | 80        | 0.999      |  28  |
@@ -67,4 +74,4 @@ ANN Search, k = 100
 |           |     |                | 80        | 0.987      | 421  |
 |           |     |                | 200       | 0.999      | 283  |
 |           |     |                | 400       | 1.000      | 178  |
-| Mariadb   | 24  |   N.A          | 10        | 1.000      |  12  |
+| MariaDB   | 24  |   N.A          | 10        | 1.000      |  12  |
