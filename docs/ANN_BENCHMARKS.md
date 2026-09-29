@@ -5,7 +5,7 @@
 > They use a different dataset, hardware and harness, so don't compare them with this page.
 >
 > This page is a one-off comparison with MariaDB on public
-> [ann-benchmarks](https://github.com/erikbern/ann-benchmarks) datasets (OVH 48-core server,
+> [ann-benchmarks](https://github.com/erikbern/ann-benchmarks) datasets (OVH server, 24-core AMD EPYC 9254,
 > 2025-02-23), run before the first tagged release. The exact build isn't recorded.
 
 ## Server
