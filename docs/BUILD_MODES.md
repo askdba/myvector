@@ -14,10 +14,23 @@ This document describes the two build modes (plugin and component) and their beh
 |--------|--------|-----------|
 | **Activation** | `mysql < sql/myvectorplugin.sql` (`INSTALL PLUGIN` + UDFs + procedures) | `mysql < sql/myvector_install_component.sql` (`INSTALL COMPONENT` + supplemental UDFs + procedures + view) |
 | **UDF registration** | Manual `CREATE FUNCTION ... SONAME 'myvector.so'` per UDF | Core UDFs automatic on component init; supplemental UDFs (`myvector_row_distance`, `myvector_is_valid`, `myvector_search_open_udf`) + `MYVECTOR_INDEX_*` procedures + view created by the install script |
-| **Deactivation** | `UNINSTALL PLUGIN myvector` (drops UDFs) | `mysql < sql/myvector_uninstall_component.sql` (drops procedures/view/supplemental UDFs, then `UNINSTALL COMPONENT`) |
+| **Deactivation** | `UNINSTALL PLUGIN myvector` (drops UDFs) | `mysql < sql/myvector_uninstall_component.sql` (drops procedures/view/supplemental UDFs, then `UNINSTALL COMPONENT`) — see the constraint below |
 | **Init timing** | Plugin load hooks | Component service init |
 | **Binlog Events** | Simple queue; no `request_shutdown()`/`clear_shutdown()` | Full shutdown/restart support via `request_shutdown()` and `clear_shutdown()` |
-| **Query rewrite** (inline `MYVECTOR(...)` DDL, `WHERE MYVECTOR_IS_ANN(...)`) | Yes | No — see issue [#144](https://github.com/askdba/myvector/issues/144) and `docs/DEV_TEST_ENVIRONMENT.md` |
+| **Query rewrite** (inline `MYVECTOR(...)` DDL, `WHERE MYVECTOR_IS_ANN(...)`) | Yes | Yes, via the Event Tracking Parse service — fixed in [#144](https://github.com/askdba/myvector/issues/144). Requires an exact MySQL point-release match between build headers and running server; see [#174](https://github.com/askdba/myvector/issues/174) if the rewrite appears to silently no-op. |
+
+### Component: `UNINSTALL COMPONENT` requires no other active connections
+
+Because the component provides the `event_tracking_parse` service (for query
+rewrite), `UNINSTALL COMPONENT` fails with `ERROR 3540` whenever *any other*
+session has run at least one query since the component was installed and is
+still connected — this is a MySQL server-side reference-caching limitation
+(see [#155](https://github.com/askdba/myvector/issues/155) for the full
+trace), not something specific to this component. In practice, the binlog
+listener's own long-lived connection is almost always the one that trips
+this, so: **`DROP` all `online=Y` indexes first** (which stops the binlog
+listener), and make sure no other client connection is idling nearby, before
+running `UNINSTALL COMPONENT`.
 
 ## Reinstall Behavior (Going-Forward Plan)
 

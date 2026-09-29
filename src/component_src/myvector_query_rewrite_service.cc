@@ -30,17 +30,31 @@
  *
  * KNOWN LIMITATION (myvector#155): once this service is registered,
  * `UNINSTALL COMPONENT` fails with ERROR 3540 ("Unregistration of service
- * implementation ... failed") whenever any `online=Y` index exists -- i.e.
- * whenever the binlog listener (myvector_binlog_service.cc) has an active
- * "Binlog Dump" replication connection open, even if it has never
- * processed a real event. The binlog listener's own shutdown path is
- * correct (mysql_binlog_close()+mysql_close() on every exit path,
- * synchronously joined before deinit returns) -- this looks like a gap in
- * how MySQL's replication-thread lifecycle interacts with the Event
- * Tracking service registry's reference counting, not a bug in the
- * shutdown sequence here. See #155 for the full investigation, ruled-out
- * causes, and next steps. Workaround: DROP online=Y indexes before
- * UNINSTALL COMPONENT.
+ * implementation ... failed") whenever ANY OTHER session has dispatched at
+ * least one query since this component was installed and is STILL
+ * CONNECTED -- confirmed via isolated repro with no binlog listener and no
+ * online index involved at all: a second, idle connection that has run one
+ * query is sufficient; UNINSTALL succeeds the instant that connection
+ * actually disconnects (deterministic, not a race). Root cause (traced into
+ * MySQL 8.4.8 source): every THD lazily acquires and holds a registry
+ * reference to matching event_tracking_parse providers on its first parse
+ * dispatch (sql/reference_caching_setup.cc's Event_reference_caching_cache),
+ * released only when that THD is destroyed; the unload-notification path
+ * only refreshes the *current* THD (the one running UNINSTALL), not any
+ * other live session's cache. This is a MySQL server-side limitation, not a
+ * bug in this component or in the binlog listener's shutdown path (which is
+ * correct: mysql_binlog_close()+mysql_close() on every exit path,
+ * synchronously joined before deinit returns).
+ *
+ * In practice the binlog listener (myvector_binlog_service.cc) is almost
+ * always the trigger, simply because it is the one connection in a typical
+ * deployment that stays alive indefinitely (any `online=Y` index keeps it
+ * running). Workaround: DROP all `online=Y` indexes (stopping the binlog
+ * listener) -- and ensure no other client connection is idling with a
+ * query already dispatched -- before UNINSTALL COMPONENT. See #155 for the
+ * full investigation and suggested next steps (this looks like it may be
+ * worth reporting upstream to MySQL, since it would affect any well-behaved
+ * component providing this service type).
  */
 #include <mysql/components/component_implementation.h>
 #include <mysql/components/util/event_tracking/event_tracking_parse_consumer_helper.h>

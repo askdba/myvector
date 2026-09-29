@@ -65,8 +65,8 @@ you're testing.
 | Install method | `INSTALL COMPONENT 'file://myvector'` | `INSTALL PLUGIN myvector SONAME 'myvector.so'` |
 | Artifact | `libmyvector_component.so` + `myvector.json` | `myvector.so` + `sql/myvectorplugin.sql` |
 | UDFs, KNN brute-force, HNSW index build/status/load/drop, online updates (binlog) | Yes | Yes |
-| Inline `col MYVECTOR(...)` DDL annotation | **No — fails on every currently-supported MySQL version** | Yes (verified) |
-| `WHERE MYVECTOR_IS_ANN(...)` query rewrite | **No — fails on every currently-supported MySQL version** | Yes (verified) |
+| Inline `col MYVECTOR(...)` DDL annotation | Yes (fixed by #144; requires exact MySQL point-release match — see #174) | Yes (verified) |
+| `WHERE MYVECTOR_IS_ANN(...)` query rewrite | Yes (fixed by #144; requires exact MySQL point-release match — see #174) | Yes (verified) |
 | Distribution used by published `ghcr.io/askdba/myvector:mysql8.4` images | No — component images are published as separate `-component` tags (e.g. `mysql8.4-component`) | Yes — this is the classic/original distribution form and still the default published tags (`mysql8.0`, `mysql8.4`, `mysql9.7`, `latest`; see `docs/DOCKER_IMAGES.md`). See `docs/COMPONENT_MIGRATION_PLAN.md` for the migration direction |
 
 There is currently only one local plugin-build script, `scripts/build-plugin-8.4-docker.sh`
@@ -75,32 +75,37 @@ this repo — if you need to test the plugin build against 8.0 or 9.7, use the
 published `ghcr.io/askdba/myvector:mysql8.0` / `:mysql9.7` images instead of
 looking for a local script that does not exist.
 
-**Why the split exists — this is a known, tracked gap, not test-environment
-flakiness.** The component's query-rewrite source
-(`src/component_src/myvector_query_rewrite_service.cc`) is only compiled
-when `${MYSQL_SOURCE_DIR}/include/mysql/components/services/query_rewrite.h`
-exists in the MySQL source tree. That header does not exist in current
-MySQL server source at all (confirmed against fresh `mysql-8.4.8` and
-`mysql-9.7.0` checkouts) — so the component build silently has *no*
-query-rewrite support on any version this project currently builds
-against. This is tracked as **GitHub issue #144**
-(https://github.com/askdba/myvector/issues/144 — or `gh issue view 144`
-for the full root-cause writeup if you have the repo checked out and `gh`
-authenticated). The plugin build is unaffected because it rewrites queries
-through a completely different, stable mechanism — the classic Audit
-Plugin pre-parse hook (`plugin_audit.h`) in `src/myvector_plugin.cc`.
-Issue #144 proposes porting query rewrite to the Event Tracking parse
-service; if/when that lands, the component build gains DDL-annotation and
-`MYVECTOR_IS_ANN` support too, so the table above is a current state, not
-a permanent architectural split.
+**History — the component build used to have no query-rewrite support at
+all.** The component's query-rewrite source
+(`src/component_src/myvector_query_rewrite_service.cc`) originally targeted
+a service header (`query_rewrite.h`) that never existed in real MySQL
+server source, so the rewrite code was silently never compiled in on any
+version. This was **GitHub issue #144**, fixed by porting the rewrite to
+the real, current extension point — the Event Tracking Parse service,
+mirroring the plugin's Audit Plugin pre-parse hook
+(`plugin_audit.h` in `src/myvector_plugin.cc`). Both build variants now
+support the inline `MYVECTOR(...)` DDL annotation and
+`WHERE MYVECTOR_IS_ANN(...)`.
 
-**Rule of thumb:**
-- Testing UDFs, KNN, HNSW index lifecycle, online (binlog) updates, or
-  running the pre-release/benchmark/stress scripts → **component** build is
-  sufficient and is what those scripts already default to.
-- Testing the inline `MYVECTOR(...)` DDL annotation or
-  `WHERE MYVECTOR_IS_ANN(...)` → you need the **plugin** build (or a
-  published image, which also uses the plugin form).
+**Caveat — the component's rewrite requires an exact MySQL point-release
+match (GitHub issue #174).** Verified working end-to-end against MySQL
+8.4.8 (the exact source our component headers are built against), but
+verified **silently non-functional** (the callback is never invoked, for
+any query, not just rewrite-eligible ones) against MySQL 8.4.11 (what the
+floating `mysql:8.4` Docker tag currently resolves to). If you're testing
+the component's rewrite path and it appears to silently no-op, pin the
+exact MySQL point release rather than assuming the feature is broken — see
+#174 for the full trace.
+
+**Component `UNINSTALL COMPONENT` constraint (GitHub issue #155).**
+Because the component provides the Event Tracking Parse service,
+`UNINSTALL COMPONENT` fails with `ERROR 3540` whenever *any other*
+connection has run at least one query since install and is still
+connected — a MySQL server-side reference-caching limitation, not specific
+to the binlog listener (though the binlog listener's long-lived connection
+is the most common trigger in practice). `DROP` all `online=Y` indexes
+(and make sure no other client is idling nearby) before uninstalling. See
+#155 for the full trace.
 
 ## 3. Quickstart
 
@@ -155,8 +160,11 @@ COMPONENT_DIR=dist/component-9.7 ./scripts/smoke-component.sh 9.7
 
 `scripts/smoke-component.sh` intentionally tolerates the
 `MYVECTOR_IS_ANN` query failing as a non-fatal `WARNING: ANN query failed
-(query rewrite may not be active)` — that's issue #144, expected on the
-component build, not a bug in the smoke script.
+(query rewrite may not be active)` rather than a hard failure. #144 (the
+original "component rewrite never runs at all" bug) is fixed, but #174
+means the rewrite can still silently no-op on a MySQL point release that
+doesn't exactly match the build headers — the tolerant warning is
+deliberate, not a bug in the smoke script.
 
 There is currently no equivalent automated smoke script for the *plugin*
 build; Task 1's verification (see below and `docs/RELIABLE_TEST_ENV_PLAN.md`)
@@ -268,3 +276,10 @@ binlog/uninstall, and the expected, tolerated
 `WARNING: ANN query failed (query rewrite may not be active)` for the
 `MYVECTOR_IS_ANN` step (issue #144, not a failure of this doc's
 instructions).
+
+**Update:** #144 is now fixed — the component's rewrite works correctly
+(verified against MySQL 8.4.8; see the point-release caveat above, #174).
+The tolerant `WARNING:` handling above is left in `smoke-component.sh`
+deliberately, since #174 means the rewrite can still silently no-op
+depending on the exact server version under test — a hard failure there
+would make the smoke test version-fragile in the wrong way.
