@@ -220,11 +220,11 @@ char* myvector_ann_set(UDF_INIT* initid,
     std::stringstream ss;
     if (searchvec) {
         std::vector<KeyTypeInteger> result_keys;
-        if (ef_search)
-            vi->setSearchEffort(ef_search);
+        /* ef_search is passed per call: storing it on the shared index raced
+         * with concurrent searches and stuck for later queries (#165). */
         if (!filtered || !allowed.empty())
             vi->searchVectorNN(searchvec, vi->getDimension(), result_keys, nn,
-                               filtered ? &allowed : nullptr);
+                               filtered ? &allowed : nullptr, ef_search);
 
         ss << "[";
         for (size_t i = 0; i < result_keys.size(); i++) {

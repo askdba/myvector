@@ -140,14 +140,16 @@ public:
 
     /* searchVectorNN - search and return 'n' Nearest Neighbours. If 'allowed'
      * is not null, only rows whose key is in that set are returned (filtered
-     * search).
+     * search). ef_search > 0 sets the search effort for this call only (HNSW);
+     * 0 uses the index's own setting.
      */
     virtual bool searchVectorNN(
         VectorPtr qvec,
         int dim,
         std::vector<KeyTypeInteger>& nnkeys,
         int n,
-        const std::unordered_set<KeyTypeInteger>* allowed = nullptr) = 0;
+        const std::unordered_set<KeyTypeInteger>* allowed = nullptr,
+        int ef_search = 0) = 0;
 
     /* insertVectortor - insert a vector into the index */
     virtual bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id) = 0;
@@ -170,10 +172,6 @@ public:
 
     virtual void setLastUpdateCoordinates(const std::string& /* file */,
                                           const size_t& /* pos */) {}
-
-    virtual void setSearchEffort(int ef_search) {
-        (void)ef_search;
-    } /* how much deep/wide to go? e.g ef_search in HNSW */
 
     void lockShared() { m_mutex.lock_shared(); }
     void lockExclusive() { m_mutex.lock(); }
