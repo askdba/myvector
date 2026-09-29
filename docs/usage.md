@@ -47,6 +47,19 @@ On MySQL 9.x you can use the native `VECTOR(n)` type with the same comment.
 `type` is case-insensitive (`hnsw` and `HNSW` both work). Other option names are
 case-sensitive: write `M=16`, not `m=16`. See [Known limitations](LIMITATIONS.md).
 
+### Build parallelism
+
+`threads=N` sets how many threads build the index. It defaults to the
+`myvector_index_bg_threads` system variable (default `2`, range 1-100):
+
+```sql
+SET GLOBAL myvector_index_bg_threads = 8;
+```
+
+Override it per column in the comment (`threads=48`) to build faster on a bigger
+box without changing the server-wide default. See
+[myvector_index_build](#index-management) for the build call this controls.
+
 ### The type must be spelled correctly
 
 A misspelled or missing `type` is an error. MyVector does not build a brute-force KNN
