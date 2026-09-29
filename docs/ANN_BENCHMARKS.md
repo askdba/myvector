@@ -1,19 +1,12 @@
 # ANN Benchmark - MyVector vs MariaDB
 
-> **Scope and date.** This is a one-off comparison against MariaDB on public
-> [ann-benchmarks](https://github.com/erikbern/ann-benchmarks) datasets, run on an OVH
-> 48-core server and checked in on 2025-02-23. It predates the first tagged MyVector release
-> (v1.0.1-rc.1, January 2026), and the check-in does not record the exact MyVector build.
-> The original title also named PGVector, but no PGVector results were ever filled in.
->
-> **These are not the CI baselines.** The per-release regression baselines come from the
-> `myvectorbench` workflow: a small synthetic workload (10,000 rows, dim 128) on GitHub runners.
-> For v1.26.9 they are in
+> **Looking for current numbers?** Per-release CI baselines are in
 > [`release/BENCHMARK_v1.26.9.md`](https://github.com/askdba/myvector/blob/main/release/BENCHMARK_v1.26.9.md).
-> The two sets use different datasets, hardware and harnesses, so do not compare numbers between them.
+> They use a different dataset, hardware and harness, so don't compare them with this page.
 >
-> That report also says every earlier *plugin CI* number measured an empty index. This page is not
-> affected: the recall values below (0.85 to 1.0) could only come from a real HNSW index.
+> This page is a one-off comparison with MariaDB on public
+> [ann-benchmarks](https://github.com/erikbern/ann-benchmarks) datasets (OVH 48-core server,
+> 2025-02-23), run before the first tagged release. The exact build isn't recorded.
 
 ## Server
 
