@@ -546,15 +546,40 @@ def _load_glove(dataset: str, rows: int, dim: int) -> list:
     return _load_tsv(str(txt_path), rows, dim)
 
 
+def _is_float(s: str) -> bool:
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
+def _tsv_has_word_column(path: str, sample: int = 1000) -> bool:
+    with open(path, encoding="utf-8") as f:
+        seen = 0
+        for line in f:
+            parts = line.split(maxsplit=1)
+            if not parts:
+                continue
+            if not _is_float(parts[0]):
+                return True
+            seen += 1
+            if seen >= sample:
+                break
+    return False
+
+
 def _load_tsv(path: str, rows: int, dim: int) -> list:
     """Load up to `rows` vectors from a whitespace-separated file.
 
-    Each line is either '<word> <f1> <f2> ...' or '<f1> <f2> ...'. A line
-    with dim + 1 fields starts with a word, which is skipped. The field
-    count decides, not whether the first field parses as a float: GloVe has
-    thousands of numeric words ("2008", "nan") that would otherwise become
-    a vector component.
+    Each line is either '<word> <f1> <f2> ...' or '<f1> <f2> ...'. A
+    non-numeric first field is always a word. A numeric one is a word only
+    if the file has a word column (some line among the first 1000 starts
+    with a non-numeric field): GloVe has thousands of numeric words
+    ("2008", "nan"), but in a file without words "1.0 1.1 1.2 9.9" is a
+    vector with a trailing field.
     """
+    has_words = _tsv_has_word_column(path)
     vectors = []
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -563,14 +588,10 @@ def _load_tsv(path: str, rows: int, dim: int) -> list:
             parts = line.strip().split()
             if not parts:
                 continue
-            if len(parts) == dim + 1:
+            if not _is_float(parts[0]):
                 start = 1
             else:
-                try:
-                    float(parts[0])
-                    start = 0
-                except ValueError:
-                    start = 1
+                start = 1 if has_words and len(parts) > dim else 0
             try:
                 v = [float(x) for x in parts[start:start + dim]]
             except ValueError:
@@ -601,6 +622,27 @@ def distance_metric(wp: dict) -> str:
         return _DISTANCES[given.lower()]
     except KeyError:
         raise ValueError(f"unsupported distance {given!r}; use L2 or Cosine") from None
+
+
+def _holdout_count(wp: dict) -> int:
+    n = int(wp.get("holdout_queries", 0))
+    if n < 0:
+        raise ValueError(f"holdout_queries must be >= 0, got {n}")
+    return n
+
+
+def load_workload(dataset: str, wp: dict) -> tuple:
+    """Load `rows` indexed vectors plus `holdout_queries` held-out ones.
+
+    Returns (indexed, held_out). If the dataset is too short, the holdout is
+    still taken in full and `indexed` is whatever is left; callers report
+    len(indexed), not the configured `rows`. May update wp['dim'] (GloVe).
+    """
+    holdout = _holdout_count(wp)
+    load_wp = dict(wp, rows=wp.get("rows", 10000) + holdout)
+    vectors = load_dataset(dataset, load_wp)
+    wp['dim'] = load_wp.get('dim', wp.get('dim'))
+    return split_holdout(vectors, holdout)
 
 
 def split_holdout(vectors: list, n: int, seed: int = 131) -> tuple:
@@ -1058,8 +1100,8 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     runner = os.environ.get("RUNNER_NAME", "local")
     dataset = wp.get("dataset", "synthetic")
-    holdout = int(wp.get("holdout_queries", 0))
-    distance_metric(wp)  # fail on a bad metric before starting a container
+    holdout = _holdout_count(wp)  # fail on bad settings before starting a container
+    distance_metric(wp)
 
     print(f"=== myvectorbench: mysql:{mysql_version} {build_path} @ {git_ref} ===")
 
@@ -1095,10 +1137,7 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
         else:
             install_plugin(c, os.path.join(artifact_dir, "myvector.so"))
 
-        # Load rows + holdout so `rows` stays the number of indexed rows.
-        load_wp = dict(wp, rows=wp.get("rows", 10000) + holdout)
-        vectors, held_out = split_holdout(load_dataset(dataset, load_wp), holdout)
-        wp['dim'] = load_wp.get('dim', wp.get('dim'))
+        vectors, held_out = load_workload(dataset, wp)
         metrics = run_workloads(c, vectors, wp, build_path, mysql_version,
                                 ann_gate=ann_gate, held_out=held_out)
 
@@ -1110,7 +1149,7 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
         "runner": runner,
         "dataset": dataset,
         "workload_params": {
-            "rows": wp.get("rows", 10000),
+            "rows": len(vectors),  # rows actually indexed
             "dim": wp.get("dim", 128),
             "M": wp.get("M", 16),
             "ef_construction": wp.get("ef_construction", 200),

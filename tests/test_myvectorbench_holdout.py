@@ -115,3 +115,35 @@ def test_tsv_word_with_extra_columns_still_loads(tmp_path):
     path = tmp_path / "vecs.txt"
     path.write_text("the 0.1 0.2 0.3 9.9\n")
     assert bench._load_tsv(str(path), 10, 3) == [[0.1, 0.2, 0.3]]
+
+
+# A file without a word column may still carry one trailing field. Per line,
+# "1.0 1.1 1.2 9.9" looks like GloVe's "2008 0.4 0.5 0.6", so whether lines
+# start with a word is decided for the whole file.
+
+def test_tsv_wordless_file_with_trailing_field_keeps_first_component(tmp_path):
+    path = tmp_path / "vecs.txt"
+    path.write_text("1.0 1.1 1.2 9.9\n2.0 2.1 2.2 9.9\n")
+    assert bench._load_tsv(str(path), 10, 3) == [[1.0, 1.1, 1.2], [2.0, 2.1, 2.2]]
+
+
+def test_negative_holdout_is_rejected():
+    with pytest.raises(ValueError):
+        bench.load_workload("synthetic", {"rows": 10, "dim": 2, "holdout_queries": -1})
+
+
+def test_load_workload_splits_rows_and_holdout():
+    wp = {"rows": 50, "dim": 4, "holdout_queries": 5}
+    indexed, held_out = bench.load_workload("synthetic", wp)
+    assert len(indexed) == 50
+    assert len(held_out) == 5
+
+
+def test_load_workload_reports_short_datasets(tmp_path):
+    # 12 vectors on disk, 10 indexed rows + 5 held out requested: the
+    # indexed count is what is left, not the configured 10.
+    path = tmp_path / "vecs.txt"
+    path.write_text("".join(f"w{i} {i}.0 1.0\n" for i in range(12)))
+    indexed, held_out = bench.load_workload(str(path), {"rows": 10, "dim": 2, "holdout_queries": 5})
+    assert len(held_out) == 5
+    assert len(indexed) == 7
