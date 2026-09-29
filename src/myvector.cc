@@ -406,7 +406,8 @@ public:
                         int dim,
                         vector<KeyTypeInteger>& keys,
                         int n,
-                        const unordered_set<KeyTypeInteger>* allowed = nullptr);
+                        const unordered_set<KeyTypeInteger>* allowed = nullptr,
+                        int ef_search = 0);
     bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
 
     bool supportsIncrUpdates() { return true; }
@@ -502,7 +503,8 @@ bool KNNIndex::searchVectorNN(VectorPtr qvec,
                               int dim,
                               vector<KeyTypeInteger>& keys,
                               int n,
-                              const unordered_set<KeyTypeInteger>* allowed) {
+                              const unordered_set<KeyTypeInteger>* allowed,
+                              int /* ef_search: exact search, not used */) {
     std::shared_lock lock(search_insert_mutex_);
 
     priority_queue<pair<FP32, KeyTypeInteger>> pq;
@@ -646,7 +648,8 @@ public:
                         int dim,
                         vector<KeyTypeInteger>& keys,
                         int n,
-                        const unordered_set<KeyTypeInteger>* allowed = nullptr);
+                        const unordered_set<KeyTypeInteger>* allowed = nullptr,
+                        int ef_search = 0);
 
     bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
 
@@ -670,8 +673,6 @@ public:
     void setLastUpdateCoordinates(const string& binlogFile,
                                   const size_t& binlogPos);
     void getCheckPointString(string& ckstr);
-
-    void setSearchEffort(int ef_search);
 
 private:
     string m_name;
@@ -956,11 +957,6 @@ bool HNSWMemoryIndex::dropIndex(const string& path) {
 
 bool HNSWMemoryIndex::closeIndex() { return true; }
 
-void HNSWMemoryIndex::setSearchEffort(int ef_search) {
-    (dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw))
-        ->setEf(ef_search);
-}
-
 hnswlib::SpaceInterface<float>* HNSWMemoryIndex::getSpace(size_t dim) {
     if (m_type == "HNSW" && m_dist == "L2")
         return new hnswlib::L2Space(m_dim);
@@ -1023,7 +1019,8 @@ bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec,
                                      int dim,
                                      vector<KeyTypeInteger>& keys,
                                      int n,
-                                     const unordered_set<KeyTypeInteger>* allowed) {
+                                     const unordered_set<KeyTypeInteger>* allowed,
+                                     int ef_search) {
     priority_queue<pair<FP32, hnswlib::labeltype>> result;
 
     auto* disk_hnsw =
@@ -1053,11 +1050,16 @@ bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec,
                 result.push({dist, key});
             }
         }
-    } else if (allowed) {
-        KeySetFilter filter(*allowed);
-        result = m_alg_hnsw->searchKnn(qvec, n, &filter);
     } else {
-        result = m_alg_hnsw->searchKnn(qvec, n);
+        /* ef_search applies to this call only; the index's ef_ is not changed,
+         * because other queries read it concurrently (#165). */
+        static const unordered_set<KeyTypeInteger> kNoKeys;  // unused if !allowed
+        KeySetFilter filter(allowed ? *allowed : kNoKeys);
+        hnswlib::BaseFilterFunctor* isIdAllowed = allowed ? &filter : nullptr;
+        if (ef_search > 0 && disk_hnsw)
+            result = disk_hnsw->searchKnnEf(qvec, n, (size_t)ef_search, isIdAllowed);
+        else
+            result = m_alg_hnsw->searchKnn(qvec, n, isIdAllowed);
     }
 
     keys.clear();
@@ -1829,11 +1831,11 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT* initid,
     stringstream ss;
     if (searchvec) {
         vector<KeyTypeInteger> result;
-        if (ef_search)
-            vi->setSearchEffort(ef_search);
+        /* ef_search is passed per call: storing it on the shared index raced
+         * with concurrent searches and stuck for later queries (#165). */
         if (!filtered || !allowed.empty())
             vi->searchVectorNN(searchvec, vi->getDimension(), result, nn,
-                               filtered ? &allowed : nullptr);
+                               filtered ? &allowed : nullptr, ef_search);
 
         /* simple JSON list of neighbour rows Pkid */
         ss << "[";

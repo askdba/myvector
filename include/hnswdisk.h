@@ -1334,6 +1334,18 @@ namespace hnswlib {
             const void* query_data,
             size_t k,
             BaseFilterFunctor* isIdAllowed = nullptr) const {
+            return searchKnnEf(query_data, k, ef_, isIdAllowed);
+        }
+
+        /* searchKnnEf - searchKnn with the search effort (ef) given per call,
+         * so a query can use its own ef without changing the index's ef_,
+         * which other threads read concurrently (#165).
+         */
+        std::priority_queue<std::pair<dist_t, labeltype>> searchKnnEf(
+            const void* query_data,
+            size_t k,
+            size_t ef,
+            BaseFilterFunctor* isIdAllowed = nullptr) const {
             std::priority_queue<std::pair<dist_t, labeltype>> result;
             if (cur_element_count == 0)
                 return result;
@@ -1379,10 +1391,10 @@ namespace hnswlib {
             bool bare_bone_search = !num_deleted_ && !isIdAllowed;
             if (bare_bone_search) {
                 top_candidates = searchBaseLayerST<true>(
-                    currObj, query_data, std::max(ef_, k), isIdAllowed);
+                    currObj, query_data, std::max(ef, k), isIdAllowed);
             } else {
                 top_candidates = searchBaseLayerST<false>(
-                    currObj, query_data, std::max(ef_, k), isIdAllowed);
+                    currObj, query_data, std::max(ef, k), isIdAllowed);
             }
 
             while (top_candidates.size() > k) {

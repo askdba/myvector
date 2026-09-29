@@ -70,6 +70,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   across reconnects and rotations. Component builds already reconnected and are unchanged
   by this fix. New test: `scripts/test-online-updates-idle.py` (plugin and
   component).
+- **`ef_search` in a search's options now applies to that query only** (PR #167, issue #165).
+  Before, `myvector_ann_set(..., 'nn=10,ef_search=N')` stored `N` on the shared index:
+  every later query from any session searched with `N` instead of the index setting, and
+  the write raced with concurrent searches (undefined behaviour). The effort is now passed
+  per call, and the query path changes no index state.
 - **`myvector_ann_set()` result buffer.** It is now sized for 10,000 keys of any length.
   The 128,000-byte buffer was too small for 10,000 keys of 12 digits or more. The plugin
   wrote past its end: `nn=10000` over 13-digit keys crashed `mysqld` (SIGSEGV) on 8.4. The

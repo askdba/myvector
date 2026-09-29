@@ -171,6 +171,20 @@ SET @q = myvector_construct('[1.2, 3.4, 5.6]');
 SELECT id FROM t WHERE MYVECTOR_IS_ANN('db.t.v', 'id', @q, 10);
 ```
 
+**Search effort per query (HNSW):** the options string accepts `ef_search`, the size of
+the candidate list the HNSW search keeps. Higher values raise recall and cost time. It
+applies to that query only. Queries without it use the index's own setting (the
+`ef_search` column option, which defaults to `ef`).
+
+```sql
+-- nearest 10, searching harder than the index default
+SELECT id FROM t WHERE MYVECTOR_IS_ANN('db.t.v', 'id', @q, 'nn=10,ef_search=400');
+SELECT myvector_ann_set('db.t.v', 'id', @q, 'nn=10,ef_search=400');
+```
+
+Before #165 a query's `ef_search` was stored on the index. It then applied to every later
+query from any session, and it raced with concurrent searches.
+
 **Filtered search:** pass the keys of the rows that may be returned as a fifth
 argument, usually a `JSON_ARRAYAGG` subquery. The search returns the `k` nearest rows
 among those keys, so it returns `k` rows whenever at least `k` rows match.
