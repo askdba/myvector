@@ -178,8 +178,8 @@ SELECT myvector_display(wordvec) FROM words50d LIMIT 1;
 ## Vector Search
 
 **Nearest neighbours (ANN):** `MYVECTOR_IS_ANN(index, key column, query vector, k)`
-returns the `k` rows nearest to the query vector (plugin builds only, see
-[Known limitations](LIMITATIONS.md)).
+returns the `k` rows nearest to the query vector (plugin builds, and component builds
+that include #156; see [Known limitations](LIMITATIONS.md)).
 
 ```sql
 SET @q = myvector_construct('[1.2, 3.4, 5.6]');

@@ -87,8 +87,10 @@ v1.26.9 or earlier releases don't. The plugin build rewrites queries
 through a different mechanism, the Audit Plugin pre-parse hook in
 `src/myvector_plugin.cc`, and has always supported both.
 
-Uninstalling a component that registers the rewrite can fail with
-ERROR 3540 while other connections are open (issue #155).
+Uninstalling a component that registers the rewrite fails with
+ERROR 3540 while another session that has run a query since the install
+is still connected. The binlog listener of an `online=Y` index counts as
+one (issue #155).
 
 **Rule of thumb:**
 - Testing UDFs, KNN, HNSW index lifecycle, online (binlog) updates, or
@@ -231,7 +233,7 @@ chown mysql:mysql /var/lib/mysql/myvector.cnf; chmod 600 /var/lib/mysql/myvector
 docker exec myv-manual mysql -uroot -pmyvector -e \
   "SET GLOBAL myvector_config_file='myvector.cnf';"
 
-# 6. Now run whatever single query you wanted, e.g. (plugin build only):
+# 6. Now run whatever single query you wanted, e.g. (plugin, or a component after #156):
 docker exec myv-manual mysql -uroot -pmyvector -e "
 CREATE DATABASE IF NOT EXISTS vtest; USE vtest;
 CREATE TABLE t (id INT AUTO_INCREMENT PRIMARY KEY,

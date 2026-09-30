@@ -308,8 +308,9 @@ def main():
             if recall < args.min_recall:
                 failures.append(f"{name}: recall {recall:.3f} < {args.min_recall}")
 
-        # MYVECTOR_IS_ANN with a bare integer k (plugin only: the rewrite
-        # turns k into 'nn=k'), without and with a filter.
+        # MYVECTOR_IS_ANN with a bare integer k (the rewrite turns k into
+        # 'nn=k'), without and with a filter. Run on the plugin only, since
+        # component builds are queried through myvector_ann_set (see above).
         bare_k = {
             "unfiltered bare-k": "",
             "filtered bare-k": ", (SELECT JSON_ARRAYAGG(id) FROM t WHERE cat IN (1,2))",
