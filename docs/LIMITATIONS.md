@@ -5,12 +5,21 @@ to the issue tracking it. Items marked *(untested)* are not verified by this pro
 
 ## Search
 
-- **`MYVECTOR_IS_ANN(...)` is available on the plugin builds only.** The annotation is
-  implemented as a query rewrite, which the component builds (`INSTALL COMPONENT`) do not
-  have: every component cell of the benchmark reports `ann_rewrite_active = False`, so there
-  is no ANN query path and no recall number for components. The component registers the
-  `myvector_ann_set()` function, but this release does not test ANN through SQL on components
-  *(untested)*.
+- **`MYVECTOR_IS_ANN(...)` on component builds needs a build that includes #156.** The
+  annotation is a query rewrite. Component builds (`INSTALL COMPONENT`) from v1.26.9 and
+  earlier releases don't have it ([#144](https://github.com/askdba/myvector/issues/144)); on
+  those, call `myvector_ann_set()` directly. Components built from `main` after
+  [#156](https://github.com/askdba/myvector/pull/156) have the rewrite, verified on MySQL
+  8.4.8, 8.4.11, 9.7.0 and 26.7.0 with components built by the repo's build scripts on
+  aarch64. [#174](https://github.com/askdba/myvector/issues/174) reports the rewrite not
+  firing on 8.4.11 in one setup, which we could not reproduce. If `MYVECTOR(...)` or
+  `MYVECTOR_IS_ANN` fails on your server, use the `MYVECTOR COLUMN` comment and
+  `myvector_ann_set()`, which work on every build. Plugin builds have always had the rewrite.
+- **Uninstalling a component that has the query rewrite can fail with ERROR 3540** while
+  another session that has run a query since the install is still connected. The binlog
+  listener of an `online=Y` index is such a session. Disconnect the other sessions (for the
+  binlog listener, drop the `online=Y` indexes) and retry
+  ([#155](https://github.com/askdba/myvector/issues/155)).
 - **Filtered search takes an explicit key list.** Pass the allowed keys as the fifth
   argument, e.g. `MYVECTOR_IS_ANN(..., 10, (SELECT JSON_ARRAYAGG(id) FROM t WHERE ...))`
   (see [Usage](usage.md#vector-search)). A predicate written *next to*

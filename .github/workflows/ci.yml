@@ -699,8 +699,9 @@ jobs:
         echo "=== Testing myvector_is_valid UDF ==="
         $MYSQL_CMD -e "SELECT myvector_is_valid(myvector_construct('[1.0, 2.0, 3.0]'), 3);"
 
-        # The plugin's DDL rewrite (not available on component builds, #144)
-        # validates the MYVECTOR(...) index type at CREATE TABLE (#160).
+        # The DDL rewrite validates the MYVECTOR(...) index type at CREATE
+        # TABLE (#160). Checked here on the plugin; components have the
+        # rewrite only since #156.
         echo "=== Testing MYVECTOR(...) DDL type validation ==="
         $MYSQL_CMD -e "CREATE DATABASE IF NOT EXISTS ddltest;"
         if OUT=$($MYSQL_CMD ddltest -e "CREATE TABLE t_typo (id INT PRIMARY KEY, v MYVECTOR(type=hnws,dim=3,size=10));" 2>&1); then

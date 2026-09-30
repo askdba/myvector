@@ -63,8 +63,8 @@ The first run downloads GloVe 6B (about 860 MB) to `~/.cache/myvectorbench/`.
 ## Limits
 
 - **Measured on the plugin only.** Component builds have had `MYVECTOR_IS_ANN` since
-  [#156](https://github.com/askdba/myvector/pull/156), but they aren't measured here, and the
-  rewrite doesn't fire on MySQL 8.4.11 ([#174](https://github.com/askdba/myvector/issues/174)).
+  [#156](https://github.com/askdba/myvector/pull/156) (not in v1.26.9 or earlier releases),
+  but they aren't measured here.
 - **Not comparable with ann-benchmarks' `glove-100-angular`.** That set is 1.2M Twitter GloVe
   vectors at 100 dimensions. This one is 100k GloVe 6B (Wikipedia + Gigaword) vectors at 50 dimensions, which
   is generally an easier search problem.

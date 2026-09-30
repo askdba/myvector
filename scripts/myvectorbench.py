@@ -835,10 +835,9 @@ def bench_recall(container: Container, vectors: list, wp: dict,
                  held_out: list = None) -> dict:
     """Measure recall@10: fraction of true KNN top-10 found by ANN, averaged over queries.
 
-    Returns recall_at_10=None when MYVECTOR_IS_ANN is inactive -- currently
-    always true on component builds (no version has the query-rewrite
-    service compiled in; see #144), and not expected on plugin builds
-    (verified active there this session).
+    Returns recall_at_10=None when MYVECTOR_IS_ANN is inactive: on
+    component builds from before #156 (v1.26.9 and earlier, see #144). It
+    is active on plugin builds and on components built after #156.
     """
     n_queries = min(wp.get('recall_queries', 50), len(held_out or vectors))
     print(f"  [recall] {n_queries} {'held-out ' if held_out else ''}queries, dim={wp['dim']}")

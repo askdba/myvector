@@ -5,8 +5,9 @@
 A vector column carries its index options: the index **type**, the dimension, the
 distance metric and the HNSW settings. There are two ways to declare it.
 
-**Plugin builds, `MYVECTOR(...)` column type.** The plugin rewrites this DDL into a
-binary column plus a comment:
+**`MYVECTOR(...)` column type.** The server-side query rewrite turns this DDL into a
+binary column plus a comment. Plugin builds have the rewrite, and component builds have it
+since #156 (not in v1.26.9 or earlier releases):
 
 ```sql
 CREATE TABLE docs (
@@ -19,8 +20,9 @@ CREATE TABLE docs (
 );
 ```
 
-**Component builds, or any build: a `MYVECTOR COLUMN` comment.** Components have no DDL
-rewrite (#144), so declare the options in the column comment yourself:
+**Any build: a `MYVECTOR COLUMN` comment.** Declare the options in the column comment
+yourself. This works without the rewrite, so use it on component builds from v1.26.9 or
+earlier:
 
 ```sql
 CREATE TABLE docs (
@@ -176,8 +178,8 @@ SELECT myvector_display(wordvec) FROM words50d LIMIT 1;
 ## Vector Search
 
 **Nearest neighbours (ANN):** `MYVECTOR_IS_ANN(index, key column, query vector, k)`
-returns the `k` rows nearest to the query vector (plugin builds only, see
-[Known limitations](LIMITATIONS.md)).
+returns the `k` rows nearest to the query vector (plugin builds, and component builds
+that include #156; see [Known limitations](LIMITATIONS.md)).
 
 ```sql
 SET @q = myvector_construct('[1.2, 3.4, 5.6]');
@@ -316,8 +318,9 @@ procedure and `SELECT` on the table. Do not build the predicate from untrusted i
 The procedure returns a result set, so you cannot join it or use it inside another query.
 For that, use the key list.
 
-On component builds, which have no `MYVECTOR_IS_ANN` rewrite, call the function
-directly. It returns a JSON array of keys:
+You can also call the function directly, on any build. Component builds from v1.26.9 or
+earlier have no `MYVECTOR_IS_ANN` rewrite, so this is the only way there. It returns a JSON
+array of keys:
 
 ```sql
 SELECT myvector_ann_set('db.t.v', 'id', @q, 'nn=10',
