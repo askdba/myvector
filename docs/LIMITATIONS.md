@@ -10,7 +10,11 @@ to the issue tracking it. Items marked *(untested)* are not verified by this pro
   earlier releases don't have it ([#144](https://github.com/askdba/myvector/issues/144)); on
   those, call `myvector_ann_set()` directly. Components built from `main` after
   [#156](https://github.com/askdba/myvector/pull/156) have the rewrite, verified on MySQL
-  8.4.8, 8.4.11, 9.7.0 and 26.7.0. Plugin builds have always had it.
+  8.4.8, 8.4.11, 9.7.0 and 26.7.0 with components built by the repo's build scripts on
+  aarch64. [#174](https://github.com/askdba/myvector/issues/174) reports the rewrite not
+  firing on 8.4.11 in one setup, which we could not reproduce. If `MYVECTOR(...)` or
+  `MYVECTOR_IS_ANN` fails on your server, use the `MYVECTOR COLUMN` comment and
+  `myvector_ann_set()`, which work on every build. Plugin builds have always had the rewrite.
 - **Uninstalling a component that has the query rewrite can fail with ERROR 3540** while
   another session that has run a query since the install is still connected. The binlog
   listener of an `online=Y` index is such a session. Disconnect the other sessions (for the
