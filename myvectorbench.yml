@@ -27,7 +27,7 @@ workload:
   recall_queries: 50
   # ann-benchmarks-style recall/throughput tradeoff sweep (myvector#131).
   # Only meaningful on cells where MYVECTOR_IS_ANN's query rewrite is active
-  # (plugin cells today; see #144 for the component-side gap) -- skipped
+  # (plugin cells, and component cells built after #156) -- skipped
   # elsewhere. Kept on the fast synthetic dataset for CI; point `dataset` at
   # glove50/glove300 above for a sweep against a real dataset with ground
   # truth instead.

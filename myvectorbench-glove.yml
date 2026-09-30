@@ -6,7 +6,7 @@
 #       --image ghcr.io/askdba/myvector:mysql8.4 --output glove-sweep.json
 #
 # The published numbers are from the plugin. Component builds have had
-# MYVECTOR_IS_ANN since #156, but see #174 (no rewrite on MySQL 8.4.11).
+# MYVECTOR_IS_ANN since #156 (not in v1.26.9), but aren't measured here.
 matrix:
   cells:
     - mysql: "8.4"

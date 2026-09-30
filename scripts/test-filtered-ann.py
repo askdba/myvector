@@ -10,8 +10,9 @@ random vectors, builds an HNSW index and checks that filtered ANN queries:
 Filters cover both code paths: few allowed rows (exact scan over the allowed
 rows) and many allowed rows (HNSW graph walk with a filter).
 
-Plugin builds are queried through MYVECTOR_IS_ANN. Component builds have no
-query rewrite (#144), so they are queried through myvector_ann_set directly.
+Plugin builds are queried through MYVECTOR_IS_ANN. Component builds are
+queried through myvector_ann_set directly: they had no query rewrite before
+#156 (#144), and calling the function keeps this test independent of it.
 
 Usage:
   ./scripts/build-plugin-8.4-docker.sh mysql-8.4.8 dist/plugin-8.4
