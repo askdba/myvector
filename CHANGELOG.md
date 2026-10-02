@@ -86,6 +86,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logged. The listener now waits until the server accepts connections. It stays off only
   when `myvector.cnf` has no user, or the login is refused, and says so in the error log.
   New test: Phase 3 test 3.6 in `scripts/pre-release-test.sh`.
+- **Component: rows applied online are no longer lost across a restart** (issue #190).
+  An `online=Y` index is saved to disk at build and at each binlog rotation, not when
+  the listener stops, but the listener resumed from where it had stopped. Rows it had
+  applied since the index was last saved were skipped, so they were missing from the
+  index after the restart (whether this happened varied from run to run). The listener
+  now starts from the oldest index checkpoint when that is earlier, and replays those
+  rows. Test 3.6 checks it.
 - **`ef_search` in a search's options now applies to that query only** (PR #167, issue #165).
   Before, `myvector_ann_set(..., 'nn=10,ef_search=N')` stored `N` on the shared index:
   every later query from any session searched with `N` instead of the index setting, and

@@ -1153,8 +1153,7 @@ run_lifecycle_online_after_restart() {
   fi
   # Once the listener connects it opens the online=Y indexes itself, with no LOAD
   # (#186). Do not call MYVECTOR_INDEX_LOAD here: it would hide a listener that never
-  # started. Whether row 4, applied before the restart, comes back depends on where the
-  # listener resumes; that is a separate question, so the count is reported, not checked.
+  # started.
   local DEADLINE=$(( $(date +%s) + 30 ))
   ROWS_SEEN=""
   while [[ -z "$ROWS_SEEN" && $(date +%s) -lt $DEADLINE ]]; do
@@ -1166,8 +1165,15 @@ run_lifecycle_online_after_restart() {
     cleanup_container
     return 0
   fi
+  # On disk the index is as of the build (3 rows). Row 4 was applied online before the
+  # restart; the listener must replay it from the index checkpoint (#190).
+  wait_index_rows lc.restart_t.vec 4 20
   local AFTER_BOOT="$ROWS_SEEN"
-  echo "  index reopened by the listener after the restart: rows=${AFTER_BOOT} (4 before the restart)"
+  if [[ "$AFTER_BOOT" == "4" ]]; then
+    pass "online after restart: row applied before the restart replayed into the index (rows=4)"
+  else
+    fail "online after restart: row applied before the restart is missing (rows=${AFTER_BOOT}, expected 4) (#190)"
+  fi
 
   # No reinstall: the component was loaded at boot. A new INSERT must be applied.
   mq -e "INSERT INTO lc.restart_t VALUES (5, myvector_construct('[0.0,1.0,1.0]'));"
