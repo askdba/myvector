@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-MyVector is a native MySQL plugin (shared library `.so`) that adds vector similarity search (ANN/KNN) to MySQL 8.0, 8.4, and 9.0. It is written in C++ and exposes UDFs and stored procedures. No external vector database is required.
+MyVector adds vector similarity search (ANN/KNN) natively to MySQL. It is written in C++ and exposes UDFs and stored procedures. No external vector database is required. It ships as two build modes (see `docs/BUILD_MODES.md`):
+- **Plugin** (`INSTALL PLUGIN`, shared library `myvector.so`) — MySQL 8.0, 8.4, 9.0.
+- **Component** (`INSTALL COMPONENT`, the forward path for new development) — MySQL 8.4, 9.7 (LTS), and 26.7 (Innovation).
 
 ## Build commands
 
