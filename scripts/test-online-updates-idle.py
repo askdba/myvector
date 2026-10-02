@@ -281,19 +281,37 @@ def main():
         # 7. reconnect path: kill the listener's binlog dump connection, with
         # and without a rotation while it is down; rows must not be skipped or
         # applied twice
+        killed = []
+
         def kill_dump():
-            ids = srv.sql("SELECT id FROM information_schema.processlist "
-                          "WHERE command='Binlog Dump';", db=None)
-            for (i,) in ids:
-                srv.sql(f"KILL {i};", db=None, check=False)
-            return len(ids)
+            """KILL the listener's binlog dump connection. The listener uses
+            mysql_binlog_open (non-GTID), so it shows as 'Binlog Dump'. Wait
+            up to 10 s for a dump connection not killed before (the listener
+            reconnects after the previous KILL); KILL errors raise."""
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                ids = [i for (i,) in srv.sql(
+                    "SELECT id FROM information_schema.processlist "
+                    "WHERE command='Binlog Dump';", db=None)
+                    if i not in killed]
+                if ids:
+                    srv.sql(f"KILL {ids[0]};", db=None)
+                    killed.append(ids[0])
+                    return ids[0]
+                time.sleep(0.5)
+            failures.append("stage 7: no binlog dump connection to KILL "
+                            "(listener not connected)")
+            return None
+
         n = kill_dump()
-        insert(20)
-        check(f"7a. after KILL of the binlog dump connection ({n} killed)")
-        n = kill_dump()
-        srv.sql("FLUSH BINARY LOGS;", db=None)
-        insert(20)
-        check(f"7b. after KILL + FLUSH BINARY LOGS ({n} killed)")
+        if n is not None:
+            insert(20)
+            check(f"7a. after KILL of the binlog dump connection (id {n})")
+            n = kill_dump()
+        if n is not None:
+            srv.sql("FLUSH BINARY LOGS;", db=None)
+            insert(20)
+            check(f"7b. after KILL + FLUSH BINARY LOGS (id {n})")
 
         for bad in ("Binlog fetch failed", "Exiting binlog",
                     "Binlog open failed"):

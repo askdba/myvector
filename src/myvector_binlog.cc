@@ -162,14 +162,28 @@ public:
 
         VectorIndexUpdateItem* next = items_.front();
         items_.pop_front();
-        return next;  // consumer to call delete
+        inflight_++;
+        return next;  // consumer to call delete, then done()
     }
-    bool empty() const { return items_.size() == 0; }
+    /* consumer has finished applying an item returned by dequeue() */
+    void done() {
+        lock_guard lk(m_);
+        inflight_--;
+    }
+    /* true when nothing is queued AND no consumer is still applying an item:
+     * a checkpoint must not advance an index's binlog position past an item a
+     * worker has dequeued but not yet applied, or myvector_table_op() would
+     * then skip that item as already applied. */
+    bool empty() {
+        lock_guard lk(m_);
+        return items_.empty() && inflight_ == 0;
+    }
 
 private:
     mutex m_;
     condition_variable cv_;
     static list<VectorIndexUpdateItem*> items_;
+    size_t inflight_ = 0;
 };
 
 list<VectorIndexUpdateItem*> EventsQ::items_;
@@ -897,7 +911,8 @@ void myvector_checkpoint_index(const string& dbtable,
  * by caller so that current binlog filename and position are locked.
  */
 void FlushOnlineVectorIndexes() {
-    /* first wait for the binlog event Q to drain out */
+    /* first wait for the binlog event Q to drain out, including items the
+     * workers have dequeued but not yet applied */
     while (1) {
         if (gqueue_.empty()) {
             break;
@@ -943,6 +958,7 @@ void myvector_binlog_loop(int id) {
     int cnt = 0;
     size_t nrows = 0;
     bool firstConnection = true;
+    bool indexesOpened = false;
     string resumeFile;
     unsigned long long resumePos = 0;
     string lastFetchError;
@@ -1014,8 +1030,12 @@ void myvector_binlog_loop(int id) {
 
         // BinlogPos bp = getMinimumBinlogReadPosition();
 
-        if (firstConnection)
+        /* once only: a retry after a failed mysql_binlog_open() below must
+         * not load the online indexes again */
+        if (!indexesOpened) {
             OpenAllOnlineVectorIndexes(&mysql);
+            indexesOpened = true;
+        }
 
         string startbinlog = resumeFile.length()
                                  ? resumeFile
@@ -1219,5 +1239,6 @@ void vector_q_thread_fn(int id) {
                           item->binlogFile_,
                           item->binlogPos_);
         delete item;
+        gqueue_.done();
     }
 }
