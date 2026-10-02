@@ -1,0 +1,33 @@
+{
+  "sweep": {
+    "dataset": "GloVe 6B 50d",
+    "indexed_rows": 100000,
+    "held_out_queries": 1000,
+    "distance": "Cosine",
+    "k": 10,
+    "build": "plugin, MySQL 8.4",
+    "commit": "4b0789f",
+    "measured": "2026-09-29",
+    "host": "8-core Arm Neoverse-N1 (aarch64), 46 GB RAM",
+    "index_build_s": 36.4,
+    "brute_force_qps": 12.7,
+    "points": [
+      {"ef_search": 10, "recall_at_10": 0.809, "qps": 1204, "p50_ms": 0.8, "p99_ms": 1.0},
+      {"ef_search": 20, "recall_at_10": 0.907, "qps": 1124, "p50_ms": 0.9, "p99_ms": 1.1},
+      {"ef_search": 50, "recall_at_10": 0.974, "qps": 1002, "p50_ms": 1.0, "p99_ms": 1.2},
+      {"ef_search": 100, "recall_at_10": 0.992, "qps": 832, "p50_ms": 1.2, "p99_ms": 1.4},
+      {"ef_search": 200, "recall_at_10": 0.999, "qps": 612, "p50_ms": 1.7, "p99_ms": 1.9},
+      {"ef_search": 400, "recall_at_10": 1.0, "qps": 481, "p50_ms": 2.1, "p99_ms": 2.6}
+    ]
+  },
+  "release": {
+    "tag": "v1.26.9",
+    "workload": "synthetic, 10,000 rows × 128 dimensions",
+    "cells": [
+      {"mysql": "8.4", "build": "plugin", "index_build_s": 2.95, "insert_qps": 3707, "recall_at_10": 0.978},
+      {"mysql": "8.4", "build": "component", "index_build_s": 2.67, "insert_qps": 3942, "recall_at_10": null},
+      {"mysql": "9.7", "build": "component", "index_build_s": 2.64, "insert_qps": 3916, "recall_at_10": null},
+      {"mysql": "26.7", "build": "component", "index_build_s": 2.53, "insert_qps": 4062, "recall_at_10": null}
+    ]
+  }
+}
