@@ -291,3 +291,23 @@ def test_sweep_summary_comes_from_the_data():
 def test_release_summary_comes_from_the_data():
     s = hook.render_release_summary(sample_data())
     assert "v1.26.9" in s and "synthetic, 10,000 rows × 128 dimensions" in s
+
+
+# Review on #180: a valid sweep where every point has recall 1.0, or a single
+# point, must still render (no zero-height or zero-width axis).
+
+def test_chart_handles_all_perfect_recall():
+    d = sample_data()
+    for p in d["sweep"]["points"]:
+        p["recall_at_10"] = 1.0
+    s = hook.chart_scale(d["sweep"]["points"])
+    assert s["y_min"] < s["y_max"]
+    assert "<circle" in hook.render_sweep_chart(d)
+
+
+def test_chart_handles_a_single_point_on_a_tick():
+    d = sample_data()
+    d["sweep"]["points"] = [{"ef_search": 100, "recall_at_10": 0.95, "qps": 1000, "p50_ms": 1.0, "p99_ms": 1.2}]
+    s = hook.chart_scale(d["sweep"]["points"])
+    assert s["x_min"] < s["x_max"]
+    assert "<circle" in hook.render_sweep_chart(d)

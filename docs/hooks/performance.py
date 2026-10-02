@@ -170,12 +170,16 @@ def chart_scale(points):
     step = _nice_step(max(qps) - min(qps) or max(qps))
     x_min = math.floor(min(qps) / step) * step
     x_max = math.ceil(max(qps) / step) * step
+    if x_max == x_min:  # a single QPS value on a tick: widen by one step
+        x_max += step
     x_ticks = [x_min + i * step for i in range(round((x_max - x_min) / step) + 1)]
 
     lowest = min(p["recall_at_10"] for p in points)
     y_step = 0.05 if lowest >= 0.75 else 0.1
     y_min = round(math.floor(lowest / y_step + 1e-9) * y_step, 2)
     y_max = 1.0
+    if y_min >= y_max:  # every point at recall 1.0: show one step below it
+        y_min = round(y_max - y_step, 2)
     y_ticks = [round(y_min + i * y_step, 2) for i in range(round((y_max - y_min) / y_step) + 1)]
     return {"x_min": x_min, "x_max": x_max, "x_ticks": x_ticks,
             "y_min": y_min, "y_max": y_max, "y_ticks": y_ticks}

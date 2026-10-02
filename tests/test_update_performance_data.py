@@ -101,3 +101,10 @@ def test_dump_reproduces_the_committed_file_byte_for_byte():
     with open(DATA_FILE, encoding="utf-8") as f:
         text = f.read()
     assert upd.dump(json.loads(text)) == text
+
+
+def test_sweep_build_label_comes_from_the_result():
+    r = _sweep_result()
+    r["mysql_version"], r["build_path"] = "9.7", "component"
+    existing = {"dataset": "GloVe 6B 50d", "k": 10, "build": "plugin, MySQL 8.4", "host": "h"}
+    assert upd.sweep_block(r, existing)["build"] == "component, MySQL 9.7"

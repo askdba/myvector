@@ -65,8 +65,8 @@ def release_block(tag, list_files, read_file):
 def sweep_block(result, existing):
     """Build the sweep block from a myvectorbench result.
 
-    Descriptive fields the result doesn't carry (dataset name, build, host, k)
-    are kept from the existing block.
+    The build label comes from the result. Descriptive fields the result
+    doesn't carry (dataset name, host, k) are kept from the existing block.
     """
     m = result["metrics"]
     points = m.get("ef_search_sweep") or []
@@ -81,7 +81,7 @@ def sweep_block(result, existing):
         "held_out_queries": wp.get("holdout_queries", 0),
         "distance": wp.get("distance", "L2"),
         "k": existing["k"],
-        "build": existing["build"],
+        "build": f"{result['build_path']}, MySQL {result['mysql_version']}",
         "commit": commit,
         "measured": result["timestamp"][:10],
         "host": existing["host"],

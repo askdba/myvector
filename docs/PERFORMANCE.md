@@ -11,8 +11,8 @@ All numbers on this page come from
 
 ## Recall vs throughput
 
-Each point is one `ef_search` setting, from 10 (fastest) to 400 (most accurate). Recall@10 is
-the share of the true 10 nearest neighbours that the search returns.
+Each point is one `ef_search` setting: the lowest is the fastest, the highest the most
+accurate. Recall@10 is the share of the true 10 nearest neighbours that the search returns.
 
 <!-- perf:sweep-chart -->
 
