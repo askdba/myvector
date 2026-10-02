@@ -44,12 +44,17 @@ markdown_extensions:
           class: mermaid
           format: !!python/name:pymdownx.superfences.fence_code_format
 
+hooks:
+  - docs/hooks/performance.py
+
 exclude_docs: |
   COMPONENT_MIGRATION_PLAN.md
   RELEASE_CANDIDATE_PLAN_MAR_2026.md
   RFC-004-RELIABILITY.md
   ISSUE_79_BENCHMARK_BASELINE.md
   superpowers/
+  hooks/
+  data/
 
 nav:
   - Home: index.md
@@ -62,8 +67,10 @@ nav:
       - Build Modes: BUILD_MODES.md
       - Building on macOS: BUILDING_MACOS.md
       - Online Index Updates: ONLINE_INDEX_UPDATES.md
-      - Benchmarks: ANN_BENCHMARKS.md
-      - ef_search Sweep: EF_SEARCH_SWEEP.md
+      - Performance:
+          - Overview: PERFORMANCE.md
+          - ef_search Sweep: EF_SEARCH_SWEEP.md
+          - MariaDB Comparison (2025): ANN_BENCHMARKS.md
       - Known Limitations: LIMITATIONS.md
       - Structure: STRUCTURE.md
       - Security: SECURITY.md
