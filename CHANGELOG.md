@@ -33,6 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ```
   The procedure is `SQL SECURITY INVOKER`: the predicate runs with the caller's
   privileges. New test: `scripts/test-filtered-ann-broad.py`, which has a `--bench` mode.
+- **Query rewrite on component builds** (PR #156, issue #144). Component builds
+  (`INSTALL COMPONENT`) now support the inline `MYVECTOR(...)` column type and
+  `WHERE MYVECTOR_IS_ANN(...)`, as plugin builds always have. The rewrite now uses MySQL's
+  Event Tracking Parse service. Before, the component's rewrite code depended on a
+  `query_rewrite.h` header that no supported MySQL version has, so it was never compiled
+  and component builds had no rewrite. Verified on MySQL 8.4.8, 8.4.11, 9.7.0 and 26.7.0
+  (PR #177). The `MYVECTOR COLUMN` comment and `myvector_ann_set()` still work on every
+  build.
 - **Docs:** a "Declaring a Vector Column" section in `docs/usage.md` covering the plugin and
   comment forms, index types, type errors and multi-line comments. There are worked
   filtered-search examples, and a troubleshooting entry for online indexes that fail to
