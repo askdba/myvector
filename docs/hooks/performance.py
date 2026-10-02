@@ -215,9 +215,13 @@ def render_sweep_chart(data):
                + " ".join(f"{x},{y}" for x, y in coords) + '"/>')
     for (x, y), p in zip(coords, points):
         out.append(f'<circle cx="{x}" cy="{y}" r="4" class="perf-point"/>')
-        # Label below the point, or above it near the x-axis so it stays in the plot.
-        label_y = y + 14 if y + 14 <= g["bottom"] - 2 else y - 8
-        out.append(f'<text class="perf-point-label" x="{x + 8}" y="{label_y}">ef {p["ef_search"]}</text>')
+        # The curve falls to the right, so label below-left of each point, clear of
+        # the line; near the x-axis, label above-right instead, inside the plot.
+        if y + 14 <= g["bottom"] - 2:
+            label = f'x="{x - 8}" y="{y + 14}" text-anchor="end"'
+        else:
+            label = f'x="{x + 8}" y="{y - 8}"'
+        out.append(f'<text class="perf-point-label" {label}>ef {p["ef_search"]}</text>')
     out.append("</svg>")
     return "\n".join(out) + "\n"
 
@@ -226,7 +230,7 @@ def render_sweep_chart(data):
 
 def render_sweep_summary(data):
     s = data["sweep"]
-    return (f"Measured on the MyVector {s['build']} build with {_int(s['indexed_rows'])} "
+    return (f"Measured on MyVector ({s['build']}) with {_int(s['indexed_rows'])} "
             f"{s['dataset']} vectors and {_int(s['held_out_queries'])} queries that are not in "
             f"the index ({s['distance']} distance, k = {s['k']}), on {s['measured']} at commit "
             f"`{s['commit']}`. Host: {s['host']}.\n")
