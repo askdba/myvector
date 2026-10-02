@@ -1564,6 +1564,12 @@ private:
         if (!mysql_init(&mysql)) {
             return Preflight::kFatal;
         }
+        // This runs in a retry loop while the server starts. Bound each attempt so a
+        // handshake that never completes cannot hold up stop_binlog_monitoring().
+        unsigned int connect_timeout_sec = 2;
+        mysql_options(&mysql, MYSQL_OPT_CONNECT_TIMEOUT, &connect_timeout_sec);
+        unsigned int read_timeout_sec = 5;
+        mysql_options(&mysql, MYSQL_OPT_READ_TIMEOUT, &read_timeout_sec);
         MYSQL* mysql_ptr = &mysql;
         std::string conn_host = g_conn_config.host;
         std::string conn_user = g_conn_config.user_id;
