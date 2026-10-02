@@ -12,7 +12,7 @@
     "index_build_s": 36.4,
     "brute_force_qps": 12.7,
     "points": [
-      {"ef_search": 10, "recall_at_10": 0.809, "qps": 1204, "p50_ms": 0.8, "p99_ms": 1.0},
+      {"ef_search": 10, "recall_at_10": 0.809, "qps": "fast", "p50_ms": 0.8, "p99_ms": 1.0},
       {"ef_search": 20, "recall_at_10": 0.907, "qps": 1124, "p50_ms": 0.9, "p99_ms": 1.1},
       {"ef_search": 50, "recall_at_10": 0.974, "qps": 1002, "p50_ms": 1.0, "p99_ms": 1.2},
       {"ef_search": 100, "recall_at_10": 0.992, "qps": 832, "p50_ms": 1.2, "p99_ms": 1.4},
