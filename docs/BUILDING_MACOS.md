@@ -5,6 +5,24 @@
 This note captures build and test observations for recent MySQL releases
 on macOS Apple Silicon. It is intended as a reference while building.
 
+> **MyVector's own current latest supported MySQL release is newer than
+> this note's source — but only for the *component* build.** The
+> **plugin** distribution (what `build-docker-local.sh` below builds, and
+> what this whole page is about) is intentionally scoped to MySQL 8.0,
+> 8.4, and 9.0 — see `CLAUDE.md`'s project overview. The **component**
+> distribution additionally supports MySQL 9.7.0 and **26.7.0** (the
+> current latest; see `.github/workflows/ci.yml` and
+> `scripts/build-component-26.7-docker.sh`), but those are built via
+> Docker Linux containers in CI, not locally on macOS — there is no
+> macOS-specific build note for the component variant, and no
+> `build-docker-local.sh` support for it either. The toolchain
+> observations below are from the cited external source and only cover
+> 8.0.45/8.4.8/9.6.0 (plugin-equivalent versions); nobody has published or
+> verified equivalent Apple Silicon toolchain compatibility data for a
+> newer plugin-eligible point release (e.g. a future 9.0.x) yet. If you
+> hit a toolchain issue not listed below, please file it so this note can
+> be updated with real findings rather than assumptions.
+
 ## Environment
 
 - Hardware: Apple Silicon (arm64)
