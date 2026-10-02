@@ -1,5 +1,8 @@
 name: Deploy Docs Site
 
+# On pull requests: build the site and run the Performance page tests, so a
+# broken page or data file fails the PR instead of the deploy. On push to
+# main (or a manual run): the same build, then deploy to GitHub Pages.
 on:
   push:
     branches: [ "main" ]
@@ -7,44 +10,60 @@ on:
       - "docs/**"
       - "mkdocs.yml"
       - ".github/workflows/deploy-docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/deploy-docs.yml"
+      - "scripts/update-performance-data.py"
+      - "tests/test_performance_hook.py"
+      - "tests/test_update_performance_data.py"
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: "pages"
-  cancel-in-progress: false
-
 jobs:
   build:
+    name: Build docs
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.x"
 
-      - name: Install MkDocs Material
-        run: pip install mkdocs-material
+      - name: Install MkDocs Material and test tools
+        run: pip install mkdocs-material pytest pyyaml
+
+      - name: Test the Performance page hook and data helper
+        run: python -m pytest -q tests/test_performance_hook.py tests/test_update_performance_data.py
 
       - name: Build site
         run: mkdocs build --strict
 
       - name: Upload artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
   deploy:
     needs: build
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       pages: write
       id-token: write
+    # Only deploys share the Pages slot; PR builds never wait behind them.
+    concurrency:
+      group: "pages"
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
