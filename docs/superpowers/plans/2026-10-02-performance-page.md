@@ -8,6 +8,7 @@ curated `docs/data/performance.json`, as specified in
 `docs/superpowers/specs/2026-10-02-performance-page-design.md`.
 
 **Architecture:**
+
 - A MkDocs hook (`docs/hooks/performance.py`) handles `on_page_markdown` for
   `PERFORMANCE.md` only. It validates the JSON and replaces four markers with Markdown tables,
   an HTML headline grid and an inline SVG chart.
