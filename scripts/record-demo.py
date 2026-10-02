@@ -194,15 +194,23 @@ def chapter(cast, label):
     cast.pause(1.0)
 
 
-def ann_query(word_var, k, opts=None):
+def ann_set(word_var, k, opts=None):
+    """The ANN search: the ids of the k nearest rows, as a JSON array."""
     options = f"nn={k}" + (f",{opts}" if opts else "")
+    return f"SET @ids = myvector_ann_set('{INDEX}', 'wordid', {word_var}, '{options}');"
+
+
+def ann_rows(word_var):
+    """The rows behind @ids, nearest first. Joining on the ids uses the primary key."""
     return (
-        "SELECT nn.rank_no, w.word,\n"
-        f"       ROUND(myvector_distance(w.wordvec, {word_var}, 'L2'), 3) AS distance\n"
-        f"FROM (SELECT myvector_ann_set('{INDEX}', 'wordid', {word_var}, '{options}') AS js) src,\n"
-        "     JSON_TABLE(src.js, '$[*]' COLUMNS (rank_no FOR ORDINALITY, id BIGINT PATH '$')) nn\n"
-        "JOIN words50d w ON w.wordid = nn.id ORDER BY nn.rank_no;"
+        f"SELECT w.word, ROUND(myvector_distance(w.wordvec, {word_var}, 'L2'), 3) AS distance\n"
+        "FROM JSON_TABLE(@ids, '$[*]' COLUMNS (id BIGINT PATH '$')) ids\n"
+        "JOIN words50d w ON w.wordid = ids.id ORDER BY distance;"
     )
+
+
+def ann_query(word_var, k, opts=None):
+    return [ann_set(word_var, k, opts), ann_rows(word_var)]
 
 
 def wait_ready():
@@ -220,7 +228,7 @@ def wait_ready():
 
 def record(image, cast):
     cast.out(f"{BOLD}MyVector demo{RESET}: vector search inside MySQL, with {image}\n")
-    cast.out(f"{DIM}Every command below ran for real; only the typing is simulated.{RESET}\n")
+    cast.out(f"{DIM}Every command below ran for real in a live container; the typing is simulated, long waits are shortened.{RESET}\n")
     cast.pause(2.5)
 
     # 1. start ------------------------------------------------------------
@@ -306,32 +314,34 @@ def record(image, cast):
     chapter(cast, "8. Nearest-neighbour search (ANN)")
     mysql_session(cast, [
         "SET @q = (SELECT wordvec FROM words50d WHERE word = 'school');",
-        ("--", "myvector_ann_set() returns the ids of the nearest rows, nearest first"),
-        f"SELECT myvector_ann_set('{INDEX}', 'wordid', @q, 'nn=8') AS ids;",
-        ("--", "JSON_TABLE turns the ids back into rows"),
-        ann_query("@q", 8),
+        ("--", "myvector_ann_set() searches the index: the ids of the 8 nearest rows"),
+        ann_set("@q", 8),
+        "SELECT @ids;",
+        ("--", "Join the ids back to the table; order the rows by distance"),
+        ann_rows("@q"),
         "SET @q = (SELECT wordvec FROM words50d WHERE word = 'coffee');",
-        ann_query("@q", 8),
+        *ann_query("@q", 8),
         "SET @q = (SELECT wordvec FROM words50d WHERE word = 'guitar');",
-        ann_query("@q", 8),
+        *ann_query("@q", 8),
         # 9. exact ---------------------------------------------------------
         ("chapter", "9. Check it against an exact (brute-force) search"),
-        ("--", "Same query, computed over every row: same answer, but it scans the table"),
+        ("--", "Exact search: compute the distance to every row. Same 8 words; compare its"),
+        ("--", "time with the SET @ids above, which is the whole ANN search"),
         "SELECT word, ROUND(myvector_distance(wordvec, @q, 'L2'), 3) AS distance\n"
         "FROM words50d ORDER BY distance LIMIT 8;",
         ("--", "ef_search trades speed for recall, per query"),
-        ann_query("@q", 8, "ef_search=400"),
+        *ann_query("@q", 8, "ef_search=400"),
     ])
 
     # 10. online -----------------------------------------------------------
     chapter(cast, "10. Online updates: new rows are searchable at once")
     mysql_session(cast, [
         "SET @db = (SELECT wordvec FROM words50d WHERE word = 'database');",
-        ann_query("@db", 5),
+        *ann_query("@db", 5),
         ("--", "Add a new word with the same meaning as 'database'"),
         "INSERT INTO words50d (word, wordvec) VALUES ('myvector', @db);",
         "DO SLEEP(2);  -- the binlog listener applies the change in the background",
-        ann_query("@db", 5),
+        *ann_query("@db", 5),
         ("--", "No rebuild. (On v1.26.9 only INSERTs are applied online; rebuild after"),
         ("--", "DELETE or UPDATE.)"),
     ])
@@ -345,7 +355,7 @@ def record(image, cast):
     mysql_session(cast, [
         f"CALL mysql.myvector_index_load('{INDEX}');",
         "SET @q = (SELECT wordvec FROM words50d WHERE word = 'computer');",
-        ann_query("@q", 6),
+        *ann_query("@q", 6),
         ("--", "Done with it? Drop the index (the table is untouched)"),
         f"CALL mysql.myvector_index_drop('{INDEX}');",
     ])
