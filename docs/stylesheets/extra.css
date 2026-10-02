@@ -45,3 +45,82 @@
   justify-content: center;
   margin: 1rem 0 2rem;
 }
+
+/* Performance page (docs/PERFORMANCE.md, rendered by docs/hooks/performance.py) */
+.perf-headline {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem;
+  margin: 1.2rem 0 1.6rem;
+}
+
+@media (max-width: 600px) {
+  .perf-headline {
+    grid-template-columns: 1fr;
+  }
+}
+
+.perf-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.8rem 1rem;
+  border: 1px solid #2a3547;
+  border-radius: 8px;
+}
+
+.perf-value {
+  font-family: var(--md-code-font-family);
+  font-size: 1.6rem;
+  font-weight: 600;
+  line-height: 1.15;
+  color: #19e2dc;
+  font-variant-numeric: tabular-nums;
+}
+
+.perf-label {
+  font-size: 0.72rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.perf-chart {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  height: auto;
+  margin: 0.4rem 0 1rem;
+}
+
+.perf-chart .perf-grid {
+  stroke: #2a3547;
+  stroke-width: 1;
+}
+
+.perf-chart .perf-line {
+  fill: none;
+  stroke: #19e2dc;
+  stroke-width: 2;
+}
+
+.perf-chart .perf-point {
+  fill: #19e2dc;
+}
+
+.perf-chart text {
+  font-family: var(--md-code-font-family);
+  font-size: 11px;
+  fill: var(--md-default-fg-color--light);
+}
+
+.perf-chart .perf-point-label {
+  fill: var(--md-default-fg-color);
+}
+
+.md-typeset .perf-fineprint {
+  font-size: 0.68rem;
+  line-height: 1.5;
+  color: var(--md-default-fg-color--light);
+  border-left: 2px solid #d939e0;
+  padding-left: 0.7rem;
+  max-width: 46rem;
+}

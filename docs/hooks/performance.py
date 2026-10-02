@@ -222,10 +222,28 @@ def render_sweep_chart(data):
     return "\n".join(out) + "\n"
 
 
+# ── summary sentences ─────────────────────────────────────────────────────────
+
+def render_sweep_summary(data):
+    s = data["sweep"]
+    return (f"Measured on the MyVector {s['build']} build with {_int(s['indexed_rows'])} "
+            f"{s['dataset']} vectors and {_int(s['held_out_queries'])} queries that are not in "
+            f"the index ({s['distance']} distance, k = {s['k']}), on {s['measured']} at commit "
+            f"`{s['commit']}`. Host: {s['host']}.\n")
+
+
+def render_release_summary(data):
+    r = data["release"]
+    return (f"Release {r['tag']} in CI ({r['workload']}, GitHub-hosted runners): index build "
+            f"and insert throughput for each supported MySQL version and build.\n")
+
+
 # ── page assembly ─────────────────────────────────────────────────────────────
 
 PAGE = "PERFORMANCE.md"
 _RENDERERS = {
+    "sweep-summary": render_sweep_summary,
+    "release-summary": render_release_summary,
     "headline": render_headline,
     "sweep-chart": render_sweep_chart,
     "sweep-table": render_sweep_table,

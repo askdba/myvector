@@ -276,3 +276,18 @@ def test_hook_reads_data_from_docs_dir(tmp_path):
     config = {"docs_dir": str(tmp_path)}  # no data/performance.json there
     with pytest.raises(hook.PerformanceDataError, match="performance.json"):
         hook.on_page_markdown(PAGE, page=_Page("PERFORMANCE.md"), config=config, files=None)
+
+
+# Sentences that carry numbers come from the data too, so a release update
+# can't leave a stale figure in hand-written text.
+
+def test_sweep_summary_comes_from_the_data():
+    s = hook.render_sweep_summary(sample_data())
+    for part in ("plugin, MySQL 8.4", "100,000", "GloVe 6B 50d", "1,000", "Cosine",
+                 "k = 10", "2026-09-29", "4b0789f", "Neoverse-N1"):
+        assert part in s
+
+
+def test_release_summary_comes_from_the_data():
+    s = hook.render_release_summary(sample_data())
+    assert "v1.26.9" in s and "synthetic, 10,000 rows × 128 dimensions" in s
