@@ -1490,15 +1490,22 @@ public:
             return 0;
         }
 
-        if (!preflight_binlog_state()) {
+        if (g_conn_config.user_id.empty()) {
             // No credentials/config — treat as binlog disabled rather than
             // failing INSTALL COMPONENT. Component init succeeds; binlog
             // monitoring stays off until config is provided and component
             // is reinstalled.
+            fprintf(stderr,
+                    "MyVector: no connection settings in %s; online index "
+                    "updates (online=Y) are off.\n",
+                    myvector_config_file ? myvector_config_file : "(none)");
             secure_zero_string(g_conn_config.password);
             return 0;
         }
 
+        // The binlog thread connects back to this server. Do not try that here:
+        // when MySQL loads the component at startup it does not accept
+        // connections yet, so the thread retries until it can (#186).
         shutdown_binlog_thread_.store(false);
         gqueue_.clear_shutdown();  // reset for restart (stop sets it, never clears)
         binlog_thread_ = new std::thread(&MyVectorBinlogServiceImpl::binlog_loop_fn, this, myvector_index_bg_threads);
@@ -1542,10 +1549,19 @@ private:
     std::string start_binlog_file_;
     size_t start_binlog_pos_ = 4;
 
-    bool preflight_binlog_state() {
+    // MySQL error codes (mysqld_error.h) for a failed login.
+    static constexpr unsigned int kErAccessDenied = 1045;
+    static constexpr unsigned int kErAccessDeniedNoPassword = 1698;
+
+    enum class Preflight { kOk, kRetry, kFatal };
+
+    // Connects once to read the server UUID and the binlog position to start
+    // from. kRetry: the server does not accept the connection yet (it is still
+    // starting), try again later. kFatal: retrying cannot help.
+    Preflight preflight_binlog_state() {
         MYSQL mysql;
         if (!mysql_init(&mysql)) {
-            return false;
+            return Preflight::kFatal;
         }
         MYSQL* mysql_ptr = &mysql;
         std::string conn_host = g_conn_config.host;
@@ -1562,25 +1578,36 @@ private:
                 (conn_port.length() ? atoi(conn_port.c_str()) : 0),
                 conn_socket.c_str(),
                 CLIENT_IGNORE_SIGPIPE)) {
+            // Keep g_conn_config.password: the caller retries with it.
             secure_zero_string(conn_password);
-            secure_zero_string(g_conn_config.password);
+            unsigned int err = mysql_errno(mysql_ptr);
             mysql_close(mysql_ptr);
-            return false;
+            if (err == kErAccessDenied || err == kErAccessDeniedNoPassword) {
+                fprintf(stderr,
+                        "MyVector: binlog listener cannot log in as '%s' "
+                        "(error %u); online index updates (online=Y) are off.\n",
+                        g_conn_config.user_id.c_str(), err);
+                return Preflight::kFatal;
+            }
+            return Preflight::kRetry;
         }
         secure_zero_string(conn_password);
         /* Do not clear g_conn_config.password here; binlog_loop_fn needs it next. */
 
         if (!fetch_server_uuid(mysql_ptr, &server_uuid_)) {
             mysql_close(mysql_ptr);
-            return false;
+            return Preflight::kRetry;
         }
 
         BinlogState state;
         bool has_state = load_binlog_state(&state);
         if (has_state && state.server_uuid != server_uuid_) {
-            // TODO: Replace with component-specific logging
+            fprintf(stderr,
+                    "MyVector: saved binlog state belongs to another server "
+                    "(server_uuid %s); online index updates (online=Y) are off.\n",
+                    state.server_uuid.c_str());
             mysql_close(mysql_ptr);
-            return false;
+            return Preflight::kFatal;
         }
 
         if (has_state) {
@@ -1616,7 +1643,34 @@ private:
         }
 
         mysql_close(mysql_ptr);
-        return true;
+        return Preflight::kOk;
+    }
+
+    // Runs preflight_binlog_state() until it succeeds. Returns false if it
+    // failed for good or the thread is asked to stop. At startup MySQL loads
+    // the component before it accepts connections, so the first attempts fail.
+    bool wait_for_preflight() {
+        bool logged = false;
+        while (!shutdown_binlog_thread_.load()) {
+            Preflight r = preflight_binlog_state();
+            if (r == Preflight::kOk) {
+                if (logged)
+                    fprintf(stderr, "MyVector: binlog listener connected.\n");
+                return true;
+            }
+            if (r == Preflight::kFatal)
+                return false;
+            if (!logged) {
+                fprintf(stderr,
+                        "MyVector: waiting for the server to accept "
+                        "connections before starting the binlog listener.\n");
+                logged = true;
+            }
+            // Sleep 1 s in short steps so stop_binlog_monitoring() is not held up.
+            for (int i = 0; i < 10 && !shutdown_binlog_thread_.load(); i++)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return false;
     }
 
     void persist_state_snapshot(const std::string& binlog_file,
@@ -1631,6 +1685,11 @@ private:
     }
 
     void binlog_loop_fn(int num_q_threads) {
+        if (!wait_for_preflight()) {
+            secure_zero_string(g_conn_config.password);
+            return;
+        }
+
         // Workers start once and survive reconnections; only shut down when
         // the entire binlog thread exits.
         worker_threads_.clear();

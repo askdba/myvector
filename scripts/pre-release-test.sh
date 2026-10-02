@@ -1075,6 +1075,111 @@ run_lifecycle_uninstall_inflight_udf() {
   cleanup_container
 }
 
+# Current Rows of an index, from MYVECTOR_INDEX_STATUS ("" if the call fails).
+index_rows() {
+  mq -N -e "CALL mysql.MYVECTOR_INDEX_STATUS('$1');" 2>/dev/null \
+    | grep -oE 'Current Rows : [0-9]+' | grep -oE '[0-9]+$' || true
+}
+
+# Poll index_rows $1 for up to $3 seconds until it equals $2. Sets ROWS_SEEN.
+wait_index_rows() {
+  local DEADLINE=$(( $(date +%s) + $3 ))
+  while :; do
+    ROWS_SEEN=$(index_rows "$1")
+    [[ "$ROWS_SEEN" == "$2" || $(date +%s) -ge $DEADLINE ]] && break
+    sleep 1
+  done
+}
+
+run_lifecycle_online_after_restart() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Lifecycle 3.6] Online updates resume after a server restart, without reinstall ($VER)"
+  cleanup_container
+  start_container "$VER"
+  install_component "$COMP_DIR"
+  # When the listener connects it finds the online=Y indexes to reopen through the
+  # mysql.myvector_columns view. sql/myvector_install_component.sql creates it;
+  # install_procs does not, so create it here as the install script does.
+  mq mysql -e "
+    CREATE OR REPLACE VIEW myvector_columns AS
+    SELECT TABLE_SCHEMA AS db, TABLE_NAME AS tbl, COLUMN_NAME AS col,
+           COLUMN_COMMENT AS info
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE COLUMN_COMMENT LIKE 'MYVECTOR%'
+    ORDER BY db, tbl, col;" 2>/dev/null
+  # install_component writes myvector.cnf after INSTALL COMPONENT; reinstall so the
+  # listener starts (as in 3.4).
+  mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
+  mq -e "INSTALL COMPONENT 'file://myvector';"
+
+  mq -e "
+    CREATE DATABASE IF NOT EXISTS lc;
+    CREATE TABLE lc.restart_t (
+      id  INT PRIMARY KEY,
+      vec VARBINARY(256)
+        COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=1000,m=16,ef=50,idcol=id,dist=L2,online=Y'
+    );
+    INSERT INTO lc.restart_t VALUES
+      (1, myvector_construct('[1.0,0.0,0.0]')),
+      (2, myvector_construct('[0.0,1.0,0.0]')),
+      (3, myvector_construct('[0.0,0.0,1.0]'));
+  " 2>/dev/null
+  mq -e "CALL mysql.MYVECTOR_INDEX_BUILD('lc.restart_t.vec', 'id');" 2>/dev/null || true
+
+  # Control: before the restart an INSERT reaches the index.
+  mq -e "INSERT INTO lc.restart_t VALUES (4, myvector_construct('[1.0,1.0,0.0]'));"
+  wait_index_rows lc.restart_t.vec 4 20
+  if [[ "$ROWS_SEEN" != "4" ]]; then
+    fail "online after restart: setup broken, INSERT not applied before the restart (rows=${ROWS_SEEN:-none}, expected 4)"
+    cleanup_container
+    return 0
+  fi
+
+  docker restart "$CONTAINER" >/dev/null
+  local READY=0
+  for _i in $(seq 1 60); do
+    if mq -e "SELECT 1" >/dev/null 2>&1; then
+      ((READY++)) || true
+      [[ $READY -ge 3 ]] && break
+    else
+      READY=0
+    fi
+    sleep 2
+  done
+  if [[ $READY -lt 3 ]]; then
+    fail "online after restart: MySQL did not come back after docker restart"
+    cleanup_container
+    return 0
+  fi
+  # Once the listener connects it opens the online=Y indexes itself, with no LOAD
+  # (#186). Do not call MYVECTOR_INDEX_LOAD here: it would hide a listener that never
+  # started. Whether row 4, applied before the restart, comes back depends on where the
+  # listener resumes; that is a separate question, so the count is reported, not checked.
+  local DEADLINE=$(( $(date +%s) + 30 ))
+  ROWS_SEEN=""
+  while [[ -z "$ROWS_SEEN" && $(date +%s) -lt $DEADLINE ]]; do
+    sleep 1
+    ROWS_SEEN=$(index_rows lc.restart_t.vec)
+  done
+  if [[ -z "$ROWS_SEEN" ]]; then
+    fail "online after restart: online=Y index not reopened by the binlog listener within 30s: listener not started at boot (#186)"
+    cleanup_container
+    return 0
+  fi
+  local AFTER_BOOT="$ROWS_SEEN"
+  echo "  index reopened by the listener after the restart: rows=${AFTER_BOOT} (4 before the restart)"
+
+  # No reinstall: the component was loaded at boot. A new INSERT must be applied.
+  mq -e "INSERT INTO lc.restart_t VALUES (5, myvector_construct('[0.0,1.0,1.0]'));"
+  wait_index_rows lc.restart_t.vec $(( AFTER_BOOT + 1 )) 20
+  if [[ "$ROWS_SEEN" == "$(( AFTER_BOOT + 1 ))" ]]; then
+    pass "online after restart: listener reopened the index and applied a new INSERT with no reinstall (rows ${AFTER_BOOT} -> ${ROWS_SEEN})"
+  else
+    fail "online after restart: INSERT not applied within 20s (rows=${ROWS_SEEN:-none}, expected $(( AFTER_BOOT + 1 ))): binlog listener not started at boot (#186)"
+  fi
+  cleanup_container
+}
+
 for VER in "${VERSIONS[@]}"; do
   DIR="${COMPONENT_DIRS[$VER]}"
   echo "--- Phase 3 Lifecycle ($VER) ---"
@@ -1083,5 +1188,6 @@ for VER in "${VERSIONS[@]}"; do
   run_lifecycle_reload_persistence   "$VER" "$DIR"
   run_lifecycle_binlog_cleanup       "$VER" "$DIR"
   run_lifecycle_uninstall_inflight_udf "$VER" "$DIR"
+  run_lifecycle_online_after_restart   "$VER" "$DIR"
   echo ""
 done
