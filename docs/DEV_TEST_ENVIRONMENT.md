@@ -65,8 +65,8 @@ you're testing.
 | Install method | `INSTALL COMPONENT 'file://myvector'` | `INSTALL PLUGIN myvector SONAME 'myvector.so'` |
 | Artifact | `libmyvector_component.so` + `myvector.json` | `myvector.so` + `sql/myvectorplugin.sql` |
 | UDFs, KNN brute-force, HNSW index build/status/load/drop, online updates (binlog) | Yes | Yes |
-| Inline `col MYVECTOR(...)` DDL annotation | **No — fails on every currently-supported MySQL version** | Yes (verified) |
-| `WHERE MYVECTOR_IS_ANN(...)` query rewrite | **No — fails on every currently-supported MySQL version** | Yes (verified) |
+| Inline `col MYVECTOR(...)` DDL annotation | Yes since #156 (verified on MySQL 8.4.8, 8.4.11, 9.7.0 and 26.7.0); no in v1.26.9 and earlier | Yes (verified) |
+| `WHERE MYVECTOR_IS_ANN(...)` query rewrite | Yes since #156 (verified on MySQL 8.4.8, 8.4.11, 9.7.0 and 26.7.0); no in v1.26.9 and earlier | Yes (verified) |
 | Distribution used by published `ghcr.io/askdba/myvector:mysql8.4` images | No — component images are published as separate `-component` tags (e.g. `mysql8.4-component`) | Yes — this is the classic/original distribution form and still the default published tags (`mysql8.0`, `mysql8.4`, `mysql9.7`, `latest`; see `docs/DOCKER_IMAGES.md`). See `docs/COMPONENT_MIGRATION_PLAN.md` for the migration direction |
 
 There is currently only one local plugin-build script, `scripts/build-plugin-8.4-docker.sh`
@@ -75,32 +75,31 @@ this repo — if you need to test the plugin build against 8.0 or 9.7, use the
 published `ghcr.io/askdba/myvector:mysql8.0` / `:mysql9.7` images instead of
 looking for a local script that does not exist.
 
-**Why the split exists — this is a known, tracked gap, not test-environment
-flakiness.** The component's query-rewrite source
-(`src/component_src/myvector_query_rewrite_service.cc`) is only compiled
-when `${MYSQL_SOURCE_DIR}/include/mysql/components/services/query_rewrite.h`
-exists in the MySQL source tree. That header does not exist in current
-MySQL server source at all (confirmed against fresh `mysql-8.4.8` and
-`mysql-9.7.0` checkouts) — so the component build silently has *no*
-query-rewrite support on any version this project currently builds
-against. This is tracked as **GitHub issue #144**
-(https://github.com/askdba/myvector/issues/144 — or `gh issue view 144`
-for the full root-cause writeup if you have the repo checked out and `gh`
-authenticated). The plugin build is unaffected because it rewrites queries
-through a completely different, stable mechanism — the classic Audit
-Plugin pre-parse hook (`plugin_audit.h`) in `src/myvector_plugin.cc`.
-Issue #144 proposes porting query rewrite to the Event Tracking parse
-service; if/when that lands, the component build gains DDL-annotation and
-`MYVECTOR_IS_ANN` support too, so the table above is a current state, not
-a permanent architectural split.
+**Why component query rewrite depends on the version.** Until #156, the
+component's query-rewrite source was only compiled when a
+`query_rewrite.h` services header existed in the MySQL source tree, and no
+supported MySQL version has that header. So component builds had *no*
+query rewrite (issue #144). #156 ported the rewrite to the Event Tracking
+Parse service, which all three supported versions have. A component built
+from `main` after #156 supports both the DDL annotation and
+`MYVECTOR_IS_ANN`; this was verified on MySQL 8.4.8, 8.4.11, 9.7.0 and 26.7.0. Components from
+v1.26.9 or earlier releases don't. The plugin build rewrites queries
+through a different mechanism, the Audit Plugin pre-parse hook in
+`src/myvector_plugin.cc`, and has always supported both.
+
+Uninstalling a component that registers the rewrite fails with
+ERROR 3540 while another session that has run a query since the install
+is still connected. The binlog listener of an `online=Y` index counts as
+one (issue #155).
 
 **Rule of thumb:**
 - Testing UDFs, KNN, HNSW index lifecycle, online (binlog) updates, or
   running the pre-release/benchmark/stress scripts → **component** build is
   sufficient and is what those scripts already default to.
 - Testing the inline `MYVECTOR(...)` DDL annotation or
-  `WHERE MYVECTOR_IS_ANN(...)` → you need the **plugin** build (or a
-  published image, which also uses the plugin form).
+  `WHERE MYVECTOR_IS_ANN(...)` → either build, as long as the component
+  is built from `main` after #156. For v1.26.9 or earlier, use the
+  **plugin** build (or a published image, which also uses the plugin form).
 
 ## 3. Quickstart
 
@@ -153,10 +152,11 @@ COMPONENT_DIR=dist/component-9.7 ./scripts/smoke-component.sh 9.7
 ./scripts/pre-release-test.sh
 ```
 
-`scripts/smoke-component.sh` intentionally tolerates the
-`MYVECTOR_IS_ANN` query failing as a non-fatal `WARNING: ANN query failed
-(query rewrite may not be active)` — that's issue #144, expected on the
-component build, not a bug in the smoke script.
+`scripts/smoke-component.sh` tolerates the `MYVECTOR_IS_ANN` query
+failing as a non-fatal `WARNING: ANN query failed (query rewrite may not
+be active)`. That was expected before #156 (issue #144). With a component
+built from current `main` the query should succeed, so the warning now
+points at a real problem.
 
 There is currently no equivalent automated smoke script for the *plugin*
 build; Task 1's verification (see below and `docs/RELIABLE_TEST_ENV_PLAN.md`)
@@ -233,7 +233,7 @@ chown mysql:mysql /var/lib/mysql/myvector.cnf; chmod 600 /var/lib/mysql/myvector
 docker exec myv-manual mysql -uroot -pmyvector -e \
   "SET GLOBAL myvector_config_file='myvector.cnf';"
 
-# 6. Now run whatever single query you wanted, e.g. (plugin build only):
+# 6. Now run whatever single query you wanted, e.g. (plugin, or a component after #156):
 docker exec myv-manual mysql -uroot -pmyvector -e "
 CREATE DATABASE IF NOT EXISTS vtest; USE vtest;
 CREATE TABLE t (id INT AUTO_INCREMENT PRIMARY KEY,
@@ -266,5 +266,5 @@ Both completed with `=== Smoke test complete ===`, all `PASS:` lines for
 UDFs/KNN/HNSW build/status/persist-reload/online-updates/multi-column
 binlog/uninstall, and the expected, tolerated
 `WARNING: ANN query failed (query rewrite may not be active)` for the
-`MYVECTOR_IS_ANN` step (issue #144, not a failure of this doc's
-instructions).
+`MYVECTOR_IS_ANN` step (issue #144, since fixed by #156; not a failure of
+this doc's instructions).

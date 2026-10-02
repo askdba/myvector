@@ -546,25 +546,52 @@ def _load_glove(dataset: str, rows: int, dim: int) -> list:
     return _load_tsv(str(txt_path), rows, dim)
 
 
+def _is_float(s: str) -> bool:
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
+def _tsv_has_word_column(path: str, sample: int = 1000) -> bool:
+    with open(path, encoding="utf-8") as f:
+        seen = 0
+        for line in f:
+            parts = line.split(maxsplit=1)
+            if not parts:
+                continue
+            if not _is_float(parts[0]):
+                return True
+            seen += 1
+            if seen >= sample:
+                break
+    return False
+
+
 def _load_tsv(path: str, rows: int, dim: int) -> list:
     """Load up to `rows` vectors from a whitespace-separated file.
 
-    Each line is either '<word> <f1> <f2> ...' or '<f1> <f2> ...' — the
-    first non-numeric field is treated as a word token and skipped.
+    Each line is either '<word> <f1> <f2> ...' or '<f1> <f2> ...'. A
+    non-numeric first field is always a word. A numeric one is a word only
+    if the file has a word column (some line among the first 1000 starts
+    with a non-numeric field): GloVe has thousands of numeric words
+    ("2008", "nan"), but in a file without words "1.0 1.1 1.2 9.9" is a
+    vector with a trailing field.
     """
+    has_words = _tsv_has_word_column(path)
     vectors = []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             if len(vectors) >= rows:
                 break
             parts = line.strip().split()
             if not parts:
                 continue
-            start = 0
-            try:
-                float(parts[0])
-            except ValueError:
+            if not _is_float(parts[0]):
                 start = 1
+            else:
+                start = 1 if has_words and len(parts) > dim else 0
             try:
                 v = [float(x) for x in parts[start:start + dim]]
             except ValueError:
@@ -582,6 +609,74 @@ def _vec_literal(v: list) -> str:
         raise ValueError(f"Vector contains non-finite value: {v[:8]}")
     inner = ",".join(f"{x:.6f}" for x in v)
     return f"myvector_construct('[{inner}]')"
+
+
+_DISTANCES = {"l2": "L2", "cosine": "Cosine"}
+
+
+def distance_metric(wp: dict) -> str:
+    """The workload's distance metric (``distance``, default L2), spelled the
+    way MyVector's index option and myvector_distance() expect it."""
+    given = str(wp.get("distance", "L2"))
+    try:
+        return _DISTANCES[given.lower()]
+    except KeyError:
+        raise ValueError(f"unsupported distance {given!r}; use L2 or Cosine") from None
+
+
+def _holdout_count(wp: dict) -> int:
+    n = int(wp.get("holdout_queries", 0))
+    if n < 0:
+        raise ValueError(f"holdout_queries must be >= 0, got {n}")
+    return n
+
+
+def load_workload(dataset: str, wp: dict) -> tuple:
+    """Load `rows` indexed vectors plus `holdout_queries` held-out ones.
+
+    Returns (indexed, held_out). If the dataset is too short, the holdout is
+    still taken in full and `indexed` is whatever is left; callers report
+    len(indexed), not the configured `rows`. May update wp['dim'] (GloVe).
+    """
+    holdout = _holdout_count(wp)
+    load_wp = dict(wp, rows=wp.get("rows", 10000) + holdout)
+    vectors = load_dataset(dataset, load_wp)
+    wp['dim'] = load_wp.get('dim', wp.get('dim'))
+    return split_holdout(vectors, holdout)
+
+
+def split_holdout(vectors: list, n: int, seed: int = 131) -> tuple:
+    """Split off ``n`` query vectors that are never inserted into the index.
+
+    Returns (indexed, queries); with n == 0 every row is indexed and queries
+    is None (the old behaviour: recall queries sampled from indexed rows,
+    so each query's nearest neighbour is itself). The split is a seeded
+    shuffle, so GloVe's frequency ordering doesn't bias the query set.
+    """
+    if n <= 0:
+        return vectors, None
+    if n >= len(vectors):
+        raise ValueError(f"holdout_queries={n} leaves no rows to index ({len(vectors)} loaded)")
+    order = list(range(len(vectors)))
+    random.Random(seed).shuffle(order)
+    held = set(order[:n])
+    queries = [vectors[i] for i in order[:n]]
+    indexed = [v for i, v in enumerate(vectors) if i not in held]
+    return indexed, queries
+
+
+def knn_sql(q: list, metric: str) -> str:
+    """Brute-force top-10 ids for q: the ground truth for recall."""
+    return (f"SELECT id FROM bench.build_t"
+            f" ORDER BY myvector_distance(vec, {_vec_literal(q)}, '{metric}') LIMIT 10;")
+
+
+def _query_sample(vectors: list, held_out, n: int, seed: int) -> list:
+    """Held-out queries when there are any, else a seeded sample of indexed rows."""
+    if held_out:
+        return held_out[:n]
+    rng = random.Random(seed)
+    return [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n)]
 
 
 def _create_bench_table(container: Container, dim: int, rows: int, M: int, ef: int,
@@ -608,7 +703,8 @@ def bench_index_build(container: Container, vectors: list, wp: dict) -> float:
     rows = len(vectors)
     print(f"  [index_build] {rows} rows, dim={dim}")
 
-    _create_bench_table(container, dim, rows, M, ef, "bench", "build_t")
+    _create_bench_table(container, dim, rows, M, ef, "bench", "build_t",
+                        dist=distance_metric(wp))
 
     batch = 500
     for start in range(0, rows, batch):
@@ -632,7 +728,8 @@ def bench_insert_throughput(container: Container, vectors: list, wp: dict) -> fl
     rows = len(vectors)
     print(f"  [insert_throughput] {rows} rows, dim={dim}, online=Y")
 
-    _create_bench_table(container, dim, rows, M, ef, "bench", "insert_t", online=True)
+    _create_bench_table(container, dim, rows, M, ef, "bench", "insert_t", online=True,
+                        dist=distance_metric(wp))
 
     t0 = time.time()
     batch = 500
@@ -655,11 +752,7 @@ def bench_knn_search(container: Container, vectors: list, wp: dict) -> dict:
     rng = random.Random(99)
     query_vectors = [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n_queries)]
 
-    queries = [
-        f"SELECT id FROM bench.build_t"
-        f" ORDER BY myvector_distance(vec, {_vec_literal(q)}, 'L2') LIMIT 10;"
-        for q in query_vectors
-    ]
+    queries = [knn_sql(q, distance_metric(wp)) for q in query_vectors]
     latencies_ms = container.sql_batch_timed(queries)
 
     latencies_ms.sort()
@@ -738,16 +831,16 @@ def bench_knn_ann(container: Container, vectors: list, wp: dict,
     }
 
 
-def bench_recall(container: Container, vectors: list, wp: dict) -> dict:
+def bench_recall(container: Container, vectors: list, wp: dict,
+                 held_out: list = None) -> dict:
     """Measure recall@10: fraction of true KNN top-10 found by ANN, averaged over queries.
 
-    Returns recall_at_10=None when MYVECTOR_IS_ANN is inactive -- currently
-    always true on component builds (no version has the query-rewrite
-    service compiled in; see #144), and not expected on plugin builds
-    (verified active there this session).
+    Returns recall_at_10=None when MYVECTOR_IS_ANN is inactive: on
+    component builds from before #156 (v1.26.9 and earlier, see #144). It
+    is active on plugin builds and on components built after #156.
     """
-    n_queries = min(wp.get('recall_queries', 50), len(vectors))
-    print(f"  [recall] {n_queries} queries, dim={wp['dim']}")
+    n_queries = min(wp.get('recall_queries', 50), len(held_out or vectors))
+    print(f"  [recall] {n_queries} {'held-out ' if held_out else ''}queries, dim={wp['dim']}")
 
     # Same probe used by bench_knn_ann to detect inactive query rewrite.
     probe_supported = True
@@ -767,17 +860,12 @@ def bench_recall(container: Container, vectors: list, wp: dict) -> dict:
         print("    ⚠ MYVECTOR_IS_ANN not supported — recall_at_10=None")
         return {"recall_at_10": None}
 
-    rng = random.Random(42)
-    query_vectors = [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n_queries)]
+    query_vectors = _query_sample(vectors, held_out, n_queries, seed=42)
 
     # Ground truth: brute-force top-10 by distance, and the ANN top-10 via
     # query rewrite, each batched over a single persistent session (not one
     # docker exec per query -- same motivation as sql_batch_timed/#124).
-    knn_queries = [
-        f"SELECT id FROM bench.build_t"
-        f" ORDER BY myvector_distance(vec, {_vec_literal(q)}, 'L2') LIMIT 10;"
-        for q in query_vectors
-    ]
+    knn_queries = [knn_sql(q, distance_metric(wp)) for q in query_vectors]
     ann_queries = [
         f"SELECT id FROM bench.build_t"
         f" WHERE MYVECTOR_IS_ANN('bench.build_t.vec', 'id', {_vec_literal(q)})"
@@ -805,7 +893,8 @@ def bench_recall(container: Container, vectors: list, wp: dict) -> dict:
     return {"recall_at_10": recall}
 
 
-def bench_ef_search_sweep(container: Container, vectors: list, wp: dict) -> dict:
+def bench_ef_search_sweep(container: Container, vectors: list, wp: dict,
+                          held_out: list = None) -> dict:
     """Sweep ef_search and record recall@10 + QPS/latency at each point
     (ann-benchmarks style), so the actual accuracy/throughput tradeoff --
     not just whatever ef_search the index happened to build with -- is
@@ -819,8 +908,9 @@ def bench_ef_search_sweep(container: Container, vectors: list, wp: dict) -> dict
     if not sweep_points:
         return {"ef_search_sweep": []}
 
-    n_queries = min(wp.get('ef_search_sweep_queries', 50), len(vectors))
-    print(f"  [ef_search_sweep] ef_search={sweep_points} x {n_queries} queries, dim={wp['dim']}")
+    n_queries = min(wp.get('ef_search_sweep_queries', 50), len(held_out or vectors))
+    print(f"  [ef_search_sweep] ef_search={sweep_points} x {n_queries}"
+          f" {'held-out ' if held_out else ''}queries, dim={wp['dim']}")
 
     probe_supported = True
     probe_vec = "[" + ",".join(["0.0"] * wp['dim']) + "]"
@@ -841,16 +931,11 @@ def bench_ef_search_sweep(container: Container, vectors: list, wp: dict) -> dict
 
     # Same query sample at every sweep point, so points are directly
     # comparable to each other and not just to their own sampling noise.
-    rng = random.Random(55)
-    query_vectors = [vectors[rng.randint(0, len(vectors) - 1)] for _ in range(n_queries)]
+    query_vectors = _query_sample(vectors, held_out, n_queries, seed=55)
 
     # Ground truth (brute-force top-10) doesn't depend on ef_search; compute
     # once and reuse across every sweep point.
-    knn_queries = [
-        f"SELECT id FROM bench.build_t"
-        f" ORDER BY myvector_distance(vec, {_vec_literal(q)}, 'L2') LIMIT 10;"
-        for q in query_vectors
-    ]
+    knn_queries = [knn_sql(q, distance_metric(wp)) for q in query_vectors]
     knn_blocks = container.sql_batch_results(knn_queries)
     # mysql --batch --silent prints no column-header row; nothing to skip.
     ground_truth = [
@@ -902,14 +987,14 @@ def bench_ef_search_sweep(container: Container, vectors: list, wp: dict) -> dict
 
 def run_workloads(container: Container, vectors: list, wp: dict,
                   build_path: str, mysql_version: str,
-                  ann_gate: bool = False) -> dict:
+                  ann_gate: bool = False, held_out: list = None) -> dict:
     metrics = {}
     metrics["index_build_time_s"] = bench_index_build(container, vectors, wp)
     metrics["insert_qps"] = bench_insert_throughput(container, vectors, wp)
     metrics.update(bench_knn_search(container, vectors, wp))
     metrics.update(bench_knn_ann(container, vectors, wp, ann_gate=ann_gate))
-    metrics.update(bench_recall(container, vectors, wp))
-    metrics.update(bench_ef_search_sweep(container, vectors, wp))
+    metrics.update(bench_recall(container, vectors, wp, held_out=held_out))
+    metrics.update(bench_ef_search_sweep(container, vectors, wp, held_out=held_out))
     return metrics
 
 
@@ -1014,6 +1099,8 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     runner = os.environ.get("RUNNER_NAME", "local")
     dataset = wp.get("dataset", "synthetic")
+    holdout = _holdout_count(wp)  # fail on bad settings before starting a container
+    distance_metric(wp)
 
     print(f"=== myvectorbench: mysql:{mysql_version} {build_path} @ {git_ref} ===")
 
@@ -1049,8 +1136,9 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
         else:
             install_plugin(c, os.path.join(artifact_dir, "myvector.so"))
 
-        vectors = load_dataset(dataset, wp)
-        metrics = run_workloads(c, vectors, wp, build_path, mysql_version, ann_gate=ann_gate)
+        vectors, held_out = load_workload(dataset, wp)
+        metrics = run_workloads(c, vectors, wp, build_path, mysql_version,
+                                ann_gate=ann_gate, held_out=held_out)
 
     result = {
         "git_ref": git_ref,
@@ -1060,13 +1148,15 @@ def run_benchmark(mysql_version: str, build_path: str, artifact_dir: str,
         "runner": runner,
         "dataset": dataset,
         "workload_params": {
-            "rows": wp.get("rows", 10000),
+            "rows": len(vectors),  # rows actually indexed
             "dim": wp.get("dim", 128),
             "M": wp.get("M", 16),
             "ef_construction": wp.get("ef_construction", 200),
             "knn_queries": wp.get("knn_queries", 200),
             "knn_ann_queries": wp.get("knn_ann_queries", 200),
             "recall_queries": wp.get("recall_queries", 50),
+            "holdout_queries": holdout,
+            "distance": distance_metric(wp),
         },
         "metrics": metrics,
     }
