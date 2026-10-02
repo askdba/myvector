@@ -22,6 +22,7 @@ embeddings to complex image and audio analysis.
 
 [Get Started :material-arrow-right:](quickstart.md){ .md-button .md-button--primary }
 [View on GitHub :fontawesome-brands-github:](https://github.com/askdba/myvector){ .md-button }
+[See performance :material-chart-line:](PERFORMANCE.md){ .md-button }
 
 ---
 
@@ -41,7 +42,7 @@ for macOS notes.
 | :--- | :--- | :--- |
 | **Deployment** | **Native MySQL Plugin:** No extra services to manage. | Often requires a separate, dedicated vector database. |
 | **Data Sync** | **Real-time:** Automatic index updates via MySQL binlogs. | Manual data synchronization or complex ETL pipelines. |
-| **Performance** | **Highly Optimized:** Built on the high-performance [HNSWlib](https://github.com/nmslib/hnswlib). | Performance varies; may require significant tuning. |
+| **Performance** | **Highly Optimized:** Built on the high-performance [HNSWlib](https://github.com/nmslib/hnswlib). [See measured recall and throughput](PERFORMANCE.md). | Performance varies; may require significant tuning. |
 | **Ease of Use** | **Simple SQL Interface:** Use familiar SQL UDFs and procedures. | Custom APIs and query languages. |
 | **Cost** | **Open Source:** Free to use and modify. | Can be expensive, especially at scale. |
 | **Ecosystem** | **Leverage MySQL:** Use your existing tools, connectors, and expertise. | Requires a new ecosystem of tools and connectors. |
