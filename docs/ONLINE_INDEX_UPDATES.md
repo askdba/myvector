@@ -190,6 +190,7 @@ If you omit `online=Y`:
 |--------|----------------|
 | Index not updating after DML | `online=Y` or `idcol` missing in column options; binlog format not ROW; `myvector_feature_level=1` |
 | "Binlog thread failed to connect" | Wrong credentials in config file; user lacks REPLICATION CLIENT |
+| Plugin: the index stops updating soon after install; the server log shows `Binlog fetch failed:` with no error text, then `Exiting binlog func` | Plugin builds before the #166 fix: the binlog listener exited when the server was idle for a second. Upgrade the plugin, then rebuild the index with `myvector_index_build` so it includes the rows changed while the listener was stopped |
 | Index not found after restart | Index not saved; ensure `myvector_index_save` or automatic save runs; check `myvector_index_dir` |
 | Wrong database for myvector_columns | The `myvector_columns` view is created in `mysql` by the installation script; ensure it exists and the plugin can query it |
 | Index not loaded at startup; the server log shows `Online index db.t.v not loaded: ERROR: unknown index type 'hnws' ...` (or `missing index type`) | The column comment's `type` is misspelled or missing. The column is not registered for online updates and searches fail with "not open". Correct the comment and rebuild (example below) |

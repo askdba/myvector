@@ -66,6 +66,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **Plugin: online indexes stopped updating about a second after the server went idle**
+  (issue #166). The plugin's binlog listener reads with a 1-second timeout. When the server
+  had no new binlog events for a second, the read timed out and the listener logged
+  `Binlog fetch failed:` (with no error text) and exited, so `online=Y` indexes stopped
+  receiving changes, usually within seconds of `INSTALL PLUGIN`. Building a non-online
+  index was not the cause. The listener now asks the server for a heartbeat every 0.5 s,
+  so an idle connection stays open. On any other read error it reconnects and resumes
+  after the last event it processed instead of exiting. Rotate events are read according
+  to whether the stream carries checksums, so the tracked binlog file name stays correct
+  across reconnects and rotations. Component builds already reconnected and are unchanged
+  by this fix. New test: `scripts/test-online-updates-idle.py` (plugin and
+  component).
 - **`ef_search` in a search's options now applies to that query only** (PR #167, issue #165).
   Before, `myvector_ann_set(..., 'nn=10,ef_search=N')` stored `N` on the shared index:
   every later query from any session searched with `N` instead of the index setting, and
