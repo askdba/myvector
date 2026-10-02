@@ -46,8 +46,14 @@ PW = "myvector"
 DIM = 4
 
 
-def sh(cmd, inp=None, check=True):
-    r = subprocess.run(cmd, input=inp, capture_output=True, text=True)
+def sh(cmd, inp=None, check=True, timeout=600):
+    """Run a command. A hung docker/mysql call fails after `timeout` seconds
+    instead of stalling the test (600 s allows a first-time image pull)."""
+    try:
+        r = subprocess.run(cmd, input=inp, capture_output=True, text=True,
+                           timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"{' '.join(cmd)} timed out after {timeout}s")
     if check and r.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)} failed:\n{r.stdout}\n{r.stderr}")
     return r
