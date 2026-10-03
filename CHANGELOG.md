@@ -66,6 +66,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **Component: online DELETE and UPDATE now reach `online=Y` indexes** (issue #188). The
+  binlog listener applied only INSERTs: after a DELETE, searches still returned the row;
+  after an UPDATE, they ranked it by its old vector. It now handles UPDATE_ROWS and
+  DELETE_ROWS events: a DELETE removes the key, an UPDATE that changes the key or the vector
+  replaces the old entry, and setting the vector to NULL removes it. Indexes gained a
+  delete operation (HNSW marks the node deleted; KNN drops it), and HNSW checkpoints now
+  write delete marks and updated vectors, so they survive a restart. Each key's changes
+  are applied in binlog order (one queue per worker, chosen by key). The row parser now
+  honours NULL columns. `Current Rows` in `MYVECTOR_INDEX_STATUS` excludes deleted rows.
+  New test: Phase 3 test 3.7 in `scripts/pre-release-test.sh`. The plugin's listener still
+  applies only INSERTs (see the follow-up issue).
 - **Component: `UNINSTALL COMPONENT` failed with ERROR 3540 while the binlog listener ran**
   (issue #189). The listener's server session holds a reference to the component's
   `event_tracking_parse` service, and MySQL checks for references before it calls the

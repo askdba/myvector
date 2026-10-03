@@ -1217,6 +1217,115 @@ run_lifecycle_online_after_restart() {
   cleanup_container
 }
 
+run_lifecycle_online_delete_update() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Lifecycle 3.7] Online DELETE and UPDATE reach the index, and survive a checkpoint + restart ($VER)"
+  cleanup_container
+  start_container "$VER"
+  install_component "$COMP_DIR"
+  # The listener reopens online=Y indexes at boot through this view (see 3.6).
+  mq mysql -e "
+    CREATE OR REPLACE VIEW myvector_columns AS
+    SELECT TABLE_SCHEMA AS db, TABLE_NAME AS tbl, COLUMN_NAME AS col,
+           COLUMN_COMMENT AS info
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE COLUMN_COMMENT LIKE 'MYVECTOR%'
+    ORDER BY db, tbl, col;" 2>/dev/null
+  # install_component writes myvector.cnf after INSTALL COMPONENT; reinstall so the
+  # listener starts (as in 3.4).
+  mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
+  mq -e "INSTALL COMPONENT 'file://myvector';"
+
+  mq -e "
+    CREATE DATABASE IF NOT EXISTS lc;
+    CREATE TABLE lc.dml_t (
+      id  INT PRIMARY KEY,
+      vec VARBINARY(256)
+        COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=1000,m=16,ef=50,idcol=id,dist=L2,online=Y'
+    );
+    INSERT INTO lc.dml_t VALUES
+      (1, myvector_construct('[1.0,0.0,0.0]')),
+      (2, myvector_construct('[0.0,1.0,0.0]')),
+      (3, myvector_construct('[0.0,0.0,1.0]')),
+      (4, myvector_construct('[1.0,1.0,0.0]')),
+      (5, myvector_construct('[0.0,1.0,1.0]'));
+  " 2>/dev/null
+  mq -e "CALL mysql.MYVECTOR_INDEX_BUILD('lc.dml_t.vec', 'id');" 2>/dev/null || true
+  wait_index_rows lc.dml_t.vec 5 20
+  if [[ "$ROWS_SEEN" != "5" ]]; then
+    fail "online DELETE/UPDATE: setup broken, index has ${ROWS_SEEN:-no} rows, expected 5"
+    cleanup_container
+    return 0
+  fi
+
+  # nn <vector> <k>: ids of the k nearest rows, e.g. [2,5,4]
+  nn() {
+    mq -N -e "SELECT myvector_ann_set('lc.dml_t.vec', 'id', myvector_construct('$1'), 'nn=$2');" \
+      2>/dev/null | LC_ALL=C tr -d '[:space:]'
+  }
+  # check_state <label>: the expected index after the DML below
+  check_state() {
+    local NOK=""
+    [[ "$(index_rows lc.dml_t.vec)" == "4" ]] || NOK="${NOK} rows=$(index_rows lc.dml_t.vec)(want 4)"
+    [[ "$(nn '[0.0,1.0,0.0]' 1)" == "[2]" ]] || NOK="${NOK} nearest[0,1,0]=$(nn '[0.0,1.0,0.0]' 1)(want [2])"
+    [[ "$(nn '[9.0,9.0,9.0]' 1)" == "[3]" ]] || NOK="${NOK} nearest[9,9,9]=$(nn '[9.0,9.0,9.0]' 1)(want [3])"
+    [[ "$(nn '[1.0,1.0,0.0]' 1)" == "[40]" ]] || NOK="${NOK} nearest[1,1,0]=$(nn '[1.0,1.0,0.0]' 1)(want [40])"
+    local ALL; ALL=$(nn '[0.0,0.0,0.0]' 10)
+    if echo "$ALL" | grep -qE '(\[|,)(4|5)(,|\])'; then NOK="${NOK} all=${ALL}(4 and 5 must be gone)"; fi
+    if [[ -z "$NOK" ]]; then
+      pass "online DELETE/UPDATE $1: index matches the table (rows=4, ids ${ALL})"
+    else
+      fail "online DELETE/UPDATE $1:${NOK} (#188)"
+    fi
+  }
+
+  # DELETE, UPDATE of the vector, UPDATE of the key, vector set to NULL, and
+  # re-INSERT of a deleted key.
+  mq -e "DELETE FROM lc.dml_t WHERE id = 2;"
+  wait_index_rows lc.dml_t.vec 4 20
+  if [[ "$(nn '[0.0,1.0,0.0]' 5)" == *2* ]] || [[ "$ROWS_SEEN" != "4" ]]; then
+    fail "online DELETE: deleted id 2 still in the index (rows=${ROWS_SEEN}, nn=$(nn '[0.0,1.0,0.0]' 5)) (#188)"
+  else
+    pass "online DELETE removed the row from the index (rows=4)"
+  fi
+  mq -e "UPDATE lc.dml_t SET vec = myvector_construct('[9.0,9.0,9.0]') WHERE id = 3;
+         UPDATE lc.dml_t SET id = 40 WHERE id = 4;
+         UPDATE lc.dml_t SET vec = NULL WHERE id = 5;
+         INSERT INTO lc.dml_t VALUES (2, myvector_construct('[0.0,1.0,0.0]'));"
+  sleep 3
+  check_state "after the DML"
+
+  # Rotate the binlog: the listener checkpoints the index to disk, so after the
+  # restart it replays nothing older and the state must come from disk.
+  mq -e "FLUSH BINARY LOGS;"
+  sleep 3
+  docker restart "$CONTAINER" >/dev/null
+  local READY=0
+  for _i in $(seq 1 60); do
+    if mq -e "SELECT 1" >/dev/null 2>&1; then
+      ((READY++)) || true
+      [[ $READY -ge 3 ]] && break
+    else
+      READY=0
+    fi
+    sleep 2
+  done
+  local DEADLINE=$(( $(date +%s) + 30 ))
+  while [[ -z "$(index_rows lc.dml_t.vec)" && $(date +%s) -lt $DEADLINE ]]; do sleep 1; done
+  check_state "after a checkpoint and a restart"
+
+  # The listener resumes from the file named by the rotation's checkpoint. Its name
+  # once came with 4 checksum bytes on the end, and the listener could not resume.
+  mq -e "INSERT INTO lc.dml_t VALUES (6, myvector_construct('[5.0,5.0,5.0]'));"
+  wait_index_rows lc.dml_t.vec 5 20
+  if [[ "$ROWS_SEEN" == "5" && "$(nn '[5.0,5.0,5.0]' 1)" == "[6]" ]]; then
+    pass "online INSERT after a rotation and a restart reached the index (rows=5)"
+  else
+    fail "online INSERT after a rotation and a restart not applied (rows=${ROWS_SEEN:-none}, nn=$(nn '[5.0,5.0,5.0]' 1))"
+  fi
+  cleanup_container
+}
+
 for VER in "${VERSIONS[@]}"; do
   DIR="${COMPONENT_DIRS[$VER]}"
   echo "--- Phase 3 Lifecycle ($VER) ---"
@@ -1226,5 +1335,6 @@ for VER in "${VERSIONS[@]}"; do
   run_lifecycle_binlog_cleanup       "$VER" "$DIR"
   run_lifecycle_uninstall_inflight_udf "$VER" "$DIR"
   run_lifecycle_online_after_restart   "$VER" "$DIR"
+  run_lifecycle_online_delete_update   "$VER" "$DIR"
   echo ""
 done

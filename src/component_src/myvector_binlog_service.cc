@@ -29,6 +29,7 @@
 #include <sys/stat.h>
 #include <algorithm>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -71,7 +72,8 @@ void myvector_table_op(const std::string& dbname,
                        unsigned int pkid,
                        std::vector<unsigned char>& vec,
                        const std::string& binlogfile,
-                       const size_t& pos);
+                       const size_t& pos,
+                       bool isDelete = false);
 std::string myvector_find_earliest_binlog_file();
 bool myvector_find_earliest_checkpoint(std::string& binlogfile, size_t& binlogpos);
 
@@ -84,6 +86,7 @@ typedef struct {
     unsigned int pkid_;
     std::string binlogFile_;
     size_t binlogPos_;
+    bool delete_ = false;  // remove pkid_ from the index (online DELETE/UPDATE)
 } VectorIndexUpdateItem;
 
 typedef struct {
@@ -160,7 +163,57 @@ private:
     bool shutting_down_ = false;
 };
 
-static EventsQ gqueue_;
+/* One queue per worker thread. A key always goes to the same queue, so the
+ * changes to one row are applied in binlog order: a DELETE and a re-INSERT of
+ * the same key must not be applied by two workers in the opposite order (#188).
+ */
+class ShardedEventsQ {
+public:
+    /* Called by the binlog thread before it starts the workers. */
+    void resize(size_t n) {
+        std::lock_guard lk(m_);
+        if (n < 1)
+            n = 1;
+        if (shards_.size() == n)
+            return;
+        shards_.clear();
+        for (size_t i = 0; i < n; i++)
+            shards_.push_back(std::make_unique<EventsQ>());
+    }
+    EventsQ& shard(size_t i) {
+        std::lock_guard lk(m_);
+        return *shards_[i % shards_.size()];
+    }
+    void enqueue(VectorIndexUpdateItem* item) {
+        std::lock_guard lk(m_);
+        shards_[item->pkid_ % shards_.size()]->enqueue(item);
+    }
+    void wait_until_empty() {
+        std::lock_guard lk(m_);
+        for (auto& q : shards_)
+            q->wait_until_empty();
+    }
+    void request_shutdown() {
+        std::lock_guard lk(m_);
+        for (auto& q : shards_)
+            q->request_shutdown();
+    }
+    void clear_shutdown() {
+        std::lock_guard lk(m_);
+        for (auto& q : shards_)
+            q->clear_shutdown();
+    }
+
+private:
+    std::mutex m_;
+    std::vector<std::unique_ptr<EventsQ>> shards_ = [] {
+        std::vector<std::unique_ptr<EventsQ>> v;
+        v.push_back(std::make_unique<EventsQ>());
+        return v;
+    }();
+};
+
+static ShardedEventsQ gqueue_;
 
 std::mutex binlog_stream_mutex_;
 // Keyed by "db.table"; value is a list of all vector columns on that table.
@@ -682,6 +735,123 @@ void parseTableMapEvent(const unsigned char* event_buf,
     return;
 }
 
+/* The row events the binlog listener applies to online=Y indexes. */
+enum class RowsEventKind { kWrite, kUpdate, kDelete };
+
+/* parseRowImage() - parse one row image (NULL bitmap, then the column values)
+ * starting at index, and advance index past it. Returns the key column (pos1)
+ * and the vector column (pos2); vec is nullptr if the vector column is NULL.
+ * Returns false if the event ends inside the image.
+ */
+static bool parseRowImage(const unsigned char* event_buf,
+                          unsigned int event_len,
+                          unsigned int& index,
+                          const TableMapEvent& tev,
+                          unsigned int ncols,
+                          unsigned int pos1,
+                          unsigned int pos2,
+                          unsigned int& idVal,
+                          const unsigned char*& vec,
+                          unsigned int& vecsz) {
+    idVal = 0;
+    vec = nullptr;
+    vecsz = 0;
+
+    // NULL bitmap: ceil(ncols/8) bytes. A NULL column has no value bytes.
+    unsigned int nulllen = (ncols + 7) >> 3;
+    if (index + nulllen > event_len)
+        return false;
+    const unsigned char* nullbits = &event_buf[index];
+    index += nulllen;
+
+    for (unsigned int i = 0; i < ncols; i++) {
+        if (nullbits[i >> 3] & (1u << (i & 7)))
+            continue;
+        if (i >= tev.columnTypes.size())
+            return false;
+        size_t remaining = event_len - index;
+        switch (tev.columnTypes[i]) {
+            case MYSQL_TYPE_LONG: {
+                if (remaining < 4)
+                    return false;
+                unsigned int lval = 0;
+                memcpy(&lval, &event_buf[index], 4);
+                index += 4;
+                if (i == pos1)
+                    idVal = lval;
+                break;
+            }
+            case MYSQL_TYPE_LONGLONG:
+                if (remaining < 8)
+                    return false;
+                index += 8;
+                break;
+            case MYSQL_TYPE_VARCHAR: {
+                unsigned int clen = 0;
+                if (tev.columnMetadata[i] < 256) {
+                    if (remaining < 1)
+                        return false;
+                    clen = (unsigned int)event_buf[index];
+                    index++;
+                    remaining -= 1;
+                } else {
+                    if (remaining < 2)
+                        return false;
+                    memcpy(&clen, &event_buf[index], 2);
+                    index += 2;
+                    remaining -= 2;
+                }
+                if (remaining < clen)
+                    return false;
+                if (i == pos2) {  // found vector column
+                    vec = &event_buf[index];
+                    vecsz = clen;
+                }
+                index += clen;
+                break;
+            }
+#if MYSQL_VERSION_ID >= 90000
+            case MYSQL_TYPE_VECTOR: {
+                unsigned int clen = 0;
+                unsigned int md_len = (i < tev.columnMetadata.size()) ? tev.columnMetadata[i] : 2;
+                if (md_len > 2)
+                    md_len = 2;
+                if (remaining < (size_t)md_len)
+                    return false;
+                memcpy(&clen, &event_buf[index], md_len);
+                index += md_len;
+                if (remaining < (size_t)md_len + clen)
+                    return false;
+                if (i == pos2) {  // found vector column
+                    vec = &event_buf[index];
+                    vecsz = clen;
+                }
+                index += clen;
+                break;
+            }
+#endif
+            case MYSQL_TYPE_TIMESTAMP2:
+                if (remaining < 4)
+                    return false;
+                index += 4;
+                break;
+            default:
+                // Unknown width: treated as zero bytes, as before this parser
+                // handled DELETE/UPDATE. Columns after it are then misread.
+                break;
+        }
+    }
+    return true;
+}
+
+/* parseRowsEvent() - turn a WRITE_ROWS, UPDATE_ROWS or DELETE_ROWS (v2) event
+ * into index operations for one vector column:
+ *   - INSERT: insert the row's vector (rows with a NULL vector are skipped).
+ *   - DELETE: delete the row's key.
+ *   - UPDATE: if the key or the vector changed, delete the old key and insert
+ *     the new row's vector (a key whose vector becomes NULL is only deleted).
+ * Expects binlog_row_image=FULL (the default): every column in every image.
+ */
 void parseRowsEvent(const unsigned char* event_buf,
                     unsigned int event_len,
                     TableMapEvent& tev,
@@ -690,6 +860,7 @@ void parseRowsEvent(const unsigned char* event_buf,
                     const std::string& columnName,
                     const std::string& binlog_file,
                     size_t binlog_pos,
+                    RowsEventKind kind,
                     std::vector<VectorIndexUpdateItem*>& updates) {
     updates.clear();
 
@@ -726,136 +897,59 @@ void parseRowsEvent(const unsigned char* event_buf,
         // 3- or 8-byte encoding: unsupported column count, skip event
         return;
     }
-    // included-columns bitmap: ceil(ncols/8) bytes
+    // Columns-present bitmap: ceil(ncols/8) bytes. UPDATE_ROWS has a second one
+    // for the after image.
     unsigned int inclen = (ncols + 7) >> 3;
-    if (index + inclen > event_len)
+    unsigned int bitmaps = (kind == RowsEventKind::kUpdate) ? 2 : 1;
+    if (index + bitmaps * inclen > event_len)
         return;
-    index += inclen;  // skip included-columns bitmap
+    index += bitmaps * inclen;
 
-    while (true) {
-        // null bitmap: ceil(ncols/8) bytes per row
-        unsigned int nulllen = (ncols + 7) >> 3;
-        if (index + nulllen > event_len)
-            break;
-        index += nulllen;
-
-        unsigned int lval = 0;
-        unsigned long llval = 0;
-
-        unsigned int idVal = 0, vecsz = 0;
-        const unsigned char* vec = nullptr;
-        bool row_overflow = false;
-        for (unsigned int i = 0; i < ncols && !row_overflow; i++) {
-            size_t remaining = event_len - index;
-            switch (tev.columnTypes[i]) {
-                case MYSQL_TYPE_LONG:
-                    if (remaining < 4) {
-                        row_overflow = true;
-                        break;
-                    }
-                    memcpy(&lval, &event_buf[index], 4);
-                    index += 4;
-                    if (i == pos1)
-                        idVal = lval;
-                    break;
-                case MYSQL_TYPE_LONGLONG:
-                    if (remaining < 8) {
-                        row_overflow = true;
-                        break;
-                    }
-                    memcpy(&llval, &event_buf[index], 8);
-                    index += 8;
-                    break;
-                case MYSQL_TYPE_VARCHAR: {
-                    unsigned int clen = 0;
-                    if (tev.columnMetadata[i] < 256) {
-                        if (remaining < 1) {
-                            row_overflow = true;
-                            break;
-                        }
-                        clen = (unsigned int)event_buf[index];
-                        index++;
-                        remaining -= 1;
-                    } else {
-                        if (remaining < 2) {
-                            row_overflow = true;
-                            break;
-                        }
-                        memcpy(&clen, &event_buf[index], 2);
-                        index += 2;
-                        remaining -= 2;
-                    }
-                    if (remaining < clen) {
-                        row_overflow = true;
-                        break;
-                    }
-                    if (i == pos2) {  // found vector column
-                        vec = &event_buf[index];
-                        vecsz = clen;
-                    }
-                    index += clen;
-                    break;
-                }
-#if MYSQL_VERSION_ID >= 90000
-                case MYSQL_TYPE_VECTOR: {
-                    unsigned int clen = 0;
-                    unsigned int md_len = (i < tev.columnMetadata.size()) ? tev.columnMetadata[i] : 2;
-                    if (md_len > 2)
-                        md_len = 2;
-                    if (remaining < (size_t)md_len) {
-                        row_overflow = true;
-                        break;
-                    }
-                    memcpy(&clen, &event_buf[index], md_len);
-                    index += md_len;
-                    if (remaining < (size_t)md_len + clen) {
-                        row_overflow = true;
-                        break;
-                    }
-                    if (i == pos2) {  // found vector column
-                        vec = &event_buf[index];
-                        vecsz = clen;
-                    }
-                    index += clen;
-                    break;
-                }
-#endif
-                case MYSQL_TYPE_TIMESTAMP2:
-                    if (remaining < 4) {
-                        row_overflow = true;
-                        break;
-                    }
-                    index += 4;
-                    break;
-                default:
-                    // error_print("unrecognized column type %d",
-                    //             (int)tev.columnTypes[i]);
-                    // TODO: Replace with component-specific logging
-                    break;
-            }  // switch
-        }  // for columns
-
-        if (row_overflow) {
-            break;  /* abort row parse on buffer overflow */
-        }
-        if (!vec || vecsz == 0) {
-            continue;  /* skip row: no vector data */
-        }
+    auto add = [&](unsigned int id, const unsigned char* v, unsigned int vsz,
+                   bool del) {
         VectorIndexUpdateItem* item = new VectorIndexUpdateItem();
         item->dbName_ = tev.dbName;
         item->tableName_ = tev.tableName;
         item->columnName_ = columnName;
-        item->vec_.assign(vec, vec + vecsz);
-        item->pkid_ = idVal;
+        if (v)
+            item->vec_.assign(v, v + vsz);
+        item->pkid_ = id;
         item->binlogFile_ = binlog_file;
         item->binlogPos_ = binlog_pos;
+        item->delete_ = del;
         updates.push_back(item);
-        // index += 4;
-        if (index >= event_len)
-            break;  // done - multi rows
+    };
 
-    }  // while (true) - single row or multi-row event!
-    return;
+    while (index < event_len) {
+        unsigned int id1 = 0, sz1 = 0;
+        const unsigned char* v1 = nullptr;
+        if (!parseRowImage(event_buf, event_len, index, tev, ncols, pos1, pos2,
+                           id1, v1, sz1))
+            break;  /* malformed or truncated: stop at this row */
+
+        if (kind == RowsEventKind::kWrite) {
+            if (v1 && sz1)
+                add(id1, v1, sz1, false);
+            continue;
+        }
+        if (kind == RowsEventKind::kDelete) {
+            add(id1, nullptr, 0, true);
+            continue;
+        }
+
+        unsigned int id2 = 0, sz2 = 0;
+        const unsigned char* v2 = nullptr;
+        if (!parseRowImage(event_buf, event_len, index, tev, ncols, pos1, pos2,
+                           id2, v2, sz2))
+            break;
+        bool hasNew = v2 && sz2;
+        bool sameVec = hasNew && v1 && sz1 == sz2 && memcmp(v1, v2, sz1) == 0;
+        if (id1 == id2 && sameVec)
+            continue;  /* key and vector unchanged: nothing to do */
+        add(id1, nullptr, 0, true);
+        if (hasNew)
+            add(id2, v2, sz2, false);
+    }
 }
 
 /* parseRotateEvent() : binlog ROTATE event indicates end of current binlog
@@ -1740,14 +1834,16 @@ private:
         // the entire binlog thread exits.
         worker_threads_.clear();
         worker_threads_.reserve(static_cast<size_t>(num_q_threads));
+        gqueue_.resize(static_cast<size_t>(num_q_threads > 0 ? num_q_threads : 1));
         for (int i = 0; i < num_q_threads; i++) {
-            worker_threads_.emplace_back([this]() {
+            worker_threads_.emplace_back([i]() {
+                EventsQ& queue = gqueue_.shard(static_cast<size_t>(i));
                 VectorIndexUpdateItem* item = nullptr;
                 // Drain until the queue signals shutdown (returns nullptr).
                 // Do NOT check shutdown_binlog_thread_ here — that would cause
                 // workers to exit before draining queued DMLs on component stop.
                 while (true) {
-                    item = gqueue_.dequeue();
+                    item = queue.dequeue();
                     if (!item) break;  // queue shutdown sentinel; exit worker
                     myvector_table_op(item->dbName_,
                                       item->tableName_,
@@ -1755,9 +1851,10 @@ private:
                                       item->pkid_,
                                       item->vec_,
                                       item->binlogFile_,
-                                      item->binlogPos_);
+                                      item->binlogPos_,
+                                      item->delete_);
                     delete item;
-                    gqueue_.mark_processed();
+                    queue.mark_processed();
                 }
             });
         }
@@ -1910,6 +2007,14 @@ private:
             reconnecting = false;
 
             TableMapEvent tev;
+            /* Whether the events now being sent carry a 4-byte CRC32 trailer.
+             * @source_binlog_checksum='NONE' only covers events the dump thread
+             * makes itself, like the first (fake) rotate of a connection. Rotate
+             * events read from a binlog file keep the checksum that file's
+             * FORMAT_DESCRIPTION_EVENT declares (CRC32 by default), as #168 found
+             * for the plugin. Without stripping it, the next file's name got 4
+             * garbage bytes, and the listener could not resume from it. */
+            bool eventsHaveChecksum = false;
             while (!shutdown_binlog_thread_.load()) {
                 int fetch_rc = mysql_binlog_fetch(&mysql, &rpl);
                 if (fetch_rc != 0) {
@@ -1933,6 +2038,8 @@ private:
             constexpr MyvectorLogEventType kRotateEvent = mysql::binlog::event::ROTATE_EVENT;
             constexpr MyvectorLogEventType kTableMapEvent = mysql::binlog::event::TABLE_MAP_EVENT;
             constexpr MyvectorLogEventType kWriteRowsEvent = mysql::binlog::event::WRITE_ROWS_EVENT;
+            constexpr MyvectorLogEventType kUpdateRowsEvent = mysql::binlog::event::UPDATE_ROWS_EVENT;
+            constexpr MyvectorLogEventType kDeleteRowsEvent = mysql::binlog::event::DELETE_ROWS_EVENT;
 #else
             using MyvectorLogEventType = binary_log::Log_event_type;
             constexpr MyvectorLogEventType kRotateEvent = binary_log::ROTATE_EVENT;
@@ -1940,6 +2047,10 @@ private:
                 binary_log::TABLE_MAP_EVENT;
             constexpr MyvectorLogEventType kWriteRowsEvent =
                 binary_log::WRITE_ROWS_EVENT;
+            constexpr MyvectorLogEventType kUpdateRowsEvent =
+                binary_log::UPDATE_ROWS_EVENT;
+            constexpr MyvectorLogEventType kDeleteRowsEvent =
+                binary_log::DELETE_ROWS_EVENT;
 #endif
 
             if (rpl.size == 0 || !rpl.buffer) {
@@ -1949,19 +2060,23 @@ private:
                 rpl.buffer[1 + EVENT_TYPE_OFFSET]);
             unsigned long event_len = rpl.size - 1;
             const unsigned char* event_buf = rpl.buffer + 1;
+            if (static_cast<int>(type) == 15) {  // FORMAT_DESCRIPTION_EVENT
+                // The checksum algorithm byte precedes the 4 checksum bytes at
+                // the end of the FDE: 0 = OFF, 1 = CRC32.
+                eventsHaveChecksum =
+                    (event_len > 5 && event_buf[event_len - 5] == 1);
+            }
             if (type == kRotateEvent) {
                 if (currentBinlogFile.length()) {
                     FlushOnlineVectorIndexes();
                 }
                 {
                     std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
-                    // offs=0: @source_binlog_checksum='NONE' means events
-                    // carry no trailing CRC, so no bytes need stripping.
                     parseRotateEvent(event_buf,
                                      event_len,
                                      currentBinlogFile,
                                      currentBinlogPos,
-                                     false);
+                                     eventsHaveChecksum);
                     persist_state_snapshot(currentBinlogFile,
                                            currentBinlogPos);
                 }
@@ -2019,9 +2134,14 @@ private:
                 std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
                 if (type == kTableMapEvent) {
                     parseTableMapEvent(event_buf, event_len, tev);
-                } else if (type == kWriteRowsEvent) {
+                } else if (type == kWriteRowsEvent || type == kUpdateRowsEvent ||
+                           type == kDeleteRowsEvent) {
                     if (g_OnlineVectorIndexes.empty())
                         continue;
+                    const RowsEventKind kind =
+                        type == kWriteRowsEvent    ? RowsEventKind::kWrite
+                        : type == kUpdateRowsEvent ? RowsEventKind::kUpdate
+                                                   : RowsEventKind::kDelete;
                     std::string key = tev.dbName + "." + tev.tableName;
                     auto kit = g_OnlineVectorIndexes.find(key);
                     if (kit == g_OnlineVectorIndexes.end())
@@ -2039,6 +2159,7 @@ private:
                                        ci.vectorColumn,
                                        binlog_file,
                                        binlog_pos,
+                                       kind,
                                        updates);
                         for (auto item : updates) {
                             gqueue_.enqueue(item);

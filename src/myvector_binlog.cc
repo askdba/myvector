@@ -123,7 +123,8 @@ void myvector_table_op(const string& dbname,
                        unsigned int pkid,
                        vector<unsigned char>& vec,
                        const string& binlogfile,
-                       const size_t& pos);
+                       const size_t& pos,
+                       bool isDelete = false);
 string myvector_find_earliest_binlog_file();
 
 typedef struct {

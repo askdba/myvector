@@ -409,6 +409,7 @@ public:
                         const unordered_set<KeyTypeInteger>* allowed = nullptr,
                         int ef_search = 0);
     bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
+    bool deleteVector(KeyTypeInteger id) override;
 
     bool supportsIncrUpdates() { return true; }
 
@@ -554,6 +555,20 @@ bool KNNIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
     return true;
 }
 
+/* deleteVector - drop every entry with this key (online DELETE/UPDATE) */
+bool KNNIndex::deleteVector(KeyTypeInteger id) {
+    std::unique_lock lock(search_insert_mutex_);
+    size_t before = m_vectors.size();
+    m_vectors.erase(std::remove_if(m_vectors.begin(), m_vectors.end(),
+                                   [id](const pair<vector<FP32>, KeyTypeInteger>& e) {
+                                       return e.second == id;
+                                   }),
+                    m_vectors.end());
+    size_t removed = before - m_vectors.size();
+    m_n_rows -= removed;
+    return removed > 0;
+}
+
 bool KNNIndex::saveIndex(const string&, const string&) {
     MYVEC_LOG_WARN("KNN Memory Index (%s) - Save Index to disk is no-op",
                    m_name.c_str());
@@ -652,6 +667,7 @@ public:
                         int ef_search = 0);
 
     bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
+    bool deleteVector(KeyTypeInteger id) override;
 
     int getDimension() { return m_dim; }
 
@@ -992,9 +1008,9 @@ string HNSWMemoryIndex::getStatus() {
            << (dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw))
                   ->size_data_per_element_
            << endl;
+        auto* disk = dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw);
         ss << "Current Rows : "
-           << (dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw))
-                  ->cur_element_count
+           << (disk->cur_element_count - disk->getDeletedCount())
            << endl;
         ss << "Searches : " << m_n_searches << endl;
     }
@@ -1209,6 +1225,25 @@ bool HNSWMemoryIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
     }
 
     m_n_rows++;  // atomic
+    m_isDirty = true;
+    return true;
+}
+
+/* deleteVector - mark the key deleted (online DELETE/UPDATE). The node stays in
+ * the graph; searches skip it, and the mark is written at the next checkpoint.
+ * A later insertVector() of the same key clears the mark and updates the vector.
+ */
+bool HNSWMemoryIndex::deleteVector(KeyTypeInteger id) {
+    auto* disk = dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw);
+    if (!disk || m_isParallelBuild)
+        return false;
+    try {
+        disk->markDelete(id);
+    } catch (const std::runtime_error&) {
+        return false;  /// key not in the index, or already deleted
+    }
+    if (m_n_rows > 0)
+        m_n_rows--;
     m_isDirty = true;
     return true;
 }
@@ -2791,7 +2826,8 @@ void myvector_table_op(const string& dbname,
                        unsigned int pkid,
                        vector<unsigned char>& vec,
                        const string& binlogfile,
-                       const size_t& binlogpos) {
+                       const size_t& binlogpos,
+                       bool isDelete) {
     string vecid = dbname + "." + tbname + "." + cname;
     AbstractVectorIndex* vi = g_indexes.get(vecid);
 
@@ -2802,7 +2838,9 @@ void myvector_table_op(const string& dbname,
 
         vi->getLastUpdateCoordinates(binlogfileold, binlogposold);
         if (isAfter(binlogfile, binlogpos, binlogfileold, binlogposold)) {
-            if (vi->isCosineMetric() &&
+            if (isDelete) {
+                vi->deleteVector(pkid);  /// false if the key was not indexed
+            } else if (vi->isCosineMetric() &&
                 isZeroVector(reinterpret_cast<const FP32*>(vec.data()),
                              vi->getDimension())) {
                 MYVEC_LOG_WARN("Skipping zero-magnitude vector for cosine index"
