@@ -103,6 +103,10 @@ DROP PROCEDURE IF EXISTS MYVECTOR_ANN_FILTERED;
 
 DROP PROCEDURE IF EXISTS MYVECTOR_BINLOG_STOP;
 
+DROP PROCEDURE IF EXISTS MYVECTOR_UNINSTALL_CHECK;
+
+DROP PROCEDURE IF EXISTS MYVECTOR_PREPARE_UNINSTALL;
+
 DELIMITER //
 
 
@@ -404,6 +408,122 @@ BEGIN
 		SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = msg;
 	END IF;
 	SELECT 'SUCCESS: binlog listener stopped' AS Status;
+END
+//
+
+
+-- MYVECTOR_UNINSTALL_CHECK() - list the other sessions that can make UNINSTALL
+-- COMPONENT fail with ERROR 3540 (#155). Every server session that has run a
+-- query since the component was installed holds a reference to its
+-- event_tracking_parse service until the session ends, and MySQL refuses to
+-- unload a component whose services are still referenced. MySQL does not show
+-- which sessions have run a query, so every other client session is listed.
+-- Read-only.
+CREATE PROCEDURE MYVECTOR_UNINSTALL_CHECK()
+BEGIN
+	DECLARE n INT DEFAULT 0;
+	SELECT COUNT(*) INTO n FROM INFORMATION_SCHEMA.PROCESSLIST
+	WHERE ID <> CONNECTION_ID() AND COMMAND <> 'Daemon'
+	  AND USER NOT IN ('system user', 'event_scheduler');
+	IF n = 0 THEN
+		SELECT 'OK: no other sessions; UNINSTALL COMPONENT can run now' AS Status;
+	ELSE
+		SELECT ID, USER, HOST, DB, COMMAND, TIME, STATE,
+		       IF(COMMAND LIKE 'Binlog Dump%',
+		          'binlog dump: the MyVector listener (MYVECTOR_BINLOG_STOP ends it) or a replica',
+		          'client session: blocks UNINSTALL if it has run a query') AS Note
+		FROM INFORMATION_SCHEMA.PROCESSLIST
+		WHERE ID <> CONNECTION_ID() AND COMMAND <> 'Daemon'
+		  AND USER NOT IN ('system user', 'event_scheduler')
+		ORDER BY ID;
+	END IF;
+END
+//
+
+
+-- MYVECTOR_PREPARE_UNINSTALL(kill_others) - get ready for UNINSTALL COMPONENT in
+-- this session: stop the binlog listener (MYVECTOR_BINLOG_STOP), then check for
+-- other sessions that would make UNINSTALL fail with ERROR 3540 (#155).
+--   kill_others = 0: only report. Raises an error naming the sessions if any
+--                    remain, so a script stops before dropping anything. Client
+--                    sessions are checked before the listener is stopped; only a
+--                    replica's 'Binlog Dump' session is found after it.
+--   kill_others = 1: KILL every other client session (including application
+--                    connections and replicas) and wait up to 10 s for them to
+--                    end. Clients that reconnect before UNINSTALL block it again.
+CREATE PROCEDURE MYVECTOR_PREPARE_UNINSTALL(IN kill_others BOOLEAN)
+BEGIN
+	DECLARE ids    TEXT;
+	DECLARE rest   TEXT;
+	DECLARE one_id BIGINT UNSIGNED;
+	DECLARE n_left INT DEFAULT 0;
+	DECLARE tries  INT DEFAULT 0;
+	DECLARE msg    VARCHAR(128);
+	DECLARE saved_gc_len BIGINT UNSIGNED;
+	-- The session may already have ended (1094), or the caller may lack
+	-- CONNECTION_ADMIN for it (1095): it is then reported as remaining below.
+	DECLARE CONTINUE HANDLER FOR 1094, 1095 BEGIN END;
+
+	SET saved_gc_len = @@SESSION.group_concat_max_len;
+	SET SESSION group_concat_max_len = 1048576;
+
+	IF NOT kill_others THEN
+		-- Check ordinary client sessions BEFORE stopping the listener (whose own
+		-- session shows as 'Binlog Dump'), so a script that stops here leaves
+		-- online updates running.
+		SELECT IFNULL(GROUP_CONCAT(ID ORDER BY ID), '') INTO rest
+		FROM INFORMATION_SCHEMA.PROCESSLIST
+		WHERE ID <> CONNECTION_ID() AND COMMAND <> 'Daemon'
+		  AND COMMAND NOT LIKE 'Binlog Dump%'
+		  AND USER NOT IN ('system user', 'event_scheduler');
+		IF rest <> '' THEN
+			SET SESSION group_concat_max_len = saved_gc_len;
+			CALL MYVECTOR_UNINSTALL_CHECK();
+			SET msg = LEFT(CONCAT('Other sessions may block UNINSTALL COMPONENT (#155): ', rest,
+			                      '. See MYVECTOR_UNINSTALL_CHECK()'), 128);
+			SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = msg;
+		END IF;
+	END IF;
+
+	CALL MYVECTOR_BINLOG_STOP();
+
+	IF kill_others THEN
+		SELECT IFNULL(GROUP_CONCAT(ID), '') INTO ids FROM INFORMATION_SCHEMA.PROCESSLIST
+		WHERE ID <> CONNECTION_ID() AND COMMAND <> 'Daemon'
+		  AND USER NOT IN ('system user', 'event_scheduler');
+		SET rest = ids;
+		WHILE rest <> '' DO
+			SET one_id = CAST(SUBSTRING_INDEX(rest, ',', 1) AS UNSIGNED);
+			SET rest   = IF(LOCATE(',', rest) > 0, SUBSTRING(rest, LOCATE(',', rest) + 1), '');
+			IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.PROCESSLIST WHERE ID = one_id) THEN
+				KILL CONNECTION one_id;
+			END IF;
+		END WHILE;
+		waitloop: LOOP
+			SELECT COUNT(*) INTO n_left FROM INFORMATION_SCHEMA.PROCESSLIST
+			WHERE ids <> '' AND FIND_IN_SET(ID, ids);
+			IF n_left = 0 OR tries >= 100 THEN
+				LEAVE waitloop;
+			END IF;
+			DO SLEEP(0.1);
+			SET tries = tries + 1;
+		END LOOP;
+	END IF;
+
+	-- Check again, now including binlog dumps: a replica's dump session blocks
+	-- UNINSTALL too. This also catches clients that connected meanwhile.
+	SELECT IFNULL(GROUP_CONCAT(ID ORDER BY ID), '') INTO rest FROM INFORMATION_SCHEMA.PROCESSLIST
+	WHERE ID <> CONNECTION_ID() AND COMMAND <> 'Daemon'
+	  AND USER NOT IN ('system user', 'event_scheduler');
+	SET SESSION group_concat_max_len = saved_gc_len;
+
+	IF rest <> '' THEN
+		CALL MYVECTOR_UNINSTALL_CHECK();
+		SET msg = LEFT(CONCAT('Other sessions may block UNINSTALL COMPONENT (#155): ', rest,
+		                      '. See MYVECTOR_UNINSTALL_CHECK()'), 128);
+		SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = msg;
+	END IF;
+	SELECT 'SUCCESS: run UNINSTALL COMPONENT now, from this session' AS Status;
 END
 //
 

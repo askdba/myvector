@@ -341,6 +341,45 @@ JOIN t ON t.id = nn.id
 ORDER BY nn.rank_no;
 ```
 
+## Uninstalling the Component
+
+Component builds remove MyVector with `sql/myvector_uninstall_component.sql`. It
+drops the procedures, view and supplemental UDFs, then runs `UNINSTALL COMPONENT`.
+
+`UNINSTALL COMPONENT` fails with `ERROR 3540` while **any other session** that has run
+a query since the install is still connected
+([#155](https://github.com/askdba/myvector/issues/155)). That includes application
+connection pools, an open `mysql` client, replicas, and MyVector's own binlog listener.
+This is MySQL behaviour that the component can't work around, so check first:
+
+```sql
+CALL mysql.MYVECTOR_UNINSTALL_CHECK();
+-- ID   USER  HOST             DB    COMMAND  TIME  STATE       Note
+-- 412  app   10.0.0.7:51234   shop  Sleep    35                client session: blocks UNINSTALL if it has run a query
+```
+
+The uninstall script starts with `CALL mysql.MYVECTOR_PREPARE_UNINSTALL(0)`. That
+procedure checks for other client sessions first. If there are any, it raises an error
+naming them, and the script stops before anything is dropped:
+
+```text
+ERROR 1644 (45000): Other sessions may block UNINSTALL COMPONENT (#155): 412. See MYVECTOR_UNINSTALL_CHECK()
+```
+
+If there are none, it stops the binlog listener (`MYVECTOR_BINLOG_STOP()`) and the script
+goes on. End the listed sessions and run the script again. Or, if you are sure, let
+MyVector end them:
+
+```sql
+-- KILLs every other client session, including application connections and
+-- replicas, then waits up to 10 s for them to end. Run UNINSTALL in the same session.
+CALL mysql.MYVECTOR_PREPARE_UNINSTALL(1);
+UNINSTALL COMPONENT 'file://myvector';
+```
+
+Clients that reconnect between the two statements block the uninstall again, so pause
+connection pools first.
+
 ## Docker Compose
 
 !!! warning "Local trial only"

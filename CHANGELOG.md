@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`MYVECTOR_UNINSTALL_CHECK()` and `MYVECTOR_PREPARE_UNINSTALL(kill_others)`** (component,
+  issue #155). `UNINSTALL COMPONENT` fails with ERROR 3540 while any other session that has
+  run a query since the install is connected. This is MySQL behaviour: each session holds a
+  reference to the component's `event_tracking_parse` service until it disconnects.
+  - `MYVECTOR_UNINSTALL_CHECK()` lists those sessions.
+  - `MYVECTOR_PREPARE_UNINSTALL(0)` raises an error naming them, before it stops anything.
+    If there are none, it stops the binlog listener.
+  - `MYVECTOR_PREPARE_UNINSTALL(1)` KILLs them.
+  - `sql/myvector_uninstall_component.sql` now calls `MYVECTOR_PREPARE_UNINSTALL(0)`, so it
+    stops before dropping anything when other sessions are connected, instead of failing
+    at `UNINSTALL` after the procedures are gone.
 - **Filtered vector search** (PR #157). `MYVECTOR_IS_ANN` and `myvector_ann_set` take an
   optional fifth argument: the keys of the rows that may be returned. The search returns
   the `k` nearest rows among them, so it returns `k` rows whenever at least `k` rows match.
