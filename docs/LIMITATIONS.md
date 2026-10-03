@@ -71,9 +71,10 @@ to the issue tracking it. Items marked *(untested)* are not verified by this pro
   defaults a missing type to KNN, and now rejects an unknown one at `CREATE TABLE`.
 - **A line break or tab after `MYVECTOR COLUMN`** (a multi-line `COMMENT`) is read like a
   space (#158). Before this fix such a comment silently built a KNN index; if you built one
-  on an earlier version, check `Type :` in `MYVECTOR_INDEX_STATUS`. The comment must still
-  *start* with `MYVECTOR COLUMN`: the index procedures reject leading whitespace with
-  "not a MYVECTOR column".
+  on an earlier version, check `Type :` in `MYVECTOR_INDEX_STATUS`. Whitespace or a line
+  break *before* `MYVECTOR COLUMN` is accepted too. Earlier, the `MYVECTOR_INDEX_*`
+  procedures rejected it with "not a MYVECTOR column". `MYVECTOR` and `COLUMN` must
+  still be separated by exactly one space.
 - **The `MYVECTOR(...)` column type is matched literally.** The plugin's DDL rewrite looks for
   the upper-case text `MYVECTOR(` with no space. `myvector (type=...)` is a syntax error.
   A `COMMENT 'MYVECTOR(...)'` string has also been seen to fail on the plugin image (#130,
