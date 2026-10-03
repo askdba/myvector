@@ -75,6 +75,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   until a build or load sets the real one; the position is read and written under a lock;
   and an HNSW insert before the graph exists is refused. New test: Lifecycle 3.9 in
   `scripts/pre-release-test.sh` (20,000-row load, then an immediate build).
+- **Component: online updates continue after the listener's binlog connection is killed**
+  (issue #179). After a binlog rotation, the listener's resume position named a file with
+  4 checksum bytes appended, so when its connection dropped (a `KILL`, a network error) it
+  could not resume, and the index stopped updating. Fixed by the rotation change in #195;
+  the new Lifecycle test 3.8 in `scripts/pre-release-test.sh` kills the connection twice
+  (once followed by a rotation) and checks that INSERTs still reach the index.
 - **Component: online DELETE and UPDATE now reach `online=Y` indexes** (issue #188). The
   binlog listener applied only INSERTs: after a DELETE, searches still returned the row;
   after an UPDATE, they ranked it by its old vector. It now handles UPDATE_ROWS and

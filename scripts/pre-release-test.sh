@@ -1336,6 +1336,82 @@ run_lifecycle_online_delete_update() {
   cleanup_container
 }
 
+run_lifecycle_dump_connection_killed() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Lifecycle 3.8] Online updates continue after the listener's binlog connection is killed ($VER)"
+  cleanup_container
+  start_container "$VER"
+  install_component "$COMP_DIR"
+  # install_component writes myvector.cnf after INSTALL COMPONENT; reinstall so the
+  # listener starts (as in 3.4).
+  mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
+  mq -e "INSTALL COMPONENT 'file://myvector';"
+
+  mq -e "
+    CREATE DATABASE IF NOT EXISTS lc;
+    CREATE TABLE lc.kill_t (
+      id  INT PRIMARY KEY,
+      vec VARBINARY(256)
+        COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=1000,m=16,ef=50,idcol=id,dist=L2,online=Y'
+    );
+    INSERT INTO lc.kill_t VALUES (1, myvector_construct('[1.0,0.0,0.0]')),
+                                 (2, myvector_construct('[0.0,1.0,0.0]'));
+  " 2>/dev/null
+  mq -e "CALL mysql.MYVECTOR_INDEX_BUILD('lc.kill_t.vec', 'id');" 2>/dev/null || true
+
+  # Rotate first: the resume position then names a file the listener reached by a
+  # rotate event (its name once came with 4 checksum bytes on the end, #179/#195).
+  mq -e "INSERT INTO lc.kill_t VALUES (3, myvector_construct('[0.0,0.0,1.0]')); FLUSH BINARY LOGS;
+         INSERT INTO lc.kill_t VALUES (4, myvector_construct('[1.0,1.0,0.0]'));"
+  wait_index_rows lc.kill_t.vec 4 20
+  if [[ "$ROWS_SEEN" != "4" ]]; then
+    fail "dump connection killed: setup broken, index has ${ROWS_SEEN:-no} rows, expected 4"
+    cleanup_container
+    return 0
+  fi
+
+  local ROUND EXPECT=4 DUMP_ID
+  for ROUND in 1 2; do
+    DUMP_ID=$(mq -N -e "SELECT ID FROM information_schema.PROCESSLIST
+                        WHERE COMMAND LIKE 'Binlog Dump%' LIMIT 1;" 2>/dev/null | LC_ALL=C tr -d '[:space:]')
+    if [[ -z "$DUMP_ID" ]]; then
+      fail "dump connection killed: no Binlog Dump session to kill (round ${ROUND})"
+      cleanup_container
+      return 0
+    fi
+    if ! mq -e "KILL ${DUMP_ID};" 2>/dev/null; then
+      fail "dump connection killed: KILL ${DUMP_ID} failed (round ${ROUND})"
+      cleanup_container
+      return 0
+    fi
+    # The INSERT must go through a new connection, so wait for the killed one to end.
+    local GONE_BY=$(( $(date +%s) + 10 )) LEFT=1
+    while [[ $(date +%s) -lt $GONE_BY ]]; do
+      LEFT=$(mq -N -e "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID = ${DUMP_ID};" \
+             2>/dev/null | LC_ALL=C tr -d '[:space:]')
+      [[ "$LEFT" == "0" ]] && break
+      sleep 0.5
+    done
+    if [[ "$LEFT" != "0" ]]; then
+      fail "dump connection killed: session ${DUMP_ID} still present 10s after KILL (round ${ROUND})"
+      cleanup_container
+      return 0
+    fi
+    [[ "$ROUND" == "2" ]] && mq -e "FLUSH BINARY LOGS;"
+    EXPECT=$(( EXPECT + 1 ))
+    mq -e "INSERT INTO lc.kill_t VALUES (${EXPECT}, myvector_construct('[${EXPECT}.0,0.0,0.0]'));"
+    wait_index_rows lc.kill_t.vec "$EXPECT" 20
+    if [[ "$ROWS_SEEN" == "$EXPECT" ]]; then
+      pass "dump connection killed (round ${ROUND}$([[ $ROUND == 2 ]] && echo ', then a rotation')): INSERT applied (rows=${EXPECT})"
+    else
+      fail "dump connection killed (round ${ROUND}): INSERT not applied within 20s (rows=${ROWS_SEEN:-none}, expected ${EXPECT}) (#179)"
+      cleanup_container
+      return 0
+    fi
+  done
+  cleanup_container
+}
+
 run_lifecycle_build_during_binlog_backlog() {
   local VER="$1" COMP_DIR="$2"
   echo "  [Lifecycle 3.9] Building an online=Y index while the listener works through a backlog ($VER)"
@@ -1408,6 +1484,7 @@ for VER in "${VERSIONS[@]}"; do
   run_lifecycle_uninstall_inflight_udf "$VER" "$DIR"
   run_lifecycle_online_after_restart   "$VER" "$DIR"
   run_lifecycle_online_delete_update   "$VER" "$DIR"
+  run_lifecycle_dump_connection_killed "$VER" "$DIR"
   run_lifecycle_build_during_binlog_backlog "$VER" "$DIR"
   echo ""
 done
