@@ -1305,6 +1305,32 @@ string VectorIndexCollection::FindEarliestBinlogFile() {
     return ret;
 }
 
+/* FindEarliestCheckpoint() - The oldest binlog position up to which an
+ * "online" vector index is saved on disk. Indexes that were never built
+ * (sentinel "zzzzzz.bin") are skipped. Returns false if there is none.
+ */
+bool VectorIndexCollection::FindEarliestCheckpoint(string& binlogfile,
+                                                   size_t& binlogpos) {
+    lock_guard<mutex> l(m_mutex);
+    bool found = false;
+    for (auto& entry : m_indexes) {
+        if (!entry.second->supportsIncrUpdates())
+            continue;
+        string file;
+        size_t pos = 0;
+        entry.second->getLastUpdateCoordinates(file, pos);
+        if (file.empty() || file == "zzzzzz.bin")
+            continue;
+        if (!found || file < binlogfile ||
+            (file == binlogfile && pos < binlogpos)) {
+            binlogfile = file;
+            binlogpos = pos;
+            found = true;
+        }
+    }
+    return found;
+}
+
 VectorIndexCollection g_indexes;
 
 /* The MYVECTOR* Annotations supported by this plugin */
@@ -2836,6 +2862,10 @@ void myvector_checkpoint_index(const string& dbtable,
 
 string myvector_find_earliest_binlog_file() {
     return g_indexes.FindEarliestBinlogFile();
+}
+
+bool myvector_find_earliest_checkpoint(string& binlogfile, size_t& binlogpos) {
+    return g_indexes.FindEarliestCheckpoint(binlogfile, binlogpos);
 }
 /* end of myvector.cc */
 

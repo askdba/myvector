@@ -196,6 +196,7 @@ public:
     bool close(AbstractVectorIndex* hindex);
 
     std::string FindEarliestBinlogFile();
+    bool FindEarliestCheckpoint(std::string& binlogfile, size_t& binlogpos);
 
 private:
     std::unordered_map<std::string, AbstractVectorIndex*> m_indexes;
