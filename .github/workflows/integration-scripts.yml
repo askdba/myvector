@@ -1,0 +1,110 @@
+---
+# Integration test scripts that run against official mysql:<ver> Docker images:
+#   scripts/test-filtered-ann.py        filtered ANN search, key-list form (#157)
+#   scripts/test-filtered-ann-broad.py  MYVECTOR_ANN_FILTERED for broad filters (#164)
+#   scripts/test-ef-search.py           ef_search applies per query (#165)
+#   scripts/test-online-updates-idle.py online=Y updates survive idle, rotation,
+#                                       KILL of the binlog connection (#166, #179)
+# Artifacts are built with the Docker build scripts (Oracle Linux 9, like the
+# mysql images), so they load in the containers; the ci.yml builds are made on
+# the Ubuntu runner and target the runner's own MySQL instead.
+# Blocking, unlike the non-blocking pre-release gate.
+name: Integration scripts
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "include/**"
+      - "sql/**"
+      - "scripts/test-*.py"
+      - "scripts/build-component*"
+      - "scripts/build-plugin*"
+      - "CMakeLists.txt"
+      - ".github/workflows/integration-scripts.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "include/**"
+      - "sql/**"
+      - "scripts/test-*.py"
+      - "scripts/build-component*"
+      - "scripts/build-plugin*"
+      - "CMakeLists.txt"
+      - ".github/workflows/integration-scripts.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integration-scripts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scripts:
+    name: scripts (${{ matrix.kind }} ${{ matrix.mysql-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kind: plugin
+            mysql-version: "8.4"
+            mysql-tag: "mysql-8.4.8"
+            build-script: "scripts/build-plugin-8.4-docker.sh"
+          - kind: component
+            mysql-version: "8.4"
+            mysql-tag: "mysql-8.4.8"
+            build-script: "scripts/build-component-8.4-docker.sh"
+          - kind: component
+            mysql-version: "9.7"
+            mysql-tag: "mysql-9.7.0"
+            build-script: "scripts/build-component-9.7-docker.sh"
+          - kind: component
+            mysql-version: "26.7"
+            mysql-tag: "mysql-26.7.0"
+            build-script: "scripts/build-component-26.7-docker.sh"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build ${{ matrix.kind }}
+        env:
+          BUILD_SCRIPT: ${{ matrix.build-script }}
+          MYSQL_TAG: ${{ matrix.mysql-tag }}
+          OUT_DIR: dist/${{ matrix.kind }}-${{ matrix.mysql-version }}
+        run: |
+          chmod +x "$BUILD_SCRIPT"
+          "$BUILD_SCRIPT" "$MYSQL_TAG" "$OUT_DIR"
+          ls -la "$OUT_DIR"
+
+      - name: Run test scripts
+        env:
+          KIND: ${{ matrix.kind }}
+          MYSQL_VERSION: ${{ matrix.mysql-version }}
+        run: |
+          DIR="dist/${KIND}-${MYSQL_VERSION}"
+          ARGS=("--${KIND}-dir" "$DIR" --image "mysql:${MYSQL_VERSION}")
+          failed=()
+          for t in test-filtered-ann.py test-filtered-ann-broad.py \
+                   test-ef-search.py test-online-updates-idle.py; do
+            echo "::group::${t} (${KIND} ${MYSQL_VERSION})"
+            if python3 "scripts/${t}" "${ARGS[@]}"; then
+              echo "PASS: ${t}"
+            else
+              echo "::error::${t} failed (${KIND} ${MYSQL_VERSION})"
+              failed+=("$t")
+            fi
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "Failed: ${failed[*]}"
+            exit 1
+          fi
+          echo "All test scripts passed (${KIND} ${MYSQL_VERSION})"
