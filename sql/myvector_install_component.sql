@@ -101,6 +101,8 @@ DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_INTERNAL;
 
 DROP PROCEDURE IF EXISTS MYVECTOR_ANN_FILTERED;
 
+DROP PROCEDURE IF EXISTS MYVECTOR_BINLOG_STOP;
+
 DELIMITER //
 
 
@@ -354,6 +356,51 @@ BEGIN
 	SET @_myvector_sql = NULL;
 	SET @_myvector_js  = NULL;
 	SET @_myvector_n   = NULL;
+END
+//
+
+
+-- MYVECTOR_BINLOG_STOP() - stop the binlog listener of online=Y indexes and wait
+-- until the server has ended its binlog sessions. Run it in the session that then
+-- runs UNINSTALL COMPONENT: while those sessions exist, UNINSTALL COMPONENT fails
+-- with ERROR 3540 (#189). Online updates stay off until the component is installed
+-- again (or the server restarts).
+CREATE PROCEDURE MYVECTOR_BINLOG_STOP()
+BEGIN
+	DECLARE ids    VARCHAR(2048);
+	DECLARE rest   VARCHAR(2048);
+	DECLARE one_id BIGINT UNSIGNED;
+	DECLARE n_left INT DEFAULT 0;
+	DECLARE tries  INT DEFAULT 0;
+	-- The session may already have ended (1094), or the caller may lack
+	-- CONNECTION_ADMIN (1095): it then ends on its own within about a second.
+	DECLARE CONTINUE HANDLER FOR 1094, 1095 BEGIN END;
+
+	SET ids  = myvector_binlog_stop();
+	SET rest = ids;
+	WHILE rest <> '' DO
+		SET one_id = CAST(SUBSTRING_INDEX(rest, ',', 1) AS UNSIGNED);
+		SET rest   = IF(LOCATE(',', rest) > 0, SUBSTRING(rest, LOCATE(',', rest) + 1), '');
+		IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.PROCESSLIST WHERE ID = one_id) THEN
+			KILL CONNECTION one_id;
+		END IF;
+	END WHILE;
+
+	waitloop: LOOP
+		SELECT COUNT(*) INTO n_left FROM INFORMATION_SCHEMA.PROCESSLIST
+		WHERE ids <> '' AND FIND_IN_SET(ID, ids);
+		IF n_left = 0 OR tries >= 100 THEN
+			LEAVE waitloop;
+		END IF;
+		DO SLEEP(0.1);
+		SET tries = tries + 1;
+	END LOOP;
+
+	IF n_left = 0 THEN
+		SELECT 'SUCCESS: binlog listener stopped' AS Status;
+	ELSE
+		SELECT CONCAT('WARNING: binlog sessions still open after 10s: ', ids) AS Status;
+	END IF;
 END
 //
 

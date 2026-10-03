@@ -1,4 +1,5 @@
 #include "myvector_udf_service.h"
+#include "myvector_binlog_service.h"
 #include <mysql/components/services/udf_metadata.h>
 #include <mysql/components/services/udf_registration.h>
 #include <mysql/udf_registration_types.h>
@@ -614,6 +615,40 @@ void myvector_display_deinit(UDF_INIT* initid) {
         free(initid->ptr);
 }
 
+// UDF: myvector_binlog_stop() - stops the binlog listener of online=Y indexes and
+// returns the server connection ids of its binlog connections ("16,17"). Their
+// server sessions keep a reference to this component's event_tracking_parse
+// service, so UNINSTALL COMPONENT fails with ERROR 3540 until they end (#189).
+// mysql.MYVECTOR_BINLOG_STOP() calls this and waits for them.
+constexpr size_t MYVECTOR_BINLOG_STOP_MAX_LEN = 2048;
+
+bool myvector_binlog_stop_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
+    if (args->arg_count != 0) {
+        strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
+        return true;
+    }
+    initid->max_length = MYVECTOR_BINLOG_STOP_MAX_LEN;
+    return myvector_alloc_init_ptr(initid, MYVECTOR_BINLOG_STOP_MAX_LEN, message);
+}
+
+char* myvector_binlog_stop(UDF_INIT* initid,
+                           UDF_ARGS*,
+                           char*,
+                           unsigned long* length,
+                           unsigned char*,
+                           unsigned char*) {
+    std::string ids = get_binlog_service().stop_and_list_connections();
+    size_t n = std::min(ids.size(), MYVECTOR_BINLOG_STOP_MAX_LEN - 1);
+    memcpy(initid->ptr, ids.data(), n);
+    *length = n;
+    return initid->ptr;
+}
+
+void myvector_binlog_stop_deinit(UDF_INIT* initid) {
+    if (initid && initid->ptr)
+        free(initid->ptr);
+}
+
 // UDF: myvector_distance
 bool myvector_distance_init(UDF_INIT* initid,
                                           UDF_ARGS* args,
@@ -799,6 +834,9 @@ const UdfDef kUdfs[] = {
     {"myvector_construct_binaryvector", STRING_RESULT,
      reinterpret_cast<Udf_func_any>(myvector_construct_binaryvector),
      myvector_construct_binaryvector_init, myvector_construct_binaryvector_deinit},
+    {"myvector_binlog_stop", STRING_RESULT,
+     reinterpret_cast<Udf_func_any>(myvector_binlog_stop),
+     myvector_binlog_stop_init, myvector_binlog_stop_deinit},
     {"myvector_hamming_distance", REAL_RESULT,
      reinterpret_cast<Udf_func_any>(myvector_hamming_distance),
      myvector_hamming_distance_init, myvector_hamming_distance_deinit},

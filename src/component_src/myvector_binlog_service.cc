@@ -1513,6 +1513,19 @@ public:
         return 0;
     }
 
+    std::string stop_and_list_connections() override {
+        stop_binlog_monitoring();  // joins the thread, so the list below is final
+        std::lock_guard<std::mutex> lock(conn_ids_mutex_);
+        std::string ids;
+        for (unsigned long id : conn_ids_) {
+            if (!ids.empty())
+                ids += ",";
+            ids += std::to_string(id);
+        }
+        conn_ids_.clear();
+        return ids;
+    }
+
     int stop_binlog_monitoring() override {
         if (!binlog_thread_) {
             return 0;
@@ -1546,6 +1559,12 @@ private:
     std::thread* binlog_thread_;
     std::vector<std::thread> worker_threads_;
     MYSQL* binlog_mysql_conn_ = nullptr;
+    // Server connection ids of the binlog connections opened by the thread. Each
+    // one runs SET statements, so its server session holds a reference to this
+    // component's event_tracking_parse service until it ends (#155, #189).
+    std::mutex conn_ids_mutex_;
+    std::vector<unsigned long> conn_ids_;
+    static constexpr size_t kMaxConnIds = 64;
     std::string server_uuid_;
     std::string start_binlog_file_;
     size_t start_binlog_pos_ = 4;
@@ -1794,6 +1813,12 @@ private:
                 password_cleared = true;
             }
             connect_attempts = 0;
+            {
+                std::lock_guard<std::mutex> lock(conn_ids_mutex_);
+                if (conn_ids_.size() >= kMaxConnIds)
+                    conn_ids_.erase(conn_ids_.begin());
+                conn_ids_.push_back(mysql_thread_id(&mysql));
+            }
 
             if (shutdown_binlog_thread_.load()) {
                 close_binlog_mysql_conn();

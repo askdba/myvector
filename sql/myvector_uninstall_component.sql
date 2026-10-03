@@ -20,6 +20,12 @@
 
 USE mysql;
 
+-- Stop the binlog listener and wait for its server sessions to end. While they
+-- exist, UNINSTALL COMPONENT fails with ERROR 3540 (#189). It must run in this
+-- session, before the procedure is dropped. Any other session that has run a
+-- query since the install also blocks UNINSTALL (#155): disconnect them first.
+CALL MYVECTOR_BINLOG_STOP();
+
 DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_BUILD;
 DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_REFRESH;
 DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_DROP;
@@ -27,6 +33,7 @@ DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_LOAD;
 DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_STATUS;
 DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_INTERNAL;
 DROP PROCEDURE IF EXISTS MYVECTOR_ANN_FILTERED;
+DROP PROCEDURE IF EXISTS MYVECTOR_BINLOG_STOP;
 
 DROP VIEW IF EXISTS myvector_columns;
 

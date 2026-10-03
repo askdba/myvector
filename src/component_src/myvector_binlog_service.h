@@ -2,6 +2,7 @@
 #define MYVECTOR_BINLOG_SERVICE_H
 
 #include "mysql_component_service_base.h"
+#include <string>
 #include <mysql/components/my_service.h>
 #include <mysql/components/component_implementation.h>
 
@@ -17,6 +18,10 @@ public:
     // Custom methods for starting and stopping the binlog thread
     virtual int start_binlog_monitoring() = 0;
     virtual int stop_binlog_monitoring() = 0;
+    // Stops the binlog thread and returns the server connection ids of the binlog
+    // connections it opened, comma-separated ("" if it was not running). Their server
+    // sessions end shortly after; UNINSTALL COMPONENT fails until they have (#189).
+    virtual std::string stop_and_list_connections() = 0;
 
 protected:
     // Destructor is protected to ensure proper memory management through factory methods

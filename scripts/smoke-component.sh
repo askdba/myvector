@@ -36,6 +36,18 @@ mq() {  # mq [-D db] "sql" -- mysql query inside container
         mysql -uroot -h 127.0.0.1 "$@"
 }
 
+# Create mysql.MYVECTOR_BINLOG_STOP from sql/myvector_install_component.sql (the
+# single source of the procedure), for test setups that install their own procedures.
+install_binlog_stop_proc() {
+    {
+        echo "DROP PROCEDURE IF EXISTS MYVECTOR_BINLOG_STOP;"
+        echo "DELIMITER //"
+        sed -n '/^CREATE PROCEDURE MYVECTOR_BINLOG_STOP()/,/^\/\/$/p' \
+            "$REPO_ROOT/sql/myvector_install_component.sql"
+        echo "DELIMITER ;"
+    } | mq_stdin mysql
+}
+
 mq_stdin() {  # mq_stdin [-D db] < file.sql
     docker exec -i -e MYSQL_PWD="$ROOT_PW" "$CONTAINER" \
         mysql -uroot -h 127.0.0.1 "$@"
@@ -249,6 +261,7 @@ END //
 
 DELIMITER ;
 PROCS
+    install_binlog_stop_proc
     pass "Stored procedures created"
 fi
 
@@ -538,7 +551,9 @@ mq -e "
     DROP FUNCTION IF EXISTS myvector_is_valid;
     DROP FUNCTION IF EXISTS myvector_search_open_udf;
 " 2>/dev/null || true
-mq -e "UNINSTALL COMPONENT 'file://myvector';"
+# The binlog listener's server session blocks UNINSTALL (ERROR 3540) until it ends;
+# stop it first, in the same session (#189).
+mq mysql -e "CALL MYVECTOR_BINLOG_STOP(); UNINSTALL COMPONENT 'file://myvector';"
 set +e
 REMAINING=$(mq -N -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';" 2>/dev/null)
 UDFS_REMAINING=$(mq -N -e "SELECT name FROM mysql.func WHERE name IN ('myvector_row_distance','myvector_is_valid','myvector_search_open_udf');" 2>/dev/null | tr -d '[:space:]')
