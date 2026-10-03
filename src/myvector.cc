@@ -119,6 +119,28 @@ extern REQUIRES_SERVICE_PLACEHOLDER(mysql_string_factory);
 extern my_service<SERVICE_TYPE(mysql_udf_metadata)>* h_udf_metadata_service;
 #endif
 
+#ifndef MYVECTOR_COMPONENT_BUILD
+#include "my_sys.h"
+#include "mysqld_error.h"
+#endif
+
+/* Fail the whole statement from a UDF's row function, with a message. Setting
+ * *error alone is not enough: MySQL then returns NULL for this row and every
+ * later row of the statement, without saying why (#170). The component build
+ * uses its own copies of these UDFs (component_src/myvector_udf_service.cc). */
+#ifndef MYVECTOR_COMPONENT_BUILD
+#define MYVECTOR_UDF_FAIL(fn, ...)                                             \
+    do {                                                                       \
+        char udf_fail_msg_[256];                                               \
+        snprintf(udf_fail_msg_, sizeof(udf_fail_msg_), __VA_ARGS__);           \
+        my_error(ER_UDF_ERROR, MYF(0), fn, udf_fail_msg_);                     \
+    } while (0)
+#else
+#define MYVECTOR_UDF_FAIL(fn, ...) \
+    do {                           \
+    } while (0)
+#endif
+
 #define SET_UDF_ERROR_AND_RETURN(...)                                          \
     {                                                                          \
         MYVEC_LOG_ERROR(__VA_ARGS__);                                          \
@@ -285,6 +307,19 @@ double computeCosineDistance(const FP32* __restrict v1,
         dist = (double)v1v2 / t;
 
     return (1 - dist);
+}
+
+MyVectorDistanceFn myvector_distance_fn(const char* name, size_t len) {
+    std::string m(name ? name : "", name ? len : 0);
+    std::transform(m.begin(), m.end(), m.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (m == "l2" || m == "euclidean")
+        return computeL2Distance;
+    if (m == "cosine")
+        return computeCosineDistance;
+    if (m == "ip")
+        return computeIPDistance;
+    return nullptr;
 }
 
 float computeCosineDistanceFn(const void* __restrict v1,
@@ -2237,8 +2272,7 @@ PLUGIN_EXPORT char* myvector_display(UDF_INIT* initid,
     unsigned char* bvec = (unsigned char*)args->args[0];
     FP32* fvec = (FP32*)args->args[0];
     if (!bvec || !args->lengths[0]) {
-        *is_null = 1;
-        *error = 1;
+        *is_null = 1;  // NULL in, NULL out, for this row only (#170)
         return result;
     }
 
@@ -2327,6 +2361,21 @@ PLUGIN_EXPORT bool myvector_distance_init(UDF_INIT* initid,
         strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
         return true;  /// error
     }
+    initid->maybe_null = true;
+    initid->ptr = nullptr;
+    /* A constant metric is checked once, here, and its function cached: an
+     * unknown name fails the statement before any row is read (#170). */
+    if (args->arg_count == 3 && args->args[2]) {
+        MyVectorDistanceFn fn = myvector_distance_fn(args->args[2], args->lengths[2]);
+        if (!fn) {
+            snprintf(message, MYSQL_ERRMSG_SIZE,
+                     "myvector_distance(): unknown distance metric '%.*s'; "
+                     "use L2, EUCLIDEAN, Cosine or IP",
+                     (int)std::min<unsigned long>(args->lengths[2], 64), args->args[2]);
+            return true;
+        }
+        initid->ptr = reinterpret_cast<char*>(fn);
+    }
     return false;
 }
 
@@ -2363,56 +2412,49 @@ PLUGIN_EXPORT double myvector_hamming_distance(UDF_INIT*,
     return HammingDistanceFn(v1, v2, &dim);
 }
 
-PLUGIN_EXPORT double myvector_distance(UDF_INIT*,
+PLUGIN_EXPORT double myvector_distance(UDF_INIT* initid,
                                        UDF_ARGS* args,
                                        char* is_null,
                                        char* error) {
-    double dist = 0.0;
     FP32* v1 = (FP32*)(args->args[0]);
     FP32* v2 = (FP32*)(args->args[1]);
-    int dim1 = MyVectorDimFromStorageLength(args->lengths[0]);
-    int dim2 = MyVectorDimFromStorageLength(args->lengths[1]);
 
-    /* Unsafe hack - keep going if 2 vectors have different dimension? */
-    if (dim1 != dim2) {
-        if (dim2 > dim1)
-            dim2 = dim1;
-        else
-            dim1 = dim2;
-    }
-
-    if (!v1 || !v2 || (dim1 != dim2) || (dim1 <= 0)) {
-        *error = 1;
+    /* NULL in, NULL out, for this row only. Setting *error here made every
+     * later row NULL too (#170). */
+    if (!v1 || !v2 || !args->lengths[0] || !args->lengths[1]) {
         *is_null = 1;
         return 0.0;
     }
 
-    const char* disttype = "L2";  // default
-    if (args->arg_count == 3)
-        disttype = args->args[2];
-
-    double (*distfn)(const FP32* v1, const FP32* v2, int dim);
-    // TODO : Cache function pointer in _init() if the 3rd argument is a
-    // constant literal
-    if (!disttype) {
-        *error = 1;  // NULL distance measure
+    int dim1 = MyVectorDimFromStorageLength(args->lengths[0]);
+    int dim2 = MyVectorDimFromStorageLength(args->lengths[1]);
+    /* Different dimensions are an error, not a distance over the shorter
+     * length: that could return 0, a "perfect match" (#171). */
+    if (dim1 != dim2 || dim1 <= 0) {
+        MYVECTOR_UDF_FAIL("myvector_distance",
+                          "vectors have different dimensions (%d and %d)", dim1, dim2);
+        *error = 1;
         return 0.0;
     }
 
-    if (!myvector_strcasecmp(disttype, "L2")
-        || !myvector_strcasecmp(disttype, "EUCLIDEAN"))
-        distfn = computeL2Distance;
-    else if (!myvector_strcasecmp(disttype, "Cosine"))
-        distfn = computeCosineDistance;
-    else if (!myvector_strcasecmp(disttype, "IP"))
-        distfn = computeIPDistance;
-    else {
-        *error = 1;  // Incorrect distance measure
-        return 0.0;
+    MyVectorDistanceFn distfn = computeL2Distance;  // default
+    if (initid->ptr) {
+        distfn = reinterpret_cast<MyVectorDistanceFn>(initid->ptr);
+    } else if (args->arg_count == 3) {
+        if (!args->args[2]) {
+            *is_null = 1;  // NULL metric: NULL distance
+            return 0.0;
+        }
+        distfn = myvector_distance_fn(args->args[2], args->lengths[2]);
+        if (!distfn) {
+            MYVECTOR_UDF_FAIL("myvector_distance",
+                              "unknown distance metric '%.*s'; use L2, EUCLIDEAN, Cosine or IP",
+                              (int)std::min<unsigned long>(args->lengths[2], 64), args->args[2]);
+            *error = 1;
+            return 0.0;
+        }
     }
-
-    dist = distfn(v1, v2, dim1);
-    return dist;
+    return distfn(v1, v2, dim1);
 }
 
 PLUGIN_EXPORT void myvector_distance_deinit(UDF_INIT* initid) {}

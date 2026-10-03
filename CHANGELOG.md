@@ -66,6 +66,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **`myvector_distance()`: a NULL vector no longer turns every later row's distance into
+  NULL** (issue #170). A NULL input (vector or metric) set the UDF's error flag, which
+  makes MySQL return NULL for that row and every later row of the statement, so
+  `ORDER BY myvector_distance(...) LIMIT k` could return wrong results. A NULL input now
+  gives NULL for that row only; `myvector_display(NULL)` likewise. An unknown metric now
+  fails the statement with a message instead of returning NULL: a constant metric is
+  checked once when the statement starts (and its function cached), a metric from a
+  column when the row is read (`ER_UDF_ERROR`). Plugin and component.
+- **`myvector_distance()`: vectors of different dimensions are an error** (issue #171).
+  The plugin computed the distance over the shorter length, which could return 0 (a
+  "perfect match"); the component returned NULL. Both now fail the statement with
+  "vectors have different dimensions (N and M)". New test:
+  `scripts/test-distance-udf.py` (plugin and component), also run by the pre-release gate.
 - **Component: online updates continue after the listener's binlog connection is killed**
   (issue #179). After a binlog rotation, the listener's resume position named a file with
   4 checksum bytes appended, so when its connection dropped (a `KILL`, a network error) it

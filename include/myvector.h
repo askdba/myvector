@@ -208,6 +208,11 @@ private:
     std::mutex m_mutex;
 };
 
+/* Distance function for a metric name (L2, EUCLIDEAN, Cosine, IP; any case),
+ * or nullptr if the name is unknown. Used by myvector_distance(). */
+typedef double (*MyVectorDistanceFn)(const FP32*, const FP32*, int);
+MyVectorDistanceFn myvector_distance_fn(const char* name, size_t len);
+
 #define MYVECTOR_BUFF_SIZE 1024
 
 /** Bit packing for binary vectors (1 bit per dimension). */
