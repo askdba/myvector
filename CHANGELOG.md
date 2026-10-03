@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Movie Finder demo app** (`examples/movie-finder/`). Semantic search over about a million
+  TMDB movies, with the vector search in MySQL through MyVector: describe a movie, filter by
+  genre, year, rating and language (key-list or `MYVECTOR_ANN_FILTERED` path, chosen and
+  explained per query), "more like this", HNSW vs exact search with recall, and adding a
+  movie that is searchable at once (`online=Y`). Every panel shows its SQL. One
+  `docker compose up`; the TMDB data is downloaded on the user's machine, never shipped.
+  Profiles of 10k, 100k and all 1,035,695 movies; `smoke.py` checks it end to end.
 - **`MYVECTOR_UNINSTALL_CHECK()` and `MYVECTOR_PREPARE_UNINSTALL(kill_others)`** (component,
   issue #155). `UNINSTALL COMPONENT` fails with ERROR 3540 while any other session that has
   run a query since the install is connected. This is MySQL behaviour: each session holds a

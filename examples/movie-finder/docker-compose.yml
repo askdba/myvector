@@ -1,0 +1,77 @@
+# MyVector Movie Finder: docker compose up, then open http://localhost:8080
+#
+#   MOVIES=10k | 100k | full   how many movies to load (default 100k)
+#   MYVECTOR_IMAGE             the MySQL + MyVector image (see README: needs a build newer than v1.26.9)
+#
+# The TMDB data is downloaded on your machine at first start (about 7 GB, once) and
+# kept in the tmdb-cache volume. It is never part of this repository or an image.
+
+name: movie-finder
+
+x-mysql-env: &mysql-env
+  MYSQL_HOST: mysql
+  MYSQL_PORT: "3306"
+  MYSQL_USER: root
+  MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-myvector}
+  MYSQL_DATABASE: movies
+
+services:
+  mysql:
+    image: ${MYVECTOR_IMAGE:-ghcr.io/askdba/myvector:mysql9.7-component}
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-myvector}
+      MYSQL_DATABASE: movies
+    command:
+      # Enough to cache the full profile's table, so an exact (full-scan) search takes
+      # seconds, not minutes. Memory is only used as pages are read.
+      - --innodb-buffer-pool-size=${MYSQL_BUFFER_POOL:-4G}
+      # Keep the whole cache across restarts, not the default 25%.
+      - --innodb-buffer-pool-dump-pct=100
+      - --max-allowed-packet=256M
+      - --binlog-expire-logs-seconds=86400
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # Writes myvector.cnf before the image installs the component, so index builds and
+      # online updates can connect back to MySQL. Demo only: it reuses the root password.
+      - ../../scripts/demo/00-myvector-cnf.sh:/docker-entrypoint-initdb.d/00-myvector-cnf.sh:ro
+    ports:
+      - "${MYSQL_PORT:-3307}:3306"
+    healthcheck:
+      # TCP, not the socket: during first-start initialisation MySQL listens on the
+      # socket only, so this passes once the real server is up.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 120
+      start_period: 30s
+
+  loader:
+    build: ./loader
+    environment:
+      <<: *mysql-env
+      MOVIES: ${MOVIES:-100k}
+      BUILD_THREADS: ${BUILD_THREADS:-0}
+    volumes:
+      - tmdb-cache:/cache
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build: ./app
+    environment:
+      <<: *mysql-env
+      MODEL_CACHE: /models
+    volumes:
+      - model-cache:/models
+    ports:
+      - "${APP_PORT:-8080}:8000"
+    depends_on:
+      loader:
+        condition: service_completed_successfully
+
+volumes:
+  mysql-data:
+  tmdb-cache:
+  model-cache:
