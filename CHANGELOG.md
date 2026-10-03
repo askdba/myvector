@@ -47,7 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   load (PR #161).
 - **CI:** a `unit-tests` job runs the option-parser tests
   (`tests/test_myvector_options.cc`) (PR #159). The plugin `test` job checks that
-  `MYVECTOR(type=<unknown>)` fails at `CREATE TABLE` (PR #161).
+  `MYVECTOR(type=<unknown>)` fails at `CREATE TABLE` (PR #161). A new, blocking
+  `integration-scripts.yml` workflow runs the Docker-based test scripts
+  (`test-filtered-ann.py`, `test-filtered-ann-broad.py`, `test-ef-search.py`,
+  `test-online-updates-idle.py`). It covers the plugin (8.4) and the components (8.4, 9.7,
+  26.7); before, these scripts ran only by hand.
 
 ### Changed
 - **Behaviour change: a missing or unknown index `type` is now an error** (PR #160).
