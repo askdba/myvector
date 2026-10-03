@@ -66,6 +66,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **Component: `UNINSTALL COMPONENT` failed with ERROR 3540 while the binlog listener ran**
+  (issue #189). The listener's server session holds a reference to the component's
+  `event_tracking_parse` service, and MySQL checks for references before it calls the
+  component's deinit, so the component could never stop its own listener in time (see
+  #155). New: `myvector_binlog_stop()` stops the listener and returns its binlog
+  connection ids, and `mysql.MYVECTOR_BINLOG_STOP()` calls it and waits until those
+  sessions have ended. `sql/myvector_uninstall_component.sql` runs it before
+  `UNINSTALL COMPONENT`. The pre-release gate failed at this step on every version since
+  #156, so Phases 2 and 3 never ran; the smoke test and lifecycle tests 3.2, 3.4 and 3.5
+  now stop the listener first or accept the documented ERROR 3540 refusal.
 - **Plugin: online indexes stopped updating about a second after the server went idle**
   (issue #166). The plugin's binlog listener reads with a 1-second timeout. When the server
   had no new binlog events for a second, the read timed out and the listener logged

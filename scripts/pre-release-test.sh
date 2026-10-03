@@ -181,6 +181,18 @@ myvector_port=3306
   install_procs
 }
 
+# Create mysql.MYVECTOR_BINLOG_STOP from sql/myvector_install_component.sql (the
+# single source of the procedure), for test setups that install their own procedures.
+install_binlog_stop_proc() {
+  {
+    echo "DROP PROCEDURE IF EXISTS MYVECTOR_BINLOG_STOP;"
+    echo "DELIMITER //"
+    sed -n '/^CREATE PROCEDURE MYVECTOR_BINLOG_STOP()/,/^\/\/$/p' \
+      "$REPO_ROOT/sql/myvector_install_component.sql"
+    echo "DELIMITER ;"
+  } | mq_stdin mysql
+}
+
 install_procs() {
   mq_stdin mysql <<'PROCS'
 DROP PROCEDURE IF EXISTS MYVECTOR_INDEX_INTERNAL;
@@ -249,6 +261,7 @@ END //
 
 DELIMITER ;
 PROCS
+  install_binlog_stop_proc
 }
 
 run_rfc004_zero_vector() {
@@ -775,7 +788,7 @@ uninstall_retry() {
 
 run_lifecycle_uninstall_under_load() {
   local VER="$1" COMP_DIR="$2"
-  echo "  [Lifecycle 3.2] UNINSTALL under load — ERROR 3540 guard ($VER)"
+  echo "  [Lifecycle 3.2] UNINSTALL under load: refused or not, the component unloads once load drains ($VER)"
   cleanup_container
   start_container "$VER"
   install_component "$COMP_DIR"
@@ -832,17 +845,16 @@ run_lifecycle_uninstall_under_load() {
   done
   wait "${BG_PIDS[@]}" 2>/dev/null || true
 
-  if echo "$UNINSTALL_OUT" | grep -q "3540"; then
-    fail "UNINSTALL returned ERROR 3540 (myvector_unload_notify regression): $UNINSTALL_OUT"
-  elif [[ "$UNINSTALL_RC" -ne 0 ]]; then
-    # MySQL refuses to unload while a statement is executing one of our UDFs
-    # (ERROR 3538). That refusal is legitimate under load, provided the component
-    # stays intact and unloads cleanly once the queries have drained (see 3.5).
+  if [[ "$UNINSTALL_RC" -ne 0 ]]; then
+    # MySQL refuses to unload while other sessions that have run a query are still
+    # connected (ERROR 3540, #155), or while a statement runs one of our UDFs (ERROR
+    # 3538). Both refusals are legitimate under load, provided the component stays
+    # intact and unloads cleanly once the queries have drained (see 3.5).
     local RETRY_OUT RETRY_RC=0
-    if echo "$UNINSTALL_OUT" | grep -q "3538"; then
-      uninstall_retry 15   # poll until statements from the killed loops drain
+    if echo "$UNINSTALL_OUT" | grep -qE "3540|3538"; then
+      uninstall_retry 15   # poll until the sessions of the killed loops have ended
       if [[ "$RETRY_RC" -eq 0 ]]; then
-        pass "UNINSTALL under load: refused once (3538) while UDFs were in use, succeeded after load drained"
+        pass "UNINSTALL under load: refused once while sessions were active, succeeded after load drained"
       else
         fail "UNINSTALL still fails after load drained: $RETRY_OUT"
       fi
@@ -931,7 +943,7 @@ run_lifecycle_reload_persistence() {
 
 run_lifecycle_binlog_cleanup() {
   local VER="$1" COMP_DIR="$2"
-  echo "  [Lifecycle 3.4] Binlog thread cleanup ($VER)"
+  echo "  [Lifecycle 3.4] MYVECTOR_BINLOG_STOP ends the listener's sessions; UNINSTALL then succeeds ($VER)"
   cleanup_container
   start_container "$VER"
   install_component "$COMP_DIR"
@@ -951,22 +963,39 @@ run_lifecycle_binlog_cleanup() {
     return 0
   fi
 
-  mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
-
-  # Poll up to 8s for binlog connections to disappear.
-  local DEADLINE=$(( $(date +%s) + 8 ))
-  local REMAINING=1
-  while [[ $(date +%s) -lt $DEADLINE ]]; do
-    REMAINING=$(mq -N -e "SHOW PROCESSLIST;" 2>/dev/null \
-      | { grep -iE "binlog|slave|replica" || true; } | wc -l | LC_ALL=C tr -d '[:space:]')
-    [[ "$REMAINING" -eq 0 ]] && break
-    sleep 0.5
-  done
-
-  if [[ "$REMAINING" -eq 0 ]]; then
-    pass "binlog thread cleaned up within 8s of UNINSTALL"
+  # Stopping the listener turns off online updates for every index: a user without
+  # CONNECTION_ADMIN must be refused, and the listener must keep running.
+  mq -e "CREATE USER IF NOT EXISTS lc_plain@'%' IDENTIFIED BY 'lc_plain_pw';" 2>/dev/null
+  local DENY_OUT DENY_LEFT
+  DENY_OUT=$(docker exec -e MYSQL_PWD=lc_plain_pw "$CONTAINER" \
+    mysql -ulc_plain -h 127.0.0.1 -e "SELECT myvector_binlog_stop();" 2>&1 || true)
+  DENY_LEFT=$(mq -N -e "SHOW PROCESSLIST;" 2>/dev/null \
+    | { grep -iE "binlog|slave|replica" || true; } | wc -l | LC_ALL=C tr -d '[:space:]')
+  if echo "$DENY_OUT" | grep -q "requires the CONNECTION_ADMIN privilege" && [[ "$DENY_LEFT" -gt 0 ]]; then
+    pass "myvector_binlog_stop() refused without CONNECTION_ADMIN; listener still running"
   else
-    fail "binlog thread still present after 8s (stop_binlog_monitoring regression)"
+    fail "myvector_binlog_stop() without CONNECTION_ADMIN: '${DENY_OUT}', binlog sessions left: ${DENY_LEFT}"
+  fi
+
+  # The listener's server session holds a reference to the component's
+  # event_tracking_parse service, and MySQL checks references before it calls the
+  # component's deinit: a plain UNINSTALL fails with ERROR 3540 (#189). Stop the
+  # listener first, in the same session.
+  local STOP_OUT UNINSTALL_RC=0
+  STOP_OUT=$(mq mysql -e "CALL MYVECTOR_BINLOG_STOP(); UNINSTALL COMPONENT 'file://myvector';" 2>&1) \
+    || UNINSTALL_RC=$?
+  local REMAINING
+  REMAINING=$(mq -N -e "SHOW PROCESSLIST;" 2>/dev/null \
+    | { grep -iE "binlog|slave|replica" || true; } | wc -l | LC_ALL=C tr -d '[:space:]')
+  if [[ "$REMAINING" -eq 0 ]] && echo "$STOP_OUT" | grep -q "SUCCESS: binlog listener stopped"; then
+    pass "MYVECTOR_BINLOG_STOP ended the listener's binlog sessions"
+  else
+    fail "binlog sessions after MYVECTOR_BINLOG_STOP: ${REMAINING} (${STOP_OUT})"
+  fi
+  if [[ "$UNINSTALL_RC" -eq 0 && -z "$(mq -N -e "SELECT component_urn FROM mysql.component;" 2>/dev/null)" ]]; then
+    pass "UNINSTALL succeeded after MYVECTOR_BINLOG_STOP"
+  else
+    fail "UNINSTALL failed after MYVECTOR_BINLOG_STOP (#189): ${STOP_OUT}"
   fi
   cleanup_container
 }
@@ -1017,11 +1046,13 @@ run_lifecycle_uninstall_inflight_udf() {
     # The server let the component unload despite a running UDF; nothing to assert
     # about a refused unload.
     skip "in-flight UDF: UNINSTALL succeeded on MySQL $VER, no refusal to verify"
-  elif ! echo "$UNINSTALL_OUT" | grep -q "3538"; then
-    fail "UNINSTALL failed for an unexpected reason (expected ERROR 3538): ${UNINSTALL_OUT}"
+  elif ! echo "$UNINSTALL_OUT" | grep -qE "3540|3538"; then
+    fail "UNINSTALL failed for an unexpected reason (expected ERROR 3540 or 3538): ${UNINSTALL_OUT}"
   else
-    # UNINSTALL was refused with 3538 (expected). A refused unload must leave the
-    # component fully functional: every UDF still registered and usable.
+    # UNINSTALL was refused (expected). The session running the UDF has run a query,
+    # so MySQL refuses with ERROR 3540 before it calls the component's deinit (#155);
+    # ERROR 3538 is the UDF-in-use refusal from deinit. A refused unload must leave
+    # the component fully functional: every UDF still registered and usable.
     local FUNC_OUT
     FUNC_OUT=$(mq -N -D lc -e "SELECT myvector_display(myvector_construct('[1.0,2.0,3.0]')),
                                 myvector_distance(myvector_construct('[1.0,2.0,3.0]'),
@@ -1045,7 +1076,7 @@ run_lifecycle_uninstall_inflight_udf() {
     if [[ -n "$MISSING" ]]; then
       fail "refused UNINSTALL left UDFs unregistered:${MISSING}"
     else
-      pass "refused UNINSTALL restored all six UDFs"
+      pass "refused UNINSTALL left all six UDFs registered"
     fi
   fi
 
@@ -1181,7 +1212,7 @@ run_lifecycle_online_after_restart() {
   if [[ "$ROWS_SEEN" == "$(( AFTER_BOOT + 1 ))" ]]; then
     pass "online after restart: listener reopened the index and applied a new INSERT with no reinstall (rows ${AFTER_BOOT} -> ${ROWS_SEEN})"
   else
-    fail "online after restart: INSERT not applied within 20s (rows=${ROWS_SEEN:-none}, expected $(( AFTER_BOOT + 1 ))): binlog listener not started at boot (#186)"
+    fail "online after restart: INSERT not applied within 20s (rows=${ROWS_SEEN:-none}, expected $(( AFTER_BOOT + 1 ))): listener stopped applying after the restart (#186; intermittent stalls: #179)"
   fi
   cleanup_container
 }

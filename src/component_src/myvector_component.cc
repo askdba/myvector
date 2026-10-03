@@ -1,6 +1,10 @@
 #include <mysql/components/component_implementation.h>
 #include <mysql/components/services/udf_metadata.h>
 #include <mysql/components/services/udf_registration.h>
+#include <mysql/components/services/dynamic_privilege.h>
+#include <mysql/components/services/mysql_current_thread_reader.h>
+#include <mysql/components/services/security_context.h>
+#include <cstring>
 #include "myvector.h"
 #include "myvector_binlog_service.h"
 #include "myvector_udf_service.h"
@@ -11,8 +15,27 @@
 /* Required services: populated by framework when component loads */
 REQUIRES_SERVICE_PLACEHOLDER(udf_registration);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_udf_metadata);
+REQUIRES_SERVICE_PLACEHOLDER(mysql_current_thread_reader);
+REQUIRES_SERVICE_PLACEHOLDER(mysql_thd_security_context);
+REQUIRES_SERVICE_PLACEHOLDER(global_grants_check);
 
 SERVICE_TYPE(mysql_udf_metadata)* myvector_component_udf_metadata = nullptr;
+
+/* True if the user of the calling session has the global privilege priv
+   (e.g. "CONNECTION_ADMIN"). False if it cannot be determined. */
+bool myvector_current_user_has_global_grant(const char* priv) {
+  MYSQL_THD thd = nullptr;
+  Security_context_handle ctx = nullptr;
+  if (!mysql_service_mysql_current_thread_reader ||
+      !mysql_service_mysql_thd_security_context ||
+      !mysql_service_global_grants_check)
+    return false;
+  if (mysql_service_mysql_current_thread_reader->get(&thd) || !thd) return false;
+  if (mysql_service_mysql_thd_security_context->get(thd, &ctx) || !ctx)
+    return false;
+  return mysql_service_global_grants_check->has_global_grant(ctx, priv,
+                                                             strlen(priv));
+}
 
 static int myvector_component_init() {
   int ret = 0;
@@ -94,6 +117,9 @@ END_COMPONENT_PROVIDES();
 BEGIN_COMPONENT_REQUIRES(myvector)
 REQUIRES_SERVICE(udf_registration),
 REQUIRES_SERVICE(mysql_udf_metadata),
+REQUIRES_SERVICE(mysql_current_thread_reader),
+REQUIRES_SERVICE(mysql_thd_security_context),
+REQUIRES_SERVICE(global_grants_check),
 END_COMPONENT_REQUIRES();
 
 /* Metadata */
