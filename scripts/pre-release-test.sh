@@ -1371,10 +1371,20 @@ run_lifecycle_build_during_binlog_backlog() {
     cleanup_container
     return 0
   fi
-  if echo "$BUILD_OUT" | grep -q "rows : 20000"; then
-    pass "build during a binlog backlog: no crash, index has all 20000 rows"
-  else
+  if ! echo "$BUILD_OUT" | grep -q "rows : 20000"; then
     fail "build during a binlog backlog: unexpected build result: ${BUILD_OUT}"
+  else
+    # Prove the race window was hit: a worker that reaches the index while it is
+    # still being created sees the never-built sentinel and logs a skip against
+    # it. If the workers drained the backlog before the build opened the index,
+    # this run did not exercise #187.
+    local OVERLAP
+    OVERLAP=$(docker logs "$CONTAINER" 2>&1 | grep -c "Skipping index update .* < (zzzzzz.bin" || true)
+    if [[ "$OVERLAP" -gt 0 ]]; then
+      pass "build during a binlog backlog: no crash, 20000 rows; ${OVERLAP} queued rows reached the index while it was being created"
+    else
+      skip "build during a binlog backlog: no crash, 20000 rows, but the listener had drained before the build (overlap not reached)"
+    fi
   fi
 
   # The listener must keep applying rows after the build.
