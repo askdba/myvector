@@ -6,8 +6,9 @@ words as 50-dimensional vectors, builds an HNSW index, and searches it. It
 checks the results against an exact search, inserts a row to show the index
 updating online, and restarts MySQL to show the index loading from disk.
 
-Every command in the recording ran for real; only the typing is simulated. Use
-the markers on the progress bar to jump to a chapter.
+Every command in the recording ran for real in a live container. The typing is
+simulated, and long waits (the first start, loading the words) are shortened.
+Use the markers on the progress bar to jump to a chapter.
 
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/asciinema-player@3.17.0/dist/bundle/asciinema-player.css">
 <div id="myvector-demo-player"></div>
@@ -74,18 +75,22 @@ INSTALL COMPONENT 'file://myvector';
 CALL mysql.myvector_index_load('demo.words50d.wordvec');
 ```
 
-Search. `myvector_ann_set()` returns the ids of the nearest rows as a JSON
-array, nearest first, and `JSON_TABLE` turns them back into rows:
+Search. `myvector_ann_set()` searches the index and returns the ids of the
+nearest rows as a JSON array. `JSON_TABLE` turns the array into rows to join
+back to the table:
 
 ```sql
 SET @q = (SELECT wordvec FROM words50d WHERE word = 'school');
+SET @ids = myvector_ann_set('demo.words50d.wordvec', 'wordid', @q, 'nn=8');
 
-SELECT nn.rank_no, w.word,
-       ROUND(myvector_distance(w.wordvec, @q, 'L2'), 3) AS distance
-FROM (SELECT myvector_ann_set('demo.words50d.wordvec', 'wordid', @q, 'nn=8') AS js) src,
-     JSON_TABLE(src.js, '$[*]' COLUMNS (rank_no FOR ORDINALITY, id BIGINT PATH '$')) nn
-JOIN words50d w ON w.wordid = nn.id ORDER BY nn.rank_no;
+SELECT w.word, ROUND(myvector_distance(w.wordvec, @q, 'L2'), 3) AS distance
+FROM JSON_TABLE(@ids, '$[*]' COLUMNS (id BIGINT PATH '$')) ids
+JOIN words50d w ON w.wordid = ids.id ORDER BY distance;
 ```
+
+The join looks up each id by primary key. Simpler forms such as
+`WHERE wordid MEMBER OF (@ids)` read the whole table, which here is slower than
+an exact search.
 
 Insert a row and search again: with `online=Y` the new row shows up after a
 moment, without a rebuild. After a restart, load the saved index with
