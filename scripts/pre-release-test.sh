@@ -709,7 +709,7 @@ run_edge_cases() {
     SELECT myvector_distance(
       myvector_construct('[1.0,0.0]'),
       myvector_construct('[1.0,0.0,0.0]')
-    );" 2>&1 | grep -v "Using a password")
+    );" 2>&1 | grep -v "Using a password" || true)
   if echo "$DIST_MM" | grep -q "different dimensions"; then
     pass "myvector_distance(dim_mismatch) fails the statement"
   else
