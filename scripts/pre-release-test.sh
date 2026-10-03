@@ -963,6 +963,20 @@ run_lifecycle_binlog_cleanup() {
     return 0
   fi
 
+  # Stopping the listener turns off online updates for every index: a user without
+  # CONNECTION_ADMIN must be refused, and the listener must keep running.
+  mq -e "CREATE USER IF NOT EXISTS lc_plain@'%' IDENTIFIED BY 'lc_plain_pw';" 2>/dev/null
+  local DENY_OUT DENY_LEFT
+  DENY_OUT=$(docker exec -e MYSQL_PWD=lc_plain_pw "$CONTAINER" \
+    mysql -ulc_plain -h 127.0.0.1 -e "SELECT myvector_binlog_stop();" 2>&1 || true)
+  DENY_LEFT=$(mq -N -e "SHOW PROCESSLIST;" 2>/dev/null \
+    | { grep -iE "binlog|slave|replica" || true; } | wc -l | LC_ALL=C tr -d '[:space:]')
+  if echo "$DENY_OUT" | grep -q "requires the CONNECTION_ADMIN privilege" && [[ "$DENY_LEFT" -gt 0 ]]; then
+    pass "myvector_binlog_stop() refused without CONNECTION_ADMIN; listener still running"
+  else
+    fail "myvector_binlog_stop() without CONNECTION_ADMIN: '${DENY_OUT}', binlog sessions left: ${DENY_LEFT}"
+  fi
+
   # The listener's server session holds a reference to the component's
   # event_tracking_parse service, and MySQL checks references before it calls the
   # component's deinit: a plain UNINSTALL fails with ERROR 3540 (#189). Stop the

@@ -261,9 +261,10 @@ END //
 
 DELIMITER ;
 PROCS
-    install_binlog_stop_proc
     pass "Stored procedures created"
 fi
+# Needed by the final UNINSTALL even when the index tests are skipped.
+install_binlog_stop_proc
 
 # ── basic UDF tests ──────────────────────────────────────────────────────────
 

@@ -372,6 +372,7 @@ BEGIN
 	DECLARE one_id BIGINT UNSIGNED;
 	DECLARE n_left INT DEFAULT 0;
 	DECLARE tries  INT DEFAULT 0;
+	DECLARE msg    VARCHAR(255);
 	-- The session may already have ended (1094), or the caller may lack
 	-- CONNECTION_ADMIN (1095): it then ends on its own within about a second.
 	DECLARE CONTINUE HANDLER FOR 1094, 1095 BEGIN END;
@@ -396,11 +397,13 @@ BEGIN
 		SET tries = tries + 1;
 	END LOOP;
 
-	IF n_left = 0 THEN
-		SELECT 'SUCCESS: binlog listener stopped' AS Status;
-	ELSE
-		SELECT CONCAT('WARNING: binlog sessions still open after 10s: ', ids) AS Status;
+	IF n_left > 0 THEN
+		-- An error, so a script stops here: UNINSTALL COMPONENT would fail with
+		-- ERROR 3540, after the uninstall script had dropped the procedures.
+		SET msg = LEFT(CONCAT('MYVECTOR_BINLOG_STOP: binlog sessions still open after 10s: ', ids), 255);
+		SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = msg;
 	END IF;
+	SELECT 'SUCCESS: binlog listener stopped' AS Status;
 END
 //
 

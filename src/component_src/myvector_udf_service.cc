@@ -1,5 +1,8 @@
 #include "myvector_udf_service.h"
 #include "myvector_binlog_service.h"
+
+/* Defined in myvector_component.cc, which holds the required services. */
+bool myvector_current_user_has_global_grant(const char* priv);
 #include <mysql/components/services/udf_metadata.h>
 #include <mysql/components/services/udf_registration.h>
 #include <mysql/udf_registration_types.h>
@@ -625,6 +628,14 @@ constexpr size_t MYVECTOR_BINLOG_STOP_MAX_LEN = 2048;
 bool myvector_binlog_stop_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
     if (args->arg_count != 0) {
         strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
+        return true;
+    }
+    // Stopping the listener turns off online updates for every online=Y index, and
+    // MySQL has no EXECUTE privilege for UDFs: check the caller here. The procedure
+    // that uses it also needs CONNECTION_ADMIN to KILL the listener's sessions.
+    if (!myvector_current_user_has_global_grant("CONNECTION_ADMIN")) {
+        snprintf(message, MYSQL_ERRMSG_SIZE,
+                 "myvector_binlog_stop() requires the CONNECTION_ADMIN privilege");
         return true;
     }
     initid->max_length = MYVECTOR_BINLOG_STOP_MAX_LEN;

@@ -1474,6 +1474,7 @@ public:
     }
 
     int start_binlog_monitoring() override {
+        std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
         if (binlog_thread_) {
             // Already running
             return 0;
@@ -1514,7 +1515,8 @@ public:
     }
 
     std::string stop_and_list_connections() override {
-        stop_binlog_monitoring();  // joins the thread, so the list below is final
+        std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
+        stop_locked();  // joins the thread, so the list below is final
         std::lock_guard<std::mutex> lock(conn_ids_mutex_);
         std::string ids;
         for (unsigned long id : conn_ids_) {
@@ -1527,6 +1529,16 @@ public:
     }
 
     int stop_binlog_monitoring() override {
+        std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
+        return stop_locked();
+    }
+
+private:
+    // Serializes start/stop: myvector_binlog_stop() can run in several sessions at
+    // once, and component init/deinit run in yet another.
+    std::mutex lifecycle_mutex_;
+
+    int stop_locked() {
         if (!binlog_thread_) {
             return 0;
         }
