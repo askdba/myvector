@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MyVector Movie Finder</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --ink: #1c1d21; --muted: #6a6d76; --line: #e3e1dc;
+    --accent: #0b6e69; --accent-ink: #ffffff; --chip: #eceae4; --code: #f1efe9; --warn: #9a5b00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121317; --panel: #1b1d22; --ink: #e9e8e4; --muted: #9a9ca4; --line: #2c2f36;
+      --accent: #3fb6ad; --accent-ink: #0d1413; --chip: #262930; --code: #16181c; --warn: #e0a64a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  a { color: var(--accent); }
+  header { padding: 28px 16px 8px; max-width: 1180px; margin: 0 auto; }
+  h1 { margin: 0; font-size: 26px; letter-spacing: -0.01em; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--muted); margin: 4px 0 0; }
+  main { max-width: 1180px; margin: 0 auto; padding: 8px 16px 40px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  form.search { display: flex; gap: 8px; flex-wrap: wrap; }
+  form.search input[type=text] { flex: 1 1 260px; min-width: 0; font: inherit; font-size: 17px; padding: 12px 14px;
+      border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); }
+  button { font: inherit; border: 1px solid var(--line); background: var(--chip); color: var(--ink);
+           border-radius: 10px; padding: 8px 14px; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .examples { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
+  .examples button { font-size: 13px; padding: 3px 10px; border-radius: 999px; }
+  .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 14px; }
+  .controls label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .04em; }
+  .controls select, .controls input { width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--line);
+      border-radius: 8px; background: var(--bg); color: var(--ink); }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { flex: 1; border: 0; border-radius: 0; padding: 6px 4px; font-size: 13px; background: transparent; }
+  .seg button.on { background: var(--accent); color: var(--accent-ink); }
+  .genres { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 12px; }
+  .genres button { font-size: 12px; padding: 2px 9px; border-radius: 999px; }
+  .genres button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .stats { display: flex; flex-wrap: wrap; gap: 18px; margin: 14px 2px; color: var(--muted); font-size: 13px; }
+  .stats b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .why { margin: 0 0 12px; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--panel); border-radius: 6px; font-size: 14px; }
+  .cols { display: grid; gap: 16px; }
+  .cols.two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .cols > div { min-width: 0; }
+  @media (max-width: 860px) { .cols.two { grid-template-columns: 1fr; } }
+  .colhead { display: flex; justify-content: space-between; align-items: baseline; margin: 0 0 8px; }
+  .colhead h2 { font-size: 15px; margin: 0; }
+  .colhead span { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; }
+  .cols.two .grid { grid-template-columns: 1fr; }
+  .card { display: flex; gap: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+  .card.hit { outline: 2px solid var(--accent); }
+  .card.miss { opacity: .6; }
+  .poster { width: 72px; height: 108px; flex: none; border-radius: 6px; background: var(--chip) center/cover no-repeat;
+            display: grid; place-items: center; color: var(--muted); font-size: 11px; text-align: center; }
+  .card h3 { margin: 0; font-size: 15px; line-height: 1.3; }
+  .card .meta { color: var(--muted); font-size: 12px; margin: 2px 0 4px; }
+  .card p { margin: 0; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .card .row { display: flex; gap: 8px; align-items: center; margin-top: 6px; font-size: 12px; }
+  .card .row button { font-size: 12px; padding: 2px 8px; }
+  .dist { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  details.sql { margin-top: 14px; }
+  details.sql summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+        overflow-x: auto; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 8px 0 0; white-space: pre; }
+  pre .ms { color: var(--muted); }
+  .source { margin: 0 0 12px; font-size: 14px; }
+  .empty { color: var(--muted); padding: 20px 4px; }
+  .error { color: var(--warn); }
+  dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--ink); width: min(560px, 92vw); }
+  dialog label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  dialog input, dialog textarea { width: 100%; font: inherit; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
+  dialog textarea { min-height: 110px; }
+  .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  footer { max-width: 1180px; margin: 0 auto; padding: 18px 16px 40px; color: var(--muted); font-size: 12px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  footer img { height: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Movie Finder <span>· MyVector</span></h1>
+  <p class="sub" id="sub">Describe a movie in your own words. The search runs inside MySQL.</p>
+</header>
+<main>
+  <section class="panel">
+    <form class="search" id="form">
+      <input type="text" id="q" placeholder="a heist that goes wrong in a snowy town" autocomplete="off" required minlength="2">
+      <button class="primary" id="go">Search</button>
+      <button type="button" id="add">+ Add a movie</button>
+    </form>
+    <div class="examples" id="examples">Try:</div>
+    <div class="controls">
+      <div><label>Search</label>
+        <div class="seg" id="mode">
+          <button type="button" data-v="ann" class="on" title="HNSW index (approximate)">HNSW</button>
+          <button type="button" data-v="exact" title="Scan every row">Exact</button>
+          <button type="button" data-v="compare" title="Run both, measure recall">Compare</button>
+        </div></div>
+      <div><label>Rank</label>
+        <div class="seg" id="rank">
+          <button type="button" data-v="popular" class="on" title="Similarity, with a small boost for films many people rated">+ popularity</button>
+          <button type="button" data-v="similar" title="Vector distance only">Similarity</button>
+        </div></div>
+      <div><label for="year_min">Year from</label><input id="year_min" type="number" min="1870" max="2100" placeholder="any"></div>
+      <div><label for="year_max">Year to</label><input id="year_max" type="number" min="1870" max="2100" placeholder="any"></div>
+      <div><label for="min_rating">Rating at least</label>
+        <select id="min_rating"><option value="">any</option><option>6</option><option>7</option><option>8</option></select></div>
+      <div><label for="language">Language</label><select id="language"><option value="">any</option></select></div>
+      <div><label for="ef">ef_search <span id="efv">100</span></label><input id="ef" type="range" min="10" max="800" step="10" value="100"></div>
+    </div>
+    <div class="genres" id="genres"></div>
+  </section>
+
+  <div class="stats" id="stats"></div>
+  <div id="results"></div>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog" id="addform">
+    <h2 style="margin:0 0 4px;font-size:18px">Add a movie</h2>
+    <p class="sub" style="margin:0">It is embedded here and INSERTed into MySQL. MyVector's binlog listener adds it to the HNSW index (<code>online=Y</code>), with no rebuild.</p>
+    <label for="nt">Title</label><input id="nt" required maxlength="200" placeholder="The Lighthouse Keeper's Cat">
+    <label for="ny">Year</label><input id="ny" type="number" min="1870" max="2100" placeholder="2026">
+    <label for="no">Plot</label><textarea id="no" required minlength="20" maxlength="2000" placeholder="A ship's cat stranded on a remote lighthouse..."></textarea>
+    <div class="dlg-actions"><button value="cancel" formnovalidate>Cancel</button><button class="primary" id="addgo" value="ok">Add and search</button></div>
+  </form>
+</dialog>
+
+<footer>
+  <a href="https://www.themoviedb.org/" target="_blank" rel="noopener"><img alt="TMDB" src="https://www.themoviedb.org/assets/2/v4/logos/v2/blue_short-8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c.svg"></a>
+  <span>This website uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB. Non-commercial demo.</span>
+  <span>Search: <a href="https://github.com/askdba/myvector" target="_blank" rel="noopener">MyVector</a> in MySQL · query embeddings: nomic-embed-text-v1.5 on CPU.</span>
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const EXAMPLES = [
+  "a boy wizard at a school of magic",
+  "a heist that goes wrong in a snowy town",
+  "astronauts stranded on a desert planet",
+  "a robot learns to love",
+  "dinosaurs brought back to life in a theme park",
+  "a detective hunts a serial killer in the rain",
+];
+const state = { mode: "ann", rank: "popular", genres: new Set(), last: null, highlight: null, meta: null };
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmt = (n) => Number(n).toLocaleString();
+const ms = (x) => x < 10 ? x.toFixed(1) + " ms" : Math.round(x) + " ms";
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail ? (typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail)) : r.statusText);
+  return body;
+}
+
+function params() {
+  const p = new URLSearchParams({ k: 10, ef: $("ef").value, mode: state.mode, rank: state.rank });
+  for (const g of state.genres) p.append("genres", g);
+  for (const id of ["year_min", "year_max", "min_rating", "language"]) if ($(id).value) p.set(id, $(id).value);
+  return p;
+}
+
+function card(m, cls = "") {
+  const poster = m.poster_path ? `style="background-image:url('https://image.tmdb.org/t/p/w185${esc(m.poster_path)}')"` : "";
+  const meta = [m.year, m.genres, m.vote_count ? `★ ${m.vote_average?.toFixed(1)} (${fmt(m.vote_count)})` : null, m.language].filter(Boolean).join(" · ");
+  return `<div class="card ${cls}">
+    <div class="poster" ${poster}>${m.poster_path ? "" : "no poster"}</div>
+    <div style="min-width:0;flex:1">
+      <h3>${esc(m.title)}</h3><div class="meta">${esc(meta)}</div>
+      <p>${esc(m.overview)}</p>
+      <div class="row"><button data-like="${m.id}">More like this</button>
+        ${m.distance != null ? `<span class="dist">distance ${m.distance.toFixed(4)}</span>` : ""}</div>
+    </div></div>`;
+}
+
+function sqlBlock(steps) {
+  return steps.map((s) => typeof s === "string" ? esc(s)
+    : `${esc(s.sql)}${s.note ? `\n<span class="ms">-- ${esc(s.note)}</span>` : ""}${s.ms ? `\n<span class="ms">-- ${ms(s.ms)}</span>` : ""}`).join("\n\n");
+}
+
+function column(title, part, cmpIds) {
+  const rows = part.rows.map((m) => card(m, m.id === state.highlight ? "hit" : (cmpIds && !cmpIds.has(m.id) ? "miss" : ""))).join("");
+  return `<div><div class="colhead"><h2>${title}</h2><span>${ms(part.ms)} in MySQL</span></div>
+    <div class="grid">${rows || '<div class="empty">No movies found.</div>'}</div>
+    <details class="sql"><summary>SQL that ran</summary><pre>${sqlBlock(part.steps)}</pre></details></div>`;
+}
+
+function render(out) {
+  state.last = out;
+  let html = "";
+  if (out.source) html += `<p class="source">Movies like <b>${esc(out.source.title)}</b>${out.source.year ? ` (${out.source.year})` : ""}: its stored vector is the query, with no model call.</p>`;
+  if (out.ann && out.ann.path && out.ann.path.kind !== "plain") html += `<p class="why"><b>Filter path:</b> ${esc(out.ann.path.why)}.</p>`;
+  if (out.mode === "compare") {
+    const exactIds = new Set(out.exact.rows.map((r) => r.id));
+    html += `<p class="why"><b>Recall@10: ${(out.recall * 100).toFixed(0)}%</b>. HNSW found ${out.ann.rows.filter((r) => exactIds.has(r.id)).length} of the exact top ${out.exact.rows.length}
+      in ${ms(out.ann.ms)}, against ${ms(out.exact.ms)} for the full scan (${(out.exact.ms / Math.max(out.ann.ms, 0.1)).toFixed(0)}× slower). Raise ef_search for higher recall. (Compare ranks by distance alone.)</p>`;
+    html += `<div class="cols two">${column("HNSW index", out.ann, exactIds)}${column("Exact (scan every row)", out.exact)}</div>`;
+  } else {
+    html += `<div class="cols">${column(out.mode === "ann" ? "HNSW index" : "Exact (scan every row)", out[out.mode])}</div>`;
+  }
+  $("results").innerHTML = html;
+  const part = out[out.mode === "exact" ? "exact" : "ann"];
+  stat(out.embed_ms ? `query embedded in <b>${ms(out.embed_ms)}</b>` : null, `search <b>${ms(part.ms)}</b>`);
+}
+
+function stat(...extra) {
+  const m = state.meta;
+  if (!m) return;
+  const items = [`<span><b>${fmt(m.movies)}</b> movies in MySQL</span>`, `<span>index <b>${esc(m.index)}</b></span>`];
+  for (const e of extra) if (e) items.push(`<span>${e}</span>`);
+  $("stats").innerHTML = items.join("");
+}
+
+async function run(fn) {
+  $("go").disabled = true;
+  $("results").innerHTML = '<div class="empty">Searching…</div>';
+  try { render(await fn()); }
+  catch (e) { $("results").innerHTML = `<div class="empty error">${esc(e.message)}</div>`; }
+  finally { $("go").disabled = false; }
+}
+
+const search = () => { state.highlight = null; state.lastQuery = { q: $("q").value };
+  const p = params(); p.set("q", $("q").value); return run(() => api("/api/search?" + p)); };
+const similar = (id) => { state.lastQuery = { id }; return run(() => api(`/api/similar/${id}?` + params())); };
+const rerun = () => state.lastQuery?.id ? similar(state.lastQuery.id) : ($("q").value.length > 1 && search());
+
+$("form").addEventListener("submit", (e) => { e.preventDefault(); search(); });
+$("results").addEventListener("click", (e) => { const id = e.target.dataset.like; if (id) { similar(id); scrollTo({ top: 0, behavior: "smooth" }); } });
+$("mode").addEventListener("click", (e) => { const v = e.target.dataset.v; if (!v) return;
+  state.mode = v; for (const b of $("mode").children) b.classList.toggle("on", b.dataset.v === v); rerun(); });
+$("rank").addEventListener("click", (e) => { const v = e.target.dataset.v; if (!v) return;
+  state.rank = v; for (const b of $("rank").children) b.classList.toggle("on", b.dataset.v === v); rerun(); });
+$("ef").addEventListener("input", () => $("efv").textContent = $("ef").value);
+$("ef").addEventListener("change", rerun);
+for (const id of ["year_min", "year_max", "min_rating", "language"]) $(id).addEventListener("change", rerun);
+
+for (const ex of EXAMPLES) {
+  const b = document.createElement("button"); b.type = "button"; b.textContent = ex;
+  b.onclick = () => { $("q").value = ex; search(); }; $("examples").append(b);
+}
+
+$("add").onclick = () => $("dlg").showModal();
+$("addform").addEventListener("submit", async (e) => {
+  if (e.submitter?.value !== "ok") return;
+  e.preventDefault();
+  const body = { title: $("nt").value, year: $("ny").value ? +$("ny").value : null, overview: $("no").value };
+  $("addgo").disabled = true;
+  try {
+    const r = await api("/api/movies", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    $("dlg").close();
+    $("results").innerHTML = `<div class="empty">Inserted movie ${r.id}. Waiting for the binlog listener to add it to the index…</div>`;
+    const t0 = performance.now();
+    let found = false;
+    for (let i = 0; i < 40 && !found; i++) { found = (await api(`/api/indexed/${r.id}`)).indexed; if (!found) await new Promise((res) => setTimeout(res, 250)); }
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    state.highlight = r.id; $("q").value = body.overview.slice(0, 200);
+    const p = params(); p.set("q", $("q").value);
+    await run(() => api("/api/search?" + p));
+    $("results").insertAdjacentHTML("afterbegin", found
+      ? `<p class="why"><b>${esc(body.title)}</b> was searchable ${secs}s after the INSERT: the index was updated online, without a rebuild. It is outlined below.</p>`
+      : `<p class="why error">The movie was inserted but is not in the index after ${secs}s. Is the binlog listener running? (See the README.)</p>`);
+  } catch (err) { alert(err.message); }
+  finally { $("addgo").disabled = false; }
+});
+
+(async () => {
+  try {
+    const m = state.meta = await api("/api/meta");
+    for (const g of m.genres) {
+      const b = document.createElement("button"); b.type = "button"; b.textContent = g;
+      b.onclick = () => { state.genres.has(g) ? state.genres.delete(g) : state.genres.add(g); b.classList.toggle("on"); rerun(); };
+      $("genres").append(b);
+    }
+    for (const l of m.languages) $("language").insertAdjacentHTML("beforeend", `<option>${esc(l)}</option>`);
+    $("sub").textContent = `Describe a movie in your own words. ${fmt(m.movies)} movies; the vector search runs inside MySQL.`;
+    stat();
+  } catch (e) { $("stats").innerHTML = `<span class="error">Cannot reach the database: ${esc(e.message)}</span>`; }
+})();
+</script>
+</body>
+</html>
