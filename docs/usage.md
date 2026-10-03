@@ -108,9 +108,8 @@ CREATE TABLE docs (
 );
 ```
 
-The comment must still *start* with `MYVECTOR COLUMN`: the `MYVECTOR_INDEX_*`
-procedures reject a comment with leading spaces or a leading line break as
-"not a MYVECTOR column".
+The comment may also start with spaces or a line break before `MYVECTOR COLUMN`.
+Write `MYVECTOR COLUMN` itself with a single space between the two words.
 
 ### Check which index was built
 
