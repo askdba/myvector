@@ -75,8 +75,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   write delete marks and updated vectors, so they survive a restart. Each key's changes
   are applied in binlog order (one queue per worker, chosen by key). The row parser now
   honours NULL columns. `Current Rows` in `MYVECTOR_INDEX_STATUS` excludes deleted rows.
-  New test: Phase 3 test 3.7 in `scripts/pre-release-test.sh`. The plugin's listener still
-  applies only INSERTs (see the follow-up issue).
+  New test: Phase 3 test 3.7 in `scripts/pre-release-test.sh`.
+- **Plugin: online DELETE and UPDATE now reach `online=Y` indexes** (issue #194). The plugin's
+  binlog listener had the same INSERT-only gap as the component (#188). It now uses the same
+  approach: UPDATE_ROWS and DELETE_ROWS events, a row parser that honours NULL columns and
+  knows the width of common column types (events it cannot read are skipped, not
+  misapplied), a CRC32 trailer stripped only when it matches, and one queue per worker
+  chosen by key, so each row's changes apply in order. Its queue list was `static`, so
+  instances could not be separated; it is now per queue. New test:
+  `scripts/test-online-dml.py` (plugin and component).
+- **Plugin: online indexes kept updating after a restart** (found with #194). At startup the
+  plugin looks up its `online=Y` columns in the `myvector_columns` view, but queried
+  `test.myvector_columns`; `sql/myvectorplugin.sql` creates it as `mysql.myvector_columns`.
+  The query failed silently, so after a restart or reinstall no online index was registered
+  again, and every later INSERT, UPDATE and DELETE was ignored until the index was rebuilt.
+  It now reads `mysql.myvector_columns`, and logs an error if it cannot.
 - **Component: `UNINSTALL COMPONENT` failed with ERROR 3540 while the binlog listener ran**
   (issue #189). The listener's server session holds a reference to the component's
   `event_tracking_parse` service, and MySQL checks for references before it calls the
