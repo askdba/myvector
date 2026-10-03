@@ -1238,17 +1238,26 @@ run_lifecycle_online_delete_update() {
 
   mq -e "
     CREATE DATABASE IF NOT EXISTS lc;
+    -- Columns of other types around the vector: the row parser must know each
+    -- one's width, or it misreads keys (and a misread DELETE removes the wrong row).
     CREATE TABLE lc.dml_t (
       id  INT PRIMARY KEY,
+      t   TINYINT DEFAULT 7,
+      d   DECIMAL(10,3) DEFAULT 12.5,
+      dt  DATETIME(3) DEFAULT '2026-10-03 10:00:00.123',
+      j   JSON,
+      c   CHAR(10) DEFAULT 'abc',
+      e   ENUM('x','y') DEFAULT 'y',
       vec VARBINARY(256)
-        COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=1000,m=16,ef=50,idcol=id,dist=L2,online=Y'
+        COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=1000,m=16,ef=50,idcol=id,dist=L2,online=Y',
+      note TEXT
     );
-    INSERT INTO lc.dml_t VALUES
-      (1, myvector_construct('[1.0,0.0,0.0]')),
-      (2, myvector_construct('[0.0,1.0,0.0]')),
-      (3, myvector_construct('[0.0,0.0,1.0]')),
-      (4, myvector_construct('[1.0,1.0,0.0]')),
-      (5, myvector_construct('[0.0,1.0,1.0]'));
+    INSERT INTO lc.dml_t (id, j, vec, note) VALUES
+      (1, '{\"a\":1}', myvector_construct('[1.0,0.0,0.0]'), 'one'),
+      (2, '{\"a\":2}', myvector_construct('[0.0,1.0,0.0]'), 'two'),
+      (3, NULL,          myvector_construct('[0.0,0.0,1.0]'), NULL),
+      (4, '{\"a\":4}', myvector_construct('[1.0,1.0,0.0]'), 'four'),
+      (5, '{\"a\":5}', myvector_construct('[0.0,1.0,1.0]'), 'five');
   " 2>/dev/null
   mq -e "CALL mysql.MYVECTOR_INDEX_BUILD('lc.dml_t.vec', 'id');" 2>/dev/null || true
   wait_index_rows lc.dml_t.vec 5 20
@@ -1291,7 +1300,8 @@ run_lifecycle_online_delete_update() {
   mq -e "UPDATE lc.dml_t SET vec = myvector_construct('[9.0,9.0,9.0]') WHERE id = 3;
          UPDATE lc.dml_t SET id = 40 WHERE id = 4;
          UPDATE lc.dml_t SET vec = NULL WHERE id = 5;
-         INSERT INTO lc.dml_t VALUES (2, myvector_construct('[0.0,1.0,0.0]'));"
+         UPDATE lc.dml_t SET note = 'changed', t = 9 WHERE id = 1;
+         INSERT INTO lc.dml_t (id, vec) VALUES (2, myvector_construct('[0.0,1.0,0.0]'));"
   sleep 3
   check_state "after the DML"
 
@@ -1316,7 +1326,7 @@ run_lifecycle_online_delete_update() {
 
   # The listener resumes from the file named by the rotation's checkpoint. Its name
   # once came with 4 checksum bytes on the end, and the listener could not resume.
-  mq -e "INSERT INTO lc.dml_t VALUES (6, myvector_construct('[5.0,5.0,5.0]'));"
+  mq -e "INSERT INTO lc.dml_t (id, vec) VALUES (6, myvector_construct('[5.0,5.0,5.0]'));"
   wait_index_rows lc.dml_t.vec 5 20
   if [[ "$ROWS_SEEN" == "5" && "$(nn '[5.0,5.0,5.0]' 1)" == "[6]" ]]; then
     pass "online INSERT after a rotation and a restart reached the index (rows=5)"

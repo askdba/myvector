@@ -17,6 +17,7 @@
 #include <mysql/service_my_plugin_log.h>
 #include <mysql/service_mysql_alloc.h>
 #include <mysql/service_plugin_registry.h>
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -738,6 +739,32 @@ void parseTableMapEvent(const unsigned char* event_buf,
 /* The row events the binlog listener applies to online=Y indexes. */
 enum class RowsEventKind { kWrite, kUpdate, kDelete };
 
+/* True if the event ends with a CRC32 of the rest of it (the binlog checksum,
+ * CRC-32/ISO-HDLC as in zlib). Events read from a binlog file keep the
+ * checksum its FORMAT_DESCRIPTION_EVENT declares; checking the value rather
+ * than trusting the FDE alone avoids trimming 4 bytes that are data. */
+static bool hasCrc32Trailer(const unsigned char* buf, unsigned long len) {
+    if (len < EVENT_HEADER_LENGTH + 4)
+        return false;
+    static const std::array<uint32_t, 256> table = [] {
+        std::array<uint32_t, 256> t{};
+        for (uint32_t n = 0; n < 256; n++) {
+            uint32_t c = n;
+            for (int k = 0; k < 8; k++)
+                c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
+            t[n] = c;
+        }
+        return t;
+    }();
+    uint32_t crc = 0xFFFFFFFFu;
+    for (unsigned long i = 0; i < len - 4; i++)
+        crc = table[(crc ^ buf[i]) & 0xFFu] ^ (crc >> 8);
+    crc ^= 0xFFFFFFFFu;
+    uint32_t stored = 0;
+    memcpy(&stored, buf + len - 4, 4);
+    return crc == stored;
+}
+
 /* parseRowImage() - parse one row image (NULL bitmap, then the column values)
  * starting at index, and advance index past it. Returns the key column (pos1)
  * and the vector column (pos2); vec is nullptr if the vector column is NULL.
@@ -767,78 +794,107 @@ static bool parseRowImage(const unsigned char* event_buf,
     for (unsigned int i = 0; i < ncols; i++) {
         if (nullbits[i >> 3] & (1u << (i & 7)))
             continue;
-        if (i >= tev.columnTypes.size())
+        if (i >= tev.columnTypes.size() || i >= tev.columnMetadata.size())
             return false;
-        size_t remaining = event_len - index;
+        const unsigned int md = tev.columnMetadata[i];
+        const size_t remaining = event_len - index;
+        size_t width = 0;        // value bytes after any length prefix
+        unsigned int lenbytes = 0;  // length prefix bytes (variable-length types)
         switch (tev.columnTypes[i]) {
-            case MYSQL_TYPE_LONG: {
-                if (remaining < 4)
+            case MYSQL_TYPE_TINY:
+            case MYSQL_TYPE_YEAR:
+                width = 1;
+                break;
+            case MYSQL_TYPE_SHORT:
+                width = 2;
+                break;
+            case MYSQL_TYPE_INT24:
+            case MYSQL_TYPE_DATE:
+                width = 3;
+                break;
+            case MYSQL_TYPE_LONG:
+            case MYSQL_TYPE_FLOAT:
+                width = 4;
+                break;
+            case MYSQL_TYPE_LONGLONG:
+            case MYSQL_TYPE_DOUBLE:
+                width = 8;
+                break;
+            case MYSQL_TYPE_TIME2:  // fractional seconds: (fsp + 1) / 2 bytes
+                width = 3 + (md + 1) / 2;
+                break;
+            case MYSQL_TYPE_DATETIME2:
+                width = 5 + (md + 1) / 2;
+                break;
+            case MYSQL_TYPE_TIMESTAMP2:
+                width = 4 + (md + 1) / 2;
+                break;
+            case MYSQL_TYPE_NEWDECIMAL: {
+                // md = precision | scale << 8; 9 digits per 4 bytes.
+                static const unsigned int dig2bytes[10] = {0, 1, 1, 2, 2, 3, 3, 4, 4, 4};
+                unsigned int precision = md & 0xFF, scale = md >> 8;
+                if (scale > precision)
                     return false;
-                unsigned int lval = 0;
-                memcpy(&lval, &event_buf[index], 4);
-                index += 4;
-                if (i == pos1)
-                    idVal = lval;
+                unsigned int intg = precision - scale;
+                width = (intg / 9) * 4 + dig2bytes[intg % 9] + (scale / 9) * 4 +
+                        dig2bytes[scale % 9];
                 break;
             }
-            case MYSQL_TYPE_LONGLONG:
-                if (remaining < 8)
-                    return false;
-                index += 8;
+            case MYSQL_TYPE_BIT:  // md = bits | bytes << 8
+                width = (md >> 8) + ((md & 0xFF) ? 1 : 0);
                 break;
-            case MYSQL_TYPE_VARCHAR: {
-                unsigned int clen = 0;
-                if (tev.columnMetadata[i] < 256) {
-                    if (remaining < 1)
-                        return false;
-                    clen = (unsigned int)event_buf[index];
-                    index++;
-                    remaining -= 1;
-                } else {
-                    if (remaining < 2)
-                        return false;
-                    memcpy(&clen, &event_buf[index], 2);
-                    index += 2;
-                    remaining -= 2;
-                }
-                if (remaining < clen)
+            case MYSQL_TYPE_VARCHAR:  // md = max length in bytes
+                lenbytes = md < 256 ? 1 : 2;
+                break;
+            case MYSQL_TYPE_BLOB:  // TEXT/BLOB/JSON/GEOMETRY: md = length bytes
+            case MYSQL_TYPE_JSON:
+            case MYSQL_TYPE_GEOMETRY:
+                if (md < 1 || md > 4)
                     return false;
-                if (i == pos2) {  // found vector column
-                    vec = &event_buf[index];
-                    vecsz = clen;
+                lenbytes = md;
+                break;
+            case MYSQL_TYPE_STRING: {  // CHAR, ENUM, SET
+                unsigned int b0 = md & 0xFF, b1 = md >> 8;
+                unsigned int realType = b0, maxLen = b1;
+                if ((b0 & 0x30) != 0x30) {  // CHAR longer than 255 bytes
+                    maxLen = b1 | (((b0 & 0x30) ^ 0x30) << 4);
+                    realType = b0 | 0x30;
                 }
-                index += clen;
+                if (realType == MYSQL_TYPE_ENUM || realType == MYSQL_TYPE_SET)
+                    width = b1;  // packed value: 1-2 (ENUM) or 1-8 (SET) bytes
+                else
+                    lenbytes = maxLen > 255 ? 2 : 1;
                 break;
             }
 #if MYSQL_VERSION_ID >= 90000
-            case MYSQL_TYPE_VECTOR: {
-                unsigned int clen = 0;
-                unsigned int md_len = (i < tev.columnMetadata.size()) ? tev.columnMetadata[i] : 2;
-                if (md_len > 2)
-                    md_len = 2;
-                if (remaining < (size_t)md_len)
-                    return false;
-                memcpy(&clen, &event_buf[index], md_len);
-                index += md_len;
-                if (remaining < (size_t)md_len + clen)
-                    return false;
-                if (i == pos2) {  // found vector column
-                    vec = &event_buf[index];
-                    vecsz = clen;
-                }
-                index += clen;
+            case MYSQL_TYPE_VECTOR:
+                lenbytes = (md >= 1 && md <= 2) ? md : 2;
                 break;
-            }
 #endif
-            case MYSQL_TYPE_TIMESTAMP2:
-                if (remaining < 4)
-                    return false;
-                index += 4;
-                break;
             default:
-                // Unknown width: treated as zero bytes, as before this parser
-                // handled DELETE/UPDATE. Columns after it are then misread.
-                break;
+                // Unknown width: the rest of the image cannot be located, and a
+                // misread key could delete the wrong row. Skip the event.
+                return false;
+        }
+        if (lenbytes) {
+            if (remaining < lenbytes)
+                return false;
+            unsigned int clen = 0;
+            memcpy(&clen, &event_buf[index], lenbytes);
+            index += lenbytes;
+            if (remaining - lenbytes < clen)
+                return false;
+            if (i == pos2) {  // found vector column
+                vec = &event_buf[index];
+                vecsz = clen;
+            }
+            index += clen;
+        } else {
+            if (remaining < width)
+                return false;
+            if (i == pos1 && tev.columnTypes[i] == MYSQL_TYPE_LONG)
+                memcpy(&idVal, &event_buf[index], 4);
+            index += width;
         }
     }
     return true;
@@ -861,8 +917,11 @@ void parseRowsEvent(const unsigned char* event_buf,
                     const std::string& binlog_file,
                     size_t binlog_pos,
                     RowsEventKind kind,
+                    bool maybeChecksum,
                     std::vector<VectorIndexUpdateItem*>& updates) {
     updates.clear();
+    if (maybeChecksum && hasCrc32Trailer(event_buf, event_len))
+        event_len -= 4;  // CRC32 trailer is not row data
 
     // @source_binlog_checksum='NONE' is always set before COM_BINLOG_DUMP,
     // so the server sends events without any trailing CRC. Do NOT subtract
@@ -897,6 +956,11 @@ void parseRowsEvent(const unsigned char* event_buf,
         // 3- or 8-byte encoding: unsupported column count, skip event
         return;
     }
+    // Only INT keys are read from row events (pkid_ is 32-bit); for any other
+    // key type the key would read as 0 and a DELETE would remove key 0.
+    if (ncols != tev.columnTypes.size() || pos1 >= ncols || pos2 >= ncols ||
+        tev.columnTypes[pos1] != MYSQL_TYPE_LONG)
+        return;
     // Columns-present bitmap: ceil(ncols/8) bytes. UPDATE_ROWS has a second one
     // for the after image.
     unsigned int inclen = (ncols + 7) >> 3;
@@ -924,8 +988,14 @@ void parseRowsEvent(const unsigned char* event_buf,
         unsigned int id1 = 0, sz1 = 0;
         const unsigned char* v1 = nullptr;
         if (!parseRowImage(event_buf, event_len, index, tev, ncols, pos1, pos2,
-                           id1, v1, sz1))
-            break;  /* malformed or truncated: stop at this row */
+                           id1, v1, sz1)) {
+            /* Unsupported column type, or truncated: apply none of this event
+             * rather than act on misread keys. */
+            for (auto* it : updates)
+                delete it;
+            updates.clear();
+            return;
+        }
 
         if (kind == RowsEventKind::kWrite) {
             if (v1 && sz1)
@@ -940,8 +1010,12 @@ void parseRowsEvent(const unsigned char* event_buf,
         unsigned int id2 = 0, sz2 = 0;
         const unsigned char* v2 = nullptr;
         if (!parseRowImage(event_buf, event_len, index, tev, ncols, pos1, pos2,
-                           id2, v2, sz2))
-            break;
+                           id2, v2, sz2)) {
+            for (auto* it : updates)
+                delete it;
+            updates.clear();
+            return;
+        }
         bool hasNew = v2 && sz2;
         bool sameVec = hasNew && v1 && sz1 == sz2 && memcmp(v1, v2, sz1) == 0;
         if (id1 == id2 && sameVec)
@@ -2076,7 +2150,8 @@ private:
                                      event_len,
                                      currentBinlogFile,
                                      currentBinlogPos,
-                                     eventsHaveChecksum);
+                                     eventsHaveChecksum &&
+                                         hasCrc32Trailer(event_buf, event_len));
                     persist_state_snapshot(currentBinlogFile,
                                            currentBinlogPos);
                 }
@@ -2160,6 +2235,7 @@ private:
                                        binlog_file,
                                        binlog_pos,
                                        kind,
+                                       eventsHaveChecksum,
                                        updates);
                         for (auto item : updates) {
                             gqueue_.enqueue(item);
