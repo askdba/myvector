@@ -1379,7 +1379,24 @@ run_lifecycle_dump_connection_killed() {
       cleanup_container
       return 0
     fi
-    mq -e "KILL ${DUMP_ID};" 2>/dev/null || true
+    if ! mq -e "KILL ${DUMP_ID};" 2>/dev/null; then
+      fail "dump connection killed: KILL ${DUMP_ID} failed (round ${ROUND})"
+      cleanup_container
+      return 0
+    fi
+    # The INSERT must go through a new connection, so wait for the killed one to end.
+    local GONE_BY=$(( $(date +%s) + 10 )) LEFT=1
+    while [[ $(date +%s) -lt $GONE_BY ]]; do
+      LEFT=$(mq -N -e "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID = ${DUMP_ID};" \
+             2>/dev/null | LC_ALL=C tr -d '[:space:]')
+      [[ "$LEFT" == "0" ]] && break
+      sleep 0.5
+    done
+    if [[ "$LEFT" != "0" ]]; then
+      fail "dump connection killed: session ${DUMP_ID} still present 10s after KILL (round ${ROUND})"
+      cleanup_container
+      return 0
+    fi
     [[ "$ROUND" == "2" ]] && mq -e "FLUSH BINARY LOGS;"
     EXPECT=$(( EXPECT + 1 ))
     mq -e "INSERT INTO lc.kill_t VALUES (${EXPECT}, myvector_construct('[${EXPECT}.0,0.0,0.0]'));"
