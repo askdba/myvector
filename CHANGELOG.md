@@ -66,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **Component: online updates continue after the listener's binlog connection is killed**
+  (issue #179). After a binlog rotation, the listener's resume position named a file with
+  4 checksum bytes appended, so when its connection dropped (a `KILL`, a network error) it
+  could not resume, and the index stopped updating. Fixed by the rotation change in #195;
+  the new Lifecycle test 3.8 in `scripts/pre-release-test.sh` kills the connection twice
+  (once followed by a rotation) and checks that INSERTs still reach the index.
 - **Component: online DELETE and UPDATE now reach `online=Y` indexes** (issue #188). The
   binlog listener applied only INSERTs: after a DELETE, searches still returned the row;
   after an UPDATE, they ranked it by its old vector. It now handles UPDATE_ROWS and
