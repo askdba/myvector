@@ -23,9 +23,11 @@ to the issue tracking it. Items marked *(untested)* are not verified by this pro
   behaviour, which the component can't change. The component's own binlog listener is
   one such session ([#189](https://github.com/askdba/myvector/issues/189)), and so is
   every application connection or open `mysql` client. Before uninstalling, run
-  `CALL mysql.MYVECTOR_UNINSTALL_CHECK()` to list the other sessions, or
-  `CALL mysql.MYVECTOR_PREPARE_UNINSTALL(0)` to stop the listener and report them, or
-  `(1)` to also KILL them. See [Uninstalling the component](usage.md#uninstalling-the-component).
+  `CALL mysql.MYVECTOR_UNINSTALL_CHECK()` to list the other sessions.
+  `CALL mysql.MYVECTOR_PREPARE_UNINSTALL(0)` checks for other client sessions first. If
+  there are any, it raises an error naming them and leaves the listener running. If there
+  are none, it stops the listener. `(1)` stops the listener and KILLs the other sessions.
+  See [Uninstalling the component](usage.md#uninstalling-the-component).
 - **Filtered search takes an explicit key list.** Pass the allowed keys as the fifth
   argument, e.g. `MYVECTOR_IS_ANN(..., 10, (SELECT JSON_ARRAYAGG(id) FROM t WHERE ...))`
   (see [Usage](usage.md#vector-search)). A predicate written *next to*
