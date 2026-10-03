@@ -434,12 +434,14 @@ public:
     unsigned long getRowCount() { return m_n_rows; }
 
     void getLastUpdateCoordinates(string& binlogFile, size_t& binlogPos) {
+        std::lock_guard<std::mutex> l(m_coordMutex);
         binlogFile = m_binlogFile;
         binlogPos  = m_binlogPosition;
     }
 
     void setLastUpdateCoordinates(const string& binlogFile,
                                   const size_t& binlogPos) {
+        std::lock_guard<std::mutex> l(m_coordMutex);
         m_binlogFile     = binlogFile;
         m_binlogPosition = binlogPos;
     }
@@ -458,8 +460,12 @@ private:
      * option ... which hides the mismatch"). */
     string m_dist;
 
-    string m_binlogFile;
-    size_t m_binlogPosition{0};
+    /* Last binlog position applied. Until the index is built or loaded, it is
+     * the "never" sentinel, so the binlog workers skip events for it: the index
+     * is in the collection from open() on, before initIndex() runs (#187). */
+    std::mutex m_coordMutex;
+    string m_binlogFile = "zzzzzz.bin";
+    size_t m_binlogPosition{99999999999};
 
     mutable std::shared_mutex search_insert_mutex_;
 
@@ -605,8 +611,7 @@ bool KNNIndex::initIndex() {
     // Sentinel: any real binlog file name is lexicographically less than
     // "zzzzzz.bin", so isAfter() returns false until setLastUpdateCoordinates
     // is called with the BUILD position.
-    m_binlogFile     = "zzzzzz.bin";
-    m_binlogPosition = 99999999999;
+    setLastUpdateCoordinates("zzzzzz.bin", 99999999999);
 
     return true;
 }
@@ -726,9 +731,12 @@ private:
 
     int m_threads;
 
-    /// last update coordinates
-    string m_binlogFile;
-    size_t m_binlogPosition;
+    /// last update coordinates. Until the index is built or loaded they are the
+    /// "never" sentinel, so the binlog workers skip it: open() puts the index in
+    /// the collection before initIndex() creates m_alg_hnsw (#187).
+    std::mutex m_coordMutex;
+    string m_binlogFile = "zzzzzz.bin";
+    size_t m_binlogPosition = 99999999999;
 };
 
 HNSWMemoryIndex::HNSWMemoryIndex(const string& name, const string& options)
@@ -1094,12 +1102,14 @@ bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec,
 
 void HNSWMemoryIndex::getLastUpdateCoordinates(string& binlogFile,
                                                size_t& binlogPosition) {
+    std::lock_guard<std::mutex> l(m_coordMutex);
     binlogFile = m_binlogFile;
     binlogPosition = m_binlogPosition;
 }
 
 void HNSWMemoryIndex::setLastUpdateCoordinates(const string& binlogFile,
                                                const size_t& binlogPosition) {
+    std::lock_guard<std::mutex> l(m_coordMutex);
     m_binlogFile = binlogFile;
     m_binlogPosition = binlogPosition;
     MYVEC_LOG_DEBUG(
@@ -1221,6 +1231,8 @@ bool HNSWMemoryIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
             flushBatchParallel();
         }
     } else {
+        if (!m_alg_hnsw)
+            return false;  /// not built or loaded yet (#187)
         m_alg_hnsw->addPoint(fvec, id);
     }
 

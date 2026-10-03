@@ -1336,6 +1336,58 @@ run_lifecycle_online_delete_update() {
   cleanup_container
 }
 
+run_lifecycle_build_during_binlog_backlog() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Lifecycle 3.9] Building an online=Y index while the listener works through a backlog ($VER)"
+  cleanup_container
+  start_container "$VER"
+  install_component "$COMP_DIR"
+  # install_component writes myvector.cnf after INSTALL COMPONENT; reinstall so the
+  # listener starts (as in 3.4).
+  mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
+  mq -e "INSTALL COMPONENT 'file://myvector';"
+
+  # 20,000 rows in one statement: the listener queues an item per row for an index
+  # that does not exist yet, and its workers are still busy when the build starts.
+  # The build used to put the index in the collection before initializing it, and a
+  # worker then inserted into the half-made index: mysqld crashed (SIGSEGV, #187).
+  mq -e "
+    CREATE DATABASE IF NOT EXISTS lc;
+    CREATE TABLE lc.bulk_t (
+      id  INT PRIMARY KEY,
+      vec VARBINARY(256)
+        COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=30000,m=16,ef=50,idcol=id,dist=L2,online=Y'
+    );
+    SET SESSION cte_max_recursion_depth = 30000;
+    INSERT INTO lc.bulk_t (id, vec)
+      WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 20000)
+      SELECT n, myvector_construct(CONCAT('[', n % 97, '.0,', n % 89, '.0,', n % 83, '.0]')) FROM seq;
+  " 2>/dev/null
+  local BUILD_OUT
+  BUILD_OUT=$(mq -N -e "CALL mysql.MYVECTOR_INDEX_BUILD('lc.bulk_t.vec', 'id');" 2>&1) || true
+  sleep 2
+  if ! mq -e "SELECT 1" >/dev/null 2>&1 || docker logs "$CONTAINER" 2>&1 | grep -q "got signal"; then
+    fail "build during a binlog backlog: mysqld crashed (#187): ${BUILD_OUT}"
+    cleanup_container
+    return 0
+  fi
+  if echo "$BUILD_OUT" | grep -q "rows : 20000"; then
+    pass "build during a binlog backlog: no crash, index has all 20000 rows"
+  else
+    fail "build during a binlog backlog: unexpected build result: ${BUILD_OUT}"
+  fi
+
+  # The listener must keep applying rows after the build.
+  mq -e "INSERT INTO lc.bulk_t VALUES (20001, myvector_construct('[500.0,500.0,500.0]'));"
+  wait_index_rows lc.bulk_t.vec 20001 30
+  if [[ "$ROWS_SEEN" == "20001" ]]; then
+    pass "build during a binlog backlog: a later INSERT reached the index (rows=20001)"
+  else
+    fail "build during a binlog backlog: later INSERT not applied (rows=${ROWS_SEEN:-none}, expected 20001)"
+  fi
+  cleanup_container
+}
+
 for VER in "${VERSIONS[@]}"; do
   DIR="${COMPONENT_DIRS[$VER]}"
   echo "--- Phase 3 Lifecycle ($VER) ---"
@@ -1346,5 +1398,6 @@ for VER in "${VERSIONS[@]}"; do
   run_lifecycle_uninstall_inflight_udf "$VER" "$DIR"
   run_lifecycle_online_after_restart   "$VER" "$DIR"
   run_lifecycle_online_delete_update   "$VER" "$DIR"
+  run_lifecycle_build_during_binlog_backlog "$VER" "$DIR"
   echo ""
 done

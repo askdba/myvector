@@ -66,6 +66,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **Building an `online=Y` index while the binlog listener has a backlog no longer crashes
+  `mysqld`** (issue #187). `VectorIndexCollection::open()` puts a new index in the collection
+  before `initIndex()` creates it, and its last-applied binlog position started empty (the
+  HNSW position was uninitialized). A listener worker applying queued rows for that table
+  took every row as new and inserted into the index before its HNSW graph existed: SIGSEGV
+  at address 0. Indexes now start at the "never built" position, so workers skip them
+  until a build or load sets the real one; the position is read and written under a lock;
+  and an HNSW insert before the graph exists is refused. New test: Lifecycle 3.9 in
+  `scripts/pre-release-test.sh` (20,000-row load, then an immediate build).
 - **Component: online DELETE and UPDATE now reach `online=Y` indexes** (issue #188). The
   binlog listener applied only INSERTs: after a DELETE, searches still returned the row;
   after an UPDATE, they ranked it by its old vector. It now handles UPDATE_ROWS and
