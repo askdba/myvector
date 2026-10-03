@@ -181,14 +181,18 @@ myvector_port=3306
   install_procs
 }
 
-# Create mysql.MYVECTOR_BINLOG_STOP from sql/myvector_install_component.sql (the
-# single source of the procedure), for test setups that install their own procedures.
+# Create the uninstall procedures (MYVECTOR_BINLOG_STOP, MYVECTOR_UNINSTALL_CHECK,
+# MYVECTOR_PREPARE_UNINSTALL) from sql/myvector_install_component.sql (their single
+# source), for test setups that install their own procedures.
 install_binlog_stop_proc() {
+  local P
   {
-    echo "DROP PROCEDURE IF EXISTS MYVECTOR_BINLOG_STOP;"
     echo "DELIMITER //"
-    sed -n '/^CREATE PROCEDURE MYVECTOR_BINLOG_STOP()/,/^\/\/$/p' \
-      "$REPO_ROOT/sql/myvector_install_component.sql"
+    for P in MYVECTOR_BINLOG_STOP MYVECTOR_UNINSTALL_CHECK MYVECTOR_PREPARE_UNINSTALL; do
+      echo "DROP PROCEDURE IF EXISTS $P//"
+      sed -n "/^CREATE PROCEDURE $P(/,/^\/\/\$/p" \
+        "$REPO_ROOT/sql/myvector_install_component.sql"
+    done
     echo "DELIMITER ;"
   } | mq_stdin mysql
 }
@@ -1000,6 +1004,97 @@ run_lifecycle_binlog_cleanup() {
   cleanup_container
 }
 
+run_lifecycle_prepare_uninstall() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Lifecycle 3.10] Other sessions block UNINSTALL (#155): reported, script stops, opt-in KILL ($VER)"
+  cleanup_container
+  start_container "$VER"
+  install_component "$COMP_DIR"
+  # Reinstall so the component reads myvector.cnf and starts its binlog listener
+  # (see 3.4): MYVECTOR_PREPARE_UNINSTALL(0) must leave it running when it refuses.
+  mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>/dev/null || true
+  mq -e "INSTALL COMPONENT 'file://myvector';"
+  sleep 2
+  local DUMPS_BEFORE
+  DUMPS_BEFORE=$(mq -N -e "SELECT COUNT(*) FROM information_schema.processlist WHERE COMMAND LIKE 'Binlog Dump%';" 2>/dev/null | LC_ALL=C tr -d '[:space:]')
+
+  # Another client session that has run a query holds a reference to the
+  # component's event_tracking_parse service until it ends (#155).
+  docker exec -e MYSQL_PWD="$ROOT_PW" "$CONTAINER" \
+    mysql -uroot -h 127.0.0.1 -e "SELECT SLEEP(120);" >/dev/null 2>&1 &
+  local BG_PID=$! OTHER_ID="" i
+  for i in $(seq 1 20); do
+    OTHER_ID=$(mq -N -e "SELECT ID FROM information_schema.processlist WHERE INFO = 'SELECT SLEEP(120)';" 2>/dev/null | LC_ALL=C tr -d '[:space:]')
+    [[ -n "$OTHER_ID" ]] && break
+    sleep 0.5
+  done
+  if [[ -z "$OTHER_ID" ]]; then
+    fail "3.10: the background session did not appear in the processlist"
+    kill "$BG_PID" 2>/dev/null || true
+    cleanup_container
+    return 0
+  fi
+
+  local OUT
+  OUT=$(mq mysql -e "CALL MYVECTOR_UNINSTALL_CHECK();" 2>&1 || true)
+  if echo "$OUT" | grep -qE "^${OTHER_ID}[[:space:]].*client session"; then
+    pass "MYVECTOR_UNINSTALL_CHECK lists the other session (id ${OTHER_ID})"
+  else
+    fail "MYVECTOR_UNINSTALL_CHECK did not list session ${OTHER_ID}: ${OUT}"
+  fi
+
+  OUT=$(mq mysql -e "CALL MYVECTOR_PREPARE_UNINSTALL(0);" 2>&1 || true)
+  if echo "$OUT" | grep -q "Other sessions may block UNINSTALL COMPONENT (#155): ${OTHER_ID}" \
+     && [[ -n "$(mq -N -e "SELECT component_urn FROM mysql.component;" 2>/dev/null)" ]]; then
+    pass "MYVECTOR_PREPARE_UNINSTALL(0) reports session ${OTHER_ID} as an error; component intact"
+  else
+    fail "MYVECTOR_PREPARE_UNINSTALL(0) with another session: ${OUT}"
+  fi
+  local DUMPS_AFTER
+  DUMPS_AFTER=$(mq -N -e "SELECT COUNT(*) FROM information_schema.processlist WHERE COMMAND LIKE 'Binlog Dump%';" 2>/dev/null | LC_ALL=C tr -d '[:space:]')
+  if [[ "${DUMPS_BEFORE:-0}" -eq 0 ]]; then
+    skip "3.10: no binlog listener running, so 'listener left running' was not checked"
+  elif [[ "${DUMPS_AFTER:-0}" -gt 0 ]]; then
+    pass "MYVECTOR_PREPARE_UNINSTALL(0) refused without stopping the binlog listener"
+  else
+    fail "MYVECTOR_PREPARE_UNINSTALL(0) refused but stopped the binlog listener (${DUMPS_BEFORE} -> ${DUMPS_AFTER} dump sessions)"
+  fi
+
+  # The uninstall script must stop at that error, before dropping anything.
+  docker cp "$REPO_ROOT/sql/myvector_uninstall_component.sql" "$CONTAINER:/tmp/uninstall.sql"
+  OUT=$(docker exec -e MYSQL_PWD="$ROOT_PW" "$CONTAINER" \
+    sh -c "mysql -uroot -h 127.0.0.1 < /tmp/uninstall.sql" 2>&1 || true)
+  if echo "$OUT" | grep -q "Other sessions may block UNINSTALL" \
+     && [[ -n "$(mq -N -e "SELECT ROUTINE_NAME FROM information_schema.routines WHERE ROUTINE_SCHEMA='mysql' AND ROUTINE_NAME='MYVECTOR_INDEX_BUILD';" 2>/dev/null)" ]] \
+     && [[ -n "$(mq -N -e "SELECT component_urn FROM mysql.component;" 2>/dev/null)" ]]; then
+    pass "uninstall script stops before dropping procedures while another session exists"
+  else
+    fail "uninstall script with another session (should stop, procedures and component intact): ${OUT}"
+  fi
+
+  # The behaviour #155 describes: a plain UNINSTALL fails while the session exists.
+  OUT=$(mq -e "UNINSTALL COMPONENT 'file://myvector';" 2>&1 || true)
+  if echo "$OUT" | grep -q "ERROR 3540"; then
+    pass "plain UNINSTALL fails with ERROR 3540 while another session exists (#155)"
+  else
+    fail "plain UNINSTALL with another session did not give ERROR 3540: ${OUT}"
+  fi
+
+  # Opt-in: KILL the other sessions, then UNINSTALL in the same session.
+  local RC=0
+  OUT=$(mq mysql -e "CALL MYVECTOR_PREPARE_UNINSTALL(1); UNINSTALL COMPONENT 'file://myvector';" 2>&1) || RC=$?
+  if [[ "$RC" -eq 0 ]] && echo "$OUT" | grep -q "SUCCESS: run UNINSTALL COMPONENT now" \
+     && [[ -z "$(mq -N -e "SELECT component_urn FROM mysql.component;" 2>/dev/null)" ]] \
+     && [[ -z "$(mq -N -e "SELECT ID FROM information_schema.processlist WHERE ID = ${OTHER_ID};" 2>/dev/null)" ]]; then
+    pass "MYVECTOR_PREPARE_UNINSTALL(1) killed session ${OTHER_ID}; UNINSTALL succeeded"
+  else
+    fail "MYVECTOR_PREPARE_UNINSTALL(1) + UNINSTALL (rc ${RC}): ${OUT}"
+  fi
+  kill "$BG_PID" 2>/dev/null || true
+  wait "$BG_PID" 2>/dev/null || true
+  cleanup_container
+}
+
 run_lifecycle_uninstall_inflight_udf() {
   local VER="$1" COMP_DIR="$2"
   echo "  [Lifecycle 3.5] UNINSTALL refused while a UDF is in use leaves the component intact ($VER)"
@@ -1486,5 +1581,6 @@ for VER in "${VERSIONS[@]}"; do
   run_lifecycle_online_delete_update   "$VER" "$DIR"
   run_lifecycle_dump_connection_killed "$VER" "$DIR"
   run_lifecycle_build_during_binlog_backlog "$VER" "$DIR"
+  run_lifecycle_prepare_uninstall "$VER" "$DIR"
   echo ""
 done
