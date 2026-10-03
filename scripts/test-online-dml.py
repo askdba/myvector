@@ -11,6 +11,7 @@ the binlog listener applies DELETE and UPDATE, not only INSERT (#188, #194):
   3. After FLUSH BINARY LOGS (the listener checkpoints the index) and a server
      restart, the index still matches: deletes and updates were saved to disk.
   4. An INSERT after that restart reaches the index (the listener resumed).
+  5. An UPDATE written with binlog_row_image=MINIMAL is skipped, not misread.
 
 The table has TINYINT, DECIMAL, DATETIME(3), JSON, CHAR, ENUM and TEXT columns
 around the vector, so the row parser must know each column's width.
@@ -76,7 +77,7 @@ def main():
                     f"myvector_construct('{v}'), 'nn={k}');")
         return r[0][0] if r else ""
 
-    def check_state(stage):
+    def state_problems():
         problems = []
         if rows() != 4:
             problems.append(f"rows={rows()} (want 4)")
@@ -87,6 +88,16 @@ def main():
         ids = nn("[0,0,0]", 10)
         if any(f"{sep}{k}{end}" in ids for k in (4, 5) for sep in "[," for end in ",]"):
             problems.append(f"ids={ids} (4 and 5 must be gone)")
+        return problems, ids
+
+    def check_state(stage, timeout=30):
+        """Poll until the index matches the table, or the deadline passes."""
+        deadline = time.time() + timeout
+        while True:
+            problems, ids = state_problems()
+            if not problems or time.time() >= deadline:
+                break
+            time.sleep(1)
         record(stage, not problems, "; ".join(problems) or f"rows=4, ids {ids}")
 
     try:
@@ -137,7 +148,6 @@ def main():
             UPDATE t SET note = 'changed', t = 9 WHERE id = 1;
             INSERT INTO t (id, vec) VALUES (2, myvector_construct('[0,1,0]'));
         """)
-        time.sleep(3)
         check_state("2. UPDATE / NULL / re-INSERT")
 
         srv.sql("FLUSH BINARY LOGS;", db=None)
@@ -156,6 +166,16 @@ def main():
         got = wait_rows(5)
         record("4. INSERT after the restart", got == 5 and nn("[5,5,5]", 1) == "[6]",
                f"rows={got}, nearest to [5,5,5]: {nn('[5,5,5]', 1)}")
+
+        # A MINIMAL row image leaves columns out; the listener must skip the
+        # event, not read it as a full image (that dropped row 1 from the index).
+        srv.sql("SET SESSION binlog_row_image = 'MINIMAL'; "
+                "UPDATE t SET note = 'minimal' WHERE id = 1;")
+        time.sleep(5)
+        got = rows()
+        record("5. UPDATE with binlog_row_image=MINIMAL is skipped",
+               got == 5 and nn("[1,0,0]", 1) == "[1]",
+               f"rows={got}, nearest to [1,0,0]: {nn('[1,0,0]', 1)}")
     finally:
         if not args.keep:
             srv.remove()

@@ -84,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   chosen by key, so each row's changes apply in order. Its queue list was `static`, so
   instances could not be separated; it is now per queue. New test:
   `scripts/test-online-dml.py` (plugin and component).
-- **Plugin: online indexes kept updating after a restart** (found with #194). At startup the
+- **Plugin: online indexes now keep updating after a restart** (found with #194). At startup the
   plugin looks up its `online=Y` columns in the `myvector_columns` view, but queried
   `test.myvector_columns`; `sql/myvectorplugin.sql` creates it as `mysql.myvector_columns`.
   The query failed silently, so after a restart or reinstall no online index was registered

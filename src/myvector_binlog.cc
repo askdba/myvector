@@ -475,8 +475,10 @@ static bool parseRowImage(const unsigned char* event_buf,
                 break;
             }
 #if MYSQL_VERSION_ID >= 90000
-            case MYSQL_TYPE_VECTOR:
-                lenbytes = (md >= 1 && md <= 2) ? md : 2;
+            case MYSQL_TYPE_VECTOR:  // a BLOB with a 4-byte length (md = 4)
+                if (md < 1 || md > 4)
+                    return false;
+                lenbytes = md;
                 break;
 #endif
             default:
@@ -564,6 +566,15 @@ void parseRowsEvent(const unsigned char* event_buf,
     unsigned int bitmaps = (kind == RowsEventKind::kUpdate) ? 2 : 1;
     if (index + bitmaps * inclen > event_len)
         return;
+    // Every column must be in every image (binlog_row_image=FULL). With MINIMAL
+    // or NOBLOB some are left out and the NULL bitmap is sized differently, so
+    // the images cannot be read with this parser: skip the event.
+    for (unsigned int b = 0; b < bitmaps; b++) {
+        const unsigned char* present = &event_buf[index + b * inclen];
+        for (unsigned int i = 0; i < ncols; i++)
+            if (!(present[i >> 3] & (1u << (i & 7))))
+                return;
+    }
     index += bitmaps * inclen;
 
     string key = tev.dbName + "." + tev.tableName;
