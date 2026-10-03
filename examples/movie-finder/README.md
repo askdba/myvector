@@ -24,6 +24,10 @@ cd examples/movie-finder
 MOVIES=100k docker compose up        # then open http://localhost:8080
 ```
 
+The page and MySQL (port 3307) listen on localhost only. The demo uses MySQL's root
+account with a known password and lets anyone with the page add movies, so share it
+with `APP_BIND=0.0.0.0` only on a network you trust.
+
 `MOVIES` picks how many films to load, most-voted first:
 
 | Profile | Movies | Notes |

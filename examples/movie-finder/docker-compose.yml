@@ -2,6 +2,7 @@
 #
 #   MOVIES=10k | 100k | full   how many movies to load (default 100k)
 #   MYVECTOR_IMAGE             the MySQL + MyVector image (see README: needs a build newer than v1.26.9)
+#   APP_BIND / APP_PORT        where the page listens (default 127.0.0.1:8080)
 #
 # The TMDB data is downloaded on your machine at first start (about 7 GB, once) and
 # kept in the tmdb-cache volume. It is never part of this repository or an image.
@@ -35,7 +36,8 @@ services:
       # online updates can connect back to MySQL. Demo only: it reuses the root password.
       - ../../scripts/demo/00-myvector-cnf.sh:/docker-entrypoint-initdb.d/00-myvector-cnf.sh:ro
     ports:
-      - "${MYSQL_PORT:-3307}:3306"
+      # Localhost only: the demo uses the root account with a known password.
+      - "127.0.0.1:${MYSQL_PORT:-3307}:3306"
     healthcheck:
       # TCP, not the socket: during first-start initialisation MySQL listens on the
       # socket only, so this passes once the real server is up.
@@ -66,7 +68,8 @@ services:
     volumes:
       - model-cache:/models
     ports:
-      - "${APP_PORT:-8080}:8000"
+      # Localhost only by default (the page can add movies); APP_BIND=0.0.0.0 to share it.
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8080}:8000"
     depends_on:
       loader:
         condition: service_completed_successfully
