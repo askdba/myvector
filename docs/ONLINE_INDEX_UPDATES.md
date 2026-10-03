@@ -142,8 +142,15 @@ On plugin startup, MyVector discovers all columns with `online=Y` from the `myve
 
 1. **Plugin init:** A background thread starts and connects to MySQL using the config file credentials.
 2. **Discovery:** The thread queries `myvector_columns` (or equivalent) for columns with `online=Y` and `idcol` set.
-3. **Binlog stream:** The thread opens a binlog stream and processes WRITE_ROWS, UPDATE_ROWS, and DELETE_ROWS events.
-4. **Index updates:** For each event affecting a registered table, the plugin adds, updates, or removes the corresponding vector entry in memory.
+3. **Binlog stream:** The thread opens a binlog stream and processes row events.
+4. **Index updates:** For each event affecting a registered table, the listener adds, updates, or removes the corresponding vector entry in memory. A row whose vector is set to NULL is removed.
+
+    !!! note "INSERT, UPDATE and DELETE on component builds; INSERT only on the plugin"
+        Component builds apply INSERT, UPDATE and DELETE (from #188). The plugin's listener
+        still applies only INSERTs: after an UPDATE or DELETE, rebuild the index
+        ([#194](https://github.com/askdba/myvector/issues/194)). Both expect the default
+        `binlog_row_image=FULL`, and the key column must be `INT`.
+
 5. **Checkpointing:** Progress is tracked via binlog file and position so the index can be recovered after restart.
 
 ## Complete Example

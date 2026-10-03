@@ -154,6 +154,11 @@ public:
     /* insertVectortor - insert a vector into the index */
     virtual bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id) = 0;
 
+    /* deleteVector - remove the vector with this key from the index. Returns
+     * false if the key is not in the index. Used for online DELETE and UPDATE.
+     */
+    virtual bool deleteVector(KeyTypeInteger /* id */) { return false; }
+
     /* startParallelBuild - User has initiated parallel index build/rebuild */
     virtual bool startParallelBuild(int nthreads) = 0;
 

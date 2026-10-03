@@ -860,6 +860,9 @@ namespace hnswlib {
                     ((unsigned char*)get_linklist0(internalId)) + 2;
                 *ll_cur |= DELETE_MARK;
                 num_deleted_ += 1;
+                // MyVector: the mark is in the level-0 link list header; write it
+                // at the next checkpoint, or the delete is lost on restart (#188).
+                addNodeLinksLevel0ToFlushList(internalId);
                 if (allow_replace_deleted_) {
                     std::unique_lock<std::mutex> lock_deleted_elements(
                         deleted_elements_lock);
@@ -904,6 +907,7 @@ namespace hnswlib {
                     ((unsigned char*)get_linklist0(internalId)) + 2;
                 *ll_cur &= ~DELETE_MARK;
                 num_deleted_ -= 1;
+                addNodeLinksLevel0ToFlushList(internalId);  // MyVector (#188)
                 if (allow_replace_deleted_) {
                     std::unique_lock<std::mutex> lock_deleted_elements(
                         deleted_elements_lock);
@@ -992,6 +996,9 @@ namespace hnswlib {
             // update the feature vector associated with existing point with new
             // vector
             memcpy(getDataByInternalId(internalId), dataPoint, data_size_);
+            // MyVector: write the new vector (and its links) at the next
+            // checkpoint (#188).
+            addNodeToFlushList(internalId);
 
             int maxLevelCopy = maxlevel_;
             tableint entryPointCopy = enterpoint_node_;
@@ -1078,6 +1085,11 @@ namespace hnswlib {
                             candidates.pop();
                         }
                     }
+                    // MyVector: neigh's links at this layer changed (#188).
+                    if (layer == 0)
+                        addNodeLinksLevel0ToFlushList(neigh);
+                    else
+                        addNodeLinksLevelGt0ToFlushList(neigh, layer);
                 }
             }
 
