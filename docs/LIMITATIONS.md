@@ -15,13 +15,19 @@ to the issue tracking it. Items marked *(untested)* are not verified by this pro
   firing on 8.4.11 in one setup, which we could not reproduce. If `MYVECTOR(...)` or
   `MYVECTOR_IS_ANN` fails on your server, use the `MYVECTOR COLUMN` comment and
   `myvector_ann_set()`, which work on every build. Plugin builds have always had the rewrite.
-- **Uninstalling a component that has the query rewrite can fail with ERROR 3540** while
-  another session that has run a query since the install is still connected. Disconnect
-  the other sessions and retry ([#155](https://github.com/askdba/myvector/issues/155)).
-  The component's own binlog listener is such a session: `sql/myvector_uninstall_component.sql`
-  stops it first with `CALL mysql.MYVECTOR_BINLOG_STOP()`. To run `UNINSTALL COMPONENT`
-  yourself, call that procedure first, in the same session
-  ([#189](https://github.com/askdba/myvector/issues/189)).
+- **Uninstalling a component that has the query rewrite fails with ERROR 3540** while
+  any other session that has run a query since the install is still connected
+  ([#155](https://github.com/askdba/myvector/issues/155)). Each such session holds a
+  reference to the component's `event_tracking_parse` service until it disconnects, and
+  MySQL won't unload a component whose services are still referenced. This is MySQL
+  behaviour, which the component can't change. The component's own binlog listener is
+  one such session ([#189](https://github.com/askdba/myvector/issues/189)), and so is
+  every application connection or open `mysql` client. Before uninstalling, run
+  `CALL mysql.MYVECTOR_UNINSTALL_CHECK()` to list the other sessions.
+  `CALL mysql.MYVECTOR_PREPARE_UNINSTALL(0)` checks for other client sessions first. If
+  there are any, it raises an error naming them and leaves the listener running. If there
+  are none, it stops the listener. `(1)` stops the listener and KILLs the other sessions.
+  See [Uninstalling the component](usage.md#uninstalling-the-component).
 - **Filtered search takes an explicit key list.** Pass the allowed keys as the fifth
   argument, e.g. `MYVECTOR_IS_ANN(..., 10, (SELECT JSON_ARRAYAGG(id) FROM t WHERE ...))`
   (see [Usage](usage.md#vector-search)). A predicate written *next to*

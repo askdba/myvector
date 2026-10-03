@@ -89,8 +89,9 @@ through a different mechanism, the Audit Plugin pre-parse hook in
 
 Uninstalling a component that registers the rewrite fails with
 ERROR 3540 while another session that has run a query since the install
-is still connected. The binlog listener of an `online=Y` index counts as
-one (issue #155).
+is still connected (issue #155). An open `mysql` client counts, and so does the
+binlog listener. `CALL mysql.MYVECTOR_UNINSTALL_CHECK()` lists those sessions;
+see [Uninstalling the component](usage.md#uninstalling-the-component).
 
 **Rule of thumb:**
 - Testing UDFs, KNN, HNSW index lifecycle, online (binlog) updates, or
