@@ -122,6 +122,43 @@ To re-record the demo, for example for a new image, run
 `python3 scripts/record-demo.py --image <image>`. It writes
 `docs/assets/demo/myvector-demo.cast`.
 
+## Movie Finder app: a million real movies
+
+A web app that searches about a million movies by meaning, with the vector search inside
+MySQL through MyVector. You describe a movie in your own words ("a heist that goes wrong
+in a snowy town"). The app embeds the text and asks MySQL for the nearest films.
+
+What it shows:
+
+- **Hybrid search**: genre, year, rating and language filters, combined with the vector
+  search in SQL. The page says which filtered-search path ran (a key list, or
+  `MYVECTOR_ANN_FILTERED`) and why.
+- **More like this**, from a film's stored vector, in pure SQL.
+- **HNSW vs exact**: both searches side by side, with the speed difference and recall.
+- **Online updates**: add a movie and it is searchable within a second, with no index
+  rebuild (`online=Y`).
+- **Under the hood**: how a search flows through MyVector, the live index details from
+  `MYVECTOR_INDEX_STATUS`, where each query's time goes, and a speed-vs-recall chart
+  over `ef_search`. Every result also shows the SQL that ran.
+
+![The app's "Under the hood" panel: the search flow, the live index details, and recall
+against search time for each ef_search](assets/demo/movie-finder-under-the-hood.png)
+
+Run it from a clone of the repository:
+
+```bash
+cd examples/movie-finder
+docker compose up          # then open http://localhost:8080
+```
+
+The first start downloads the movie data (about 7 GB, once). `MOVIES=10k`, `100k` (the
+default) or `full` (all 1,035,695 movies) picks how many films to load. The app needs
+features that are newer than the v1.26.9 images; until a release includes them, its
+README shows how to build a local image. See
+[examples/movie-finder](https://github.com/askdba/myvector/tree/main/examples/movie-finder)
+for the details, timings and licensing: the movie data comes from TMDB, is downloaded on
+your machine, and is not part of MyVector.
+
 ## Large dataset: Amazon product catalog
 
 A bigger example: load a real-world product catalog (from Amazon) into a MySQL
