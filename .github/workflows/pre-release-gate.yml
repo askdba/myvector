@@ -43,9 +43,10 @@ jobs:
     name: gate (${{ matrix.mysql-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # Non-blocking until the gate has shown it is stable on shared runners (#116).
+    # 8.4 and 9.7 block (#208): the gate passed every job of its last 19 runs
+    # (57/57) on shared runners, which was the condition for blocking (#116).
     # 26.7 stays non-blocking, like the rest of CI, until release tags.
-    continue-on-error: true
+    continue-on-error: ${{ !matrix.blocking }}
     strategy:
       fail-fast: false
       matrix:
@@ -53,12 +54,15 @@ jobs:
           - mysql-version: "8.4"
             mysql-tag: "mysql-8.4.8"
             build-script: "scripts/build-component-8.4-docker.sh"
+            blocking: true
           - mysql-version: "9.7"
             mysql-tag: "mysql-9.7.0"
             build-script: "scripts/build-component-9.7-docker.sh"
+            blocking: true
           - mysql-version: "26.7"
             mysql-tag: "mysql-26.7.0"
             build-script: "scripts/build-component-26.7-docker.sh"
+            blocking: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4
