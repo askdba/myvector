@@ -168,6 +168,10 @@ SET @vec2 = myvector_construct('[1.0, 3.0, 5.0]');
 SELECT myvector_distance(@vec1, @vec2, 'L2');
 ```
 
+The metric is `L2` (the default; `EUCLIDEAN` is the same), `Cosine` or `IP`, in any case.
+If either vector is NULL, the result is NULL for that row. An unknown metric, or two
+vectors of different dimensions, is an error that stops the statement.
+
 **Display a Vector:**
 
 ```sql
