@@ -2611,6 +2611,13 @@ void myvector_open_index_impl(char* vecid,
             vi->startParallelBuild(nthreads);
     }
 
+    /* A rebuilt or reloaded index: a skip of a reason already warned about is
+     * worth a new warning (#205). */
+    if (!strcmp(action, "load") || !strcmp(action, "build")) {
+        string idx(vecid);
+        myvector_online_skip_rearm(idx.substr(0, idx.rfind('.')));
+    }
+
     if (!strcmp(action, "build") || !strcmp(action, "refresh")) {
         char errorbuf[1024];
         char *db, *table, *veccol;
@@ -2937,7 +2944,8 @@ void myvector_table_op(const string& dbname,
  * the error log. Counts live in memory and reset when the server restarts. */
 namespace {
 struct OnlineSkipStats {
-    std::map<OnlineSkipReason, unsigned long long> counts;
+    std::map<OnlineSkipReason, unsigned long long> counts;  // since server start
+    std::set<OnlineSkipReason> warned;  // since the index was last built or loaded
 };
 std::mutex g_online_skip_mutex;
 std::map<string, OnlineSkipStats> g_online_skips;  // key: db.table
@@ -2964,8 +2972,9 @@ void myvector_online_skip(const string& db,
     bool first;
     {
         std::lock_guard<std::mutex> l(g_online_skip_mutex);
-        unsigned long long& n = g_online_skips[db + "." + table].counts[why];
-        first = (n++ == 0);
+        OnlineSkipStats& st = g_online_skips[db + "." + table];
+        st.counts[why]++;
+        first = st.warned.insert(why).second;
     }
     if (first)
         MYVEC_LOG_WARN("Online updates for %s.%s: skipping row events (%s%s%s). "
@@ -2973,6 +2982,13 @@ void myvector_online_skip(const string& db,
                        "MYVECTOR_INDEX_STATUS counts them.",
                        db.c_str(), table.c_str(), onlineSkipReasonText(why),
                        detail.empty() ? "" : ": ", detail.c_str());
+}
+
+void myvector_online_skip_rearm(const string& dbtable) {
+    std::lock_guard<std::mutex> l(g_online_skip_mutex);
+    auto it = g_online_skips.find(dbtable);
+    if (it != g_online_skips.end())
+        it->second.warned.clear();
 }
 
 string myvector_online_skip_status(const string& dbtable) {

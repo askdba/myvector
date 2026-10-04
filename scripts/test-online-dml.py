@@ -13,6 +13,8 @@ the binlog listener applies DELETE and UPDATE, not only INSERT (#188, #194):
   4. An INSERT after that restart reaches the index (the listener resumed).
   5. An UPDATE written with binlog_row_image=MINIMAL is skipped, not misread,
      and the skip is logged once and counted in MYVECTOR_INDEX_STATUS (#205).
+     After the index is reloaded, the next such skip is logged again; the count
+     keeps adding up.
   6. A table whose key column is not an integer (DOUBLE): its events are
      skipped with a warning naming the key type (#205).
   7. A signed SMALLINT key with negative values, after a YEAR and an UNSIGNED
@@ -218,6 +220,18 @@ def main():
                f"rows={got}, nearest to [1,0,0]: {nn('[1,0,0]', 1)}, "
                f"status: {skip_line(st)!r}, warnings in the log: {warns}")
 
+        # Reloading the index re-arms the warning; the count is cumulative.
+        srv.sql(f"CALL mysql.myvector_index_load('{INDEX}');", check=False)
+        srv.sql("SET SESSION binlog_row_image = 'MINIMAL'; "
+                f"UPDATE t SET note = 'minimal again' WHERE id = {K(1)};")
+        time.sleep(5)
+        st = status(INDEX)
+        warns = log_lines("Online updates for vtest.t: skipping row events "
+                          "(binlog_row_image is not FULL")
+        record("5b. after a reload the skip is logged again, and the count adds up",
+               warns == 2 and "Online events skipped : 2 (binlog_row_image is not FULL: 2)" in st,
+               f"status: {skip_line(st)!r}, warnings in the log: {warns}")
+
         # A key column that is not an integer: the listener cannot read the key,
         # so it skips the table's events, and says why.
         srv.sql("""
@@ -236,8 +250,10 @@ def main():
             warns = log_lines("Online updates for vtest.t2: skipping row events "
                               "(key column is not an integer: key column is DOUBLE")
         st2 = status("vtest.t2.vec")
+        # One warning, or two: the component may see the INSERT before the build
+        # (it discovers the table from the binlog), and the build re-arms it.
         record("6. a DOUBLE key column is skipped with a warning naming the type",
-               warns == 1 and ("Online events skipped" not in st2
+               warns in (1, 2) and ("Online events skipped" not in st2
                                or "key column is not an integer" in st2),
                f"warnings in the log: {warns}, status: {skip_line(st2)!r}")
 

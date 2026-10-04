@@ -89,9 +89,15 @@ to the issue tracking it. Items marked *(untested)* are not verified by this pro
 
 ## Data model
 
-- Row keys are integers (`TINYINT` to `BIGINT`, signed or unsigned; `KeyTypeInteger`)
-  and must not be negative. Online updates (`online=Y`) take the same key types;
-  before #204 they applied only `INT` keys and silently skipped the others.
+- Row keys are integers (`TINYINT` to `BIGINT`, signed or unsigned; `KeyTypeInteger`).
+  Online updates (`online=Y`) take the same key types; before #204 they applied only
+  `INT` keys and silently skipped the others.
+- Use non-negative keys. A key is stored as an unsigned 64-bit number, so a negative key
+  becomes 2^64 minus its absolute value: `-7` is stored as `18446744073709551609`. The
+  index build and online updates agree on that value (#204), but searches return it as
+  that unsigned number, not as `-7`, and a filtered search's key list
+  (`JSON_ARRAYAGG(id)` as the fifth argument of `MYVECTOR_IS_ANN` or
+  `myvector_ann_set`) rejects negative keys.
 - Vectors are 32-bit floats (`FP32`); the default maximum dimension is 4096
   (`myvector_max_vector_dim`, a plugin variable).
 - Distance metrics: L2, Cosine and inner product.

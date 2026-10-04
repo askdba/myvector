@@ -10,7 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Skipped online updates are visible** (issue #205). When the binlog listener has to skip
   a table's row events (`binlog_row_image` not FULL, a key column that is not an integer,
-  a column type it cannot read), it now logs one warning per table and reason,
+  a column type it cannot read), it now logs one warning per table and reason (again
+  after the index is rebuilt or reloaded),
   `Online updates for db.t: skipping row events (...)`, and `myvector_index_status` shows
   `Online events skipped : N (reason: n, ...)`. Before, the events were dropped silently, so
   an index that stopped updating gave no hint why. Plugin and component.
