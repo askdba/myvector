@@ -245,7 +245,7 @@ BEGIN
   IF colinfo IS NULL THEN
     SIGNAL SQLSTATE '50001' SET MESSAGE_TEXT = 'Vector column not found.';
   END IF;
-  IF LOCATE('MYVECTOR COLUMN', colinfo) <> 1 THEN
+  IF NOT REGEXP_LIKE(colinfo, '^[[:space:]]*MYVECTOR COLUMN', 'i') THEN
     SIGNAL SQLSTATE '50002' SET MESSAGE_TEXT = 'Column is not a MYVECTOR column.';
   END IF;
   SET status = MYVECTOR_SEARCH_OPEN_UDF(myvectorcolumn, colinfo, pkidcolumn, action, extra);

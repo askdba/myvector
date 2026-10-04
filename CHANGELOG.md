@@ -94,6 +94,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "perfect match"); the component returned NULL. Both now fail the statement with
   "vectors have different dimensions (N and M)". New test:
   `scripts/test-distance-udf.py` (plugin and component), also run by the pre-release gate.
+- **A column comment that starts with whitespace or a line break** is accepted by the
+  `MYVECTOR_INDEX_*` procedures and `MYVECTOR_ANN_FILTERED`, as it already was by the option
+  parser (#159). They used to reject it with "not a MYVECTOR column". The prefix check
+  ignores leading whitespace and case, like the parser.
 - **Building an `online=Y` index while the binlog listener has a backlog no longer crashes
   `mysqld`** (issue #187). `VectorIndexCollection::open()` puts a new index in the collection
   before `initIndex()` creates it, and its last-applied binlog position started empty (the

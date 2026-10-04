@@ -187,7 +187,7 @@ BEGIN
 
 	-- SELECT CONCAT('Column Comment is :',colinfo);
 
-	IF LOCATE("MYVECTOR COLUMN", colinfo) <> 1 THEN
+	IF NOT REGEXP_LIKE(colinfo, '^[[:space:]]*MYVECTOR COLUMN', 'i') THEN
 	  SIGNAL SQLSTATE '50002' SET MESSAGE_TEXT = 'The specified column is not a MYVECTOR column.';
 	END IF;
 
@@ -276,7 +276,7 @@ BEGIN
 	IF colinfo IS NULL THEN
 	  SIGNAL SQLSTATE '50001' SET MESSAGE_TEXT = 'Vector column not found. Please use the fully qualified name: <database>.<table>.<column>.';
 	END IF;
-	IF LOCATE("MYVECTOR COLUMN", colinfo) <> 1 THEN
+	IF NOT REGEXP_LIKE(colinfo, '^[[:space:]]*MYVECTOR COLUMN', 'i') THEN
 	  SIGNAL SQLSTATE '50002' SET MESSAGE_TEXT = 'The specified column is not a MYVECTOR column.';
 	END IF;
 	SELECT COUNT(*) INTO idfound FROM INFORMATION_SCHEMA.COLUMNS

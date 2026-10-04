@@ -242,7 +242,7 @@ BEGIN
   IF colinfo IS NULL THEN
     SIGNAL SQLSTATE '50001' SET MESSAGE_TEXT = 'Vector column not found.';
   END IF;
-  IF LOCATE('MYVECTOR COLUMN', colinfo) <> 1 THEN
+  IF NOT REGEXP_LIKE(colinfo, '^[[:space:]]*MYVECTOR COLUMN', 'i') THEN
     SIGNAL SQLSTATE '50002' SET MESSAGE_TEXT = 'Column is not a MYVECTOR column.';
   END IF;
   SET status = MYVECTOR_SEARCH_OPEN_UDF(myvectorcolumn, colinfo, pkidcolumn, action, extra);
@@ -476,7 +476,7 @@ SQL
 run_index_type_check() {
   echo "  [Index type] type=hnsw yields an HNSW index for all comment formats"
   mq -D prerel -e "
-    DROP TABLE IF EXISTS itype_nopipe, itype_pipe, itype_multiline, itype_tab;
+    DROP TABLE IF EXISTS itype_nopipe, itype_pipe, itype_multiline, itype_tab, itype_leading;
     CREATE TABLE itype_nopipe (id INT PRIMARY KEY, vec VARBINARY(256)
       COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
     CREATE TABLE itype_pipe (id INT PRIMARY KEY, vec VARBINARY(256)
@@ -486,14 +486,19 @@ run_index_type_check() {
         type=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
     CREATE TABLE itype_tab (id INT PRIMARY KEY, vec VARBINARY(256)
       COMMENT 'MYVECTOR COLUMN\ttype=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
+    CREATE TABLE itype_leading (id INT PRIMARY KEY, vec VARBINARY(256)
+      COMMENT '\n    MYVECTOR COLUMN type=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
     INSERT INTO itype_nopipe VALUES (1, myvector_construct('[1.0,2.0,3.0]')),
                                     (2, myvector_construct('[4.0,5.0,6.0]'));
     INSERT INTO itype_pipe SELECT * FROM itype_nopipe;
     INSERT INTO itype_multiline SELECT * FROM itype_nopipe;
     INSERT INTO itype_tab SELECT * FROM itype_nopipe;
+    INSERT INTO itype_leading SELECT * FROM itype_nopipe;
   " 2>/dev/null
   local T OUT
-  for T in itype_nopipe itype_pipe itype_multiline itype_tab; do
+  # itype_leading: a comment that starts with a line break and spaces is accepted by
+  # the MYVECTOR_INDEX_* procedures too, not only by the option parser.
+  for T in itype_nopipe itype_pipe itype_multiline itype_tab itype_leading; do
     mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_BUILD('prerel.${T}.vec', 'id');" >/dev/null 2>&1 || true
     OUT=$(mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_STATUS('prerel.${T}.vec');" 2>&1) || true
     if echo "$OUT" | grep -q "Type : HNSW"; then
