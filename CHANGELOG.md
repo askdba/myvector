@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Skipped online updates are visible** (issue #205). When the binlog listener has to skip
+  a table's row events (`binlog_row_image` not FULL, a key column that is not an integer,
+  a column type it cannot read), it now logs one warning per table and reason (again
+  after the index is rebuilt or reloaded),
+  `Online updates for db.t: skipping row events (...)`, and `myvector_index_status` shows
+  `Online events skipped : N (reason: n, ...)`. Before, the events were dropped silently, so
+  an index that stopped updating gave no hint why. Plugin and component.
 - **Movie Finder demo app** (`examples/movie-finder/`). Semantic search over about a million
   TMDB movies, with the vector search in MySQL through MyVector: describe a movie, filter by
   genre, year, rating and language (key-list or `MYVECTOR_ANN_FILTERED` path, chosen and
@@ -90,6 +97,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **Online updates for `BIGINT` keys** (issue #204). The binlog listener read only `INT`
+  keys: for a table keyed by `BIGINT` (or `SMALLINT`, `MEDIUMINT`, `TINYINT`), every
+  INSERT, UPDATE and DELETE was skipped and the index never changed, with nothing logged.
+  Integer keys of any width are now read, as 64-bit values, the same way the index build
+  converts them. Plugin and component. `scripts/test-online-dml.py --key-type bigint` uses
+  keys above 2^32; it and `test-distance-udf.py` now run in the blocking integration CI.
 - **`myvector_distance()`: a NULL vector no longer turns every later row's distance into
   NULL** (issue #170). A NULL input (vector or metric) set the UDF's error flag, which
   makes MySQL return NULL for that row and every later row of the statement, so

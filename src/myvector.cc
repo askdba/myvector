@@ -29,6 +29,7 @@
 #include <regex>
 #include <set>
 #include <shared_mutex>
+#include <map>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -2471,6 +2472,10 @@ PLUGIN_EXPORT double myvector_distance(UDF_INIT* initid,
 
 PLUGIN_EXPORT void myvector_distance_deinit(UDF_INIT* initid) {}
 
+/* myvector_search_open_udf returns index status and messages that can be
+ * longer than MySQL's 255-byte UDF result buffer (the status grew with the
+ * online skip counts, #205), so it writes to its own MYVECTOR_BUFF_SIZE buffer,
+ * the size of the VARCHAR(1024) the SQL procedures read it into. */
 PLUGIN_EXPORT bool myvector_search_open_udf_init(UDF_INIT* initid,
                                                  UDF_ARGS* args,
                                                  char* message) {
@@ -2478,6 +2483,12 @@ PLUGIN_EXPORT bool myvector_search_open_udf_init(UDF_INIT* initid,
         strcpy(message, "Incorrect arguments to MyVector internal UDF.");
         return true;
     }
+    initid->ptr = static_cast<char*>(malloc(MYVECTOR_BUFF_SIZE));
+    if (!initid->ptr) {
+        strcpy(message, "MyVector: out of memory.");
+        return true;
+    }
+    initid->max_length = MYVECTOR_BUFF_SIZE - 1;
     return false;
 }
 
@@ -2573,7 +2584,11 @@ void myvector_open_index_impl(char* vecid,
                    " (see the server log)");
     } else if (!strcmp(action, "status")) {
         string s = vi->getStatus();
-        strcpy(result, s.c_str());
+        string idx(vecid);  // db.table.column; skips are counted per db.table
+        s += myvector_online_skip_status(idx.substr(0, idx.rfind('.')));
+        /* result holds MYVECTOR_BUFF_SIZE bytes: the UDF's own buffer, or the
+         * caller's in the component's startup load */
+        snprintf(result, MYVECTOR_BUFF_SIZE, "%s", s.c_str());
     } else if (!strcmp(action, "drop")) {
         vi->dropIndex(myvector_index_dir);
         l.release();
@@ -2594,6 +2609,13 @@ void myvector_open_index_impl(char* vecid,
     } else if (!strcmp(action, "refresh")) {
         if (nthreads >= 2)
             vi->startParallelBuild(nthreads);
+    }
+
+    /* A rebuilt or reloaded index: a skip of a reason already warned about is
+     * worth a new warning (#205). */
+    if (!strcmp(action, "load") || !strcmp(action, "build")) {
+        string idx(vecid);
+        myvector_online_skip_rearm(idx.substr(0, idx.rfind('.')));
     }
 
     if (!strcmp(action, "build") || !strcmp(action, "refresh")) {
@@ -2644,9 +2666,9 @@ void myvector_open_index_impl(char* vecid,
     return;
 }
 
-PLUGIN_EXPORT char* myvector_search_open_udf(UDF_INIT*,
+PLUGIN_EXPORT char* myvector_search_open_udf(UDF_INIT* initid,
                                              UDF_ARGS* args,
-                                             char* result,
+                                             char* /* MySQL's 255-byte buffer: too small */,
                                              unsigned long* length,
                                              unsigned char* is_null,
                                              unsigned char*) {
@@ -2663,6 +2685,7 @@ PLUGIN_EXPORT char* myvector_search_open_udf(UDF_INIT*,
                    action,
                    extra);
 
+    char* result = initid->ptr;  // MYVECTOR_BUFF_SIZE bytes
     strcpy(result, "SUCCESS");
 
     myvector_open_index_impl(vecid, details, pkidcol, action, extra, result);
@@ -2671,7 +2694,10 @@ PLUGIN_EXPORT char* myvector_search_open_udf(UDF_INIT*,
     return result;
 }
 
-PLUGIN_EXPORT void myvector_search_open_udf_deinit() {}
+PLUGIN_EXPORT void myvector_search_open_udf_deinit(UDF_INIT* initid) {
+    free(initid->ptr);
+    initid->ptr = nullptr;
+}
 
 PLUGIN_EXPORT bool myvector_search_save_udf_init(UDF_INIT* initid,
                                                  UDF_ARGS* args,
@@ -2877,7 +2903,7 @@ bool isAfter(const string& binlogfile2,
 void myvector_table_op(const string& dbname,
                        const string& tbname,
                        const string& cname,
-                       unsigned int pkid,
+                       KeyTypeInteger pkid,
                        vector<unsigned char>& vec,
                        const string& binlogfile,
                        const size_t& binlogpos,
@@ -2898,8 +2924,8 @@ void myvector_table_op(const string& dbname,
                 isZeroVector(reinterpret_cast<const FP32*>(vec.data()),
                              vi->getDimension())) {
                 MYVEC_LOG_WARN("Skipping zero-magnitude vector for cosine index"
-                               " (pkid=%u), row is in table but not in index.",
-                               pkid);
+                               " (pkid=%zu), row is in table but not in index.",
+                               (size_t)pkid);
             } else {
                 vi->insertVector(vec.data(), vi->getDimension(), pkid);
             }
@@ -2911,6 +2937,75 @@ void myvector_table_op(const string& dbname,
                         binlogposold);
         }
     }
+}
+
+/* Row events skipped by the binlog listener (#205): counted per table and
+ * reason, and each (table, reason) logged once, so a busy table cannot flood
+ * the error log. Counts live in memory and reset when the server restarts. */
+namespace {
+struct OnlineSkipStats {
+    std::map<OnlineSkipReason, unsigned long long> counts;  // since server start
+    std::set<OnlineSkipReason> warned;  // since the index was last built or loaded
+};
+std::mutex g_online_skip_mutex;
+std::map<string, OnlineSkipStats> g_online_skips;  // key: db.table
+
+const char* onlineSkipReasonText(OnlineSkipReason why) {
+    switch (why) {
+        case OnlineSkipReason::kKeyType:
+            return "key column is not an integer";
+        case OnlineSkipReason::kRowImage:
+            return "binlog_row_image is not FULL";
+        case OnlineSkipReason::kColumnCount:
+            return "column count does not match the table";
+        case OnlineSkipReason::kColumnType:
+            return "unreadable column type or truncated event";
+    }
+    return "unknown";
+}
+}  // namespace
+
+void myvector_online_skip(const string& db,
+                          const string& table,
+                          OnlineSkipReason why,
+                          const string& detail) {
+    bool first;
+    {
+        std::lock_guard<std::mutex> l(g_online_skip_mutex);
+        OnlineSkipStats& st = g_online_skips[db + "." + table];
+        st.counts[why]++;
+        first = st.warned.insert(why).second;
+    }
+    if (first)
+        MYVEC_LOG_WARN("Online updates for %s.%s: skipping row events (%s%s%s). "
+                       "Their changes do not reach the vector index; "
+                       "MYVECTOR_INDEX_STATUS counts them.",
+                       db.c_str(), table.c_str(), onlineSkipReasonText(why),
+                       detail.empty() ? "" : ": ", detail.c_str());
+}
+
+void myvector_online_skip_rearm(const string& dbtable) {
+    std::lock_guard<std::mutex> l(g_online_skip_mutex);
+    auto it = g_online_skips.find(dbtable);
+    if (it != g_online_skips.end())
+        it->second.warned.clear();
+}
+
+string myvector_online_skip_status(const string& dbtable) {
+    std::lock_guard<std::mutex> l(g_online_skip_mutex);
+    auto it = g_online_skips.find(dbtable);
+    if (it == g_online_skips.end())
+        return "";
+    unsigned long long total = 0;
+    std::stringstream reasons;
+    for (const auto& rc : it->second.counts) {
+        reasons << (total ? ", " : "") << onlineSkipReasonText(rc.first) << ": "
+                << rc.second;
+        total += rc.second;
+    }
+    std::stringstream ss;
+    ss << "Online events skipped : " << total << " (" << reasons.str() << ")" << endl;
+    return ss.str();
 }
 
 /* myvector_checkpoint_index() - Incrementally persist a vector index. Check

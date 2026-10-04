@@ -5,6 +5,9 @@
 #   scripts/test-ef-search.py           ef_search applies per query (#165)
 #   scripts/test-online-updates-idle.py online=Y updates survive idle, rotation,
 #                                       KILL of the binlog connection (#166, #179)
+#   scripts/test-online-dml.py          online DELETE/UPDATE (#188, #194), INT and
+#                                       BIGINT keys (#204), skip warnings (#205)
+#   scripts/test-distance-udf.py        myvector_distance NULL/errors (#170, #171)
 # Artifacts are built with the Docker build scripts (Oracle Linux 9, like the
 # mysql images), so they load in the containers; the ci.yml builds are made on
 # the Ubuntu runner and target the runner's own MySQL instead.
@@ -92,10 +95,14 @@ jobs:
           DIR="dist/${KIND}-${MYSQL_VERSION}"
           ARGS=("--${KIND}-dir" "$DIR" --image "mysql:${MYSQL_VERSION}")
           failed=()
-          for t in test-filtered-ann.py test-filtered-ann-broad.py \
-                   test-ef-search.py test-online-updates-idle.py; do
+          # Each entry: a script and its extra arguments.
+          for t in "test-filtered-ann.py" "test-filtered-ann-broad.py" \
+                   "test-ef-search.py" "test-online-updates-idle.py" \
+                   "test-online-dml.py" "test-online-dml.py --key-type bigint" \
+                   "test-distance-udf.py"; do
+            read -r -a T <<< "$t"
             echo "::group::${t} (${KIND} ${MYSQL_VERSION})"
-            if python3 "scripts/${t}" "${ARGS[@]}"; then
+            if python3 "scripts/${T[0]}" "${ARGS[@]}" "${T[@]:1}"; then
               echo "PASS: ${t}"
             else
               echo "::error::${t} failed (${KIND} ${MYSQL_VERSION})"

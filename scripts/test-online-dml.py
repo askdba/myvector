@@ -11,13 +11,26 @@ the binlog listener applies DELETE and UPDATE, not only INSERT (#188, #194):
   3. After FLUSH BINARY LOGS (the listener checkpoints the index) and a server
      restart, the index still matches: deletes and updates were saved to disk.
   4. An INSERT after that restart reaches the index (the listener resumed).
-  5. An UPDATE written with binlog_row_image=MINIMAL is skipped, not misread.
+  5. An UPDATE written with binlog_row_image=MINIMAL is skipped, not misread,
+     and the skip is logged once and counted in MYVECTOR_INDEX_STATUS (#205).
+     After the index is reloaded, the next such skip is logged again; the count
+     keeps adding up.
+  6. A table whose key column is not an integer (DOUBLE): its events are
+     skipped with a warning naming the key type (#205).
+  7. A signed SMALLINT key with negative values, after a YEAR and an UNSIGNED
+     column: online changes use the same key as the build (sign-extended), so
+     the table map's signedness bits must be read at the right position.
+  8. An INT UNSIGNED key above 2^31 is not sign-extended.
+
+With --key-type bigint the key column is BIGINT and every key is above 2^32,
+so a key truncated to 32 bits would fail checks 1-4 (#204).
 
 The table has TINYINT, DECIMAL, DATETIME(3), JSON, CHAR, ENUM and TEXT columns
 around the vector, so the row parser must know each column's width.
 
 Usage:
   python3 scripts/test-online-dml.py --plugin-dir dist/plugin-8.4 --image mysql:8.4
+  python3 scripts/test-online-dml.py --plugin-dir dist/plugin-8.4 --key-type bigint
   python3 scripts/test-online-dml.py --component-dir dist/component-9.7 --image mysql:9.7
 
 Exit 0 = all checks passed.
@@ -47,7 +60,19 @@ def main():
     ap.add_argument("--image", default="mysql:8.4")
     ap.add_argument("--keep", action="store_true",
                     help="keep the container for debugging")
+    ap.add_argument("--key-type", choices=("int", "bigint"), default="int",
+                    help="type of the key column (bigint: keys above 2^32, #204)")
     args = ap.parse_args()
+    # Every key is BASE + a small number: with BIGINT, past 2^32, so a key cut
+    # to 32 bits would point at another row.
+    BASE = 5_000_000_000 if args.key_type == "bigint" else 0
+    KEYTYPE = args.key_type.upper()
+
+    def K(k):
+        return BASE + k
+
+    def one(k):
+        return f"[{K(k)}]"
 
     srv = idle.Server(args.image, f"myv-online-dml-{os.getpid()}")
     results = []
@@ -72,6 +97,18 @@ def main():
             time.sleep(0.5)
         return got
 
+    def status(index):
+        r = srv.sql(f"CALL mysql.myvector_index_status('{index}');", check=False)
+        return "\n".join(str(c) for row in (r or []) for c in row).replace("\\n", "\n")
+
+    def skip_line(st):
+        return next((ln for ln in st.splitlines() if ln.startswith("Online events skipped")), "")
+
+    def log_lines(text):
+        """How many lines of the server's error log contain text."""
+        out = idle.sh(["docker", "logs", srv.name], check=False)
+        return sum(text in ln for ln in (out.stdout + out.stderr).splitlines())
+
     def nn(v, k):
         r = srv.sql(f"SELECT myvector_ann_set('{INDEX}', 'id', "
                     f"myvector_construct('{v}'), 'nn={k}');")
@@ -81,12 +118,12 @@ def main():
         problems = []
         if rows() != 4:
             problems.append(f"rows={rows()} (want 4)")
-        for v, want in (("[0,1,0]", "[2]"), ("[9,9,9]", "[3]"), ("[1,1,0]", "[40]")):
+        for v, want in (("[0,1,0]", one(2)), ("[9,9,9]", one(3)), ("[1,1,0]", one(40))):
             got = nn(v, 1)
             if got != want:
                 problems.append(f"nearest {v}={got} (want {want})")
         ids = nn("[0,0,0]", 10)
-        if any(f"{sep}{k}{end}" in ids for k in (4, 5) for sep in "[," for end in ",]"):
+        if any(f"{sep}{K(k)}{end}" in ids for k in (4, 5) for sep in "[," for end in ",]"):
             problems.append(f"ids={ids} (4 and 5 must be gone)")
         return problems, ids
 
@@ -109,9 +146,9 @@ def main():
         # Plugin: keep the index directory across the restart (no-op on the component).
         srv.sql("SET PERSIST myvector_index_dir='/var/lib/mysql';", db=None, check=False)
         srv.sql("CREATE DATABASE vtest;", db=None)
-        srv.sql("""
+        srv.sql(f"""
             CREATE TABLE t (
-              id  INT PRIMARY KEY,
+              id  {KEYTYPE} PRIMARY KEY,
               t   TINYINT DEFAULT 7,
               d   DECIMAL(10,3) DEFAULT 12.5,
               dt  DATETIME(3) DEFAULT '2026-10-03 10:00:00.123',
@@ -123,11 +160,11 @@ def main():
               note TEXT
             );
             INSERT INTO t (id, j, vec, note) VALUES
-              (1, '{"a":1}', myvector_construct('[1,0,0]'), 'one'),
-              (2, '{"a":2}', myvector_construct('[0,1,0]'), 'two'),
-              (3, NULL,      myvector_construct('[0,0,1]'), NULL),
-              (4, '{"a":4}', myvector_construct('[1,1,0]'), 'four'),
-              (5, '{"a":5}', myvector_construct('[0,1,1]'), 'five');
+              ({K(1)}, '{{"a":1}}', myvector_construct('[1,0,0]'), 'one'),
+              ({K(2)}, '{{"a":2}}', myvector_construct('[0,1,0]'), 'two'),
+              ({K(3)}, NULL,      myvector_construct('[0,0,1]'), NULL),
+              ({K(4)}, '{{"a":4}}', myvector_construct('[1,1,0]'), 'four'),
+              ({K(5)}, '{{"a":5}}', myvector_construct('[0,1,1]'), 'five');
         """)
         srv.sql(f"CALL mysql.myvector_index_build('{INDEX}', 'id');")
         got = wait_rows(5)
@@ -135,18 +172,18 @@ def main():
             record("setup", False, f"index has {got} rows after the build, expected 5")
             return 1
 
-        srv.sql("DELETE FROM t WHERE id = 2;")
+        srv.sql(f"DELETE FROM t WHERE id = {K(2)};")
         got = wait_rows(4)
         ids = nn("[0,1,0]", 5)
-        record("1. DELETE", got == 4 and "2" not in ids.strip("[]").split(","),
+        record("1. DELETE", got == 4 and str(K(2)) not in ids.strip("[]").split(","),
                f"rows={got}, nearest to [0,1,0]: {ids}")
 
-        srv.sql("""
-            UPDATE t SET vec = myvector_construct('[9,9,9]') WHERE id = 3;
-            UPDATE t SET id = 40 WHERE id = 4;
-            UPDATE t SET vec = NULL WHERE id = 5;
-            UPDATE t SET note = 'changed', t = 9 WHERE id = 1;
-            INSERT INTO t (id, vec) VALUES (2, myvector_construct('[0,1,0]'));
+        srv.sql(f"""
+            UPDATE t SET vec = myvector_construct('[9,9,9]') WHERE id = {K(3)};
+            UPDATE t SET id = {K(40)} WHERE id = {K(4)};
+            UPDATE t SET vec = NULL WHERE id = {K(5)};
+            UPDATE t SET note = 'changed', t = 9 WHERE id = {K(1)};
+            INSERT INTO t (id, vec) VALUES ({K(2)}, myvector_construct('[0,1,0]'));
         """)
         check_state("2. UPDATE / NULL / re-INSERT")
 
@@ -162,20 +199,120 @@ def main():
             srv.sql(f"CALL mysql.myvector_index_load('{INDEX}');", check=False)
         check_state("3. after a checkpoint and a restart")
 
-        srv.sql("INSERT INTO t (id, vec) VALUES (6, myvector_construct('[5,5,5]'));")
+        srv.sql(f"INSERT INTO t (id, vec) VALUES ({K(6)}, myvector_construct('[5,5,5]'));")
         got = wait_rows(5)
-        record("4. INSERT after the restart", got == 5 and nn("[5,5,5]", 1) == "[6]",
+        record("4. INSERT after the restart", got == 5 and nn("[5,5,5]", 1) == one(6),
                f"rows={got}, nearest to [5,5,5]: {nn('[5,5,5]', 1)}")
 
         # A MINIMAL row image leaves columns out; the listener must skip the
         # event, not read it as a full image (that dropped row 1 from the index).
         srv.sql("SET SESSION binlog_row_image = 'MINIMAL'; "
-                "UPDATE t SET note = 'minimal' WHERE id = 1;")
+                f"UPDATE t SET note = 'minimal' WHERE id = {K(1)};")
         time.sleep(5)
         got = rows()
-        record("5. UPDATE with binlog_row_image=MINIMAL is skipped",
-               got == 5 and nn("[1,0,0]", 1) == "[1]",
-               f"rows={got}, nearest to [1,0,0]: {nn('[1,0,0]', 1)}")
+        st = status(INDEX)
+        warns = log_lines("Online updates for vtest.t: skipping row events "
+                          "(binlog_row_image is not FULL")
+        record("5. UPDATE with binlog_row_image=MINIMAL is skipped, logged once and counted",
+               got == 5 and nn("[1,0,0]", 1) == one(1)
+               and "Online events skipped : 1 (binlog_row_image is not FULL: 1)" in st
+               and warns == 1,
+               f"rows={got}, nearest to [1,0,0]: {nn('[1,0,0]', 1)}, "
+               f"status: {skip_line(st)!r}, warnings in the log: {warns}")
+
+        # Reloading the index re-arms the warning; the count is cumulative.
+        srv.sql(f"CALL mysql.myvector_index_load('{INDEX}');", check=False)
+        srv.sql("SET SESSION binlog_row_image = 'MINIMAL'; "
+                f"UPDATE t SET note = 'minimal again' WHERE id = {K(1)};")
+        time.sleep(5)
+        st = status(INDEX)
+        warns = log_lines("Online updates for vtest.t: skipping row events "
+                          "(binlog_row_image is not FULL")
+        record("5b. after a reload the skip is logged again, and the count adds up",
+               warns == 2 and "Online events skipped : 2 (binlog_row_image is not FULL: 2)" in st,
+               f"status: {skip_line(st)!r}, warnings in the log: {warns}")
+
+        # A key column that is not an integer: the listener cannot read the key,
+        # so it skips the table's events, and says why.
+        srv.sql("""
+            CREATE TABLE t2 (
+              id  DOUBLE PRIMARY KEY,
+              vec VARBINARY(256) COMMENT
+                'MYVECTOR COLUMN type=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2,online=Y'
+            );
+            INSERT INTO t2 VALUES (1, myvector_construct('[1,0,0]'));
+        """)
+        srv.sql("CALL mysql.myvector_index_build('vtest.t2.vec', 'id');", check=False)
+        srv.sql("INSERT INTO t2 VALUES (2, myvector_construct('[0,1,0]'));")
+        warns, deadline = 0, time.time() + 20
+        while warns == 0 and time.time() < deadline:
+            time.sleep(1)
+            warns = log_lines("Online updates for vtest.t2: skipping row events "
+                              "(key column is not an integer: key column is DOUBLE")
+        st2 = status("vtest.t2.vec")
+        # One warning, or two: the component may see the INSERT before the build
+        # (it discovers the table from the binlog), and the build re-arms it.
+        record("6. a DOUBLE key column is skipped with a warning naming the type",
+               warns in (1, 2) and ("Online events skipped" not in st2
+                               or "key column is not an integer" in st2),
+               f"warnings in the log: {warns}, status: {skip_line(st2)!r}")
+
+        def wait_index(index, want, timeout=20):
+            got, deadline = -1, time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    got = idle.current_rows(srv, index)
+                except Exception:
+                    got = -1
+                if got == want:
+                    break
+                time.sleep(0.5)
+            return got
+
+        def nearest(index, v):
+            r = srv.sql(f"SELECT myvector_ann_set('{index}', 'id', myvector_construct('{v}'), 'nn=1');")
+            return r[0][0] if r else ""
+
+        # The build reads a key as a signed 64-bit integer (atol), so -7 becomes
+        # 2^64 - 7. The listener must give an online row the same key.
+        srv.sql("""
+            CREATE TABLE t3 (
+              y   YEAR DEFAULT 2026,
+              a   TINYINT UNSIGNED DEFAULT 200,
+              id  SMALLINT PRIMARY KEY,
+              vec VARBINARY(256) COMMENT
+                'MYVECTOR COLUMN type=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2,online=Y'
+            );
+            INSERT INTO t3 (id, vec) VALUES (-5, myvector_construct('[1,0,0]')),
+                                            (3,  myvector_construct('[0,1,0]'));
+        """)
+        srv.sql("CALL mysql.myvector_index_build('vtest.t3.vec', 'id');")
+        wait_index("vtest.t3.vec", 2)
+        srv.sql("INSERT INTO t3 (id, vec) VALUES (-7, myvector_construct('[0,0,1]')); "
+                "DELETE FROM t3 WHERE id = -5;")
+        got = wait_index("vtest.t3.vec", 2)
+        near = nearest("vtest.t3.vec", "[0,0,1]")
+        record("7. negative SMALLINT keys match the build (sign-extended)",
+               got == 2 and near == f"[{2**64 - 7}]",
+               f"rows={got} (want 2), nearest to [0,0,1]: {near} (want [{2**64 - 7}])")
+
+        srv.sql("""
+            CREATE TABLE t4 (
+              id  INT UNSIGNED PRIMARY KEY,
+              vec VARBINARY(256) COMMENT
+                'MYVECTOR COLUMN type=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2,online=Y'
+            );
+            INSERT INTO t4 VALUES (3000000001, myvector_construct('[1,0,0]'));
+        """)
+        srv.sql("CALL mysql.myvector_index_build('vtest.t4.vec', 'id');")
+        wait_index("vtest.t4.vec", 1)
+        srv.sql("INSERT INTO t4 VALUES (4000000000, myvector_construct('[0,0,1]')); "
+                "DELETE FROM t4 WHERE id = 3000000001;")
+        got = wait_index("vtest.t4.vec", 1)
+        near = nearest("vtest.t4.vec", "[0,0,1]")
+        record("8. INT UNSIGNED keys above 2^31 are not sign-extended",
+               got == 1 and near == "[4000000000]",
+               f"rows={got} (want 1), nearest to [0,0,1]: {near} (want [4000000000])")
     finally:
         if not args.keep:
             srv.remove()

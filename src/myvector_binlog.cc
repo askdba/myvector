@@ -122,7 +122,7 @@ extern char* myvector_index_dir;
 void myvector_table_op(const string& dbname,
                        const string& tbname,
                        const string& cname,
-                       unsigned int pkid,
+                       KeyTypeInteger pkid,
                        vector<unsigned char>& vec,
                        const string& binlogfile,
                        const size_t& pos,
@@ -135,7 +135,7 @@ typedef struct {
     string columnName_;
     vector<unsigned char> vec_;
     unsigned int veclen_;  // bytes
-    unsigned int pkid_;
+    KeyTypeInteger pkid_;
     string binlogFile_;
     size_t binlogPos_;
     bool delete_ = false;  // remove pkid_ from the index (online DELETE/UPDATE)
@@ -258,7 +258,76 @@ typedef struct {
     unsigned int nColumns;
     vector<unsigned char> columnTypes;
     vector<int> columnMetadata;
+    vector<unsigned char> columnUnsigned;  // 1 = UNSIGNED; empty if unknown (#204)
 } TableMapEvent;
+
+static bool hasCrc32Trailer(const unsigned char* buf, unsigned long len);
+
+/* Column types that carry a bit in the table map's SIGNEDNESS field: MySQL's
+ * has_signedess_information_type() (sql/field_common_properties.h), YEAR
+ * included. */
+static bool hasSignednessBit(unsigned char t) {
+    switch (t) {
+        case MYSQL_TYPE_TINY:
+        case MYSQL_TYPE_SHORT:
+        case MYSQL_TYPE_INT24:
+        case MYSQL_TYPE_LONG:
+        case MYSQL_TYPE_LONGLONG:
+        case MYSQL_TYPE_YEAR:
+        case MYSQL_TYPE_FLOAT:
+        case MYSQL_TYPE_DOUBLE:
+        case MYSQL_TYPE_DECIMAL:
+        case MYSQL_TYPE_NEWDECIMAL:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* parseTableMapSignedness - read the SIGNEDNESS field of the table map's
+ * optional metadata (MySQL 8.0+, logged with the default
+ * binlog_row_metadata=MINIMAL): one bit per column of the types above, most
+ * significant bit first, set if the column is UNSIGNED. index is the end of the
+ * column metadata. Fills tev.columnUnsigned, or leaves it empty if the field is
+ * absent or cannot be read; keys are then zero-extended (#204). */
+static void parseTableMapSignedness(const unsigned char* buf,
+                                    unsigned int len,
+                                    unsigned int index,
+                                    TableMapEvent& tev) {
+    if (hasCrc32Trailer(buf, len))
+        len -= 4;
+    index += (tev.nColumns + 7) / 8;  // NULL bitmap
+    while (index + 2 <= len) {
+        unsigned int type = buf[index++];
+        uint64_t flen = buf[index++];  // length-encoded integer
+        unsigned int extra = flen == 0xFC ? 2 : flen == 0xFD ? 3 : flen == 0xFE ? 8 : 0;
+        if (flen == 0xFB || flen == 0xFF || index + extra > len)
+            return;
+        if (extra) {
+            flen = 0;
+            memcpy(&flen, &buf[index], extra);
+            index += extra;
+        }
+        if (flen > len - index)
+            return;
+        if (type == 1) {  // SIGNEDNESS
+            std::vector<unsigned char> isUnsigned(tev.nColumns, 0);
+            uint64_t bit = 0;
+            for (unsigned int i = 0; i < tev.nColumns; i++) {
+                if (!hasSignednessBit(tev.columnTypes[i]))
+                    continue;
+                if (bit / 8 >= flen)
+                    return;  // fewer bits than such columns: not readable
+                isUnsigned[i] = (buf[index + bit / 8] >> (7 - bit % 8)) & 1;
+                bit++;
+            }
+            tev.columnUnsigned.swap(isUnsigned);
+            return;
+        }
+        index += (unsigned int)flen;
+    }
+}
+
 
 /* parseTableMapEvent - Parse the TableMap binlog event that appears before
  * any *ROWS* event.
@@ -266,7 +335,6 @@ typedef struct {
 void parseTableMapEvent(const unsigned char* event_buf,
                         unsigned int event_len,
                         TableMapEvent& tev) {
-    (void)event_len;
     tev = TableMapEvent();
 
     unsigned int index = EVENT_HEADER_LENGTH;
@@ -340,7 +408,7 @@ void parseTableMapEvent(const unsigned char* event_buf,
         tev.columnMetadata.push_back(md);
     }  /// for
 
-    return;
+    parseTableMapSignedness(event_buf, event_len, index, tev);
 }
 
 /* The row events the binlog listener applies to online=Y indexes. */
@@ -371,9 +439,31 @@ static bool hasCrc32Trailer(const unsigned char* buf, unsigned long len) {
     return crc == stored;
 }
 
+/* Key column types the listener reads from row events (#204): any integer,
+ * stored little-endian in 1, 2, 3, 4 or 8 bytes. The value is zero-extended to
+ * KeyTypeInteger, as the index build converts keys, so both agree on every
+ * non-negative INT/BIGINT key (and on BIGINT UNSIGNED). */
+static bool isIntegerKeyType(unsigned char t) {
+    return t == MYSQL_TYPE_TINY || t == MYSQL_TYPE_SHORT || t == MYSQL_TYPE_INT24 ||
+           t == MYSQL_TYPE_LONG || t == MYSQL_TYPE_LONGLONG;
+}
+
+/* A readable name for a key column's binlog type, for the skip warning. */
+static std::string keyTypeName(unsigned char t) {
+    switch (t) {
+        case MYSQL_TYPE_FLOAT: return "FLOAT";
+        case MYSQL_TYPE_DOUBLE: return "DOUBLE";
+        case MYSQL_TYPE_NEWDECIMAL: return "DECIMAL";
+        case MYSQL_TYPE_VARCHAR: return "VARCHAR";
+        case MYSQL_TYPE_STRING: return "CHAR";
+        case MYSQL_TYPE_BLOB: return "BLOB/TEXT";
+        default: return "binlog type " + std::to_string((int)t);
+    }
+}
+
 /* parseRowImage() - parse one row image (NULL bitmap, then the column values)
  * starting at index, and advance index past it. Returns the key column (pos1,
- * INT only) and the vector column (pos2; vec is nullptr if it is NULL).
+ * any integer type) and the vector column (pos2; vec is nullptr if it is NULL).
  * Returns false for a column type whose width is unknown, or if the event ends
  * inside the image: the caller then drops the whole event, because a misread
  * key in a DELETE or UPDATE would remove the wrong row.
@@ -385,7 +475,7 @@ static bool parseRowImage(const unsigned char* event_buf,
                           unsigned int ncols,
                           unsigned int pos1,
                           unsigned int pos2,
-                          unsigned int& idVal,
+                          KeyTypeInteger& idVal,
                           const unsigned char*& vec,
                           unsigned int& vecsz) {
     idVal = 0;
@@ -500,8 +590,16 @@ static bool parseRowImage(const unsigned char* event_buf,
         } else {
             if (remaining < width)
                 return false;
-            if (i == pos1 && tev.columnTypes[i] == MYSQL_TYPE_LONG)
-                memcpy(&idVal, &event_buf[index], 4);
+            if (i == pos1 && isIntegerKeyType(tev.columnTypes[i])) {
+                uint64_t key = 0;  // little-endian (#204)
+                memcpy(&key, &event_buf[index], width);
+                /* A negative value of a signed key: sign-extend, as the index
+                 * build reads keys (atol), so both give the row the same key. */
+                if (width < 8 && pos1 < tev.columnUnsigned.size() &&
+                    !tev.columnUnsigned[pos1] && ((key >> (8 * width - 1)) & 1))
+                    key |= ~uint64_t{0} << (8 * width);
+                idVal = (KeyTypeInteger)key;
+            }
             index += width;
         }
     }
@@ -514,8 +612,9 @@ static bool parseRowImage(const unsigned char* event_buf,
  *   - DELETE: delete the row's key.
  *   - UPDATE: if the key or the vector changed, delete the old key and insert
  *     the new row's vector (a key whose vector becomes NULL is only deleted).
- * Expects binlog_row_image=FULL (the default) and an INT key column; other
- * events are dropped rather than applied with misread keys (#194).
+ * Expects binlog_row_image=FULL (the default) and an integer key column;
+ * other events are dropped rather than applied with misread keys (#194), and
+ * counted and logged once (#205).
  */
 void parseRowsEvent(const unsigned char* event_buf,
                     unsigned int event_len,
@@ -554,11 +653,23 @@ void parseRowsEvent(const unsigned char* event_buf,
         ncols = (unsigned int)event_buf[index] | ((unsigned int)event_buf[index + 1] << 8);
         index += 2;
     } else {
+        myvector_online_skip(tev.dbName, tev.tableName, OnlineSkipReason::kColumnCount,
+                             "more than 65535 columns");
         return;
     }
-    if (ncols != tev.columnTypes.size() || pos1 >= ncols || pos2 >= ncols ||
-        tev.columnTypes[pos1] != MYSQL_TYPE_LONG)
+    if (ncols != tev.columnTypes.size() || pos1 >= ncols || pos2 >= ncols) {
+        myvector_online_skip(tev.dbName, tev.tableName, OnlineSkipReason::kColumnCount,
+                             "the event has " + std::to_string(ncols) +
+                                 " columns, the table map " +
+                                 std::to_string(tev.columnTypes.size()));
         return;
+    }
+    if (!isIntegerKeyType(tev.columnTypes[pos1])) {
+        myvector_online_skip(tev.dbName, tev.tableName, OnlineSkipReason::kKeyType,
+                             "key column is " + keyTypeName(tev.columnTypes[pos1]) +
+                                 "; online=Y needs an integer key");
+        return;
+    }
 
     // Columns-present bitmap: ceil(ncols/8) bytes. UPDATE_ROWS has a second one
     // for the after image.
@@ -572,15 +683,19 @@ void parseRowsEvent(const unsigned char* event_buf,
     for (unsigned int b = 0; b < bitmaps; b++) {
         const unsigned char* present = &event_buf[index + b * inclen];
         for (unsigned int i = 0; i < ncols; i++)
-            if (!(present[i >> 3] & (1u << (i & 7))))
+            if (!(present[i >> 3] & (1u << (i & 7)))) {
+                myvector_online_skip(tev.dbName, tev.tableName,
+                                     OnlineSkipReason::kRowImage,
+                                     "a column is missing from the row image");
                 return;
+            }
     }
     index += bitmaps * inclen;
 
     string key = tev.dbName + "." + tev.tableName;
     string columnName = g_OnlineVectorIndexes[key].vectorColumn;
 
-    auto add = [&](unsigned int id, const unsigned char* v, unsigned int vsz,
+    auto add = [&](KeyTypeInteger id, const unsigned char* v, unsigned int vsz,
                    bool del) {
         VectorIndexUpdateItem* item = new VectorIndexUpdateItem();
         item->dbName_ = tev.dbName;
@@ -601,10 +716,14 @@ void parseRowsEvent(const unsigned char* event_buf,
     };
 
     while (index < event_len) {
-        unsigned int id1 = 0, sz1 = 0;
+        KeyTypeInteger id1 = 0;
+        unsigned int sz1 = 0;
         const unsigned char* v1 = nullptr;
         if (!parseRowImage(event_buf, event_len, index, tev, ncols, pos1, pos2,
                            id1, v1, sz1)) {
+            myvector_online_skip(tev.dbName, tev.tableName,
+                                 OnlineSkipReason::kColumnType,
+                                 "a column the listener cannot read");
             drop_all();
             return;
         }
@@ -617,10 +736,14 @@ void parseRowsEvent(const unsigned char* event_buf,
             add(id1, nullptr, 0, true);
             continue;
         }
-        unsigned int id2 = 0, sz2 = 0;
+        KeyTypeInteger id2 = 0;
+        unsigned int sz2 = 0;
         const unsigned char* v2 = nullptr;
         if (!parseRowImage(event_buf, event_len, index, tev, ncols, pos1, pos2,
                            id2, v2, sz2)) {
+            myvector_online_skip(tev.dbName, tev.tableName,
+                                 OnlineSkipReason::kColumnType,
+                                 "a column the listener cannot read");
             drop_all();
             return;
         }
@@ -927,7 +1050,7 @@ void OpenAllOnlineVectorIndexes(MYSQL* hnd) {
             char empty[1024];
             char action[] = "load";
             char vecid[1024];
-            char result[1024] = {0};
+            char result[MYVECTOR_BUFF_SIZE] = {0};
             snprintf(vecid, sizeof(vecid), "%s.%s.%s", dbname, tbl, col);
             myvector_open_index_impl(vecid, info, empty, action, empty, result);
             /* A successful load writes nothing to result. On an error (e.g. a
