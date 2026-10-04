@@ -1,5 +1,25 @@
 #include "myvector_udf_service.h"
 #include "myvector_binlog_service.h"
+#include <mysql/components/services/mysql_runtime_error_service.h>
+#if __has_include(<mysqld_error.h>)
+#include <mysqld_error.h>
+#endif
+#ifndef ER_UDF_ERROR
+#define ER_UDF_ERROR 3200  // "%s UDF failed; %s" (fixed number since MySQL 8.0)
+#endif
+#include <cstdarg>
+
+/* Fail the whole statement from a UDF's row function, with a message. Setting
+ * *error alone makes MySQL return NULL for this row and every later row of the
+ * statement, without saying why (#170). */
+static void myvector_udf_fail(const char* fn, const char* fmt, ...) {
+    char msg[256];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+    mysql_error_service_printf(ER_UDF_ERROR, 0, fn, msg);
+}
 
 /* Defined in myvector_component.cc, which holds the required services. */
 bool myvector_current_user_has_global_grant(const char* priv);
@@ -526,8 +546,7 @@ char* myvector_display(UDF_INIT* initid,
     unsigned char* bvec = (unsigned char*)args->args[0];
     FP32* fvec = (FP32*)args->args[0];
     if (!bvec || !args->lengths[0]) {
-        *is_null = 1;
-        *error = 1;
+        *is_null = 1;  // NULL in, NULL out, for this row only (#170)
         return result;
     }
 #if MYSQL_VERSION_ID < 90000
@@ -668,6 +687,21 @@ bool myvector_distance_init(UDF_INIT* initid,
         strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
         return true;  /// error
     }
+    initid->maybe_null = true;
+    initid->ptr = nullptr;
+    /* A constant metric is checked once, here, and its function cached: an
+     * unknown name fails the statement before any row is read (#170). */
+    if (args->arg_count == 3 && args->args[2]) {
+        MyVectorDistanceFn fn = myvector_distance_fn(args->args[2], args->lengths[2]);
+        if (!fn) {
+            snprintf(message, MYSQL_ERRMSG_SIZE,
+                     "myvector_distance(): unknown distance metric '%.*s'; "
+                     "use L2, EUCLIDEAN, Cosine or IP",
+                     (int)std::min<unsigned long>(args->lengths[2], 64), args->args[2]);
+            return true;
+        }
+        initid->ptr = reinterpret_cast<char*>(fn);
+    }
     return false;
 }
 
@@ -680,17 +714,20 @@ double myvector_distance(UDF_INIT* initid,
     unsigned char* v2_raw = (unsigned char*)args->args[1];
     unsigned long l2 = args->lengths[1];
 
+    /* NULL in, NULL out, for this row only. Setting *error here made every
+     * later row NULL too (#170). */
     if (!v1_raw || !l1 || !v2_raw || !l2) {
         *is_null = 1;
-        *error = 1;
         return 0.0;
     }
 
     int dim1 = MyVectorDimFromStorageLength(l1);
     int dim2 = MyVectorDimFromStorageLength(l2);
 
+    /* Different dimensions fail the statement (#171). */
     if (dim1 != dim2 || dim1 == 0) {
-        *is_null = 1;
+        myvector_udf_fail("myvector_distance",
+                          "vectors have different dimensions (%d and %d)", dim1, dim2);
         *error = 1;
         return 0.0;
     }
@@ -704,19 +741,19 @@ double myvector_distance(UDF_INIT* initid,
 #endif
 
     // Choose distance by optional third argument (default L2)
-    double (*distfn)(const FP32*, const FP32*, int) = computeL2Distance;
-    if (args->arg_count >= 3 && args->args[2] && args->lengths[2] > 0) {
-        std::string metric(args->args[2], args->lengths[2]);
-        std::transform(metric.begin(), metric.end(), metric.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (metric == "l2" || metric == "euclidean")
-            distfn = computeL2Distance;
-        else if (metric == "cosine")
-            distfn = computeCosineDistance;
-        else if (metric == "ip")
-            distfn = computeIPDistance;
-        else {
-            *is_null = 1;
+    MyVectorDistanceFn distfn = computeL2Distance;
+    if (initid->ptr) {
+        distfn = reinterpret_cast<MyVectorDistanceFn>(initid->ptr);  // constant metric
+    } else if (args->arg_count >= 3) {
+        if (!args->args[2]) {
+            *is_null = 1;  // NULL metric: NULL distance
+            return 0.0;
+        }
+        distfn = myvector_distance_fn(args->args[2], args->lengths[2]);
+        if (!distfn) {
+            myvector_udf_fail("myvector_distance",
+                              "unknown distance metric '%.*s'; use L2, EUCLIDEAN, Cosine or IP",
+                              (int)std::min<unsigned long>(args->lengths[2], 64), args->args[2]);
             *error = 1;
             return 0.0;
         }

@@ -242,7 +242,7 @@ BEGIN
   IF colinfo IS NULL THEN
     SIGNAL SQLSTATE '50001' SET MESSAGE_TEXT = 'Vector column not found.';
   END IF;
-  IF LOCATE('MYVECTOR COLUMN', colinfo) <> 1 THEN
+  IF NOT REGEXP_LIKE(colinfo, '^[[:space:]]*MYVECTOR COLUMN', 'i') THEN
     SIGNAL SQLSTATE '50002' SET MESSAGE_TEXT = 'Column is not a MYVECTOR column.';
   END IF;
   SET status = MYVECTOR_SEARCH_OPEN_UDF(myvectorcolumn, colinfo, pkidcolumn, action, extra);
@@ -476,7 +476,7 @@ SQL
 run_index_type_check() {
   echo "  [Index type] type=hnsw yields an HNSW index for all comment formats"
   mq -D prerel -e "
-    DROP TABLE IF EXISTS itype_nopipe, itype_pipe, itype_multiline, itype_tab;
+    DROP TABLE IF EXISTS itype_nopipe, itype_pipe, itype_multiline, itype_tab, itype_leading;
     CREATE TABLE itype_nopipe (id INT PRIMARY KEY, vec VARBINARY(256)
       COMMENT 'MYVECTOR COLUMN type=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
     CREATE TABLE itype_pipe (id INT PRIMARY KEY, vec VARBINARY(256)
@@ -486,14 +486,19 @@ run_index_type_check() {
         type=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
     CREATE TABLE itype_tab (id INT PRIMARY KEY, vec VARBINARY(256)
       COMMENT 'MYVECTOR COLUMN\ttype=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
+    CREATE TABLE itype_leading (id INT PRIMARY KEY, vec VARBINARY(256)
+      COMMENT '\n    MYVECTOR COLUMN type=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2');
     INSERT INTO itype_nopipe VALUES (1, myvector_construct('[1.0,2.0,3.0]')),
                                     (2, myvector_construct('[4.0,5.0,6.0]'));
     INSERT INTO itype_pipe SELECT * FROM itype_nopipe;
     INSERT INTO itype_multiline SELECT * FROM itype_nopipe;
     INSERT INTO itype_tab SELECT * FROM itype_nopipe;
+    INSERT INTO itype_leading SELECT * FROM itype_nopipe;
   " 2>/dev/null
   local T OUT
-  for T in itype_nopipe itype_pipe itype_multiline itype_tab; do
+  # itype_leading: a comment that starts with a line break and spaces is accepted by
+  # the MYVECTOR_INDEX_* procedures too, not only by the option parser.
+  for T in itype_nopipe itype_pipe itype_multiline itype_tab itype_leading; do
     mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_BUILD('prerel.${T}.vec', 'id');" >/dev/null 2>&1 || true
     OUT=$(mq -D prerel -e "CALL mysql.MYVECTOR_INDEX_STATUS('prerel.${T}.vec');" 2>&1) || true
     if echo "$OUT" | grep -q "Type : HNSW"; then
@@ -707,16 +712,17 @@ run_edge_cases() {
     fail "dimension mismatch: expected 2-row SUCCESS, got: $DIM_BUILD"
   fi
 
-  # myvector_distance with mismatched dims (must not return a numeric distance)
+  # myvector_distance with mismatched dims fails the statement (#171): no numeric
+  # distance over the shorter length.
   DIST_MM=$(mq -N -e "
     SELECT myvector_distance(
       myvector_construct('[1.0,0.0]'),
       myvector_construct('[1.0,0.0,0.0]')
-    );" 2>/dev/null | LC_ALL=C tr -d '[:space:]')
-  if [[ -z "$DIST_MM" || "$DIST_MM" == "NULL" ]]; then
-    pass "myvector_distance(dim_mismatch) returns NULL"
+    );" 2>&1 | grep -v "Using a password" || true)
+  if echo "$DIST_MM" | grep -q "different dimensions"; then
+    pass "myvector_distance(dim_mismatch) fails the statement"
   else
-    fail "myvector_distance(dim_mismatch): expected NULL, got '$DIST_MM'"
+    fail "myvector_distance(dim_mismatch): expected a 'different dimensions' error, got '$DIST_MM'"
   fi
 
   # myvector_is_valid with wrong dimension arg → 0
@@ -727,6 +733,22 @@ run_edge_cases() {
     pass "myvector_is_valid(3d_vec, dim=5) returns 0"
   else
     fail "myvector_is_valid(3d_vec, dim=5): expected 0, got '$ISVALID'"
+  fi
+}
+
+# myvector_distance()/myvector_display(): a NULL input is NULL for that row only;
+# an unknown metric or vectors of different dimensions fail the statement
+# (#170, #171). Runs scripts/test-distance-udf.py in its own container.
+run_distance_udf_checks() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Edge] myvector_distance NULL and error handling ($VER)"
+  local OUT RC=0
+  OUT=$(python3 "$REPO_ROOT/scripts/test-distance-udf.py" \
+          --component-dir "$COMP_DIR" --image "mysql:$VER" 2>&1) || RC=$?
+  if [[ "$RC" -eq 0 ]]; then
+    pass "myvector_distance: NULL rows, unknown metric and dimension mismatch handled ($(echo "$OUT" | grep -c '^\[PASS')/7 checks)"
+  else
+    fail "myvector_distance NULL/error handling (#170, #171): $(echo "$OUT" | grep -E '^\[FAIL|Error' | head -3 | tr '\n' ' ')"
   fi
 }
 
@@ -749,6 +771,7 @@ for VER in "${VERSIONS[@]}"; do
   run_rfc004_crash_injection
 
   cleanup_container
+  run_distance_udf_checks "$VER" "$DIR"
   echo ""
 done
 

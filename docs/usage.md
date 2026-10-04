@@ -108,9 +108,8 @@ CREATE TABLE docs (
 );
 ```
 
-The comment must still *start* with `MYVECTOR COLUMN`: the `MYVECTOR_INDEX_*`
-procedures reject a comment with leading spaces or a leading line break as
-"not a MYVECTOR column".
+The comment may also start with spaces or a line break before `MYVECTOR COLUMN`.
+Write `MYVECTOR COLUMN` itself with a single space between the two words.
 
 ### Check which index was built
 
@@ -168,6 +167,10 @@ SET @vec1 = myvector_construct('[1.2, 3.4, 5.6]');
 SET @vec2 = myvector_construct('[1.0, 3.0, 5.0]');
 SELECT myvector_distance(@vec1, @vec2, 'L2');
 ```
+
+The metric is `L2` (the default; `EUCLIDEAN` is the same), `Cosine` or `IP`, in any case.
+If either vector is NULL, the result is NULL for that row. An unknown metric, or two
+vectors of different dimensions, is an error that stops the statement.
 
 **Display a Vector:**
 
