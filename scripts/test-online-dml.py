@@ -15,6 +15,10 @@ the binlog listener applies DELETE and UPDATE, not only INSERT (#188, #194):
      and the skip is logged once and counted in MYVECTOR_INDEX_STATUS (#205).
   6. A table whose key column is not an integer (DOUBLE): its events are
      skipped with a warning naming the key type (#205).
+  7. A signed SMALLINT key with negative values, after a YEAR and an UNSIGNED
+     column: online changes use the same key as the build (sign-extended), so
+     the table map's signedness bits must be read at the right position.
+  8. An INT UNSIGNED key above 2^31 is not sign-extended.
 
 With --key-type bigint the key column is BIGINT and every key is above 2^32,
 so a key truncated to 32 bits would fail checks 1-4 (#204).
@@ -236,6 +240,63 @@ def main():
                warns == 1 and ("Online events skipped" not in st2
                                or "key column is not an integer" in st2),
                f"warnings in the log: {warns}, status: {skip_line(st2)!r}")
+
+        def wait_index(index, want, timeout=20):
+            got, deadline = -1, time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    got = idle.current_rows(srv, index)
+                except Exception:
+                    got = -1
+                if got == want:
+                    break
+                time.sleep(0.5)
+            return got
+
+        def nearest(index, v):
+            r = srv.sql(f"SELECT myvector_ann_set('{index}', 'id', myvector_construct('{v}'), 'nn=1');")
+            return r[0][0] if r else ""
+
+        # The build reads a key as a signed 64-bit integer (atol), so -7 becomes
+        # 2^64 - 7. The listener must give an online row the same key.
+        srv.sql("""
+            CREATE TABLE t3 (
+              y   YEAR DEFAULT 2026,
+              a   TINYINT UNSIGNED DEFAULT 200,
+              id  SMALLINT PRIMARY KEY,
+              vec VARBINARY(256) COMMENT
+                'MYVECTOR COLUMN type=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2,online=Y'
+            );
+            INSERT INTO t3 (id, vec) VALUES (-5, myvector_construct('[1,0,0]')),
+                                            (3,  myvector_construct('[0,1,0]'));
+        """)
+        srv.sql("CALL mysql.myvector_index_build('vtest.t3.vec', 'id');")
+        wait_index("vtest.t3.vec", 2)
+        srv.sql("INSERT INTO t3 (id, vec) VALUES (-7, myvector_construct('[0,0,1]')); "
+                "DELETE FROM t3 WHERE id = -5;")
+        got = wait_index("vtest.t3.vec", 2)
+        near = nearest("vtest.t3.vec", "[0,0,1]")
+        record("7. negative SMALLINT keys match the build (sign-extended)",
+               got == 2 and near == f"[{2**64 - 7}]",
+               f"rows={got} (want 2), nearest to [0,0,1]: {near} (want [{2**64 - 7}])")
+
+        srv.sql("""
+            CREATE TABLE t4 (
+              id  INT UNSIGNED PRIMARY KEY,
+              vec VARBINARY(256) COMMENT
+                'MYVECTOR COLUMN type=hnsw,dim=3,size=100,m=16,ef=50,idcol=id,dist=L2,online=Y'
+            );
+            INSERT INTO t4 VALUES (3000000001, myvector_construct('[1,0,0]'));
+        """)
+        srv.sql("CALL mysql.myvector_index_build('vtest.t4.vec', 'id');")
+        wait_index("vtest.t4.vec", 1)
+        srv.sql("INSERT INTO t4 VALUES (4000000000, myvector_construct('[0,0,1]')); "
+                "DELETE FROM t4 WHERE id = 3000000001;")
+        got = wait_index("vtest.t4.vec", 1)
+        near = nearest("vtest.t4.vec", "[0,0,1]")
+        record("8. INT UNSIGNED keys above 2^31 are not sign-extended",
+               got == 1 and near == "[4000000000]",
+               f"rows={got} (want 1), nearest to [0,0,1]: {near} (want [4000000000])")
     finally:
         if not args.keep:
             srv.remove()

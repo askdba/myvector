@@ -258,7 +258,76 @@ typedef struct {
     unsigned int nColumns;
     vector<unsigned char> columnTypes;
     vector<int> columnMetadata;
+    vector<unsigned char> columnUnsigned;  // 1 = UNSIGNED; empty if unknown (#204)
 } TableMapEvent;
+
+static bool hasCrc32Trailer(const unsigned char* buf, unsigned long len);
+
+/* Column types that carry a bit in the table map's SIGNEDNESS field: MySQL's
+ * has_signedess_information_type() (sql/field_common_properties.h), YEAR
+ * included. */
+static bool hasSignednessBit(unsigned char t) {
+    switch (t) {
+        case MYSQL_TYPE_TINY:
+        case MYSQL_TYPE_SHORT:
+        case MYSQL_TYPE_INT24:
+        case MYSQL_TYPE_LONG:
+        case MYSQL_TYPE_LONGLONG:
+        case MYSQL_TYPE_YEAR:
+        case MYSQL_TYPE_FLOAT:
+        case MYSQL_TYPE_DOUBLE:
+        case MYSQL_TYPE_DECIMAL:
+        case MYSQL_TYPE_NEWDECIMAL:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* parseTableMapSignedness - read the SIGNEDNESS field of the table map's
+ * optional metadata (MySQL 8.0+, logged with the default
+ * binlog_row_metadata=MINIMAL): one bit per column of the types above, most
+ * significant bit first, set if the column is UNSIGNED. index is the end of the
+ * column metadata. Fills tev.columnUnsigned, or leaves it empty if the field is
+ * absent or cannot be read; keys are then zero-extended (#204). */
+static void parseTableMapSignedness(const unsigned char* buf,
+                                    unsigned int len,
+                                    unsigned int index,
+                                    TableMapEvent& tev) {
+    if (hasCrc32Trailer(buf, len))
+        len -= 4;
+    index += (tev.nColumns + 7) / 8;  // NULL bitmap
+    while (index + 2 <= len) {
+        unsigned int type = buf[index++];
+        uint64_t flen = buf[index++];  // length-encoded integer
+        unsigned int extra = flen == 0xFC ? 2 : flen == 0xFD ? 3 : flen == 0xFE ? 8 : 0;
+        if (flen == 0xFB || flen == 0xFF || index + extra > len)
+            return;
+        if (extra) {
+            flen = 0;
+            memcpy(&flen, &buf[index], extra);
+            index += extra;
+        }
+        if (flen > len - index)
+            return;
+        if (type == 1) {  // SIGNEDNESS
+            std::vector<unsigned char> isUnsigned(tev.nColumns, 0);
+            uint64_t bit = 0;
+            for (unsigned int i = 0; i < tev.nColumns; i++) {
+                if (!hasSignednessBit(tev.columnTypes[i]))
+                    continue;
+                if (bit / 8 >= flen)
+                    return;  // fewer bits than such columns: not readable
+                isUnsigned[i] = (buf[index + bit / 8] >> (7 - bit % 8)) & 1;
+                bit++;
+            }
+            tev.columnUnsigned.swap(isUnsigned);
+            return;
+        }
+        index += (unsigned int)flen;
+    }
+}
+
 
 /* parseTableMapEvent - Parse the TableMap binlog event that appears before
  * any *ROWS* event.
@@ -266,7 +335,6 @@ typedef struct {
 void parseTableMapEvent(const unsigned char* event_buf,
                         unsigned int event_len,
                         TableMapEvent& tev) {
-    (void)event_len;
     tev = TableMapEvent();
 
     unsigned int index = EVENT_HEADER_LENGTH;
@@ -340,7 +408,7 @@ void parseTableMapEvent(const unsigned char* event_buf,
         tev.columnMetadata.push_back(md);
     }  /// for
 
-    return;
+    parseTableMapSignedness(event_buf, event_len, index, tev);
 }
 
 /* The row events the binlog listener applies to online=Y indexes. */
@@ -523,8 +591,13 @@ static bool parseRowImage(const unsigned char* event_buf,
             if (remaining < width)
                 return false;
             if (i == pos1 && isIntegerKeyType(tev.columnTypes[i])) {
-                uint64_t key = 0;  // little-endian, zero-extended (#204)
+                uint64_t key = 0;  // little-endian (#204)
                 memcpy(&key, &event_buf[index], width);
+                /* A negative value of a signed key: sign-extend, as the index
+                 * build reads keys (atol), so both give the row the same key. */
+                if (width < 8 && pos1 < tev.columnUnsigned.size() &&
+                    !tev.columnUnsigned[pos1] && ((key >> (8 * width - 1)) & 1))
+                    key |= ~uint64_t{0} << (8 * width);
                 idVal = (KeyTypeInteger)key;
             }
             index += width;
@@ -977,7 +1050,7 @@ void OpenAllOnlineVectorIndexes(MYSQL* hnd) {
             char empty[1024];
             char action[] = "load";
             char vecid[1024];
-            char result[1024] = {0};
+            char result[MYVECTOR_BUFF_SIZE] = {0};
             snprintf(vecid, sizeof(vecid), "%s.%s.%s", dbname, tbl, col);
             myvector_open_index_impl(vecid, info, empty, action, empty, result);
             /* A successful load writes nothing to result. On an error (e.g. a

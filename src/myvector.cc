@@ -2472,6 +2472,10 @@ PLUGIN_EXPORT double myvector_distance(UDF_INIT* initid,
 
 PLUGIN_EXPORT void myvector_distance_deinit(UDF_INIT* initid) {}
 
+/* myvector_search_open_udf returns index status and messages that can be
+ * longer than MySQL's 255-byte UDF result buffer (the status grew with the
+ * online skip counts, #205), so it writes to its own MYVECTOR_BUFF_SIZE buffer,
+ * the size of the VARCHAR(1024) the SQL procedures read it into. */
 PLUGIN_EXPORT bool myvector_search_open_udf_init(UDF_INIT* initid,
                                                  UDF_ARGS* args,
                                                  char* message) {
@@ -2479,6 +2483,12 @@ PLUGIN_EXPORT bool myvector_search_open_udf_init(UDF_INIT* initid,
         strcpy(message, "Incorrect arguments to MyVector internal UDF.");
         return true;
     }
+    initid->ptr = static_cast<char*>(malloc(MYVECTOR_BUFF_SIZE));
+    if (!initid->ptr) {
+        strcpy(message, "MyVector: out of memory.");
+        return true;
+    }
+    initid->max_length = MYVECTOR_BUFF_SIZE - 1;
     return false;
 }
 
@@ -2576,7 +2586,9 @@ void myvector_open_index_impl(char* vecid,
         string s = vi->getStatus();
         string idx(vecid);  // db.table.column; skips are counted per db.table
         s += myvector_online_skip_status(idx.substr(0, idx.rfind('.')));
-        strcpy(result, s.c_str());
+        /* result holds MYVECTOR_BUFF_SIZE bytes: the UDF's own buffer, or the
+         * caller's in the component's startup load */
+        snprintf(result, MYVECTOR_BUFF_SIZE, "%s", s.c_str());
     } else if (!strcmp(action, "drop")) {
         vi->dropIndex(myvector_index_dir);
         l.release();
@@ -2647,9 +2659,9 @@ void myvector_open_index_impl(char* vecid,
     return;
 }
 
-PLUGIN_EXPORT char* myvector_search_open_udf(UDF_INIT*,
+PLUGIN_EXPORT char* myvector_search_open_udf(UDF_INIT* initid,
                                              UDF_ARGS* args,
-                                             char* result,
+                                             char* /* MySQL's 255-byte buffer: too small */,
                                              unsigned long* length,
                                              unsigned char* is_null,
                                              unsigned char*) {
@@ -2666,6 +2678,7 @@ PLUGIN_EXPORT char* myvector_search_open_udf(UDF_INIT*,
                    action,
                    extra);
 
+    char* result = initid->ptr;  // MYVECTOR_BUFF_SIZE bytes
     strcpy(result, "SUCCESS");
 
     myvector_open_index_impl(vecid, details, pkidcol, action, extra, result);
@@ -2674,7 +2687,10 @@ PLUGIN_EXPORT char* myvector_search_open_udf(UDF_INIT*,
     return result;
 }
 
-PLUGIN_EXPORT void myvector_search_open_udf_deinit() {}
+PLUGIN_EXPORT void myvector_search_open_udf_deinit(UDF_INIT* initid) {
+    free(initid->ptr);
+    initid->ptr = nullptr;
+}
 
 PLUGIN_EXPORT bool myvector_search_save_udf_init(UDF_INIT* initid,
                                                  UDF_ARGS* args,
