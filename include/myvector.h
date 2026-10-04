@@ -244,4 +244,20 @@ extern long myvector_index_bg_threads;
 extern long myvector_feature_level;
 extern char* myvector_config_file;
 
+/* Row events the binlog listener cannot apply to an online=Y index (#205).
+ * Each (table, reason) is logged once as a warning and counted; the counts
+ * appear in MYVECTOR_INDEX_STATUS as "Online events skipped". */
+enum class OnlineSkipReason {
+    kKeyType,      // key column is not an integer type
+    kRowImage,     // binlog_row_image is not FULL: a column is missing
+    kColumnCount,  // column count unreadable or not matching the table map
+    kColumnType,   // a column type the parser cannot read, or a truncated event
+};
+void myvector_online_skip(const std::string& db,
+                          const std::string& table,
+                          OnlineSkipReason why,
+                          const std::string& detail);
+/* "Online events skipped : N (reason: n, ...)\n" for db.table, or "" if none. */
+std::string myvector_online_skip_status(const std::string& dbtable);
+
 #endif  // PLUGIN_MYVECTOR_H

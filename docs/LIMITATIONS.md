@@ -89,7 +89,9 @@ to the issue tracking it. Items marked *(untested)* are not verified by this pro
 
 ## Data model
 
-- Row keys are `INT` / `BIGINT` only (`KeyTypeInteger`).
+- Row keys are integers (`TINYINT` to `BIGINT`, signed or unsigned; `KeyTypeInteger`)
+  and must not be negative. Online updates (`online=Y`) take the same key types;
+  before #204 they applied only `INT` keys and silently skipped the others.
 - Vectors are 32-bit floats (`FP32`); the default maximum dimension is 4096
   (`myvector_max_vector_dim`, a plugin variable).
 - Distance metrics: L2, Cosine and inner product.

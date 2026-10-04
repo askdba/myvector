@@ -29,6 +29,7 @@
 #include <regex>
 #include <set>
 #include <shared_mutex>
+#include <map>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -2573,6 +2574,8 @@ void myvector_open_index_impl(char* vecid,
                    " (see the server log)");
     } else if (!strcmp(action, "status")) {
         string s = vi->getStatus();
+        string idx(vecid);  // db.table.column; skips are counted per db.table
+        s += myvector_online_skip_status(idx.substr(0, idx.rfind('.')));
         strcpy(result, s.c_str());
     } else if (!strcmp(action, "drop")) {
         vi->dropIndex(myvector_index_dir);
@@ -2877,7 +2880,7 @@ bool isAfter(const string& binlogfile2,
 void myvector_table_op(const string& dbname,
                        const string& tbname,
                        const string& cname,
-                       unsigned int pkid,
+                       KeyTypeInteger pkid,
                        vector<unsigned char>& vec,
                        const string& binlogfile,
                        const size_t& binlogpos,
@@ -2898,8 +2901,8 @@ void myvector_table_op(const string& dbname,
                 isZeroVector(reinterpret_cast<const FP32*>(vec.data()),
                              vi->getDimension())) {
                 MYVEC_LOG_WARN("Skipping zero-magnitude vector for cosine index"
-                               " (pkid=%u), row is in table but not in index.",
-                               pkid);
+                               " (pkid=%zu), row is in table but not in index.",
+                               (size_t)pkid);
             } else {
                 vi->insertVector(vec.data(), vi->getDimension(), pkid);
             }
@@ -2911,6 +2914,66 @@ void myvector_table_op(const string& dbname,
                         binlogposold);
         }
     }
+}
+
+/* Row events skipped by the binlog listener (#205): counted per table and
+ * reason, and each (table, reason) logged once, so a busy table cannot flood
+ * the error log. Counts live in memory and reset when the server restarts. */
+namespace {
+struct OnlineSkipStats {
+    std::map<OnlineSkipReason, unsigned long long> counts;
+};
+std::mutex g_online_skip_mutex;
+std::map<string, OnlineSkipStats> g_online_skips;  // key: db.table
+
+const char* onlineSkipReasonText(OnlineSkipReason why) {
+    switch (why) {
+        case OnlineSkipReason::kKeyType:
+            return "key column is not an integer";
+        case OnlineSkipReason::kRowImage:
+            return "binlog_row_image is not FULL";
+        case OnlineSkipReason::kColumnCount:
+            return "column count does not match the table";
+        case OnlineSkipReason::kColumnType:
+            return "unreadable column type or truncated event";
+    }
+    return "unknown";
+}
+}  // namespace
+
+void myvector_online_skip(const string& db,
+                          const string& table,
+                          OnlineSkipReason why,
+                          const string& detail) {
+    bool first;
+    {
+        std::lock_guard<std::mutex> l(g_online_skip_mutex);
+        unsigned long long& n = g_online_skips[db + "." + table].counts[why];
+        first = (n++ == 0);
+    }
+    if (first)
+        MYVEC_LOG_WARN("Online updates for %s.%s: skipping row events (%s%s%s). "
+                       "Their changes do not reach the vector index; "
+                       "MYVECTOR_INDEX_STATUS counts them.",
+                       db.c_str(), table.c_str(), onlineSkipReasonText(why),
+                       detail.empty() ? "" : ": ", detail.c_str());
+}
+
+string myvector_online_skip_status(const string& dbtable) {
+    std::lock_guard<std::mutex> l(g_online_skip_mutex);
+    auto it = g_online_skips.find(dbtable);
+    if (it == g_online_skips.end())
+        return "";
+    unsigned long long total = 0;
+    std::stringstream reasons;
+    for (const auto& rc : it->second.counts) {
+        reasons << (total ? ", " : "") << onlineSkipReasonText(rc.first) << ": "
+                << rc.second;
+        total += rc.second;
+    }
+    std::stringstream ss;
+    ss << "Online events skipped : " << total << " (" << reasons.str() << ")" << endl;
+    return ss.str();
 }
 
 /* myvector_checkpoint_index() - Incrementally persist a vector index. Check

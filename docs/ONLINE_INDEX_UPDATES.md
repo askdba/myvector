@@ -148,9 +148,12 @@ On plugin startup, MyVector discovers all columns with `online=Y` from the `myve
     !!! note "Requirements"
         Plugin and component builds apply INSERT, UPDATE and DELETE (#188, #194). Releases
         before these fixes applied only INSERTs: on them, rebuild the index after an UPDATE
-        or DELETE. Online updates expect the default `binlog_row_image=FULL` and an `INT` key
-        column; row events of a table with another key type, or with a column type the
-        listener cannot read, are skipped.
+        or DELETE. Online updates expect the default `binlog_row_image=FULL` and an integer
+        key column (`TINYINT` to `BIGINT`, signed or unsigned; before #204 only `INT`).
+        Row events the listener cannot apply (another key type, a row image that is not
+        FULL, a column type it cannot read) are skipped. Each table and reason is logged
+        once as a warning, and `myvector_index_status` counts them, see
+        [Troubleshooting](#troubleshooting).
 
 5. **Checkpointing:** Progress is tracked via binlog file and position so the index can be recovered after restart.
 
@@ -197,6 +200,7 @@ If you omit `online=Y`:
 | Symptom | Possible cause |
 |--------|----------------|
 | Index not updating after DML | `online=Y` or `idcol` missing in column options; binlog format not ROW; `myvector_feature_level=1` |
+| `myvector_index_status` shows `Online events skipped : N (...)`; the server log has `Online updates for db.t: skipping row events (...)` | The listener received row events for the table that it cannot apply, and the reason says why: `binlog_row_image is not FULL` (set it back to `FULL`, the default), `key column is not an integer` (`idcol` must be an integer column), or a column type it cannot read. The skipped changes are not in the index: fix the cause, then rebuild the index with `myvector_index_build`. The count resets when the server restarts |
 | "Binlog thread failed to connect" | Wrong credentials in config file; user lacks REPLICATION CLIENT |
 | Plugin: the index stops updating soon after install; the server log shows `Binlog fetch failed:` with no error text, then `Exiting binlog func` | Plugin builds before the #166 fix: the binlog listener exited when the server was idle for a second. Upgrade the plugin, then rebuild the index with `myvector_index_build` so it includes the rows changed while the listener was stopped |
 | Index not found after restart | Index not saved; ensure `myvector_index_save` or automatic save runs; check `myvector_index_dir` |
