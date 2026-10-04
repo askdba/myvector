@@ -211,7 +211,8 @@ def ann_search(cur, k, ef, f, rank, exclude_id=None):
         for name, sql in f.count_queries().items():
             rows, ms = timed(cur, sql)
             counts[name] = rows[0]["n"]
-            steps.append({"sql": sql + ";", "ms": ms, "note": f"{counts[name]:,} movies"})
+            steps.append({"sql": sql + ";", "ms": ms, "stage": "filter",
+                          "note": f"{counts[name]:,} movies"})
         bound = min(counts.values())
         at_most = "" if len(counts) == 1 else "at most "
         if bound == 0:
@@ -226,7 +227,8 @@ def ann_search(cur, k, ef, f, rank, exclude_id=None):
                      f"     '{predicate.replace(chr(39), chr(39) * 2)}');")
             hits, ms = timed(cur, "CALL mysql.MYVECTOR_ANN_FILTERED(%s, 'id', @q, %s, %s)",
                              (INDEX, nn, predicate))
-            steps.append({"sql": shown, "ms": ms})
+            steps.append({"sql": shown, "ms": ms, "stage": "myvector",
+                          "note": f"{len(hits)} nearest movies that pass the filter"})
             ids = [h["id"] for h in hits if h["id"] != exclude_id]
             if not ids:
                 return [], steps, path
@@ -235,20 +237,27 @@ def ann_search(cur, k, ef, f, rank, exclude_id=None):
                    f"FROM {DB}.movies m WHERE m.id IN ({id_list})\n"
                    f"ORDER BY {order_by(rank)}\nLIMIT {int(k)}")
             rows, ms = timed(cur, sql)
-            steps.append({"sql": sql + ";", "ms": ms})
+            steps.append({"sql": sql + ";", "ms": ms, "stage": "fetch"})
             return rows, steps, path
         path = {"kind": "key_list",
                 "why": f"{at_most}{bound:,} movies match: a narrow filter (at most {KEYLIST_MAX:,}), "
                        "so their keys go to the search, which returns the nearest among them"}
         keys = ",\n         " + f.keys_sql()
 
+    # Two statements, so the page can show the MyVector search's own time: the HNSW
+    # search returns the nearest keys as a JSON array, then SQL fetches and ranks them.
+    sql = f"SET @nn = myvector_ann_set('{INDEX}', 'id', @q, 'nn={nn},ef_search={ef}'{keys})"
+    _, ms = timed(cur, sql)
+    note = f"HNSW search for the {nn} nearest keys"
+    if keys:
+        note += ", among the filter's keys (building the key list is included)"
+    steps.append({"sql": sql + ";", "ms": ms, "stage": "myvector", "note": note})
     sql = (f"SELECT {DETAIL_COLS},\n       {DISTANCE} AS distance\n"
-           f"FROM (SELECT myvector_ann_set('{INDEX}', 'id', @q, 'nn={nn},ef_search={ef}'{keys}) AS js) src,\n"
-           "     JSON_TABLE(src.js, '$[*]' COLUMNS (rank_no FOR ORDINALITY, id INT PATH '$')) nn\n"
+           "FROM JSON_TABLE(@nn, '$[*]' COLUMNS (rank_no FOR ORDINALITY, id INT PATH '$')) nn\n"
            f"JOIN {DB}.movies m ON m.id = nn.id\n{excl}"
            f"ORDER BY {'nn.rank_no' if rank == 'similar' else order_by(rank)}\nLIMIT {int(k)}")
     rows, ms = timed(cur, sql)
-    steps.append({"sql": sql + ";", "ms": ms})
+    steps.append({"sql": sql + ";", "ms": ms, "stage": "fetch"})
     return rows, steps, path
 
 
@@ -275,7 +284,8 @@ def exact_search(cur, k, f, rank, exclude_id=None):
                                      "(the first scan after a start reads it from disk); try again, "
                                      "or raise MYSQL_BUFFER_POOL.")
         raise
-    return rows, [{"sql": sql + ";", "ms": ms}]
+    return rows, [{"sql": sql + ";", "ms": ms, "stage": "scan",
+                   "note": "myvector_distance() on every row, no index"}]
 
 
 def clean(rows):
@@ -331,17 +341,83 @@ def meta():
             "keylist_max": KEYLIST_MAX}
 
 
-@app.get("/api/status")
-def status():
+def parse_options(text):
+    """'MYVECTOR COLUMN type=HNSW,dim=768,...' -> {'type': 'HNSW', 'dim': '768', ...}"""
+    body = re.sub(r"^\s*MYVECTOR\s+COLUMN\s*", "", text or "", flags=re.I)
+    return {k.strip().lower(): v.strip() for k, _, v in
+            (p.partition("=") for p in body.replace("\n", ",").split(",")) if k.strip()}
+
+
+@app.get("/api/index")
+def index_info():
+    """What MyVector reports about the index, for the page's index panel."""
+    out = {"index": INDEX}
     with cursor() as cur:
-        t = time.perf_counter()
-        cur.execute("CALL mysql.myvector_index_status(%s)", (INDEX,))
-        rows = cur.fetchall()
-        while cur.nextset():
-            pass
-        ms = (time.perf_counter() - t) * 1000
-    text = "\n".join(" ".join(str(v) for v in r.values()) for r in rows)
-    return {"sql": f"CALL mysql.myvector_index_status('{INDEX}');", "ms": ms, "text": text}
+        rows, ms = timed(cur, "CALL mysql.myvector_index_status(%s)", (INDEX,))
+        text = "\n".join(str(v) for r in rows for v in r.values()).replace("\\n", "\n")
+        status = {}
+        for line in text.splitlines():
+            key, sep, val = line.partition(" : ") if " : " in line else line.partition(" = ")
+            if sep:
+                status[key.strip()] = val.strip()
+        out["status"] = status
+        out["status_sql"] = f"CALL mysql.myvector_index_status('{INDEX}');"
+        out["status_ms"] = ms
+        cur.execute("SELECT info FROM mysql.myvector_columns WHERE db = %s AND tbl = 'movies' "
+                    "AND col = 'embedding'", (DB,))
+        row = cur.fetchone()
+        out["options"] = parse_options(row and row["info"])
+        cur.execute("SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%'")
+        out["build"] = "component" if cur.fetchone() else "plugin"
+        cur.execute("SELECT VERSION() AS v")
+        out["mysql"] = cur.fetchone()["v"]
+        # The binlog listener follows the binlog like a replica: a Binlog Dump thread.
+        cur.execute("SELECT COUNT(*) AS n FROM information_schema.processlist "
+                    "WHERE command LIKE 'Binlog Dump%'")
+        out["listener"] = cur.fetchone()["n"] > 0
+        cur.execute("SELECT data_length + index_length AS b FROM information_schema.tables "
+                    "WHERE table_schema = %s AND table_name = 'movies'", (DB,))
+        out["table_bytes"] = int(cur.fetchone()["b"] or 0)
+    out["model"] = MODEL
+    out["dim"] = DIM
+    return out
+
+
+SWEEP_EF = (10, 20, 40, 80, 160, 320, 640)
+
+
+@app.get("/api/sweep")
+def sweep(q: str = Query(..., min_length=2, max_length=500), k: int = Query(10, ge=1, le=50)):
+    """Recall and latency of the HNSW search over ef_search, against an exact scan.
+
+    Unfiltered and ranked by distance alone, so recall measures the index itself.
+    """
+    vec = embed(q)
+    with cursor() as cur:
+        set_query_vector(cur, vec)
+        exact_sql = (f"SELECT /*+ MAX_EXECUTION_TIME({EXACT_TIMEOUT_S * 1000}) */ m.id, "
+                     f"{DISTANCE} AS distance FROM {DB}.movies m ORDER BY distance LIMIT {int(k)}")
+        try:
+            rows, exact_ms = timed(cur, exact_sql)
+        except pymysql.err.OperationalError as e:
+            if e.args[0] == 3024:
+                raise HTTPException(504, f"The exact scan took over {EXACT_TIMEOUT_S} s; "
+                                         "the table is not cached yet. Try again.")
+            raise
+        truth = {r["id"] for r in rows}
+        points = []
+        for ef in SWEEP_EF:
+            times, found = [], set()
+            for _ in range(3):
+                res, ms = timed(cur, f"SELECT myvector_ann_set('{INDEX}', 'id', @q, "
+                                     f"'nn={int(k)},ef_search={ef}') AS js")
+                times.append(ms)
+                found = {int(x) for x in re.findall(r"-?\d+", res[0]["js"] or "")}
+            points.append({"ef": ef, "ms": sorted(times)[1],
+                           "recall": round(len(found & truth) / len(truth), 3) if truth else None})
+    return {"k": k, "exact_ms": exact_ms, "points": points,
+            "sql": f"SELECT myvector_ann_set('{INDEX}', 'id', @q, 'nn={k},ef_search=<ef>');",
+            "exact_sql": exact_sql + ";"}
 
 
 @app.get("/api/search")

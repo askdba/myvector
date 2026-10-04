@@ -146,6 +146,25 @@ Every result panel has a "SQL" toggle showing the exact statement that ran, with
 The footer shows the TMDB logo and the notice TMDB's terms require: "This website uses
 TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB."
 
+## Under the hood (added 2026-10-04, after a first look at the app)
+
+Asked for after trying the demo: show that MyVector does the search, how, and how fast.
+
+- A flow: browser → app (embeds) → MySQL + MyVector (`myvector_ann_set` walks the HNSW
+  graph in mysqld) → binlog listener keeps it in sync.
+- The index, live: `MYVECTOR_INDEX_STATUS`, the column options from
+  `mysql.myvector_columns`, component or plugin, whether a Binlog Dump thread (the
+  listener) is connected, and the table size.
+- Per query, a stacked bar of time per step. The HNSW search runs as its own statement
+  (`SET @nn = myvector_ann_set(...)`, then `JSON_TABLE(@nn ...)`) so its time is measured
+  on its own.
+- A speed-vs-recall chart: the query at `ef_search` 10 to 640 (median of 3 runs) against
+  an exact scan, unfiltered and ranked by distance. Series colours come from the
+  validated categorical palette for both themes.
+- Links both ways: the app links to the docs Demo page, and the Demo page has a Movie
+  Finder section with a screenshot of this panel. The screenshot has no posters, so no
+  TMDB content enters the repository.
+
 ## Licensing
 
 - TMDB content is under TMDB's terms (non-commercial use with attribution; no caching

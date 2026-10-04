@@ -15,6 +15,12 @@ search running inside MySQL through MyVector.
 - **Add a movie**: it becomes searchable within about a second, with no index rebuild
   (`online=Y`).
 
+- **Under the hood**: how a search flows through MyVector, the live index details
+  (`MYVECTOR_INDEX_STATUS`, the column options, whether the binlog listener is
+  connected), a bar showing where each query's time went (embedding, filter counts,
+  the MyVector search, the row fetch), and a speed-vs-recall chart that runs the query
+  at `ef_search` 10 to 640 against an exact scan.
+
 Every result panel shows the SQL that ran.
 
 ## Run it
