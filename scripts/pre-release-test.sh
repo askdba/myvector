@@ -707,16 +707,17 @@ run_edge_cases() {
     fail "dimension mismatch: expected 2-row SUCCESS, got: $DIM_BUILD"
   fi
 
-  # myvector_distance with mismatched dims (must not return a numeric distance)
+  # myvector_distance with mismatched dims fails the statement (#171): no numeric
+  # distance over the shorter length.
   DIST_MM=$(mq -N -e "
     SELECT myvector_distance(
       myvector_construct('[1.0,0.0]'),
       myvector_construct('[1.0,0.0,0.0]')
-    );" 2>/dev/null | LC_ALL=C tr -d '[:space:]')
-  if [[ -z "$DIST_MM" || "$DIST_MM" == "NULL" ]]; then
-    pass "myvector_distance(dim_mismatch) returns NULL"
+    );" 2>&1 | grep -v "Using a password" || true)
+  if echo "$DIST_MM" | grep -q "different dimensions"; then
+    pass "myvector_distance(dim_mismatch) fails the statement"
   else
-    fail "myvector_distance(dim_mismatch): expected NULL, got '$DIST_MM'"
+    fail "myvector_distance(dim_mismatch): expected a 'different dimensions' error, got '$DIST_MM'"
   fi
 
   # myvector_is_valid with wrong dimension arg → 0
@@ -727,6 +728,22 @@ run_edge_cases() {
     pass "myvector_is_valid(3d_vec, dim=5) returns 0"
   else
     fail "myvector_is_valid(3d_vec, dim=5): expected 0, got '$ISVALID'"
+  fi
+}
+
+# myvector_distance()/myvector_display(): a NULL input is NULL for that row only;
+# an unknown metric or vectors of different dimensions fail the statement
+# (#170, #171). Runs scripts/test-distance-udf.py in its own container.
+run_distance_udf_checks() {
+  local VER="$1" COMP_DIR="$2"
+  echo "  [Edge] myvector_distance NULL and error handling ($VER)"
+  local OUT RC=0
+  OUT=$(python3 "$REPO_ROOT/scripts/test-distance-udf.py" \
+          --component-dir "$COMP_DIR" --image "mysql:$VER" 2>&1) || RC=$?
+  if [[ "$RC" -eq 0 ]]; then
+    pass "myvector_distance: NULL rows, unknown metric and dimension mismatch handled ($(echo "$OUT" | grep -c '^\[PASS')/7 checks)"
+  else
+    fail "myvector_distance NULL/error handling (#170, #171): $(echo "$OUT" | grep -E '^\[FAIL|Error' | head -3 | tr '\n' ' ')"
   fi
 }
 
@@ -749,6 +766,7 @@ for VER in "${VERSIONS[@]}"; do
   run_rfc004_crash_injection
 
   cleanup_container
+  run_distance_udf_checks "$VER" "$DIR"
   echo ""
 done
 

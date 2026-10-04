@@ -4,6 +4,7 @@
 #include <mysql/components/services/dynamic_privilege.h>
 #include <mysql/components/services/mysql_current_thread_reader.h>
 #include <mysql/components/services/security_context.h>
+#include <mysql/components/services/mysql_runtime_error.h>
 #include <cstring>
 #include "myvector.h"
 #include "myvector_binlog_service.h"
@@ -18,6 +19,7 @@ REQUIRES_SERVICE_PLACEHOLDER(mysql_udf_metadata);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_current_thread_reader);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_thd_security_context);
 REQUIRES_SERVICE_PLACEHOLDER(global_grants_check);
+REQUIRES_SERVICE_PLACEHOLDER(mysql_runtime_error);
 
 SERVICE_TYPE(mysql_udf_metadata)* myvector_component_udf_metadata = nullptr;
 
@@ -120,6 +122,7 @@ REQUIRES_SERVICE(mysql_udf_metadata),
 REQUIRES_SERVICE(mysql_current_thread_reader),
 REQUIRES_SERVICE(mysql_thd_security_context),
 REQUIRES_SERVICE(global_grants_check),
+REQUIRES_SERVICE(mysql_runtime_error),
 END_COMPONENT_REQUIRES();
 
 /* Metadata */
