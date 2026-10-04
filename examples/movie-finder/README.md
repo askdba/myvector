@@ -4,7 +4,7 @@ Search about a million real movies by describing them in your own words, with th
 search running inside MySQL through MyVector.
 
 - **Describe a movie** ("a heist that goes wrong in a snowy town") and get matching films,
-  with posters.
+  with posters. A film's title or poster opens its TMDB page in a new tab.
 - **Filter** by genre, year, rating and language: ordinary SQL, combined with the
   vector search. The page explains which filtered-search path ran and why.
 - **Rank** by similarity alone, or (the default) with a small boost for films many

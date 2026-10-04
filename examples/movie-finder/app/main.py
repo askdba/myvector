@@ -338,7 +338,7 @@ def meta():
         row = cur.fetchone()
     return {"movies": n, "genres": _genres, "languages": _languages,
             "loaded": row and row["v"], "index": INDEX, "model": MODEL,
-            "keylist_max": KEYLIST_MAX}
+            "keylist_max": KEYLIST_MAX, "added_id_base": ADDED_ID_BASE}
 
 
 def parse_options(text):
