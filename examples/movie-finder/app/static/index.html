@@ -66,6 +66,10 @@
   .poster { width: 72px; height: 108px; flex: none; border-radius: 6px; background: var(--chip) center/cover no-repeat;
             display: grid; place-items: center; color: var(--muted); font-size: 11px; text-align: center; }
   .card h3 { margin: 0; font-size: 15px; line-height: 1.3; }
+  .card h3 a, .source a { color: inherit; text-decoration: none; }
+  .card h3 a:hover, .source a:hover { text-decoration: underline; color: var(--accent); }
+  .card h3 a::after, .source a::after { content: " ↗"; font-size: 11px; color: var(--muted); }
+  a.poster { text-decoration: none; }
   .card .meta { color: var(--muted); font-size: 12px; margin: 2px 0 4px; }
   .card p { margin: 0; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .card .row { display: flex; gap: 8px; align-items: center; margin-top: 6px; font-size: 12px; }
@@ -232,13 +236,23 @@ function params() {
   return p;
 }
 
+// A movie's page on TMDB, opened in a new tab. Movies added from this page have ids
+// from added_id_base up and no TMDB page.
+const tmdbUrl = (id) => id < (state.meta?.added_id_base ?? 1e8) ? `https://www.themoviedb.org/movie/${id}` : null;
+const tmdbLink = (id, inner, cls = "") => {
+  const u = tmdbUrl(id);
+  return u ? `<a ${cls ? `class="${cls}" ` : ""}href="${u}" target="_blank" rel="noopener" title="Open on TMDB (new tab)">${inner}</a>` : inner;
+};
+
 function card(m, cls = "") {
   const poster = m.poster_path ? `style="background-image:url('https://image.tmdb.org/t/p/w185${esc(m.poster_path)}')"` : "";
   const meta = [m.year, m.genres, m.vote_count ? `★ ${m.vote_average?.toFixed(1)} (${fmt(m.vote_count)})` : null, m.language].filter(Boolean).join(" · ");
   return `<div class="card ${cls}">
-    <div class="poster" ${poster}>${m.poster_path ? "" : "no poster"}</div>
+    ${tmdbUrl(m.id)
+        ? `<a class="poster" ${poster} href="${tmdbUrl(m.id)}" target="_blank" rel="noopener" title="Open on TMDB (new tab)" aria-label="${esc(m.title)} on TMDB">${m.poster_path ? "" : "no poster"}</a>`
+        : `<div class="poster" ${poster}>${m.poster_path ? "" : "no poster"}</div>`}
     <div style="min-width:0;flex:1">
-      <h3>${esc(m.title)}</h3><div class="meta">${esc(meta)}</div>
+      <h3>${tmdbLink(m.id, esc(m.title))}</h3><div class="meta">${esc(meta)}</div>
       <p>${esc(m.overview)}</p>
       <div class="row"><button data-like="${m.id}">More like this</button>
         ${m.distance != null ? `<span class="dist">distance ${m.distance.toFixed(4)}</span>` : ""}</div>
@@ -283,7 +297,7 @@ function column(title, part, cmpIds, embedMs) {
 function render(out) {
   state.last = out;
   let html = "";
-  if (out.source) html += `<p class="source">Movies like <b>${esc(out.source.title)}</b>${out.source.year ? ` (${out.source.year})` : ""}: its stored vector is the query, with no model call.</p>`;
+  if (out.source) html += `<p class="source">Movies like <b>${tmdbLink(out.source.id, esc(out.source.title))}</b>${out.source.year ? ` (${out.source.year})` : ""}: its stored vector is the query, with no model call.</p>`;
   if (out.ann && out.ann.path && out.ann.path.kind !== "plain") html += `<p class="why"><b>Filter path:</b> ${esc(out.ann.path.why)}.</p>`;
   if (out.mode === "compare") {
     const exactIds = new Set(out.exact.rows.map((r) => r.id));
