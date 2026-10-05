@@ -126,3 +126,29 @@ def test_compare_warns_on_machine_mismatch():
 def test_compare_quiet_for_same_machine_and_legacy_results():
     assert compare.comparability_warnings(_result("host", "a"), _result("host", "a")) == []
     assert compare.comparability_warnings(_result(), _result()) == []
+
+
+def test_sql_string_body_escapes_backslash_then_quote():
+    # Under the default sql_mode a trailing backslash would escape the closing quote.
+    assert bench.sql_string_body("benchroot") == "benchroot"
+    assert bench.sql_string_body("a'b\\") == "a''b\\\\"
+
+
+def test_resolve_basedir_lost_extraction_race(tmp_path, monkeypatch):
+    # Another run finishes extracting while we are still in tar: our rename
+    # fails, we use their tree and leave no staging directory behind.
+    name = bench.mysql_tarball_name("9.7.0")
+    (tmp_path / f"{name}.tar.xz").write_text("")
+    basedir = tmp_path / name
+
+    def fake_tar(cmd, check):
+        (basedir / "bin").mkdir(parents=True)
+        (basedir / "bin" / "mysqld").write_text("theirs")
+        staging = cmd[cmd.index("-C") + 1]
+        os.makedirs(os.path.join(staging, "bin"))
+        open(os.path.join(staging, "bin", "mysqld"), "w").close()
+
+    monkeypatch.setattr(bench.subprocess, "run", fake_tar)
+    assert bench.resolve_mysql_basedir("9.7.0", str(tmp_path)) == str(basedir)
+    assert (basedir / "bin" / "mysqld").read_text() == "theirs"
+    assert not [p for p in tmp_path.iterdir() if ".partial-" in p.name]

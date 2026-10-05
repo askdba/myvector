@@ -301,26 +301,38 @@ def resolve_mysql_basedir(full_version: str, cache_dir: str) -> str:
     cache.mkdir(parents=True, exist_ok=True)
     tarball = cache / f"{name}.tar.xz"
     if not tarball.exists():
-        part = tarball.with_name(tarball.name + ".part")
+        # Unique staging names, so concurrent first runs sharing a cache never
+        # write to or delete each other's partial files.
+        fd, part_name = tempfile.mkstemp(prefix=f"{name}.tar.xz.part-", dir=cache)
+        os.close(fd)
+        part = Path(part_name)
         errors = []
-        for url in mysql_tarball_urls(full_version):
-            print(f"  Downloading {url}")
-            try:
-                with urllib.request.urlopen(url) as r, open(part, "wb") as f:
-                    shutil.copyfileobj(r, f, 1 << 20)
-                part.rename(tarball)
-                break
-            except Exception as e:  # 404 on the first URL is expected for old releases
-                errors.append(f"{url}: {e}")
-        else:
-            raise RuntimeError("MySQL tarball download failed:\n  " + "\n  ".join(errors))
+        try:
+            for url in mysql_tarball_urls(full_version):
+                print(f"  Downloading {url}")
+                try:
+                    with urllib.request.urlopen(url) as r, open(part, "wb") as f:
+                        shutil.copyfileobj(r, f, 1 << 20)
+                    part.replace(tarball)
+                    break
+                except Exception as e:  # 404 on the first URL is expected for old releases
+                    errors.append(f"{url}: {e}")
+            else:
+                raise RuntimeError("MySQL tarball download failed:\n  " + "\n  ".join(errors))
+        finally:
+            part.unlink(missing_ok=True)
     print(f"  Extracting {tarball.name} into {cache}")
-    partial = cache / f"{name}.partial"
-    shutil.rmtree(partial, ignore_errors=True)
-    partial.mkdir()
-    subprocess.run(["tar", "-xJf", str(tarball), "-C", str(partial),
-                    "--strip-components=1"], check=True)
-    partial.rename(basedir)
+    partial = Path(tempfile.mkdtemp(prefix=f"{name}.partial-", dir=cache))
+    try:
+        subprocess.run(["tar", "-xJf", str(tarball), "-C", str(partial),
+                        "--strip-components=1"], check=True)
+        partial.rename(basedir)
+    except OSError:
+        # Another run extracted it first: use theirs.
+        if not (basedir / "bin" / "mysqld").exists():
+            raise
+    finally:
+        shutil.rmtree(partial, ignore_errors=True)
     return str(basedir)
 
 
@@ -339,6 +351,12 @@ def _system_lib_path(soname: str) -> str:
         if len(parts) == 2 and parts[0].split(" ")[0] == soname:
             return parts[1].strip()
     return ""
+
+
+def sql_string_body(text: str) -> str:
+    """Escape text for a single-quoted SQL literal under the default sql_mode,
+    where backslash is an escape character (so it must be doubled first)."""
+    return text.replace("\\", "\\\\").replace("'", "''")
 
 
 def _format_cell(v) -> str:
@@ -443,7 +461,7 @@ class HostServer:
         # reads it when it starts and never connects if it only appears later.
         self.write_myvector_cnf(myvector_cnf(self.root_pw, self.port))
         init_file = self.workdir / "init.sql"
-        pw = self.root_pw.replace("'", "''")
+        pw = sql_string_body(self.root_pw)
         # root@% like the Docker image's MYSQL_ROOT_HOST=%; the server only
         # listens on 127.0.0.1, so this is not reachable from outside.
         init_file.write_text(
