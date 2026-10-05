@@ -38,8 +38,28 @@ MIN_VOTES_FOR_RATING = 20
 # 0.02 still put vote-less near-duplicates first, 0.05 began to override the description.
 POP_WEIGHT = float(os.environ.get("RANK_POP_WEIGHT", "0.04"))
 EXACT_TIMEOUT_S = int(os.environ.get("EXACT_TIMEOUT_S", "90"))
+# For a public instance: READ_ONLY=1 turns off "Add a movie", and EXACT_MAX_CONCURRENT
+# caps how many exact scans (each reads the whole table) run at once; 0 = no cap.
+READ_ONLY = os.environ.get("READ_ONLY", "").lower() in ("1", "true", "yes")
+EXACT_MAX_CONCURRENT = int(os.environ.get("EXACT_MAX_CONCURRENT", "0"))
+_exact_slots = threading.BoundedSemaphore(EXACT_MAX_CONCURRENT) if EXACT_MAX_CONCURRENT > 0 else None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+@contextmanager
+def exact_slot():
+    """Hold one of the EXACT_MAX_CONCURRENT exact-scan slots, or answer 429."""
+    if _exact_slots is None:
+        yield
+        return
+    if not _exact_slots.acquire(blocking=False):
+        raise HTTPException(429, "Too many exact scans are running right now; try again "
+                                 "in a few seconds, or use the HNSW search.")
+    try:
+        yield
+    finally:
+        _exact_slots.release()
 
 _model = None
 _model_lock = threading.Lock()
@@ -276,7 +296,8 @@ def exact_search(cur, k, f, rank, exclude_id=None):
            f"JOIN {DB}.movies m ON m.id = top.id\n"
            f"ORDER BY {order_by(rank).replace('m.vote_count', 'top.vote_count').replace('distance', 'top.distance')}")
     try:
-        rows, ms = timed(cur, sql)
+        with exact_slot():
+            rows, ms = timed(cur, sql)
     except pymysql.err.OperationalError as e:
         if e.args[0] == 3024:   # ER_QUERY_TIMEOUT
             raise HTTPException(504, f"The exact search scans every row and took over "
@@ -338,7 +359,7 @@ def meta():
         row = cur.fetchone()
     return {"movies": n, "genres": _genres, "languages": _languages,
             "loaded": row and row["v"], "index": INDEX, "model": MODEL,
-            "keylist_max": KEYLIST_MAX, "added_id_base": ADDED_ID_BASE}
+            "keylist_max": KEYLIST_MAX, "added_id_base": ADDED_ID_BASE, "read_only": READ_ONLY}
 
 
 def parse_options(text):
@@ -398,7 +419,8 @@ def sweep(q: str = Query(..., min_length=2, max_length=500), k: int = Query(10, 
         exact_sql = (f"SELECT /*+ MAX_EXECUTION_TIME({EXACT_TIMEOUT_S * 1000}) */ m.id, "
                      f"{DISTANCE} AS distance FROM {DB}.movies m ORDER BY distance LIMIT {int(k)}")
         try:
-            rows, exact_ms = timed(cur, exact_sql)
+            with exact_slot():
+                rows, exact_ms = timed(cur, exact_sql)
         except pymysql.err.OperationalError as e:
             if e.args[0] == 3024:
                 raise HTTPException(504, f"The exact scan took over {EXACT_TIMEOUT_S} s; "
@@ -467,6 +489,8 @@ class NewMovie(BaseModel):
 
 @app.post("/api/movies")
 def add_movie(m: NewMovie):
+    if READ_ONLY:
+        raise HTTPException(403, "This demo is read-only: adding movies is turned off.")
     bad = [g for g in m.genres if g not in _genres]
     if bad:
         raise HTTPException(400, f"unknown genre: {bad[0]}")

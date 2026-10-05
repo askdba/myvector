@@ -39,6 +39,16 @@ Running it on a remote server? Forward the port over SSH instead of opening it:
 `ssh -N -L 8080:127.0.0.1:8080 <server>`, then browse to http://localhost:8080 on your
 own machine.
 
+To host it publicly, turn off "Add a movie" and limit the exact scans, which read the
+whole table:
+
+```bash
+READ_ONLY=1 EXACT_TIMEOUT_S=15 EXACT_MAX_CONCURRENT=1 docker compose up -d
+```
+
+Then put a reverse proxy with HTTPS in front of the page (it still listens on
+127.0.0.1 only). MySQL's port stays on localhost.
+
 `MOVIES` picks how many films to load, most-voted first:
 
 | Profile | Movies | Notes |
