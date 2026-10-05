@@ -199,3 +199,17 @@ def test_require_connector_message(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_mysql)
     with pytest.raises(RuntimeError, match="pip install mysql-connector-python"):
         bench.require_connector()
+
+
+def test_host_stop_without_mysqladmin_still_cleans_up(short_tmp):
+    # A basedir without bin/mysqladmin (OSError) must not skip stopping
+    # mysqld or removing the workdir.
+    basedir = short_tmp / "mysql"
+    (basedir / "bin").mkdir(parents=True)
+    srv = bench.HostServer("8.4", str(basedir), str(short_tmp / "runs"), label="plugin")
+    srv.workdir.mkdir(parents=True)
+    srv._proc = bench.subprocess.Popen(["sleep", "300"])
+    proc = srv._proc
+    srv.stop()
+    assert proc.poll() is not None
+    assert not srv.workdir.exists()

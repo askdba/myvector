@@ -529,8 +529,10 @@ class HostServer:
                                 "-uroot", "--connect-timeout=10",
                                 f"--socket={self.socket}", "shutdown"],
                                env=self._env(), capture_output=True, timeout=60)
-            except subprocess.TimeoutExpired:
-                pass  # fall through to the wait/kill below
+            except (OSError, subprocess.TimeoutExpired):
+                # mysqladmin missing or stuck: SIGTERM is mysqld's normal
+                # shutdown signal; the wait/kill and cleanup below still run.
+                self._proc.terminate()
             try:
                 self._proc.wait(timeout=120)
             except subprocess.TimeoutExpired:
