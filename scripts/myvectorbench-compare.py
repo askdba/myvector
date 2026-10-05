@@ -57,6 +57,26 @@ def format_delta(delta: float, mode: str) -> str:
     return f"{sign}{delta:.4f}"
 
 
+def comparability_warnings(baseline: dict, current: dict) -> list:
+    """Reasons the two results may not be comparable (myvector#133).
+
+    Results from before host metadata existed carry neither field; they count
+    as Docker runs on an unknown machine.
+    """
+    warnings = []
+    b_mode = baseline.get('server_mode', 'docker')
+    c_mode = current.get('server_mode', 'docker')
+    if b_mode != c_mode:
+        warnings.append(f"server mode differs (baseline {b_mode}, current {c_mode}); "
+                        "latency/QPS deltas mostly measure the harness, not MyVector")
+    b_key = (baseline.get('host') or {}).get('machine_key')
+    c_key = (current.get('host') or {}).get('machine_key')
+    if b_key and c_key and b_key != c_key:
+        warnings.append(f"machine type differs (baseline {b_key}, current {c_key}); "
+                        "compare against a baseline from the same machine type")
+    return warnings
+
+
 def compare(baseline_path: str, current_path: str, config_path: str) -> int:
     try:
         with open(config_path) as f:
@@ -82,6 +102,9 @@ def compare(baseline_path: str, current_path: str, config_path: str) -> int:
     except FileNotFoundError:
         print(f"ERROR: current result not found at {current_path}", file=sys.stderr)
         return 1
+
+    for warning in comparability_warnings(baseline, current):
+        print(f"WARNING: {warning}", file=sys.stderr)
 
     bm = baseline.get('metrics', {})
     cm = current.get('metrics', {})

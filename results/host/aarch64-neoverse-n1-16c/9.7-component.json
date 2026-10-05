@@ -1,0 +1,83 @@
+{
+  "git_ref": "v1.26.9-47-gf0cafae",
+  "mysql_version": "9.7",
+  "mysqld_version": "9.7.0",
+  "build_path": "component",
+  "server_mode": "host",
+  "connection": "connector",
+  "timestamp": "2026-10-05T13:34:01Z",
+  "runner": "local",
+  "host": {
+    "arch": "aarch64",
+    "cpu_model": "Neoverse-N1",
+    "cpu_cores": 16,
+    "cpu_governor": null,
+    "mem_total_gb": 94.1,
+    "kernel": "7.0.0-1012-oracle",
+    "os": "Ubuntu 24.04.4 LTS",
+    "machine_key": "aarch64-neoverse-n1-16c"
+  },
+  "dataset": "synthetic",
+  "workload_params": {
+    "rows": 10000,
+    "dim": 128,
+    "M": 16,
+    "ef_construction": 200,
+    "knn_queries": 200,
+    "knn_ann_queries": 200,
+    "recall_queries": 50,
+    "holdout_queries": 0,
+    "distance": "L2"
+  },
+  "metrics": {
+    "index_build_time_s": 6.235739231109619,
+    "insert_qps": 7774.243725079368,
+    "knn_qps": 6.78530435826023,
+    "knn_p50_ms": 147.39877899410203,
+    "knn_p99_ms": 149.66504499898292,
+    "knn_ann_qps": 795.4399021317462,
+    "knn_ann_p50_ms": 1.2470235087675974,
+    "knn_ann_p99_ms": 1.365923002595082,
+    "ann_rewrite_active": true,
+    "recall_at_10": 0.98,
+    "ef_search_sweep": [
+      {
+        "ef_search": 10,
+        "recall_at_10": 0.604,
+        "qps": 1442.4031290781336,
+        "p50_ms": 0.6852220103610307,
+        "p99_ms": 0.7938019989524037
+      },
+      {
+        "ef_search": 20,
+        "recall_at_10": 0.7120000000000001,
+        "qps": 1344.8589223872139,
+        "p50_ms": 0.734321991330944,
+        "p99_ms": 0.8218020084314048
+      },
+      {
+        "ef_search": 50,
+        "recall_at_10": 0.88,
+        "qps": 1163.793265791221,
+        "p50_ms": 0.8532029896741733,
+        "p99_ms": 0.9570029797032475
+      },
+      {
+        "ef_search": 100,
+        "recall_at_10": 0.94,
+        "qps": 988.1333696479138,
+        "p50_ms": 1.006783000775613,
+        "p99_ms": 1.0853229905478656
+      },
+      {
+        "ef_search": 200,
+        "recall_at_10": 0.99,
+        "qps": 810.3663754185535,
+        "p50_ms": 1.2291630118852481,
+        "p99_ms": 1.296722999541089
+      }
+    ],
+    "select1_p50_ms": 0.09632100409362465,
+    "select1_p99_ms": 0.1449599803891033
+  }
+}
