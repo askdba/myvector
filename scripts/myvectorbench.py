@@ -311,7 +311,9 @@ def resolve_mysql_basedir(full_version: str, cache_dir: str) -> str:
             for url in mysql_tarball_urls(full_version):
                 print(f"  Downloading {url}")
                 try:
-                    with urllib.request.urlopen(url) as r, open(part, "wb") as f:
+                    # timeout applies per socket operation: a stalled CDN
+                    # fails instead of hanging the run.
+                    with urllib.request.urlopen(url, timeout=60) as r, open(part, "wb") as f:
                         shutil.copyfileobj(r, f, 1 << 20)
                     part.replace(tarball)
                     break
@@ -382,11 +384,15 @@ class HostServer:
     connection = "connector"
 
     def __init__(self, mysql_version: str, basedir: str, workdir_root: str,
-                 root_pw: str = "benchroot", keep_workdir: bool = False):
+                 root_pw: str = "benchroot", keep_workdir: bool = False,
+                 label: str = ""):
         self.version = mysql_version
         self.root_pw = root_pw
         self.basedir = Path(basedir)
-        self.name = f"myvector-bench-{os.getpid()}-{mysql_version.replace('.', '')}"
+        # One workdir per cell (version + build path), so --all-cells
+        # --keep-workdir keeps the 8.4 plugin run when 8.4 component starts.
+        self.name = f"myvector-bench-{os.getpid()}-{mysql_version.replace('.', '')}" + (
+            f"-{label}" if label else "")
         self.workdir = Path(workdir_root) / self.name
         self.datadir = self.workdir / "data"
         self.plugin_path = self.workdir / "plugin"
@@ -449,6 +455,15 @@ class HostServer:
             return "(no error log)"
 
     def start(self):
+        # __exit__ never runs when __enter__ raises, so clean up here.
+        try:
+            self._start()
+        except BaseException:
+            self.stop()
+            raise
+        print(f"  MySQL {self.version} host server ready (pid {self._proc.pid})")
+
+    def _start(self):
         self._prepare_workdir()
         print(f"  MySQL {self.version} host server: basedir={self.basedir}")
         print(f"    workdir={self.workdir} port={self.port}")
@@ -475,17 +490,15 @@ class HostServer:
         ]
         self._proc = subprocess.Popen(args, env=self._env(), stdout=subprocess.DEVNULL,
                                       stderr=subprocess.DEVNULL)
-        try:
-            self._wait_ready()
-        except Exception:
-            self.stop()
-            raise
-        print(f"  MySQL {self.version} host server ready (pid {self._proc.pid})")
+        self._wait_ready()
 
     def _connect(self):
         import mysql.connector
+        # connection_timeout bounds a single connect, so a wedged listener
+        # cannot block past _wait_ready()'s deadline.
         return mysql.connector.connect(unix_socket=self.socket, user="root",
-                                       password=self.root_pw, autocommit=True)
+                                       password=self.root_pw, autocommit=True,
+                                       connection_timeout=10)
 
     def _wait_ready(self):
         deadline = time.time() + 180
@@ -511,9 +524,13 @@ class HostServer:
                 pass
             self._conn = None
         if self._proc is not None and self._proc.poll() is None:
-            subprocess.run([str(self.basedir / "bin" / "mysqladmin"), "--no-defaults",
-                            "-uroot", f"--socket={self.socket}", "shutdown"],
-                           env=self._env(), capture_output=True)
+            try:
+                subprocess.run([str(self.basedir / "bin" / "mysqladmin"), "--no-defaults",
+                                "-uroot", "--connect-timeout=10",
+                                f"--socket={self.socket}", "shutdown"],
+                               env=self._env(), capture_output=True, timeout=60)
+            except subprocess.TimeoutExpired:
+                pass  # fall through to the wait/kill below
             try:
                 self._proc.wait(timeout=120)
             except subprocess.TimeoutExpired:
@@ -1568,6 +1585,16 @@ def _docker_extra_volumes(mysql_version: str, build_path: str, artifact_dir: str
     return extra_volumes
 
 
+def require_connector():
+    """Host mode times queries over mysql.connector; check for it up front,
+    not after a multi-GB tarball download and a server start."""
+    try:
+        import mysql.connector  # noqa: F401
+    except ImportError:
+        raise RuntimeError("--server host needs mysql-connector-python: "
+                           "pip install mysql-connector-python") from None
+
+
 def make_server(server: str, mysql_version: str, build_path: str, artifact_dir: str,
                 image: str = None, host_opts: dict = None):
     """The server to benchmark: a Docker container (default) or a host mysqld."""
@@ -1575,6 +1602,7 @@ def make_server(server: str, mysql_version: str, build_path: str, artifact_dir: 
         return Container(mysql_version, image=image,
                          extra_volumes=_docker_extra_volumes(
                              mysql_version, build_path, artifact_dir, image))
+    require_connector()
     host_opts = host_opts or {}
     basedir = host_opts.get("basedir")
     if not basedir:
@@ -1587,7 +1615,8 @@ def make_server(server: str, mysql_version: str, build_path: str, artifact_dir: 
     workdir_root = host_opts.get("workdir_root") or str(
         Path(host_opts.get("cache_dir") or default_mysql_cache_dir()).parent / "bench")
     return HostServer(mysql_version, basedir, workdir_root,
-                      keep_workdir=host_opts.get("keep_workdir", False))
+                      keep_workdir=host_opts.get("keep_workdir", False),
+                      label=build_path)
 
 
 def connection_latency(server, n: int = 200) -> dict:

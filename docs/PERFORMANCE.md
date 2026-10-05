@@ -76,6 +76,9 @@ overhead ([#124](https://github.com/askdba/myvector/issues/124)).
     nothing else: a `SELECT 1` costs about 0.1 ms. Each result records the machine (CPU, cores, memory,
     kernel) and the round trip as `select1_p50_ms`.
 
+    Host mode needs the MySQL Python driver (`pip install mysql-connector-python`; Docker
+    mode doesn't). The harness checks for it before downloading anything.
+
     One command runs every cell in `myvectorbench.yml` (plugin 8.4, components 8.4, 9.7
     and 26.7). Put the tarball cache and the run directories on a data volume, as they
     take several GB:

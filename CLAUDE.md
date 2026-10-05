@@ -101,7 +101,8 @@ python3 scripts/myvectorbench.py \
     --artifact component-8.4
 
 # Run every cell against a real host mysqld (official tarball, no Docker in the
-# query path; #133). Keep the tarball cache and run dirs on /data:
+# query path; #133). Needs `pip install mysql-connector-python`. Keep the
+# tarball cache and run dirs on /data:
 python3 scripts/myvectorbench.py --server host --all-cells \
     --artifact-root dist --cache-dir /data/mysql/tarballs \
     --workdir-root /data/mysql/bench --output-dir /data/build/bench-host

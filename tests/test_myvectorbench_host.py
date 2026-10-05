@@ -152,3 +152,50 @@ def test_resolve_basedir_lost_extraction_race(tmp_path, monkeypatch):
     assert bench.resolve_mysql_basedir("9.7.0", str(tmp_path)) == str(basedir)
     assert (basedir / "bin" / "mysqld").read_text() == "theirs"
     assert not [p for p in tmp_path.iterdir() if ".partial-" in p.name]
+
+
+@pytest.fixture
+def short_tmp():
+    # pytest's tmp_path is too long for a unix socket path (108 bytes).
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="mvb") as d:
+        yield bench.Path(d)
+
+
+def test_host_workdir_is_per_cell(short_tmp):
+    # --all-cells runs 8.4 plugin and 8.4 component in one process; with
+    # --keep-workdir the second must not reuse (and wipe) the first's dir.
+    plugin = bench.HostServer("8.4", str(short_tmp), str(short_tmp), label="plugin")
+    component = bench.HostServer("8.4", str(short_tmp), str(short_tmp), label="component")
+    assert plugin.workdir != component.workdir
+    assert plugin.workdir.name.endswith("-84-plugin")
+
+
+def test_host_start_failure_removes_workdir(short_tmp):
+    # A failing `mysqld --initialize-insecure` happens inside __enter__, so
+    # __exit__ never runs; start() itself must clean up.
+    basedir = short_tmp / "mysql"
+    (basedir / "bin").mkdir(parents=True)
+    (basedir / "lib" / "plugin").mkdir(parents=True)
+    mysqld = basedir / "bin" / "mysqld"
+    mysqld.write_text("#!/bin/sh\necho init failed >&2\nexit 1\n")
+    mysqld.chmod(0o755)
+    srv = bench.HostServer("8.4", str(basedir), str(short_tmp / "runs"), label="plugin")
+    with pytest.raises(RuntimeError, match="initialize-insecure failed"):
+        with srv:
+            pass
+    assert not srv.workdir.exists()
+
+
+def test_require_connector_message(monkeypatch):
+    import builtins
+    real_import = builtins.__import__
+
+    def no_mysql(name, *args, **kwargs):
+        if name.startswith("mysql"):
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_mysql)
+    with pytest.raises(RuntimeError, match="pip install mysql-connector-python"):
+        bench.require_connector()
