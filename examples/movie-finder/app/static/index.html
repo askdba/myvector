@@ -466,6 +466,7 @@ loadIndex();
 (async () => {
   try {
     const m = state.meta = await api("/api/meta");
+    if (m.read_only) $("add").hidden = true;
     for (const g of m.genres) {
       const b = document.createElement("button"); b.type = "button"; b.textContent = g;
       b.onclick = () => { state.genres.has(g) ? state.genres.delete(g) : state.genres.add(g); b.classList.toggle("on"); rerun(); };
