@@ -23,8 +23,8 @@ accurate. Recall@10 is the share of the true 10 nearest neighbours that the sear
 graph. Higher values find more of the true nearest neighbours (higher recall) but take longer
 per query. Set it per query with `MYVECTOR_IS_ANN(index, key, vector, 'nn=10,ef_search=N')`;
 queries without it use the index's own setting. QPS here is measured through the `mysql`
-client in Docker, one query at a time, so treat it as relative between ef_search values
-([#133](https://github.com/askdba/myvector/issues/133)).
+client in Docker, one query at a time, so treat it as relative between ef_search values.
+For absolute numbers, run the benchmark against a host `mysqld` (below).
 </p>
 
 ## Latest release
@@ -65,3 +65,40 @@ overhead ([#124](https://github.com/askdba/myvector/issues/124)).
     ```
 
     Full write-up, including both runs and their latency: [ef_search Sweep](EF_SEARCH_SWEEP.md).
+
+??? info "Run the benchmark on a host mysqld"
+
+    By default `myvectorbench.py` runs MySQL in Docker. With `--server host` it downloads
+    Oracle's generic Linux tarball for the exact patch release the MyVector build targets
+    (8.4.8, 9.7.0, 26.7.0), starts an isolated `mysqld` from it (its own datadir, port and
+    socket, listening on 127.0.0.1 only) and times each query over one persistent
+    connection, measured on the client, so the numbers include the whole round trip and
+    nothing else: a `SELECT 1` costs about 0.1 ms. Each result records the machine (CPU, cores, memory,
+    kernel) and the round trip as `select1_p50_ms`.
+
+    One command runs every cell in `myvectorbench.yml` (plugin 8.4, components 8.4, 9.7
+    and 26.7). Put the tarball cache and the run directories on a data volume, as they
+    take several GB:
+
+    ```bash
+    python3 scripts/myvectorbench.py --server host --all-cells \
+        --artifact-root dist --cache-dir /data/mysql/tarballs \
+        --workdir-root /data/mysql/bench --output-dir /data/build/bench-host
+    ```
+
+    - **Artifacts:** `dist/component-<ver>/` from `scripts/build-component-<ver>-docker.sh`.
+      For the plugin use `scripts/build-plugin-8.4-docker.sh mysql-8.4.8 dist/plugin-8.4-ol9`,
+      built with the same Oracle Linux 9 toolchain as Oracle's binaries, so it loads into
+      the tarball `mysqld`; `--all-cells` prefers `plugin-8.4-ol9/` over `plugin-8.4/`.
+    - **Results** go under `<output-dir>/<machine-key>/` (for example
+      `aarch64-neoverse-n1-16c/`), so baselines from different machine types stay apart.
+      `myvectorbench-compare.py` warns when the baseline comes from another machine type
+      or from a Docker run.
+    - **Single cell:** `--server host --mysql-version 9.7 --build-path component
+      --artifact-dir dist/component-9.7`. `--mysql-basedir` uses an already extracted or
+      source-built server instead of downloading; `--keep-workdir` keeps the datadir and
+      error log.
+    - **Ubuntu 24.04** only has `libaio.so.1t64`; the harness links it as `libaio.so.1` in
+      the run directory for `mysqld`, without touching the system.
+    - CI still uses Docker; GitHub runners are shared hardware, so their numbers are only
+      relative.

@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`myvectorbench.py --server host`** (issue #133). Benchmarks against a real `mysqld` on
+  the host instead of Docker. It downloads Oracle's generic tarball for the matching patch
+  release once, starts an isolated server from it, and times every query client-side over one
+  persistent connection (`SELECT 1` round trip about 0.1 ms), instead of server-side `NOW(6)`
+  markers around a `mysql` client inside a container. With nothing else in the way,
+  brute-force KNN on the component (about 150 ms p50 at 10k rows) turns out roughly 15x
+  slower than on the plugin (about 10 ms). `--all-cells` runs plugin 8.4 and components 8.4,
+  9.7 and 26.7 in one command. Every result now records the machine (CPU, cores, memory,
+  kernel, a `machine_key`), the server mode and the `SELECT 1` round trip, and
+  `myvectorbench-compare.py` warns when a baseline comes from another machine type or mode.
+  Docker stays the default and CI is unchanged.
 - **Skipped online updates are visible** (issue #205). When the binlog listener has to skip
   a table's row events (`binlog_row_image` not FULL, a key column that is not an integer,
   a column type it cannot read), it now logs one warning per table and reason (again
