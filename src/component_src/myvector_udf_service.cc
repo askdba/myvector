@@ -420,6 +420,15 @@ static bool myvector_construct_do_convert(char* ptr,
                                           unsigned long* retlen_out,
                                           unsigned char* is_null,
                                           unsigned char* error) {
+    /* Bytes appended after the vector below (metadata + checksum on < 9.0,
+     * none on >= 9.0). Reserve exactly these, so capacity checks neither
+     * overflow the buffer nor reject a valid max-size vector per version. */
+#if MYSQL_VERSION_ID < 90000
+    const unsigned long trailer = sizeof(unsigned int) + sizeof(ha_checksum);
+#else
+    const unsigned long trailer = 0;
+#endif
+
     bool skipConvert = false;
     if (!opt || !optlen)
         opt = "i=string,o=float";
@@ -445,6 +454,12 @@ static bool myvector_construct_do_convert(char* ptr,
         if ((ptrlen % sizeof(FP32)) != 0) {
             MYVEC_LOG_ERROR("Input vector is malformed, length not a "
                             "multiple of sizeof(float) %lu.", ptrlen);
+            *error = 1;
+            return false;
+        }
+        if (ptrlen + trailer > retvec_cap) {  // would overflow the result buffer
+            MYVEC_LOG_ERROR("Input vector too large: %lu bytes, max %lu.",
+                            ptrlen, retvec_cap - trailer);
             *error = 1;
             return false;
         }
@@ -481,7 +496,7 @@ static bool myvector_construct_do_convert(char* ptr,
             buff[len] = '\0';
 
             FP32 fval = atof(buff);
-            if (retlen + sizeof(FP32) > retvec_cap - 16) {  /* leave room for metadata+checksum */
+            if (retlen + sizeof(FP32) + trailer > retvec_cap) {  // leave room for the trailer
                 *error = 1;
                 return false;
             }
@@ -503,41 +518,36 @@ static bool myvector_construct_do_convert(char* ptr,
     return true;
 }
 
+/* Header kept at the front of initid->ptr, before the result buffer.
+ * The vector itself is converted once and reused when all arguments are
+ * constant (#214). The result is built on the FIRST row call, not in _init:
+ * _init's args->lengths are declared maximums, not the actual constant
+ * lengths, so converting there could read past a short constant value. */
+struct ConstructCache {
+    size_t len;          // cached result length (valid only when built)
+    bool can_cache;      // all args constant -> safe to build once and reuse
+    bool built;          // the cached result is ready
+};
+
 bool myvector_construct_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
     if (args->arg_count < 1 || args->arg_count > 2) {
         strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
         return true;  // error
     }
     initid->max_length = MYVECTOR_CONSTRUCT_MAX_LEN;
-    /* Buffer layout: [size_t cache_len][MYVECTOR_CONSTRUCT_MAX_LEN bytes].
-     * cache_len > 0 means _init already built the result (all args constant),
-     * so myvector_construct() returns it without re-parsing per row (#214). */
-    size_t alloc_size = sizeof(size_t) + MYVECTOR_CONSTRUCT_MAX_LEN;
+    size_t alloc_size = sizeof(ConstructCache) + MYVECTOR_CONSTRUCT_MAX_LEN;
     if (myvector_alloc_init_ptr(initid, alloc_size, message))
         return true;
-    *(size_t*)initid->ptr = 0;  // 0 = no cache
 
-    /* Cache only when every argument is constant. A non-constant arg is NULL
-     * here; args[1] non-constant means the options vary per row, so we must
-     * not cache (that would ignore them and return wrong results, cf. #79). */
-    bool can_cache = (args->args[0] != nullptr && args->lengths[0] > 0);
+    ConstructCache* hdr = (ConstructCache*)initid->ptr;
+    hdr->len = 0;
+    hdr->built = false;
+    /* A constant arg is non-NULL here; a non-constant one (a column, or per-row
+     * options) is NULL, and must be converted every row -- caching it would
+     * return the first row's value for all rows (cf. #79). */
+    hdr->can_cache = (args->args[0] != nullptr && args->lengths[0] > 0);
     if (args->arg_count >= 2 && args->args[1] == nullptr)
-        can_cache = false;
-    if (can_cache) {
-        const char* opt =
-            (args->arg_count >= 2 && args->args[1]) ? args->args[1] : nullptr;
-        unsigned long optlen =
-            (args->arg_count >= 2 && args->args[1]) ? args->lengths[1] : 0;
-        unsigned char is_null = 0, err = 0;
-        unsigned long result_len = 0;
-        if (myvector_construct_do_convert(args->args[0], args->lengths[0],
-                                          opt, optlen,
-                                          initid->ptr + sizeof(size_t),
-                                          MYVECTOR_CONSTRUCT_MAX_LEN,
-                                          &result_len, &is_null, &err) &&
-            !err)
-            *(size_t*)initid->ptr = result_len;
-    }
+        hdr->can_cache = false;
     return false;
 }
 
@@ -547,11 +557,11 @@ char* myvector_construct(UDF_INIT* initid,
                                        unsigned long* length,
                                        unsigned char* is_null,
                                        unsigned char* error) {
-    char* retvec = initid->ptr + sizeof(size_t);
+    ConstructCache* hdr = (ConstructCache*)initid->ptr;
+    char* retvec = initid->ptr + sizeof(ConstructCache);
 
-    size_t cache_len = *(size_t*)initid->ptr;
-    if (cache_len > 0) {  // built once in _init (all args constant, #214)
-        *length = cache_len;
+    if (hdr->built) {  // all args constant: built on the first row, reused (#214)
+        *length = hdr->len;
         return retvec;
     }
 
@@ -572,6 +582,10 @@ char* myvector_construct(UDF_INIT* initid,
         return retvec;
 
     *length = retlen;
+    if (hdr->can_cache && !*error && !*is_null) {  // reuse for the remaining rows
+        hdr->len = retlen;
+        hdr->built = true;
+    }
     return retvec;
 }
 
