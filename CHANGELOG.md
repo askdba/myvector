@@ -108,6 +108,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **Component: `myvector_construct()` with a constant argument is built once, not per row**
+  (issue #214). The component re-parsed a constant literal on every row, so a brute-force
+  `ORDER BY myvector_distance(vec, myvector_construct('[...]'), 'L2')` over 10k rows took
+  ~157 ms versus ~10 ms on the plugin. The component's `myvector_construct_init` now caches
+  the converted vector when every argument is constant (the plugin's #79 behaviour), so KNN
+  is ~15x faster and matches the plugin. Per-row inputs (a column, or per-row options) are
+  still converted each row.
 - **Online updates for `BIGINT` keys** (issue #204). The binlog listener read only `INT`
   keys: for a table keyed by `BIGINT` (or `SMALLINT`, `MEDIUMINT`, `TINYINT`), every
   INSERT, UPDATE and DELETE was skipped and the index never changed, with nothing logged.
