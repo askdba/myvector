@@ -405,105 +405,91 @@ char* myvector_construct_bv(const std::string& srctype,
 }
 
 // UDF: myvector_construct
-bool myvector_construct_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
-    if (args->arg_count < 1 || args->arg_count > 2) {
-        strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
-        return true;  // error
-    }
-    initid->max_length = MYVECTOR_CONSTRUCT_MAX_LEN;
-    return myvector_alloc_init_ptr(initid, MYVECTOR_CONSTRUCT_MAX_LEN, message);
-}
-
-char* myvector_construct(UDF_INIT* initid,
-                                       UDF_ARGS* args,
-                                       char* result,
-                                       unsigned long* length,
-                                       unsigned char* is_null,
-                                       unsigned char* error) {
-    char* ptr = (char*)args->args[0];
-    if (!ptr) {
-        *is_null = 1;
-        return (char*)initid->ptr;
-    }
-    const char* opt = nullptr;
-    if (args->arg_count == 2)
-        opt = (char*)args->args[1];
-
-    char* start = nullptr;
-    char endch;
-    char* retvec = (char*)initid->ptr;
-    int retlen = 0;
+//
+// Convert one input (string / float / binary) into the stored "myvector"
+// representation. Writes into retvec (capacity retvec_cap) and sets *retlen_out.
+// Returns true on success. Factored out of myvector_construct() so the same
+// conversion can run once in _init when every argument is constant (#214) and
+// per row otherwise -- mirrors the plugin's myvector_construct_do_convert.
+static bool myvector_construct_do_convert(char* ptr,
+                                          unsigned long ptrlen,
+                                          const char* opt,
+                                          unsigned long optlen,
+                                          char* retvec,
+                                          unsigned long retvec_cap,
+                                          unsigned long* retlen_out,
+                                          unsigned char* is_null,
+                                          unsigned char* error) {
     bool skipConvert = false;
-
-    if (!opt || !args->lengths[1])
-        opt = "i=string,o=float";  // i=string,o=float
+    if (!opt || !optlen)
+        opt = "i=string,o=float";
     else {
-        MyVectorOptions vo(opt);
+        MyVectorOptions vo(string(opt, optlen));
 
         if (vo.getOption("i") == "float" && vo.getOption("o") == "float")
             skipConvert = true;
 
-        if (vo.getOption("o") == "bv")
-            return myvector_construct_bv(vo.getOption("i"),
-                                         ptr,
-                                         (char*)initid->ptr,
-                                         args->lengths[0],
-                                         initid->max_length,
-                                         length,
-                                         is_null,
-                                         error);
+        if (vo.getOption("o") == "bv") {
+            unsigned long bvlen = 0;
+            char* r = myvector_construct_bv(vo.getOption("i"), ptr, retvec, ptrlen,
+                                            retvec_cap, &bvlen, is_null, error);
+            if (!r || *error)
+                return false;
+            *retlen_out = bvlen;
+            return true;
+        }
     }  // else opt
 
+    int retlen = 0;
     if (skipConvert) {
-        if ((args->lengths[0] % sizeof(FP32)) != 0)
-            SET_UDF_ERROR_AND_RETURN(
-                "Input vector is malformed, length not a "
-                "multiple of sizeof(float) %lu.",
-                args->lengths[0]);
-        memcpy(retvec, ptr, args->lengths[0]);
-        retlen = args->lengths[0];
-        goto addChecksum;
-    }
-
-    if ((start = strchr(ptr, '[')))
-        endch = ']';
-    else if ((start = strchr(ptr, '{')))
-        endch = '}';
-    else if ((start = strchr(ptr, '(')))
-        endch = ')';
-    else {
-        start = ptr;
-        endch = '\0';
-    }
-    if (endch)
-        start++;
-
-    ptr = start;
-
-    while (*ptr && *ptr != endch) {
-        while (*ptr && (*ptr == ' ' || *ptr == ','))
-            ptr++;
-        char* p1 = ptr;
-        while (*ptr && *ptr != ' ' && *ptr != ',' && *ptr != endch)
-            ptr++;
-        char buff[64];
-        size_t len = (size_t)(ptr - p1);
-        if (len >= sizeof(buff))
-            len = sizeof(buff) - 1;
-        memcpy(buff, p1, len);
-        buff[len] = '\0';
-
-        FP32 fval = atof(buff);
-        if (retlen + sizeof(FP32) > MYVECTOR_CONSTRUCT_MAX_LEN - 16) {  /* leave room for metadata+checksum */
+        if ((ptrlen % sizeof(FP32)) != 0) {
+            MYVEC_LOG_ERROR("Input vector is malformed, length not a "
+                            "multiple of sizeof(float) %lu.", ptrlen);
             *error = 1;
-            return retvec;
+            return false;
         }
-        memcpy(&retvec[retlen], &fval, sizeof(FP32));
+        memcpy(retvec, ptr, ptrlen);
+        retlen = ptrlen;
+    } else {
+        char* start = nullptr;
+        char endch;
+        if ((start = strchr(ptr, '[')))
+            endch = ']';
+        else if ((start = strchr(ptr, '{')))
+            endch = '}';
+        else if ((start = strchr(ptr, '(')))
+            endch = ')';
+        else {
+            start = ptr;
+            endch = '\0';
+        }
+        if (endch)
+            start++;
 
-        retlen += sizeof(FP32);
-    }  // while
+        char* p = start;
+        while (*p && *p != endch) {
+            while (*p && (*p == ' ' || *p == ','))
+                p++;
+            char* p1 = p;
+            while (*p && *p != ' ' && *p != ',' && *p != endch)
+                p++;
+            char buff[64];
+            size_t len = (size_t)(p - p1);
+            if (len >= sizeof(buff))
+                len = sizeof(buff) - 1;
+            memcpy(buff, p1, len);
+            buff[len] = '\0';
 
-addChecksum:
+            FP32 fval = atof(buff);
+            if (retlen + sizeof(FP32) > retvec_cap - 16) {  /* leave room for metadata+checksum */
+                *error = 1;
+                return false;
+            }
+            memcpy(&retvec[retlen], &fval, sizeof(FP32));
+            retlen += sizeof(FP32);
+        }  // while
+    }
+
 #if MYSQL_VERSION_ID < 90000
     unsigned int metadata = MYVECTOR_V1_FP32_METADATA;
     memcpy(&retvec[retlen], &metadata, sizeof(metadata));
@@ -513,8 +499,79 @@ addChecksum:
     memcpy(&retvec[retlen], &cksum, sizeof(cksum));
     retlen += sizeof(cksum);
 #endif
-    *length = retlen;
+    *retlen_out = retlen;
+    return true;
+}
 
+bool myvector_construct_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
+    if (args->arg_count < 1 || args->arg_count > 2) {
+        strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
+        return true;  // error
+    }
+    initid->max_length = MYVECTOR_CONSTRUCT_MAX_LEN;
+    /* Buffer layout: [size_t cache_len][MYVECTOR_CONSTRUCT_MAX_LEN bytes].
+     * cache_len > 0 means _init already built the result (all args constant),
+     * so myvector_construct() returns it without re-parsing per row (#214). */
+    size_t alloc_size = sizeof(size_t) + MYVECTOR_CONSTRUCT_MAX_LEN;
+    if (myvector_alloc_init_ptr(initid, alloc_size, message))
+        return true;
+    *(size_t*)initid->ptr = 0;  // 0 = no cache
+
+    /* Cache only when every argument is constant. A non-constant arg is NULL
+     * here; args[1] non-constant means the options vary per row, so we must
+     * not cache (that would ignore them and return wrong results, cf. #79). */
+    bool can_cache = (args->args[0] != nullptr && args->lengths[0] > 0);
+    if (args->arg_count >= 2 && args->args[1] == nullptr)
+        can_cache = false;
+    if (can_cache) {
+        const char* opt =
+            (args->arg_count >= 2 && args->args[1]) ? args->args[1] : nullptr;
+        unsigned long optlen =
+            (args->arg_count >= 2 && args->args[1]) ? args->lengths[1] : 0;
+        unsigned char is_null = 0, err = 0;
+        unsigned long result_len = 0;
+        if (myvector_construct_do_convert(args->args[0], args->lengths[0],
+                                          opt, optlen,
+                                          initid->ptr + sizeof(size_t),
+                                          MYVECTOR_CONSTRUCT_MAX_LEN,
+                                          &result_len, &is_null, &err) &&
+            !err)
+            *(size_t*)initid->ptr = result_len;
+    }
+    return false;
+}
+
+char* myvector_construct(UDF_INIT* initid,
+                                       UDF_ARGS* args,
+                                       char* result,
+                                       unsigned long* length,
+                                       unsigned char* is_null,
+                                       unsigned char* error) {
+    char* retvec = initid->ptr + sizeof(size_t);
+
+    size_t cache_len = *(size_t*)initid->ptr;
+    if (cache_len > 0) {  // built once in _init (all args constant, #214)
+        *length = cache_len;
+        return retvec;
+    }
+
+    char* ptr = (char*)args->args[0];
+    if (!ptr) {
+        *is_null = 1;
+        return retvec;
+    }
+    const char* opt =
+        (args->arg_count == 2 && args->args[1]) ? (char*)args->args[1] : nullptr;
+    unsigned long optlen =
+        (args->arg_count == 2 && args->args[1]) ? args->lengths[1] : 0;
+
+    unsigned long retlen = 0;
+    if (!myvector_construct_do_convert(ptr, args->lengths[0], opt, optlen,
+                                       retvec, MYVECTOR_CONSTRUCT_MAX_LEN,
+                                       &retlen, is_null, error))
+        return retvec;
+
+    *length = retlen;
     return retvec;
 }
 
