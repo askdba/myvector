@@ -143,6 +143,7 @@ CREATE TABLE myvector.index_meta (
   lnk_chunk_nodes INT UNSIGNED      NOT NULL,   -- nodes per links chunk
   ckpt_id         VARCHAR(512)      NOT NULL,   -- "Checkpoint:binlog:<file>:<pos>"
   ckpt_gtids      MEDIUMTEXT        NULL,       -- GTID set at the checkpoint, see 4.8
+  writer_uuid     CHAR(36)          NOT NULL,   -- server_uuid of the checkpoint writer, see 4.8
   ckpt_time       TIMESTAMP(6)      NOT NULL,
   node_count      BIGINT UNSIGNED   NOT NULL,
   PRIMARY KEY (index_name)
@@ -238,7 +239,7 @@ START TRANSACTION;
   -- last transaction only:
   UPDATE myvector.index_meta
      SET ckpt_seq = ?, header = ?, ckpt_id = ?, ckpt_gtids = ?,
-         ckpt_time = NOW(6), node_count = ?
+         writer_uuid = @@server_uuid, ckpt_time = NOW(6), node_count = ?
    WHERE index_name = ? AND generation = ?;
 COMMIT;
 ```
@@ -381,10 +382,51 @@ read-only servers work: replicas never write index rows, so `read_only` and
 
 **Roles.** For `storage=innodb` indexes, a server is:
 
-- a **writer** while `read_only = OFF`: it applies table row events to the index
-  (as today) and writes checkpoints;
-- a **follower** while `read_only = ON`: it ignores table row events for these
-  indexes and follows the replicated index rows instead.
+- a **writer**: it applies table row events to the index (as today) and writes
+  checkpoints;
+- a **follower**: it ignores table row events for these indexes and follows the
+  replicated index rows instead.
+
+There must be exactly one writer per topology. Two writers would both write
+checkpoints into rows that also replicate between them, and the graphs would
+collide. `read_only` alone is not a safe signal: a replica with `read_only` left
+off by mistake is common. So the role comes from a setting, and `auto` checks
+two signals:
+
+```text
+myvector_index_role = auto | writer | follower      (default: auto)
+```
+
+- **`auto`:** a **follower** if `read_only = ON`, **or** if any replication
+  applier channel is running (`performance_schema.replication_applier_status`,
+  `SERVICE_STATE = 'ON'`). The Group Replication channels
+  (`group_replication_applier`, `group_replication_recovery`) don't count, because
+  they also run on a GR primary; there the GR role decides, through
+  `super_read_only`. Otherwise a **writer**. If `read_only = OFF` but a channel is
+  running, the server becomes a follower and logs a warning saying the replica
+  should be read-only.
+- **`writer` / `follower`:** forced, for topologies `auto` can't read (for example
+  replication from a source MyVector doesn't know about). A forced `writer` with a
+  running channel still logs a warning.
+
+**When the role is checked:** when the listener starts, on every heartbeat (each
+second, §4.11), and again just before each checkpoint, so a checkpoint never
+starts on a server that has just become a follower.
+
+**Fencing.** `index_meta.writer_uuid` holds the `server_uuid` of the server that
+wrote the last checkpoint. A writer that sees a *replicated* change to `index_meta`
+(its GTID names another server's UUID; GTID mode is required, see Promotion) knows a
+second writer exists. It stops
+writing checkpoints for that index, becomes a follower, and logs an error naming
+both servers. This catches a misconfiguration that the signals above miss.
+
+**Role changes:**
+
+- **follower → writer** (promotion): as described under **Promotion** below. The
+  first checkpoint sets `writer_uuid` to this server.
+- **writer → follower:** drop the in-memory changes made since the last
+  checkpoint (the primary's graph is the authority) and reload from the tables
+  (§4.7), then follow as usual.
 
 **Writer side.**
 
@@ -449,7 +491,7 @@ The real fix is **catch-up in memory** (Phase 2c), built on the GTID start below
 
 With catch-up, the interval only affects backup freshness and crash replay.
 
-**Promotion.** When a follower becomes the writer (`read_only` turns off), its
+**Promotion.** When a follower becomes the writer (by the role rules above), its
 graph is the old primary's last checkpoint. It must apply every table change after
 that point, but `ckpt_id` holds the old primary's binlog file and position, which
 mean nothing on the new primary.
@@ -618,15 +660,24 @@ guards against future layout changes.
    follower is reading (throttle the follower); the follower never loads a mix of
    two checkpoints (compare with the primary's graph at the same `ckpt_seq`).
 9. **GTID mode off:** follower mode refuses to start, with a clear error.
-10. **Checkpoint timer:** with no binlog rotation, a checkpoint happens every
+10. **Roles:**
+   - A replica with `read_only = OFF` and a running channel becomes a follower and
+     logs the warning; it writes no index rows.
+   - On a Group Replication cluster, only the primary writes; after a primary
+     switch the new primary takes over and the old one follows.
+   - Two servers forced to `writer` with replication between them: the first
+     replicated `index_meta` change makes one stop writing and log the error.
+   - Writer → follower discards uncheckpointed changes and matches the primary's
+     graph.
+11. **Checkpoint timer:** with no binlog rotation, a checkpoint happens every
    `myvector_checkpoint_interval`; with `0`, only at rotation. Idle indexes are
    not rewritten.
-11. **Backup:** xtrabackup or clone, restore, start; check that the index loads and
+12. **Backup:** xtrabackup or clone, restore, start; check that the index loads and
    catches up, and that the missing-binlog case is reported. Repeat with a backup
    taken on a replica.
-12. **Write volume:** count bytes written per checkpoint (file vs innodb) for
+13. **Write volume:** count bytes written per checkpoint (file vs innodb) for
    1k, 10k and 100k inserts per rotation, to confirm §4.3.
-13. **Performance:** `myvectorbench.py` and `bench-concurrent-stress.py`, file vs
+14. **Performance:** `myvectorbench.py` and `bench-concurrent-stress.py`, file vs
    innodb: full build time, checkpoint time under write load, reload time and
    QPS/recall (QPS and recall should be unchanged). The Movie Finder dataset
    (~1M vectors) is a realistic size.
@@ -662,6 +713,7 @@ guards against future layout changes.
 | D7 | Replica freshness | Keep 300 s and document the lag; catch-up in memory follows in Phase 2c (§4.8) |
 | D8 | Promotion | Follower mode requires GTID mode; promotion ships with follower mode; GTID for the file backend is a follow-up (§4.8) |
 | D9 | Large checkpoints | Versioned chunks, transactions ≤ 64 MB, `index_meta` committed last, snapshot reads (§4.4) |
+| D10 | Writer role | `myvector_index_role = auto`: follower if `read_only` or a non-GR replication channel is running; `writer_uuid` fencing catches a second writer (§4.8) |
 
 ## 10. Open Questions
 
