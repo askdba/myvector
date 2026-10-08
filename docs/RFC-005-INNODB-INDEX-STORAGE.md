@@ -107,9 +107,14 @@ Storage is an **option of each index**, in the existing options string
 type=HNSW,dim=768,size=1000000,M=16,ef=100,storage=innodb
 ```
 
-`storage=file` (the default) keeps today's behavior exactly. The choice is recorded
-in `index_meta` (§4.2) and used by every later checkpoint, save, load and drop of
-that index. A global setting was considered and rejected: changing it while an
+`storage=file` (the default) keeps today's behavior exactly.
+
+**Where the choice is stored:** in the options string itself, which already lives
+in the vector column's comment (`MYVECTOR(...)`) and is read back through the
+`mysql.myvector_columns` view, like `type`, `dim` and `M`. That comment is the
+single source of truth used by every checkpoint, save, load and drop of the index.
+`index_meta` holds the stored data for `storage=innodb` indexes; it does not
+decide the backend. Migration (§4.10) changes the comment. A global setting was considered and rejected: changing it while an
 index is in use would leave unclear where its next checkpoint goes.
 
 A system variable `myvector_index_storage_default = file | innodb` sets the value
@@ -223,7 +228,7 @@ A checkpoint with sequence number `s = ckpt_seq + 1` writes every dirty chunk as
 3. In the last transaction, update `index_meta`:
 
 ```sql
-SET SESSION binlog_row_image = 'MINIMAL';   -- see 4.8: don't log before-images
+SET SESSION binlog_row_image = 'MINIMAL';   -- see 4.8: deletes log only the key
 START TRANSACTION;
   -- for each dirty chunk in this batch:
   INSERT INTO myvector.index_vectors
@@ -304,22 +309,40 @@ is dirty: all chunks get version `s` (§4.4). No separate mechanism is needed.
 A **build** (`build`) replaces the graph: internal node ids are reassigned, and the
 chunk count and chunk sizes can change. It writes a **new generation**:
 
-1. `g = live generation + 1`.
-2. Write all vector and links chunks for `g` (version 1) in bounded transactions.
-3. In one transaction, update `index_meta` to point at `g`, with `ckpt_seq = 1`
-   and the new header and `ckpt_id`.
-4. Delete generation `g-1` in batches, in the background.
+1. `g = live generation + 1`, or `1` if the index has no `index_meta` row yet
+   (a first build, or a migration from `file`).
+2. Delete any rows with `generation ≥ g` for this index. They can only be left by
+   an earlier build that stopped before step 4, including one in the same server
+   process; without this, its rows would collide with the new ones.
+3. Write all vector and links chunks for `g` (version 1) in bounded transactions.
+4. Publish `g` in one transaction, as an upsert so a first build creates the row:
 
-Readers only ever see the generation that `index_meta` points to. A crash during
-step 2 leaves orphan rows for `g`, which are removed on the next load.
+```sql
+INSERT INTO myvector.index_meta
+       (index_name, format_version, generation, ckpt_seq, header, ...)
+VALUES (?, ?, ?, 1, ?, ...)
+ON DUPLICATE KEY UPDATE generation = VALUES(generation), ckpt_seq = 1,
+       header = VALUES(header), ...;
+```
+
+   The build checks that the statement affected the row (1 = inserted,
+   2 = updated) and fails otherwise.
+5. Delete generation `g-1` in batches, in the background.
+
+Readers only ever see the generation that `index_meta` points to. Checkpoints also
+check that their `index_meta` update (§4.4) affected exactly one row; zero means the
+generation changed under them, and the checkpoint fails and is retried.
 
 ### 4.7 Load and startup
 
 **Steps:**
 
-1. `START TRANSACTION WITH CONSISTENT SNAPSHOT`. Every read below is in this one
-   snapshot, so a checkpoint or replication applier running at the same time can't
-   give a mix of two checkpoints.
+1. `START TRANSACTION WITH CONSISTENT SNAPSHOT` at `REPEATABLE READ`. Every read
+   below is in this one snapshot, so a checkpoint or replication applier running at
+   the same time can't give a mix of two checkpoints. The storage connection sets
+   `SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ` when it connects:
+   under `READ COMMITTED`, `WITH CONSISTENT SNAPSHOT` has no effect and each read
+   gets a fresh snapshot, whatever the server's default isolation level is.
 2. Read `index_meta`. Check `format_version` and that the header matches the
    index definition (dimension, metric, M).
 3. Scan `index_vectors` and `index_links` for `(index_name, generation)` in
@@ -368,15 +391,22 @@ read-only servers work: replicas never write index rows, so `read_only` and
 - Checkpoint and full-save writes are logged normally, so they replicate.
 - The writer's listener must ignore events on the `myvector` schema, or it would
   read its own checkpoints back.
-- The storage session uses `binlog_row_image = MINIMAL`. With the default
-  `FULL`, every chunk update would also log the old 4 MB or 256 KB row.
+- The storage session uses `binlog_row_image = MINIMAL`. Checkpoints insert new
+  chunk versions, which log the new row under any setting. But they also
+  **delete** old versions (§4.4 step 4), leftovers (step 1) and old generations
+  (§4.6), and with the default `FULL` every row-based delete logs the whole deleted
+  row: the old 4 MB or 256 KB blob, again, for every chunk rewritten. `MINIMAL`
+  logs only the primary key. If granting `SESSION_VARIABLES_ADMIN` is not
+  acceptable, setting `binlog_row_image = MINIMAL` globally has the same effect,
+  for all tables.
 
 **Follower side.** The follower's listener already reads the follower's own binlog,
 which contains the replicated transactions (`log_replica_updates`, `ON` by default
 since 8.0). It ignores the chunk transactions and acts only on a change to an
 `index_meta` row, which marks a committed checkpoint:
 
-1. `START TRANSACTION WITH CONSISTENT SNAPSHOT`, then read `index_meta`. The
+1. `START TRANSACTION WITH CONSISTENT SNAPSHOT` (at `REPEATABLE READ`, §4.7),
+   then read `index_meta`. The
    replication applier may already be past the checkpoint that triggered this, so
    the follower uses whatever checkpoint the snapshot shows; it may skip some.
 2. If `generation` changed (a build, §4.6), reload the whole index (§4.7).
@@ -473,15 +503,19 @@ Rules:
 
 ### 4.10 Migration and drop
 
-- **file → innodb:** load the index from its files, change its options to
-  `storage=innodb`, then save it; the save is a full save (§4.6) and records the
-  new backend in `index_meta`. The files are left in place until the user removes
-  them. The internal `save` action exists today but has no user-facing procedure;
+- **file → innodb:** load the index from its files, change `storage=innodb` in
+  the column comment, then save it. With no `index_meta` row yet, this save
+  publishes generation 1 as in §4.6. If the server stops between the comment
+  change and the save, the next load finds `storage=innodb` but no `index_meta`
+  row, loads the files instead and saves again. The files are left in place until
+  the user removes them. The internal `save` action exists today but has no user-facing procedure;
   Phase 2 adds one (`MYVECTOR_INDEX_SAVE`, or a `migrate` option on
   `MYVECTOR_INDEX_LOAD`).
 - **innodb → file:** the same in reverse.
 - **Drop** (`MYVECTOR_INDEX_DROP`): delete the `index_meta` row in one transaction,
-  so the index is gone at once, then delete its chunks in batches.
+  so the index is gone at once, then delete its chunks in batches. Drop also
+  removes the index files if any exist, whatever `storage` says, so a drop during a
+  migration leaves nothing behind.
 
 ### 4.11 Checkpoint timer
 
@@ -570,7 +604,7 @@ guards against future layout changes.
    - A full save (new generation) makes the replica reload.
    - The primary's listener ignores its own `myvector` writes.
    - With `binlog_row_image = MINIMAL`, binlog bytes per checkpoint are close to
-     the chunk bytes written (no before-images).
+     the chunk bytes inserted: the deletes of old versions add only keys.
 6. **Promotion:** stop the primary, promote the replica, insert rows; the new
    writer applies every change after the last checkpoint's GTID set, and none
    twice.
