@@ -53,17 +53,26 @@ class BenchContainer(mb.Container):
 
     def start(self):
         self._d("rm", "-fv", self.name)
+        # Confirm the container is actually gone before touching its datadir —
+        # never wipe the data of a container that failed to remove / is still live.
+        chk = self._d("ps", "-aq", "-f", f"name=^{self.name}$")
+        if (chk.stdout or "").strip():
+            raise RuntimeError(f"container {self.name} still present after 'docker rm'; "
+                               f"refusing to wipe {self._datadir}")
         if self._datadir:
             # Fresh datadir so the base image initialises cleanly. The files are
             # owned by the container's mysql uid, so wipe them as root via a
             # throwaway container (a plain host rm as ubuntu silently fails and
-            # leaves the OLD datadir in place).
-            subprocess.run(self._sudo + ["bash", "-c",
-                           f"mkdir -p {self._datadir}"], check=False)
+            # leaves the OLD datadir in place). Pass the path as an argument,
+            # never interpolated into a shell string.
+            subprocess.run(self._sudo + ["mkdir", "-p", self._datadir], check=True)
             w = self._d("run", "--rm", "-v", f"{self._datadir}:/d", "alpine",
                         "sh", "-c", "rm -rf /d/* /d/.[!.]* /d/..?* 2>/dev/null; ls -A /d | wc -l")
-            left = (w.stdout or "").strip().splitlines()[-1] if w.stdout else "?"
-            print(f"  datadir wiped ({self._datadir}); entries left: {left}", flush=True)
+            left = (w.stdout or "").strip().splitlines()[-1] if w.stdout else ""
+            if left != "0":
+                raise RuntimeError(f"datadir {self._datadir} not empty after wipe "
+                                   f"(entries left: {left!r}); aborting to avoid booting on stale data")
+            print(f"  datadir wiped clean ({self._datadir})", flush=True)
         cmd = ["run", "-d", "--name", self.name, "--restart", "unless-stopped",
                "-e", f"MYSQL_ROOT_PASSWORD={self.root_pw}",
                "-e", "MYSQL_DATABASE=bench",
@@ -119,11 +128,15 @@ def main():
     try:
         c.sql(probe, "bench")
         print("  ✅ MYVECTOR_IS_ANN query-rewrite ACTIVE", flush=True)
-    except RuntimeError as e:
-        if "does not exist" in str(e) and "FUNCTION" in str(e):
+    except RuntimeError as err:
+        msg = str(err)
+        if "does not exist" in msg and "FUNCTION" in msg:
             print("  ❌ rewrite STILL INACTIVE after fresh install", flush=True)
             sys.exit(2)
-        print("  ✅ rewrite active (probe error is index/dim, not missing function)", flush=True)
+        # MYVECTOR_IS_ANN was recognised (rewrite fired) — but surface the actual
+        # error instead of silently claiming a clean success.
+        print(f"  ✅ rewrite active (probe raised a non-missing-function error: {msg[:160]})",
+              flush=True)
     c.sql("DROP TABLE IF EXISTS bench.rwcheck;")
 
 
