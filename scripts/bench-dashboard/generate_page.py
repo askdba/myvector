@@ -11,8 +11,8 @@ import json
 import os
 import sys
 
-ORDER = ["8.4", "9.7", "26.7", "MariaDB 11.8"]
-COL = {"8.4": "#4f9dff", "9.7": "#36c98d", "26.7": "#f0a93b", "MariaDB 11.8": "#a56bd8"}
+ORDER = ["8.4", "9.7", "26.7", "MariaDB"]
+COL = {"8.4": "#4f9dff", "9.7": "#36c98d", "26.7": "#f0a93b", "MariaDB": "#a56bd8"}
 
 
 def e(s):
@@ -92,7 +92,7 @@ def main():
               f'{w.get("distance")} · HNSW M={w.get("M")}, ef_construction={w.get("ef_construction")} · '
               f'{w.get("holdout_queries")} held-out queries. Identical synthetic data on every instance. '
               f'8.4 on Ampere A2; 9.7, 26.7 &amp; MariaDB on Ampere A1 (pinned 4 vCPU / 24 GB each). '
-              f'MariaDB 11.8 uses its <b>native</b> VECTOR/HNSW index (built online during insert, so its '
+              f'MariaDB uses its <b>native</b> VECTOR/HNSW index (built online during insert, so its '
               f'build time = load time, with no separate build phase or ef_construction) — a cross-engine '
               f'comparison against MyVector-on-MySQL, not a different MyVector build.')
 
@@ -169,7 +169,7 @@ footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
 (function(){{
   if (typeof Chart === 'undefined') return;   // charts are enhancement only
   var DATA = {payload};
-  var COL = {{"8.4":"#4f9dff","9.7":"#36c98d","26.7":"#f0a93b","MariaDB 11.8":"#a56bd8"}};
+  var COL = {{"8.4":"#4f9dff","9.7":"#36c98d","26.7":"#f0a93b","MariaDB":"#a56bd8"}};
   function disp(d){{return d.label||("MySQL "+d.version);}}
   var css = getComputedStyle(document.documentElement);
   Chart.defaults.color = css.getPropertyValue('--muted').trim();

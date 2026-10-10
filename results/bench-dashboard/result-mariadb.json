@@ -1,11 +1,11 @@
 {
-  "version": "MariaDB 11.8",
-  "label": "MariaDB 11.8.9",
+  "version": "MariaDB",
+  "label": "MariaDB 12.3.3",
   "engine": "MariaDB native VECTOR/HNSW",
   "container": "bench-mariadb",
   "host_label": "myvector-dev \u00b7 Ampere A1",
   "arch": "aarch64",
-  "timestamp": "2026-10-10T20:08:25.038375+00:00",
+  "timestamp": "2026-10-10T21:18:17.738236+00:00",
   "rows_indexed": 50000,
   "workload": {
     "rows": 50000,
@@ -15,51 +15,51 @@
     "holdout_queries": 200
   },
   "metrics": {
-    "index_build_time_s": 133.35,
-    "insert_qps": 374.96699251219263,
-    "knn_qps": 1.421701745427498,
-    "knn_p50_ms": 703.2964999999999,
-    "knn_p99_ms": 714.702,
-    "knn_ann_qps": 42.29940406484583,
-    "knn_ann_p50_ms": 30.4175,
-    "knn_ann_p99_ms": 54.42,
+    "index_build_time_s": 582.81,
+    "insert_qps": 85.79195118104685,
+    "knn_qps": 1.4255143621106552,
+    "knn_p50_ms": 701.431,
+    "knn_p99_ms": 715.376,
+    "knn_ann_qps": 28.95816486317629,
+    "knn_ann_p50_ms": 35.2795,
+    "knn_ann_p99_ms": 54.079,
     "ann_rewrite_active": true,
-    "recall_at_10": 0.579,
+    "recall_at_10": 0.852,
     "ef_search_sweep": [
       {
         "ef_search": 10,
-        "recall_at_10": 0.408,
-        "qps": 174.24577715359067,
-        "p50_ms": 5.0760000000000005,
-        "p99_ms": 12.427000000000001
+        "recall_at_10": 0.38,
+        "qps": 245.69300168054014,
+        "p50_ms": 3.8585,
+        "p99_ms": 11.207999999999998
       },
       {
         "ef_search": 20,
-        "recall_at_10": 0.462,
-        "qps": 126.88068901289361,
-        "p50_ms": 6.9865,
-        "p99_ms": 22.876
+        "recall_at_10": 0.512,
+        "qps": 142.21676109859604,
+        "p50_ms": 6.251,
+        "p99_ms": 17.604000000000003
       },
       {
         "ef_search": 50,
-        "recall_at_10": 0.53,
-        "qps": 85.06584096090374,
-        "p50_ms": 12.157,
-        "p99_ms": 27.609
+        "recall_at_10": 0.706,
+        "qps": 78.97671450549521,
+        "p50_ms": 12.1105,
+        "p99_ms": 30.188
       },
       {
         "ef_search": 100,
-        "recall_at_10": 0.564,
-        "qps": 62.150017712755044,
-        "p50_ms": 18.42,
-        "p99_ms": 48.376000000000005
+        "recall_at_10": 0.7859999999999999,
+        "qps": 49.606865590197685,
+        "p50_ms": 20.175,
+        "p99_ms": 32.336999999999996
       },
       {
         "ef_search": 200,
-        "recall_at_10": 0.578,
-        "qps": 40.28379125261643,
-        "p50_ms": 30.6,
-        "p99_ms": 59.415
+        "recall_at_10": 0.848,
+        "qps": 30.386805805824665,
+        "p50_ms": 33.9765,
+        "p99_ms": 46.077
       }
     ]
   }
