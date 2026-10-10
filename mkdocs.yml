@@ -72,6 +72,7 @@ nav:
           - Overview: PERFORMANCE.md
           - ef_search Sweep: EF_SEARCH_SWEEP.md
           - MariaDB Comparison (2025): ANN_BENCHMARKS.md
+          - Live Benchmark: https://bench.myvector.online
       - Known Limitations: LIMITATIONS.md
       - Structure: STRUCTURE.md
       - Security: SECURITY.md
