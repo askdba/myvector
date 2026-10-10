@@ -1,7 +1,7 @@
 # Benchmark dashboard (bench.myvector.online)
 
 Tooling behind the public cross-version benchmark dashboard: MyVector's native
-HNSW vector search on **MySQL 8.4 / 9.7 / 26.7**, plus **MariaDB 11.8** native
+HNSW vector search on **MySQL 8.4 / 9.7 / 26.7**, plus **MariaDB 12.3** (current LTS) native
 `VECTOR`/HNSW as a cross-engine reference. All four run the **same**
 seed-deterministic synthetic workload (50 000 × 128-d, L2, HNSW M=16) so the
 numbers line up.
@@ -36,7 +36,7 @@ Result JSONs live in [`results/bench-dashboard/`](../../results/bench-dashboard/
    # ...likewise 8.4 (port 3306) and 26.7 (port 3310, cpuset 4-7)
    docker run -d --name bench-mariadb --cpuset-cpus 8-11 --memory 24g --memory-swap 24g \
      -p 127.0.0.1:3311:3306 -e MARIADB_ROOT_PASSWORD="$PW" -e MARIADB_DATABASE=bench \
-     -v /data/mysql/bench/mariadb:/var/lib/mysql mariadb:11.8
+     -v /data/mysql/bench/mariadb:/var/lib/mysql mariadb:12.3
    ```
 
 3. **Run the benchmarks:**
@@ -58,7 +58,7 @@ Result JSONs live in [`results/bench-dashboard/`](../../results/bench-dashboard/
 
 ## Caveats
 
-- **Cross-engine, not cross-build:** MariaDB 11.8 uses its own native vector
+- **Cross-engine, not cross-build:** MariaDB (12.3 LTS) uses its own native vector
   index — a different implementation from MyVector-on-MySQL. MariaDB builds the
   HNSW index **online during insert** (no separate build phase or
   `ef_construction`), so its "build time" is load time.
