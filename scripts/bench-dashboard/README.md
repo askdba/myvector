@@ -34,7 +34,7 @@ Result JSONs live in [`results/bench-dashboard/`](../../results/bench-dashboard/
      --base-image mysql:9.7 --comp-dir dist/component-9.7 \
      --port 3309 --cpuset 0-3 --mem 24g --datadir /data/mysql/bench/97 --root-pw "$PW"
    # ...likewise 8.4 (port 3306) and 26.7 (port 3310, cpuset 4-7)
-   docker run -d --name bench-mariadb --cpuset-cpus 8-11 --memory 24g \
+   docker run -d --name bench-mariadb --cpuset-cpus 8-11 --memory 24g --memory-swap 24g \
      -p 127.0.0.1:3311:3306 -e MARIADB_ROOT_PASSWORD="$PW" -e MARIADB_DATABASE=bench \
      -v /data/mysql/bench/mariadb:/var/lib/mysql mariadb:11.8
    ```

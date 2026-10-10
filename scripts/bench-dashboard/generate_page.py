@@ -6,12 +6,18 @@ required); Chart.js (cdnjs) adds charts as a guarded progressive enhancement.
 Usage: generate_page.py <results_dir> <out_html>
 """
 import glob
+import html
 import json
 import os
 import sys
 
 ORDER = ["8.4", "9.7", "26.7", "MariaDB 11.8"]
 COL = {"8.4": "#4f9dff", "9.7": "#36c98d", "26.7": "#f0a93b", "MariaDB 11.8": "#a56bd8"}
+
+
+def e(s):
+    """HTML-escape a value for safe insertion into static markup."""
+    return html.escape(str(s), quote=True)
 
 
 def disp(d):
@@ -33,6 +39,7 @@ def load(results_dir):
         except Exception:
             continue
         if "version" in d and "metrics" in d:
+            d["_srcfile"] = os.path.basename(p)
             rows[str(d["version"])] = d
     return [rows[v] for v in ORDER if v in rows]
 
@@ -44,18 +51,19 @@ def main():
         print("no result JSONs found", file=sys.stderr)
         sys.exit(1)
     generated = max((d.get("timestamp", "") for d in data), default="")[:19].replace("T", " ") + " UTC"
-    payload = json.dumps(data)
+    # Escape "<" so a field value can't terminate the inline <script> payload.
+    payload = json.dumps(data).replace("<", "\\u003c")
     downloads = " · ".join(
-        f'<a href="data/result-{d["version"]}.json">MySQL {d["version"]} JSON</a>' for d in data)
+        f'<a href="data/{e(d["_srcfile"])}">{e(disp(d))} JSON</a>' for d in data)
 
     # ---- static (no-JS) content ----
     legend = "".join(
         f'<span class="lg"><span class="dot" style="background:{COL.get(d["version"],"#888")}"></span>'
-        f'{disp(d)} <span class="mut">· {d["arch"]} · {d.get("host_label","")}</span></span>'
+        f'{e(disp(d))} <span class="mut">· {e(d.get("arch",""))} · {e(d.get("host_label",""))}</span></span>'
         for d in data)
 
     cards = "".join(
-        f'<div class="card"><h3 style="color:{COL.get(d["version"],"#888")}">{disp(d)}</h3>'
+        f'<div class="card"><h3 style="color:{COL.get(d["version"],"#888")}">{e(disp(d))}</h3>'
         f'<div class="row"><span>Index build</span><b>{fmt(d["metrics"]["index_build_time_s"],1)}s</b></div>'
         f'<div class="row"><span>Insert QPS</span><b>{fmt(d["metrics"]["insert_qps"])}</b></div>'
         f'<div class="row"><span>ANN QPS</span><b>{fmt(d["metrics"]["knn_ann_qps"])}</b></div>'
@@ -73,7 +81,7 @@ def main():
         ("ANN p99 (ms)", "knn_ann_p99_ms", 1),
         ("Recall@10", "recall_at_10", 3),
     ]
-    thead = "".join(f'<th style="color:{COL.get(d["version"],"#888")}">{disp(d)}</th>' for d in data)
+    thead = "".join(f'<th style="color:{COL.get(d["version"],"#888")}">{e(disp(d))}</th>' for d in data)
     tbody = ""
     for label, key, dp in rowsdef:
         cells = "".join(f"<td>{fmt(d['metrics'].get(key), dp)}</td>" for d in data)
@@ -125,8 +133,9 @@ footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
 <div class="wrap">
   <h1>MyVector — cross-version benchmark</h1>
   <p class="sub">MySQL 8.4 vs 9.7 vs 26.7 · HNSW vector search · generated {generated}</p>
-  <p class="desc">An apples-to-apples comparison of MyVector's native HNSW vector search across three
-  MySQL versions — same hardware, same data, same index parameters. It measures index build time,
+  <p class="desc">A comparison of MyVector's native HNSW vector search across three MySQL versions
+  (plus MariaDB's native vector as a cross-engine reference) — same data and index parameters, each
+  pinned to an identical 4 vCPU / 24 GB slice (hardware noted below). It measures index build time,
   insert throughput, exact KNN, approximate (ANN) QPS and latency, recall@10, and the
   accuracy/throughput tradeoff as <code>ef_search</code> varies.</p>
   <div class="legend">{legend}</div>
