@@ -1,0 +1,66 @@
+{
+  "version": "26.7",
+  "container": "bench-mysql267",
+  "host_label": "myvector-dev \u00b7 Ampere A1",
+  "arch": "aarch64",
+  "timestamp": "2026-10-10T11:17:13.472334+00:00",
+  "rows_indexed": 50000,
+  "workload": {
+    "rows": 50000,
+    "dim": 128,
+    "M": 16,
+    "ef_construction": 200,
+    "distance": "L2",
+    "holdout_queries": 200
+  },
+  "wall_seconds": 336.6,
+  "metrics": {
+    "index_build_time_s": 56.9965443611145,
+    "insert_qps": 3711.2059324025495,
+    "knn_qps": 1.402166588551966,
+    "knn_p50_ms": 713.395,
+    "knn_p99_ms": 721.811,
+    "knn_ann_qps": 529.0291521514293,
+    "knn_ann_p50_ms": 1.8315000000000001,
+    "knn_ann_p99_ms": 2.124,
+    "ann_rewrite_active": true,
+    "recall_at_10": 0.82,
+    "ef_search_sweep": [
+      {
+        "ef_search": 10,
+        "recall_at_10": 0.21400000000000002,
+        "qps": 1055.2975939214857,
+        "p50_ms": 0.7555000000000001,
+        "p99_ms": 9.889
+      },
+      {
+        "ef_search": 20,
+        "recall_at_10": 0.32799999999999996,
+        "qps": 984.3682324684019,
+        "p50_ms": 0.831,
+        "p99_ms": 9.719
+      },
+      {
+        "ef_search": 50,
+        "recall_at_10": 0.516,
+        "qps": 818.7460086132079,
+        "p50_ms": 1.0295,
+        "p99_ms": 9.93
+      },
+      {
+        "ef_search": 100,
+        "recall_at_10": 0.654,
+        "qps": 681.3195797620832,
+        "p50_ms": 1.2694999999999999,
+        "p99_ms": 10.120000000000001
+      },
+      {
+        "ef_search": 200,
+        "recall_at_10": 0.802,
+        "qps": 522.3514171393947,
+        "p50_ms": 1.707,
+        "p99_ms": 10.827
+      }
+    ]
+  }
+}
