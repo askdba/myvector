@@ -67,6 +67,15 @@ def main():
     c = MariaContainer(args.container, args.root_pw)
 
     print(f"== {args.container} (MariaDB) ==", flush=True)
+
+    # Fair config: MariaDB's HNSW graph cache defaults to only 16MB, far smaller
+    # than the index for this dataset (~27MB), so searches and the online build
+    # thrash to disk (~15x slower). MyVector loads its whole index into memory, so
+    # match that by sizing the cache above the index. Set BEFORE the build/inserts.
+    mhnsw_cache = 1073741824  # 1 GiB
+    c.sql(f"SET GLOBAL mhnsw_max_cache_size={mhnsw_cache};")
+    print(f"  mhnsw_max_cache_size set to {mhnsw_cache//1024//1024} MiB", flush=True)
+
     vectors, held_out = mb.load_workload("synthetic", wp)
     rows = len(vectors)
     print(f"  {rows} vectors dim={dim}", flush=True)
@@ -169,6 +178,7 @@ def main():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "rows_indexed": rows,
         "workload": {k: wp[k] for k in ("rows", "dim", "M", "distance", "holdout_queries")},
+        "mhnsw_cache_mib": mhnsw_cache // 1024 // 1024,
         "metrics": metrics,
     }
     with open(args.out, "w") as f:

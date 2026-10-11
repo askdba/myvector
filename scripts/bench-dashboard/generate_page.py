@@ -94,7 +94,10 @@ def main():
               f'8.4 on Ampere A2; 9.7, 26.7 &amp; MariaDB on Ampere A1 (pinned 4 vCPU / 24 GB each). '
               f'MariaDB uses its <b>native</b> VECTOR/HNSW index (built online during insert, so its '
               f'build time = load time, with no separate build phase or ef_construction) — a cross-engine '
-              f'comparison against MyVector-on-MySQL, not a different MyVector build.')
+              f'comparison against MyVector-on-MySQL, not a different MyVector build. MariaDB is run with '
+              f'<code>mhnsw_max_cache_size</code> sized above the index (its 16&nbsp;MB default is smaller than '
+              f'the ~27&nbsp;MB index and thrashes to disk — ~15&times; slower — so the default would be an '
+              f'unfair handicap).')
 
     html = f"""<!doctype html>
 <html lang="en">

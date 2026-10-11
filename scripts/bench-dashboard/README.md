@@ -58,6 +58,10 @@ Result JSONs live in [`results/bench-dashboard/`](../../results/bench-dashboard/
 
 ## Caveats
 
+- **MariaDB cache sizing:** MariaDB's `mhnsw_max_cache_size` defaults to 16 MB, smaller than
+  the ~27 MB index for this dataset, which makes searches and the online build thrash to disk
+  (~15× slower). `bench_mariadb.py` raises it to 1 GiB before the build so the comparison is fair
+  (MyVector loads its whole index into memory). Size it above the index for your own data.
 - **Cross-engine, not cross-build:** MariaDB (12.3 LTS) uses its own native vector
   index — a different implementation from MyVector-on-MySQL. MariaDB builds the
   HNSW index **online during insert** (no separate build phase or
