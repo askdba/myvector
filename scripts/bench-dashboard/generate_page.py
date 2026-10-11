@@ -88,16 +88,21 @@ def main():
         tbody += f"<tr><td>{label}</td>{cells}</tr>"
 
     w = data[0].get("workload", {})
-    footer = (f'Workload: {fmt(data[0].get("rows_indexed", w.get("rows")))} vectors · dim {w.get("dim")} · '
-              f'{w.get("distance")} · HNSW M={w.get("M")}, ef_construction={w.get("ef_construction")} · '
-              f'{w.get("holdout_queries")} held-out queries. Identical synthetic data on every instance. '
-              f'8.4 on Ampere A2; 9.7, 26.7 &amp; MariaDB on Ampere A1 (pinned 4 vCPU / 24 GB each). '
-              f'MariaDB uses its <b>native</b> VECTOR/HNSW index (built online during insert, so its '
-              f'build time = load time, with no separate build phase or ef_construction) — a cross-engine '
-              f'comparison against MyVector-on-MySQL, not a different MyVector build. MariaDB is run with '
-              f'<code>mhnsw_max_cache_size</code> sized above the index (its 16&nbsp;MB default is smaller than '
-              f'the ~27&nbsp;MB index and thrashes to disk — on this dataset ~15&times; slower on search and '
-              f'~6&times; on build — so the default would be an unfair handicap).')
+    caveats = [
+        (f'<b>Workload:</b> {fmt(data[0].get("rows_indexed", w.get("rows")))} vectors · dim {w.get("dim")} · '
+         f'{w.get("distance")} · HNSW M={w.get("M")}, ef_construction={w.get("ef_construction")} · '
+         f'{w.get("holdout_queries")} held-out queries. Identical synthetic data on every instance.'),
+        ('<b>Hardware:</b> MySQL&nbsp;8.4 on Ampere&nbsp;A2; MySQL&nbsp;9.7, 26.7 &amp; MariaDB on '
+         'Ampere&nbsp;A1 — each pinned to an identical 4&nbsp;vCPU / 24&nbsp;GB slice. A1-vs-A1 numbers '
+         'are directly comparable; 8.4 is on newer-gen A2 silicon.'),
+        ('<b>MariaDB HNSW cache:</b> run with <code>mhnsw_max_cache_size</code> sized above the index. Its '
+         '16&nbsp;MB default is smaller than the ~27&nbsp;MB index and thrashes to disk — on this dataset '
+         '~15&times; slower on search and ~6&times; on build — so the default would be an unfair handicap.'),
+        ('<b>Cross-engine:</b> MariaDB uses its <b>native</b> VECTOR/HNSW index, built online during insert '
+         '(build time = load time, no separate build phase or ef_construction) — a comparison against '
+         'MyVector-on-MySQL, not a different MyVector build.'),
+    ]
+    caveats_html = "".join(f"<li>{c}</li>" for c in caveats)
 
     html = f"""<!doctype html>
 <html lang="en">
@@ -130,6 +135,8 @@ table{{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;fon
 th,td{{text-align:right;padding:7px 8px;border-bottom:1px solid var(--line)}}
 th:first-child,td:first-child{{text-align:left}}
 footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
+.caveats{{margin:0;padding-left:18px}}
+.caveats li{{margin:6px 0;color:var(--fg);font-size:13px;line-height:1.55}}
 </style>
 </head>
 <body>
@@ -163,8 +170,11 @@ footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
     <canvas id="c_sweep" style="max-height:340px"></canvas>
   </div>
 
-  <p class="sub" style="margin-top:14px">Raw results: {downloads}</p>
-  <footer>{footer}</footer>
+  <div class="panel" style="margin-top:18px">
+    <h2>Notes &amp; caveats</h2>
+    <ul class="caveats">{caveats_html}</ul>
+  </div>
+  <footer>Raw results: {downloads}</footer>
 </div>
 
 <script src="chart.umd.min.js"></script>
