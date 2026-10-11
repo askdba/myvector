@@ -96,8 +96,8 @@ def main():
               f'build time = load time, with no separate build phase or ef_construction) — a cross-engine '
               f'comparison against MyVector-on-MySQL, not a different MyVector build. MariaDB is run with '
               f'<code>mhnsw_max_cache_size</code> sized above the index (its 16&nbsp;MB default is smaller than '
-              f'the ~27&nbsp;MB index and thrashes to disk — ~15&times; slower — so the default would be an '
-              f'unfair handicap).')
+              f'the ~27&nbsp;MB index and thrashes to disk — on this dataset ~15&times; slower on search and '
+              f'~6&times; on build — so the default would be an unfair handicap).')
 
     html = f"""<!doctype html>
 <html lang="en">

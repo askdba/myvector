@@ -72,9 +72,12 @@ def main():
     # than the index for this dataset (~27MB), so searches and the online build
     # thrash to disk (~15x slower). MyVector loads its whole index into memory, so
     # match that by sizing the cache above the index. Set BEFORE the build/inserts.
-    mhnsw_cache = 1073741824  # 1 GiB
+    # Size the cache above the index so the whole HNSW graph stays in memory.
+    # The index is ~560 B/row here (> the 512 B of raw vector); 4x the raw-vector
+    # bytes is a generous estimate that scales with --rows, floored at 1 GiB.
+    mhnsw_cache = max(1073741824, wp["rows"] * dim * 4 * 4)
     c.sql(f"SET GLOBAL mhnsw_max_cache_size={mhnsw_cache};")
-    print(f"  mhnsw_max_cache_size set to {mhnsw_cache//1024//1024} MiB", flush=True)
+    print(f"  mhnsw_max_cache_size set to {mhnsw_cache//1024//1024} MiB (scales with --rows)", flush=True)
 
     vectors, held_out = mb.load_workload("synthetic", wp)
     rows = len(vectors)
