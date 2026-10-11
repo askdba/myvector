@@ -162,7 +162,7 @@ def main():
 
     ver = c.scalar("SELECT VERSION();")
     result = {
-        "version": "MariaDB 11.8", "label": f"MariaDB {ver.split('-')[0]}",
+        "version": "MariaDB", "label": f"MariaDB {ver.split('-')[0]}",
         "engine": "MariaDB native VECTOR/HNSW",
         "container": args.container, "host_label": args.host_label,
         "arch": subprocess.run(["uname", "-m"], capture_output=True, text=True).stdout.strip(),
