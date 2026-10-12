@@ -92,9 +92,8 @@ def main():
         (f'<b>Workload:</b> {fmt(data[0].get("rows_indexed", w.get("rows")))} vectors · dim {w.get("dim")} · '
          f'{w.get("distance")} · HNSW M={w.get("M")}, ef_construction={w.get("ef_construction")} · '
          f'{w.get("holdout_queries")} held-out queries. Identical synthetic data on every instance.'),
-        ('<b>Hardware:</b> MySQL&nbsp;8.4 on Ampere&nbsp;A2; MySQL&nbsp;9.7, 26.7 &amp; MariaDB on '
-         'Ampere&nbsp;A1 — each pinned to an identical 4&nbsp;vCPU / 24&nbsp;GB slice. A1-vs-A1 numbers '
-         'are directly comparable; 8.4 is on newer-gen A2 silicon.'),
+        ('<b>Hardware:</b> all four engines run on the same Ampere&nbsp;A1 host, each pinned to an '
+         'identical 4&nbsp;vCPU / 24&nbsp;GB slice — so the numbers are directly comparable.'),
         ('<b>MariaDB HNSW cache:</b> run with <code>mhnsw_max_cache_size</code> sized above the index. Its '
          '16&nbsp;MB default is smaller than the ~27&nbsp;MB index and thrashes to disk — on this dataset '
          '~15&times; slower on search and ~6&times; on build — so the default would be an unfair handicap.'),
