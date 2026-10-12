@@ -66,8 +66,8 @@ Result JSONs live in [`results/bench-dashboard/`](../../results/bench-dashboard/
   index — a different implementation from MyVector-on-MySQL. MariaDB builds the
   HNSW index **online during insert** (no separate build phase or
   `ef_construction`), so its "build time" is load time.
-- **Hardware:** 8.4 runs on Ampere A2; 9.7, 26.7 and MariaDB on Ampere A1. The
-  A1 instances are directly comparable; 8.4's absolute numbers are on newer-gen
-  silicon. Recorded per-instance in each result JSON.
+- **Hardware:** all four engines run on the same Ampere A1 host, each pinned to an
+  identical 4 vCPU / 24 GB slice, so the numbers are directly comparable. Recorded
+  per-instance in each result JSON.
 - Recall is honest (held-out queries never inserted); ground truth is
   brute-force top-10 on an unindexed copy.
