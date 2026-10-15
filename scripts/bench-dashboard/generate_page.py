@@ -5,6 +5,7 @@ required); Chart.js (cdnjs) adds charts as a guarded progressive enhancement.
 
 Usage: generate_page.py <results_dir> <out_html>
 """
+import base64
 import glob
 import html
 import json
@@ -53,6 +54,12 @@ def main():
     generated = max((d.get("timestamp", "") for d in data), default="")[:19].replace("T", " ") + " UTC"
     # Escape "<" so a field value can't terminate the inline <script> payload.
     payload = json.dumps(data).replace("<", "\\u003c")
+    # MyVector favicon embedded as a data URI (favicon.png sits next to this script).
+    _fav = os.path.join(os.path.dirname(os.path.abspath(__file__)), "favicon.png")
+    favlink = ""
+    if os.path.exists(_fav):
+        favlink = ('<link rel="icon" type="image/png" href="data:image/png;base64,'
+                   + base64.b64encode(open(_fav, "rb").read()).decode() + '">')
     downloads = " · ".join(
         f'<a href="data/{e(d["_srcfile"])}">{e(disp(d))} JSON</a>' for d in data)
 
@@ -109,6 +116,7 @@ def main():
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MyVector Benchmark</title>
+{favlink}
 <style>
 :root{{ --bg:#f6f8fa; --card:#fff; --fg:#1b2733; --muted:#5a6b7b; --line:#e3e8ee; }}
 @media (prefers-color-scheme: dark){{ :root{{ --bg:#0e1621; --card:#17212e; --fg:#e8eef4; --muted:#93a3b4; --line:#243243; }} }}
