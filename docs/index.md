@@ -80,6 +80,12 @@ flowchart LR
 
 ---
 
+## Related projects
+
+Want AI assistants to query your MySQL databases safely? See
+[MySQL MCP Server](RELATED_PROJECTS.md#mysql-mcp-server), a read-only MCP
+server for MySQL and MariaDB.
+
 ## Acknowledgments
 
 - [**hnswlib**](https://github.com/nmslib/hnswlib): For the high-performance

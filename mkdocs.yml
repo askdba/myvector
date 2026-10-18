@@ -79,4 +79,5 @@ nav:
   - Community:
       - Code of Conduct: CODE_OF_CONDUCT.md
       - Contributing: CONTRIBUTING.md
+      - Related Projects: RELATED_PROJECTS.md
   - GitHub: https://github.com/askdba/myvector
