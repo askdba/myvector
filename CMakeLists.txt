@@ -155,6 +155,29 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     " -static-libstdc++ -static-libgcc")
 endif()
 
+# ---------------------------------------------------------------------------
+# MCP components (RFC 0001 in askdba/mysql-mcp-server). Opt-in, so the MyVector
+# build is unchanged: cmake -DMYVECTOR_BUILD_MCP=ON ...
+# component_mcp_guard needs only server headers (no libmysqlclient).
+# ---------------------------------------------------------------------------
+option(MYVECTOR_BUILD_MCP "Build the MCP components (component_mcp_guard)" OFF)
+if(MYVECTOR_BUILD_MCP)
+  add_library(component_mcp_guard SHARED src/mcp/guard/component_mcp_guard.cc)
+  target_include_directories(component_mcp_guard PRIVATE ${MYVECTOR_INCLUDE_DIRS})
+  set_target_properties(component_mcp_guard PROPERTIES PREFIX "")
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set_property(TARGET component_mcp_guard APPEND_STRING PROPERTY LINK_FLAGS
+      " -static-libstdc++ -static-libgcc")
+  endif()
+  install(TARGETS component_mcp_guard
+    LIBRARY DESTINATION lib/plugin
+    RUNTIME DESTINATION lib/plugin
+  )
+  install(FILES src/mcp/guard/mcp_guard.json
+    DESTINATION share/mysql/component
+  )
+endif()
+
 # Install: shared library and component manifest
 install(TARGETS myvector_component
   LIBRARY DESTINATION lib/plugin

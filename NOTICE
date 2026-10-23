@@ -4,6 +4,10 @@ Copyright (c) 2024 p3io.in / shiyer22@gmail.com
 This product is licensed under the GNU General Public License v2.0.
 See the LICENSE file for the full license text.
 
+Exception: the files under sql/mcp/ (the mysql_mcp SQL tool pack used by
+mysql-mcp-server) are licensed under the Apache License, Version 2.0.
+See sql/mcp/LICENSE.
+
 ================================================================================
 
 This product includes software developed by third parties:

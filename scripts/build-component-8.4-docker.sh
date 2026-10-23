@@ -23,6 +23,7 @@ docker run --rm \
   -e HOST_UID="$HOST_UID" \
   -e HOST_GID="$HOST_GID" \
   -e OUTPUT_DIR="$OUTPUT_DIR" \
+  -e MYVECTOR_BUILD_MCP="${MYVECTOR_BUILD_MCP:-OFF}" \
   oraclelinux:9 \
   bash -c '
     set -e
@@ -138,13 +139,19 @@ docker run --rm \
       -DMYSQL_SOURCE_DIR="$MYSQL_SRC" \
       -DMYSQL_BUILD_DIR="$MYSQL_BLD" \
       -DMYSQL_DIR="$MYSQL_LIBDIR" \
-      -DMYSQLCLIENT_LIBRARY="$MYSQLCLIENT_LIB"
+      -DMYSQLCLIENT_LIBRARY="$MYSQLCLIENT_LIB" \
+      -DMYVECTOR_BUILD_MCP="$MYVECTOR_BUILD_MCP"
     make -C "$COMPONENT_BUILD" -j$(nproc) VERBOSE=1
 
     echo "==> Packaging artifact..."
     mkdir -p "/workspace/$OUTPUT_DIR"
     cp "$COMPONENT_BUILD/libmyvector_component.so" "/workspace/$OUTPUT_DIR/"
     cp src/component_src/myvector.json "/workspace/$OUTPUT_DIR/"
+    # MCP guard component (RFC 0001), built when MYVECTOR_BUILD_MCP=ON.
+    if [ -f "$COMPONENT_BUILD/component_mcp_guard.so" ]; then
+      cp "$COMPONENT_BUILD/component_mcp_guard.so" src/mcp/guard/mcp_guard.json "/workspace/$OUTPUT_DIR/"
+      echo "==> Built: /workspace/$OUTPUT_DIR/component_mcp_guard.so"
+    fi
     echo "==> Built: /workspace/$OUTPUT_DIR/libmyvector_component.so"
 
     # Restore host ownership so runner can use the result and cache can save the source.
