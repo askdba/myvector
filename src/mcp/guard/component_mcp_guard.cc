@@ -26,24 +26,38 @@ REQUIRES_SERVICE_PLACEHOLDER(dynamic_privilege_register);
 namespace {
 
 // MCP_USER marks accounts used by mysql-mcp-server; MCP_ADMIN may change mcp.* policy.
+// Both names are reserved for this component (see sql/mcp/README.md).
 constexpr const char *kPrivileges[] = {"MCP_USER", "MCP_ADMIN"};
+constexpr size_t kPrivilegeCount = sizeof(kPrivileges) / sizeof(kPrivileges[0]);
+
+// Which privileges this load of the component registered. The server registry has no
+// owner or reference count (registering an existing name reports success), so, like
+// Oracle's component_mysql_rest_service, unregister only what this component's own
+// calls registered, and never a name whose registration failed.
+bool registered[kPrivilegeCount] = {};
 
 bool unregister_privileges() {
   bool failed = false;
-  for (const char *priv : kPrivileges) {
-    failed |= mysql_service_dynamic_privilege_register->unregister_privilege(
-        priv, std::strlen(priv));
+  for (size_t i = 0; i < kPrivilegeCount; ++i) {
+    if (!registered[i]) continue;
+    if (mysql_service_dynamic_privilege_register->unregister_privilege(
+            kPrivileges[i], std::strlen(kPrivileges[i]))) {
+      failed = true;
+      continue;
+    }
+    registered[i] = false;
   }
   return failed;
 }
 
 mysql_service_status_t mcp_guard_init() {
-  for (const char *priv : kPrivileges) {
+  for (size_t i = 0; i < kPrivilegeCount; ++i) {
     if (mysql_service_dynamic_privilege_register->register_privilege(
-            priv, std::strlen(priv))) {
-      unregister_privileges();
+            kPrivileges[i], std::strlen(kPrivileges[i]))) {
+      unregister_privileges();  // roll back only the ones registered above
       return 1;
     }
+    registered[i] = true;
   }
   return 0;
 }

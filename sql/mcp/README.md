@@ -10,4 +10,8 @@ call it. See [RFC 0001](https://github.com/askdba/mysql-mcp-server/blob/main/doc
 are standalone scripts that are not linked into any component, and mysql-mcp-server
 (Apache-2.0) vendors them.
 
+**Reserved names:** `component_mcp_guard` registers the dynamic privileges `MCP_USER` and
+`MCP_ADMIN` and unregisters them on `UNINSTALL COMPONENT`. MySQL's privilege registry has
+no owner, so other components must not register these names.
+
 Status: Phase 0 placeholder. The first procedures land in Phase 1.

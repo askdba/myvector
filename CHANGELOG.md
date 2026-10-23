@@ -111,6 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **Component build scripts no longer re-clone the MySQL source on every run.** Inside the build container, git refused the host-owned tree ("dubious ownership"), so the tag check always failed and the tree was deleted and cloned again, also defeating the CI cache. The scripts now mark the tree as a safe directory. They also reconfigure the server tree when an earlier configure failed: a `.configure-ok` marker is written only after `cmake` succeeds, instead of trusting `CMakeCache.txt`, which appears before configuration finishes.
 - **Component: `myvector_construct()` with a constant argument is built once, not per row**
   (issue #214). The component re-parsed a constant literal on every row, so a brute-force
   `ORDER BY myvector_distance(vec, myvector_construct('[...]'), 'L2')` over 10k rows took

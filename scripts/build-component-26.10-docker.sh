@@ -66,6 +66,9 @@ docker run --rm \
 
     echo "==> Cloning MySQL source ($MYSQL_TAG)..."
     MYSQL_WORKSPACE="/workspace/mysql-server-${MYSQL_TAG}"
+    # The tree is owned by the host user, not root: without this, git refuses it
+    # ("dubious ownership"), the tag check below fails, and every run re-clones.
+    git config --global --add safe.directory "$MYSQL_WORKSPACE"
     NEED_CLONE=true
     if [ -d "$MYSQL_WORKSPACE/.git" ]; then
       CURRENT_TAG="$(git -C "$MYSQL_WORKSPACE" describe --tags --exact-match 2>/dev/null \
@@ -88,7 +91,9 @@ docker run --rm \
 
     echo "==> Configuring MySQL (generate headers)..."
     mkdir -p "$MYSQL_BLD"
-    if [ ! -f "$MYSQL_BLD/CMakeCache.txt" ]; then
+    # .configure-ok is written only after cmake succeeds: CMakeCache.txt appears early,
+    # so a failed configure would otherwise be skipped on the next run.
+    if [ ! -f "$MYSQL_BLD/.configure-ok" ]; then
       cd "$MYSQL_BLD"
       cmake .. \
         -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc \
@@ -104,8 +109,9 @@ docker run --rm \
         -DWITH_AUTHENTICATION_WEBAUTHN=OFF \
         -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
         -DCMAKE_BUILD_TYPE=Release
+      touch "$MYSQL_BLD/.configure-ok"
     else
-      echo "==> Reusing existing MySQL bld/ (CMakeCache.txt present)"
+      echo "==> Reusing existing MySQL bld/ (configured earlier)"
     fi
 
     echo "==> Building MyVector component..."
@@ -147,11 +153,19 @@ docker run --rm \
     mkdir -p "/workspace/$OUTPUT_DIR"
     cp "$COMPONENT_BUILD/libmyvector_component.so" "/workspace/$OUTPUT_DIR/"
     cp src/component_src/myvector.json "/workspace/$OUTPUT_DIR/"
-    # MCP guard component (RFC 0001), built when MYVECTOR_BUILD_MCP=ON.
-    if [ -f "$COMPONENT_BUILD/component_mcp_guard.so" ]; then
+    # MCP guard component (RFC 0001), built when MYVECTOR_BUILD_MCP=ON. Clear any
+    # copy from an earlier build first, so an OFF build never ships a stale guard.
+    rm -f "/workspace/$OUTPUT_DIR/component_mcp_guard.so" "/workspace/$OUTPUT_DIR/mcp_guard.json"
+    case "$MYVECTOR_BUILD_MCP" in
+    ON | on | 1 | TRUE | true | YES | yes)
+      if [ ! -f "$COMPONENT_BUILD/component_mcp_guard.so" ]; then
+        echo "ERROR: MYVECTOR_BUILD_MCP=$MYVECTOR_BUILD_MCP but component_mcp_guard.so was not built" >&2
+        exit 1
+      fi
       cp "$COMPONENT_BUILD/component_mcp_guard.so" src/mcp/guard/mcp_guard.json "/workspace/$OUTPUT_DIR/"
       echo "==> Built: /workspace/$OUTPUT_DIR/component_mcp_guard.so"
-    fi
+      ;;
+    esac
     echo "==> Built: /workspace/$OUTPUT_DIR/libmyvector_component.so"
 
     # Restore host ownership of the MySQL source workspace so the runner user
