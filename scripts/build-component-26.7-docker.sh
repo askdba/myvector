@@ -66,9 +66,6 @@ docker run --rm \
 
     echo "==> Cloning MySQL source ($MYSQL_TAG)..."
     MYSQL_WORKSPACE="/workspace/mysql-server-${MYSQL_TAG}"
-    # The tree is owned by the host user, not root: without this, git refuses it
-    # ("dubious ownership"), the tag check below fails, and every run re-clones.
-    git config --global --add safe.directory "$MYSQL_WORKSPACE"
     NEED_CLONE=true
     if [ -d "$MYSQL_WORKSPACE/.git" ]; then
       CURRENT_TAG="$(git -C "$MYSQL_WORKSPACE" describe --tags --exact-match 2>/dev/null \
