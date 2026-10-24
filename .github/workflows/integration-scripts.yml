@@ -22,6 +22,7 @@ on:
       - "include/**"
       - "sql/**"
       - "scripts/test-*.py"
+      - "scripts/test-mcp-guard.sh"
       - "scripts/build-component*"
       - "scripts/build-plugin*"
       - "CMakeLists.txt"
@@ -33,6 +34,7 @@ on:
       - "include/**"
       - "sql/**"
       - "scripts/test-*.py"
+      - "scripts/test-mcp-guard.sh"
       - "scripts/build-component*"
       - "scripts/build-plugin*"
       - "CMakeLists.txt"
@@ -115,3 +117,48 @@ jobs:
             exit 1
           fi
           echo "All test scripts passed (${KIND} ${MYSQL_VERSION})"
+
+  mcp-guard:
+    # component_mcp_guard (RFC 0001 in askdba/mysql-mcp-server): build it with
+    # MYVECTOR_BUILD_MCP=ON and run the install / grant / restart / uninstall
+    # lifecycle test on the official image of the same patch release.
+    name: mcp-guard (${{ matrix.mysql-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mysql-version: "8.4.11"
+            mysql-tag: "mysql-8.4.11"
+            build-script: "scripts/build-component-8.4-docker.sh"
+          - mysql-version: "9.7.2"
+            mysql-tag: "mysql-9.7.2"
+            build-script: "scripts/build-component-9.7-docker.sh"
+          - mysql-version: "26.10.0"
+            mysql-tag: "mysql-26.10.0"
+            build-script: "scripts/build-component-26.10-docker.sh"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build component_mcp_guard
+        env:
+          BUILD_SCRIPT: ${{ matrix.build-script }}
+          MYSQL_TAG: ${{ matrix.mysql-tag }}
+          MYVECTOR_BUILD_MCP: "ON"
+          OUT_DIR: dist/mcp-guard-${{ matrix.mysql-version }}
+        run: |
+          chmod +x "$BUILD_SCRIPT"
+          "$BUILD_SCRIPT" "$MYSQL_TAG" "$OUT_DIR"
+          ls -la "$OUT_DIR"
+          test -f "$OUT_DIR/component_mcp_guard.so"
+
+      - name: Lifecycle test
+        env:
+          MYSQL_VERSION: ${{ matrix.mysql-version }}
+        run: |
+          chmod +x scripts/test-mcp-guard.sh
+          scripts/test-mcp-guard.sh "$MYSQL_VERSION" "dist/mcp-guard-${MYSQL_VERSION}"
