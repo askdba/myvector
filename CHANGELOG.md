@@ -112,6 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Component build scripts reconfigure the server tree after a failed configure.** A `.configure-ok` marker is written only after `cmake` succeeds; before, the scripts trusted `CMakeCache.txt`, which appears before configuration finishes, so a failed configure was skipped on the next run.
+- **Component build scripts no longer re-clone the MySQL source on every run.** Inside the build container, git refused the host-owned tree ("dubious ownership"), so the tag check always failed and the tree was deleted and cloned again, which also defeated the CI cache of the source tree. The scripts now mark the tree as a git safe directory.
 - **Component: `myvector_construct()` with a constant argument is built once, not per row**
   (issue #214). The component re-parsed a constant literal on every row, so a brute-force
   `ORDER BY myvector_distance(vec, myvector_construct('[...]'), 'L2')` over 10k rows took
