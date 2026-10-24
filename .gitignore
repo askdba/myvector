@@ -62,3 +62,6 @@ docs/ISSUE_*_CLOSE_COMMENT.md
 
 # Local docs build output
 /site/
+
+# MySQL server source trees cloned by scripts/build-component-*-docker.sh
+/mysql-server-mysql-*/

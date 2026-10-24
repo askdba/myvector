@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`component_mcp_guard` skeleton** (Phase 0 of [RFC 0001](https://github.com/askdba/mysql-mcp-server/blob/main/docs/rfc/0001-mysql-component-architecture.md) in mysql-mcp-server). A separate component for mysql-mcp-server sessions. For now it only registers the `MCP_USER` and `MCP_ADMIN` dynamic privileges; enforcement and observability come in later phases. It is opt-in and does not change the MyVector build: `MYVECTOR_BUILD_MCP=ON ./scripts/build-component-<ver>-docker.sh` also builds and packages `component_mcp_guard.so`. `scripts/test-mcp-guard.sh <ver> <artifact-dir>` checks install, privilege registration, grants, restart and uninstall against the official `mysql:<ver>` image. Verified on MySQL 8.4.11, 9.7.2 and 26.10.0.
+- **MySQL 26.10 component build script** (`scripts/build-component-26.10-docker.sh`). It configures the server tree with `-DWITH_AUTHENTICATION_WEBAUTHN=OFF`: 26.10 enables WebAuthn by default, which needs `libudev`/`libfido2` headers the build container does not have, and the component build only needs generated headers.
+- **`sql/mcp/`**: home of the `mysql_mcp` SQL tool pack for mysql-mcp-server, licensed **Apache-2.0** (`sql/mcp/LICENSE`, noted in `NOTICE`), unlike the rest of the repository.
 - **`myvectorbench.py --server host`** (issue #133). Benchmarks against a real `mysqld` on
   the host instead of Docker. It downloads Oracle's generic tarball for the matching patch
   release once, starts an isolated server from it, and times every query client-side over one
@@ -108,6 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **Component build scripts reconfigure the server tree after a failed configure.** A `.configure-ok` marker is written only after `cmake` succeeds; before, the scripts trusted `CMakeCache.txt`, which appears before configuration finishes, so a failed configure was skipped on the next run.
 - **Component: `myvector_construct()` with a constant argument is built once, not per row**
   (issue #214). The component re-parsed a constant literal on every row, so a brute-force
   `ORDER BY myvector_distance(vec, myvector_construct('[...]'), 'L2')` over 10k rows took
