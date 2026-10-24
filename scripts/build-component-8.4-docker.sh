@@ -114,7 +114,13 @@ docker run --rm \
       echo "==> Reusing existing MySQL bld/ (configured earlier)"
     fi
 
-    echo "==> Building MyVector component..."
+    # Normalize MYVECTOR_BUILD_MCP to ON/OFF using the CMake truthy values, so building
+    # and packaging agree (e.g. Y or True build the guard and package it).
+    case "$(printf "%s" "$MYVECTOR_BUILD_MCP" | tr "[:lower:]" "[:upper:]")" in
+    1 | ON | YES | TRUE | Y) MYVECTOR_BUILD_MCP=ON ;;
+    *) MYVECTOR_BUILD_MCP=OFF ;;
+    esac
+    echo "==> Building MyVector component (MYVECTOR_BUILD_MCP=$MYVECTOR_BUILD_MCP)..."
     cd /workspace
     # Arch-specific component build dir. OUTPUT_DIR is build/component-${arch};
     # a shared "build" dir would be wiped by the next architecture in the
@@ -156,16 +162,14 @@ docker run --rm \
     # MCP guard component (RFC 0001), built when MYVECTOR_BUILD_MCP=ON. Clear any
     # copy from an earlier build first, so an OFF build never ships a stale guard.
     rm -f "/workspace/$OUTPUT_DIR/component_mcp_guard.so" "/workspace/$OUTPUT_DIR/mcp_guard.json"
-    case "$MYVECTOR_BUILD_MCP" in
-    ON | on | 1 | TRUE | true | YES | yes)
+    if [ "$MYVECTOR_BUILD_MCP" = ON ]; then
       if [ ! -f "$COMPONENT_BUILD/component_mcp_guard.so" ]; then
-        echo "ERROR: MYVECTOR_BUILD_MCP=$MYVECTOR_BUILD_MCP but component_mcp_guard.so was not built" >&2
+        echo "ERROR: MYVECTOR_BUILD_MCP=ON but component_mcp_guard.so was not built" >&2
         exit 1
       fi
       cp "$COMPONENT_BUILD/component_mcp_guard.so" src/mcp/guard/mcp_guard.json "/workspace/$OUTPUT_DIR/"
       echo "==> Built: /workspace/$OUTPUT_DIR/component_mcp_guard.so"
-      ;;
-    esac
+    fi
     echo "==> Built: /workspace/$OUTPUT_DIR/libmyvector_component.so"
 
     # Restore host ownership so runner can use the result and cache can save the source.
