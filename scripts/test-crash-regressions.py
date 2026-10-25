@@ -109,7 +109,9 @@ def main():
 
         build_rows, build_err = run("CALL mysql.myvector_index_build('vtest.t.v','id');")
         record("2a. MYVECTOR_INDEX_BUILD with a NULL vector row completes",
-               not build_err, build_err or f"rows={build_rows}")
+               not build_err and build_rows and build_rows[0]
+               and build_rows[0][0].startswith("SUCCESS"),
+               build_err or f"rows={build_rows}")
         record("2b. server still answers ping after the build",
                alive(), "mysqladmin ping")
 
