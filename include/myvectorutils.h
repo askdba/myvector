@@ -42,7 +42,16 @@ inline std::string MyVectorIndexBase(const std::string& dir,
     std::string base = dir.empty() ? std::string(".") : dir;
     if (base.back() != '/')
         base.push_back('/');
-    return base + name;
+    // `name` is the index id (db.table.column), derived from a caller-chosen
+    // column name/comment and not otherwise restricted to a safe character
+    // set. Neutralize path separators so it can never escape `dir` (e.g. via
+    // a column named ".." or containing "/"), regardless of how the caller
+    // obtained it.
+    std::string safe_name;
+    safe_name.reserve(name.size());
+    for (char c : name)
+        safe_name += (c == '/' || c == '\\' || c == '\0') ? '_' : c;
+    return base + safe_name;
 }
 
 /* Helper class to manage vector index options as k-v map.
@@ -162,6 +171,19 @@ private:
     bool m_valid;
 };
 
+/* Backtick-quote a database/table/column identifier for safe interpolation
+ * into SQL text, doubling any embedded backtick. Defined in
+ * myvectorutils.cc. */
+std::string quote_identifier(const std::string& identifier);
+
+/* Escape a value for safe interpolation into a single-quoted SQL string
+ * literal (default SQL mode: backslash escapes enabled). Equivalent to
+ * mysql_real_escape_string()'s default behavior, reimplemented locally
+ * because that symbol is not reliably available to a loaded plugin (only a
+ * subset of libmysqlclient is exported by mysqld to plugins, and it does not
+ * include this one on every build). Defined in myvectorutils.cc. */
+std::string escape_sql_string_literal(const std::string& value);
+
 #ifdef TODO
 /* Compare 2 binlog coordinates */
 int binlogPositionCompare(const std::string& file1,
@@ -175,5 +197,4 @@ int binlogPositionCompare(const std::string& file1,
     else
         return -1;
 }
-std::string quote_identifier(const std::string& identifier);
 #endif
