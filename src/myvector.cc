@@ -1694,6 +1694,10 @@ bool rewriteMyVectorIsANN(const string& query, string& newQuery) {
         }
 
         string idcolexpr = annparams[1];
+        if (idcolexpr.length() < 2) {
+            error = true;
+            break;
+        }
         idcolexpr = idcolexpr.substr(
             1, idcolexpr.length() - 2);  // remove the single quote
 
