@@ -619,7 +619,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mysql-version: ['8.0', '8.4', '9.0']
+        # mysql-version labels the artifact (matches the build job's output,
+        # e.g. myvector-mysql9.0-linux) and names this job's matrix leg;
+        # mysql-setup-version is the exact release handed to the setup
+        # action below. 9.0.0 was pulled from MySQL's download servers after
+        # a critical restart bug, so "9.0" alone no longer resolves there —
+        # pin to 9.0.1, the only remaining 9.0.x release, same as the other
+        # two legs pin an exact point release already.
+        include:
+          - mysql-version: '8.0'
+            mysql-setup-version: '8.0'
+          - mysql-version: '8.4'
+            mysql-setup-version: '8.4'
+          - mysql-version: '9.0'
+            mysql-setup-version: '9.0.1'
 
     steps:
     - name: Checkout
@@ -628,7 +641,7 @@ jobs:
     - name: Set up MySQL Server
       uses: shogo82148/actions-setup-mysql@v1
       with:
-        mysql-version: ${{ matrix.mysql-version }}
+        mysql-version: ${{ matrix.mysql-setup-version }}
         auto-start: true
         root-password: 'root'
 
