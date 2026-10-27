@@ -1378,7 +1378,8 @@ void myvector_open_index_impl(char* vecid,
                               char* pkidcol,
                               char* action,
                               char* extra,
-                              char* result);
+                              char* result,
+                              bool validateAgainstSchema);
 
 /* Schema where myvector_columns view is installed (see sql/myvectorplugin.sql).
  * Default is "mysql"; override if the view is created in another database.
@@ -1448,7 +1449,12 @@ void OpenAllOnlineVectorIndexes(MYSQL* hnd) {
             char vecid[1024];
             char result[MYVECTOR_BUFF_SIZE] = {0};
             snprintf(vecid, sizeof(vecid), "%s.%s.%s", dbname, tbl, col);
-            myvector_open_index_impl(vecid, info, empty, action, empty, result);
+            // info was just read from information_schema by this same scan
+            // (above), so it is already authoritative -- skip the redundant
+            // re-validation that myvector_open_index_impl otherwise performs
+            // for externally (UDF-)triggered calls.
+            myvector_open_index_impl(
+                vecid, info, empty, action, empty, result, false);
             /* A successful load writes nothing to result. On an error (e.g. a
              * missing or unknown index type) there is no index to keep up to
              * date, so do not register the column for online updates. */
@@ -1464,6 +1470,147 @@ void OpenAllOnlineVectorIndexes(MYSQL* hnd) {
     }  // while
 
     mysql_free_result(result);
+}
+
+/* ValidateVectorIndexRequest() - component-build counterpart of the
+ * plugin's function of the same name (src/myvector_binlog.cc); see that
+ * file for the full rationale. Independently confirms, from
+ * information_schema, that `vecid` ("db.table.column") names a real column
+ * whose comment begins with "MYVECTOR COLUMN", and (when pkidcol is
+ * non-empty) that pkidcol is a real column of the same table -- so a caller
+ * cannot bypass MYVECTOR_INDEX_INTERNAL's checks (sql/myvector_install_component.sql)
+ * by invoking myvector_search_open_udf directly. On success, *comment is set
+ * to the column's real, authoritative comment text.
+ */
+bool ValidateVectorIndexRequest(const char* vecid,
+                                const char* pkidcol,
+                                std::string& comment,
+                                std::string& error) {
+    std::string vid(vecid);
+    size_t p1 = vid.find('.');
+    size_t p2 = (p1 == std::string::npos) ? std::string::npos : vid.find('.', p1 + 1);
+    if (p1 == std::string::npos || p2 == std::string::npos) {
+        error =
+            "Please use the fully qualified vector column name: "
+            "<database>.<table>.<column>.";
+        return false;
+    }
+    std::string db = vid.substr(0, p1);
+    std::string table = vid.substr(p1 + 1, p2 - p1 - 1);
+    std::string column = vid.substr(p2 + 1);
+    std::string pkid(pkidcol ? pkidcol : "");
+
+    // MySQL identifiers are at most 64 characters / 256 bytes; reject
+    // anything longer outright rather than query information_schema for a
+    // name that could never legitimately match.
+    constexpr size_t kMaxIdentLen = 256;
+    if (db.size() > kMaxIdentLen || table.size() > kMaxIdentLen ||
+        column.size() > kMaxIdentLen || pkid.size() > kMaxIdentLen) {
+        error = "Vector column or id column name too long.";
+        return false;
+    }
+
+    readConfigFile(myvector_config_file);
+
+    MYSQL mysql;
+    MYSQL* conn = mysql_init(&mysql);
+    if (conn == nullptr) {
+        error = "ValidateVectorIndexRequest: mysql_init failed (out of memory).";
+        return false;
+    }
+    {
+        std::string conn_host = g_conn_config.host;
+        std::string conn_user = g_conn_config.user_id;
+        std::string conn_password = g_conn_config.password;
+        std::string conn_socket = g_conn_config.socket;
+        std::string conn_port = g_conn_config.port;
+        bool connected = mysql_real_connect(
+            &mysql,
+            conn_host.c_str(),
+            conn_user.c_str(),
+            conn_password.c_str(),
+            NULL,
+            (conn_port.length() ? atoi(conn_port.c_str()) : 0),
+            conn_socket.c_str(),
+            CLIENT_IGNORE_SIGPIPE);
+        secure_zero_string(conn_password);
+        if (!connected) {
+            error = std::string("Error connecting to validate vector index request: ") +
+                    mysql_error(&mysql);
+            return false;
+        }
+    }
+
+    std::string edb = escape_sql_string_literal(db);
+    std::string etable = escape_sql_string_literal(table);
+    std::string ecolumn = escape_sql_string_literal(column);
+    std::string epkid = pkid.empty() ? std::string() : escape_sql_string_literal(pkid);
+
+    char query[2560];
+    if (!pkid.empty())
+        snprintf(query,
+                 sizeof(query),
+                 "SELECT column_name, column_comment FROM "
+                 "information_schema.columns WHERE table_schema='%s' AND "
+                 "table_name='%s' AND (column_name='%s' OR column_name='%s')",
+                 edb.c_str(),
+                 etable.c_str(),
+                 ecolumn.c_str(),
+                 epkid.c_str());
+    else
+        snprintf(query,
+                 sizeof(query),
+                 "SELECT column_name, column_comment FROM "
+                 "information_schema.columns WHERE table_schema='%s' AND "
+                 "table_name='%s' AND column_name='%s'",
+                 edb.c_str(),
+                 etable.c_str(),
+                 ecolumn.c_str());
+
+    bool found_column = false;
+    bool found_pkid = pkid.empty();
+    bool ok = false;
+    if (!mysql_real_query(&mysql, query, strlen(query))) {
+        MYSQL_RES* result = mysql_store_result(&mysql);
+        if (result) {
+            MYSQL_ROW row;
+            while ((row = mysql_fetch_row(result))) {
+                if (!row[0])
+                    continue;
+                if (column == row[0]) {
+                    found_column = true;
+                    if (row[1])
+                        comment = row[1];
+                } else if (!pkid.empty() && pkid == row[0]) {
+                    found_pkid = true;
+                }
+            }
+            mysql_free_result(result);
+            static const std::regex myvector_col_re("^\\s*MYVECTOR COLUMN",
+                                                     std::regex::icase);
+            if (!found_column)
+                error =
+                    "Vector column not found. Please use the fully qualified "
+                    "name: <database>.<table>.<column>.";
+            else if (!std::regex_search(comment, myvector_col_re))
+                error = "The specified column is not a MYVECTOR column.";
+            else if (!found_pkid)
+                error =
+                    "The specified id column was not found on the same "
+                    "table.";
+            else
+                ok = true;
+        } else {
+            error = std::string("Error validating vector index request: ") +
+                    mysql_error(&mysql);
+        }
+    } else {
+        error = std::string("Error validating vector index request: ") +
+                mysql_error(&mysql);
+    }
+
+    mysql_close(&mysql);
+    return ok;
 }
 
 /* BuildMyVectorIndexSQL - Build/Refresh the Vector Index! This function uses

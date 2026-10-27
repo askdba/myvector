@@ -939,11 +939,27 @@ void GetBaseTableColumnPositions(MYSQL* hnd,
         "information_schema.columns where table_schema='%s' "
         "and table_name='%s' and "
         "(column_name='%s' or column_name='%s');";
-    char buff[MYVECTOR_BUFF_SIZE];
+    // Headroom beyond MYVECTOR_BUFF_SIZE for the fixed SQL text plus 4
+    // escaped identifiers; snprintf truncates safely if this is ever not
+    // enough, it never overflows.
+    char buff[2560];
 
     idcolpos = veccolpos = 0;
 
-    snprintf(buff, sizeof(buff), q, db, table, idcol, veccol);
+    // db/table/idcol/veccol are used as quoted SQL string literals here, not
+    // identifiers: escape them for that context rather than backtick-quoting.
+    string edb = escape_sql_string_literal(db);
+    string etable = escape_sql_string_literal(table);
+    string eidcol = escape_sql_string_literal(idcol);
+    string eveccol = escape_sql_string_literal(veccol);
+
+    snprintf(buff,
+             sizeof(buff),
+             q,
+             edb.c_str(),
+             etable.c_str(),
+             eidcol.c_str(),
+             eveccol.c_str());
 
     if (mysql_real_query(hnd, buff, strlen(buff))) {
         // TODO
@@ -987,7 +1003,8 @@ void myvector_open_index_impl(char* vecid,
                               char* pkidcol,
                               char* action,
                               char* extra,
-                              char* result);
+                              char* result,
+                              bool validateAgainstSchema);
 
 /* OpenAllOnlineVectorIndexes() - Query MYVECTOR_COLUMNS view and open/load
  * all vector indexes that have online=Y i.e updated online when DMLs are
@@ -1052,7 +1069,12 @@ void OpenAllOnlineVectorIndexes(MYSQL* hnd) {
             char vecid[1024];
             char result[MYVECTOR_BUFF_SIZE] = {0};
             snprintf(vecid, sizeof(vecid), "%s.%s.%s", dbname, tbl, col);
-            myvector_open_index_impl(vecid, info, empty, action, empty, result);
+            // info was just read from information_schema by this same scan
+            // (above), so it is already authoritative -- skip the redundant
+            // re-validation that myvector_open_index_impl otherwise performs
+            // for externally (UDF-)triggered calls.
+            myvector_open_index_impl(
+                vecid, info, empty, action, empty, result, false);
             /* A successful load writes nothing to result. On an error (e.g. a
              * missing or unknown index type) there is no index to keep up to
              * date, so do not register the column for online updates. */
@@ -1068,6 +1090,143 @@ void OpenAllOnlineVectorIndexes(MYSQL* hnd) {
     }  // while
 
     mysql_free_result(result);
+}
+
+/* ValidateVectorIndexRequest() - Independently confirm, from
+ * information_schema, that `vecid` ("db.table.column") names a real column
+ * whose comment begins with "MYVECTOR COLUMN", and (when pkidcol is
+ * non-empty) that pkidcol is a real column of the same table. This mirrors
+ * MYVECTOR_INDEX_INTERNAL's own checks (sql/myvectorplugin.sql) so that a
+ * caller cannot bypass them by invoking myvector_search_open_udf directly
+ * instead of through the validating stored procedure.
+ *
+ * On success, *comment is set to the column's real, authoritative comment
+ * text -- the caller should use this in place of whatever "details" string
+ * it was given, since that argument cannot be trusted for a direct UDF call.
+ * On failure, *error is set to a message safe to return to the caller.
+ */
+bool ValidateVectorIndexRequest(const char* vecid,
+                                const char* pkidcol,
+                                string& comment,
+                                string& error) {
+    string vid(vecid);
+    size_t p1 = vid.find('.');
+    size_t p2 = (p1 == string::npos) ? string::npos : vid.find('.', p1 + 1);
+    if (p1 == string::npos || p2 == string::npos) {
+        error =
+            "Please use the fully qualified vector column name: "
+            "<database>.<table>.<column>.";
+        return false;
+    }
+    string db = vid.substr(0, p1);
+    string table = vid.substr(p1 + 1, p2 - p1 - 1);
+    string column = vid.substr(p2 + 1);
+    string pkid(pkidcol ? pkidcol : "");
+
+    // MySQL identifiers are at most 64 characters / 256 bytes; reject
+    // anything longer outright rather than query information_schema for a
+    // name that could never legitimately match.
+    constexpr size_t kMaxIdentLen = 256;
+    if (db.size() > kMaxIdentLen || table.size() > kMaxIdentLen ||
+        column.size() > kMaxIdentLen || pkid.size() > kMaxIdentLen) {
+        error = "Vector column or id column name too long.";
+        return false;
+    }
+
+    if (!readConfigFile(myvector_config_file)) {
+        error = "Error loading config file for index validation.";
+        return false;
+    }
+    MyVectorConnConfig conn_cfg = getConfigSnapshot();
+
+    MYSQL mysql;
+    mysql_init(&mysql);
+    if (!mysql_real_connect(
+            &mysql,
+            conn_cfg.host.c_str(),
+            conn_cfg.user_id.c_str(),
+            conn_cfg.password.c_str(),
+            NULL,
+            (conn_cfg.port.length() ? atoi(conn_cfg.port.c_str()) : 0),
+            conn_cfg.socket.c_str(),
+            CLIENT_IGNORE_SIGPIPE)) {
+        error = string("Error connecting to validate vector index request: ") +
+                mysql_error(&mysql);
+        return false;
+    }
+
+    string edb = escape_sql_string_literal(db);
+    string etable = escape_sql_string_literal(table);
+    string ecolumn = escape_sql_string_literal(column);
+    string epkid = pkid.empty() ? string() : escape_sql_string_literal(pkid);
+
+    // Sized for the fixed SQL text plus 4 escaped identifiers at their worst
+    // case (kMaxIdentLen above), with headroom.
+    char query[2560];
+    if (!pkid.empty())
+        snprintf(query,
+                 sizeof(query),
+                 "SELECT column_name, column_comment FROM "
+                 "information_schema.columns WHERE table_schema='%s' AND "
+                 "table_name='%s' AND (column_name='%s' OR column_name='%s')",
+                 edb.c_str(),
+                 etable.c_str(),
+                 ecolumn.c_str(),
+                 epkid.c_str());
+    else
+        snprintf(query,
+                 sizeof(query),
+                 "SELECT column_name, column_comment FROM "
+                 "information_schema.columns WHERE table_schema='%s' AND "
+                 "table_name='%s' AND column_name='%s'",
+                 edb.c_str(),
+                 etable.c_str(),
+                 ecolumn.c_str());
+
+    bool found_column = false;
+    bool found_pkid = pkid.empty();
+    bool ok = false;
+    if (!mysql_real_query(&mysql, query, strlen(query))) {
+        MYSQL_RES* result = mysql_store_result(&mysql);
+        if (result) {
+            MYSQL_ROW row;
+            while ((row = mysql_fetch_row(result))) {
+                if (!row[0])
+                    continue;
+                if (column == row[0]) {
+                    found_column = true;
+                    if (row[1])
+                        comment = row[1];
+                } else if (!pkid.empty() && pkid == row[0]) {
+                    found_pkid = true;
+                }
+            }
+            mysql_free_result(result);
+            static const std::regex myvector_col_re("^\\s*MYVECTOR COLUMN",
+                                                     std::regex::icase);
+            if (!found_column)
+                error =
+                    "Vector column not found. Please use the fully qualified "
+                    "name: <database>.<table>.<column>.";
+            else if (!std::regex_search(comment, myvector_col_re))
+                error = "The specified column is not a MYVECTOR column.";
+            else if (!found_pkid)
+                error =
+                    "The specified id column was not found on the same "
+                    "table.";
+            else
+                ok = true;
+        } else {
+            error = string("Error validating vector index request: ") +
+                    mysql_error(&mysql);
+        }
+    } else {
+        error = string("Error validating vector index request: ") +
+                mysql_error(&mysql);
+    }
+
+    mysql_close(&mysql);
+    return ok;
 }
 
 /* BuildMyVectorIndexSQL - Build/Refresh the Vector Index! This function uses
@@ -1127,6 +1286,16 @@ void BuildMyVectorIndexSQL(const char* db,
 
     (void)mysql_autocommit(&mysql, false);
 
+    // Identifiers below come from the caller's own column COMMENT/options and
+    // the index name, not from this connection's own validated schema lookup
+    // (see myvector_open_index_impl) -- quote them as identifiers so they
+    // cannot break out of the generated SQL text.
+    string qdb = quote_identifier(db);
+    string qtable = quote_identifier(table);
+    string qidcol = quote_identifier(idcol);
+    string qveccol = quote_identifier(veccol);
+    string qtrackcol = quote_identifier(trackingColumn);
+
     char query[MYVECTOR_BUFF_SIZE];
 
     snprintf(
@@ -1139,8 +1308,8 @@ void BuildMyVectorIndexSQL(const char* db,
     snprintf(query,
              sizeof(query),
              "LOCK TABLES %s.%s READ",
-             db,
-             table);  // No DMLs during build.
+             qdb.c_str(),
+             qtable.c_str());  // No DMLs during build.
 
     if (mysql_real_query(&mysql, query, strlen(query))) {
         // TODO
@@ -1150,10 +1319,10 @@ void BuildMyVectorIndexSQL(const char* db,
     snprintf(query,
              sizeof(query),
              "SELECT %s, %s FROM %s.%s",
-             idcol,
-             veccol,
-             db,
-             table);
+             qidcol.c_str(),
+             qveccol.c_str(),
+             qdb.c_str(),
+             qtable.c_str());
 
     /// table has been locked, now we perform the timestamp related stuff
     unsigned long current_ts = time(NULL);
@@ -1166,9 +1335,9 @@ void BuildMyVectorIndexSQL(const char* db,
             whereClause,
             sizeof(whereClause),
             " WHERE unix_timestamp(%s) > %lu AND unix_timestamp(%s) <= %lu",
-            trackingColumn,
+            qtrackcol.c_str(),
             previous_ts,
-            trackingColumn,
+            qtrackcol.c_str(),
             current_ts);
         strcat(query, whereClause);
     }

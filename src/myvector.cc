@@ -2505,13 +2505,44 @@ void BuildMyVectorIndexSQL(const char* db,
                            AbstractVectorIndex* vi,
                            char* errorbuf);
 
+bool ValidateVectorIndexRequest(const char* vecid,
+                                const char* pkidcol,
+                                string& comment,
+                                string& error);
+
 void myvector_open_index_impl(char* vecid,
                               char* details,
                               char* pkidcol,
                               char* action,
                               char* extra,
-                              char* result) {
+                              char* result,
+                              bool validateAgainstSchema) {
     bool existing = true;
+
+    /* myvector_search_open_udf is SQL-registered like any ordinary function;
+     * nothing prevents a caller from invoking it directly instead of through
+     * MYVECTOR_INDEX_INTERNAL (sql/myvectorplugin.sql), which would otherwise
+     * be the only thing confirming `vecid` names a real MYVECTOR column and
+     * that `details`/`pkidcol` describe it truthfully. Re-derive the same
+     * facts here, from information_schema, for every externally-triggered
+     * call (validateAgainstSchema is false only for the plugin's own
+     * startup scan in OpenAllOnlineVectorIndexes, which already read this
+     * same comment from information_schema moments earlier). `details` is
+     * replaced with the column's real comment on success: a caller's own
+     * "details" string is never trusted past this point.
+     */
+    string validatedComment;
+    const char* effective_details = details;
+    if (validateAgainstSchema) {
+        string validationError;
+        if (!ValidateVectorIndexRequest(
+                vecid, pkidcol, validatedComment, validationError)) {
+            snprintf(result, 255, "ERROR: %.200s", validationError.c_str());
+            return;
+        }
+        effective_details = validatedComment.c_str();
+    }
+
     /* Admin operations usecases :-
 
      1. Load rows into base table -> call myvector("build"). If VectorIndex is
@@ -2532,7 +2563,7 @@ void myvector_open_index_impl(char* vecid,
      * the index is already open; status, drop and save do not, so an index
      * whose comment was later broken can still be dropped.
      */
-    string itype = MyVectorOptions(details).getOption("type");
+    string itype = MyVectorOptions(effective_details).getOption("type");
     bool readsComment = !strcmp(action, "build") || !strcmp(action, "refresh") ||
                         !strcmp(action, "load");
     AbstractVectorIndex* vi = nullptr;
@@ -2540,7 +2571,7 @@ void myvector_open_index_impl(char* vecid,
         vi = g_indexes.get(vecid);
     if (!vi) {
         if (isValidIndexType(itype))
-            vi = g_indexes.open(vecid, details, action);
+            vi = g_indexes.open(vecid, effective_details, action);
         if (!vi) {
             /* result is at least 255 bytes (MySQL's UDF string buffer) */
             if (itype.empty())
@@ -2567,7 +2598,7 @@ void myvector_open_index_impl(char* vecid,
     string trackingColumn = "";
     int nthreads = 0;
 
-    MyVectorOptions vo(details);
+    MyVectorOptions vo(effective_details);
     if (vo.getOption("track").length()) {
         trackingColumn = vo.getOption("track");
     }
@@ -2692,7 +2723,8 @@ PLUGIN_EXPORT char* myvector_search_open_udf(UDF_INIT* initid,
     char* result = initid->ptr;  // MYVECTOR_BUFF_SIZE bytes
     strcpy(result, "SUCCESS");
 
-    myvector_open_index_impl(vecid, details, pkidcol, action, extra, result);
+    myvector_open_index_impl(
+        vecid, details, pkidcol, action, extra, result, true);
 
     *length = strlen(result);
     return result;
