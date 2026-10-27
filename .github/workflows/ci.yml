@@ -458,8 +458,8 @@ jobs:
             mysql-version: '8.0'
           - mysql-tag: 'mysql-8.4.8'
             mysql-version: '8.4'
-          - mysql-tag: 'mysql-9.0.0'
-            mysql-version: '9.0'
+          - mysql-tag: 'mysql-9.7.0'
+            mysql-version: '9.7'
 
     steps:
     - name: Checkout MyVector Code
@@ -619,7 +619,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mysql-version: ['8.0', '8.4', '9.0']
+        # Matches the build job's "mysql-version" labels (8.0, 8.4, 9.7) so
+        # the myvector-mysql${{ matrix.mysql-version }}-linux artifact name
+        # below matches what that job uploaded.
+        mysql-version: ['8.0', '8.4', '9.7']
 
     steps:
     - name: Checkout
