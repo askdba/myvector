@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project overview
 
 MyVector adds vector similarity search (ANN/KNN) natively to MySQL. It is written in C++ and exposes UDFs and stored procedures. No external vector database is required. It ships as two build modes (see `docs/BUILD_MODES.md`):
-- **Plugin** (`INSTALL PLUGIN`, shared library `myvector.so`) — MySQL 8.0, 8.4, 9.0.
+- **Plugin** (`INSTALL PLUGIN`, shared library `myvector.so`) — MySQL 8.0, 8.4, 9.7.
 - **Component** (`INSTALL COMPONENT`, the forward path for new development) — MySQL 8.4, 9.7 (LTS), and 26.7 (Innovation).
 
 ## Build commands
@@ -164,7 +164,7 @@ MySQL Server
 ## CI / Release workflow
 
 Workflows under `.github/workflows/`:
-- **ci.yml** — builds against MySQL 8.0, 8.4, 9.0 and runs integration tests
+- **ci.yml** — builds against MySQL 8.0, 8.4, 9.7 and runs integration tests
 - **docker-publish.yml** — builds and pushes multi-arch Docker images; `workflow_dispatch` only, started by `release.yml` on `v*` tags (dispatching on a non-version ref is refused by its guard)
 - **linter.yml** — actionlint only (no super-linter); see lessons below
 - **release.yml** — release automation
