@@ -35,6 +35,7 @@
 #include <mysql_version.h>
 
 #include <cstring>
+#include <exception>
 #include <string>
 #include <thread>
 
@@ -161,8 +162,19 @@ static int myvector_sql_preparse(MYSQL_THD,
         return 0;
 
     std::string rewritten_query;
-    if (myvector_query_rewrite(std::string(event_parse->query.str),
-                               &rewritten_query)) {
+    bool rewritten;
+    try {
+        rewritten = myvector_query_rewrite(std::string(event_parse->query.str),
+                                           &rewritten_query);
+    } catch (const std::exception& e) {
+        my_plugin_log_message(&gplugin,
+                              MY_ERROR_LEVEL,
+                              "myvector_query_rewrite threw an exception (%s); "
+                              "leaving the query unrewritten.",
+                              e.what());
+        return 0;
+    }
+    if (rewritten) {
         char* rewritten_query_buf = static_cast<char*>(my_malloc(
             PSI_NOT_INSTRUMENTED, rewritten_query.length() + 1, MYF(MY_WME)));
         strcpy(rewritten_query_buf, rewritten_query.c_str());

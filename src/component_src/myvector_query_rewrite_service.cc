@@ -47,6 +47,7 @@
 #include <mysql/service_mysql_alloc.h>
 
 #include <cstring>
+#include <exception>
 #include <string>
 
 #include "my_inttypes.h"
@@ -71,7 +72,16 @@ bool Event_tracking_parse_implementation::callback(
     std::string original(data->query.str ? data->query.str : "",
                          data->query.length);
     std::string rewritten_query;
-    if (myvector_query_rewrite(original, &rewritten_query)) {
+    bool rewritten;
+    try {
+        rewritten = myvector_query_rewrite(original, &rewritten_query);
+    } catch (const std::exception&) {
+        // A parsing bug in the rewriter must not escape this callback and
+        // crash the server; leave the query unrewritten and let normal
+        // parsing/execution proceed (and fail there if it's truly invalid).
+        return false;
+    }
+    if (rewritten) {
         char* rewritten_query_buf = static_cast<char*>(my_malloc(
             PSI_NOT_INSTRUMENTED, rewritten_query.length() + 1, MYF(MY_WME)));
         if (!rewritten_query_buf)
