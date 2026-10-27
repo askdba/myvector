@@ -8,6 +8,9 @@
 #   scripts/test-online-dml.py          online DELETE/UPDATE (#188, #194), INT and
 #                                       BIGINT keys (#204), skip warnings (#205)
 #   scripts/test-distance-udf.py        myvector_distance NULL/errors (#170, #171)
+#   scripts/test-crash-regressions.py   malformed MYVECTOR_IS_ANN and a NULL
+#                                       vector row during index build no
+#                                       longer crash mysqld (audit run-1)
 #   scripts/test-index-governance.py    access-control bypass, SQL injection and
 #                                       path traversal in index build/governance
 #                                       are closed, ordinary workflow unaffected
@@ -105,7 +108,8 @@ jobs:
           for t in "test-filtered-ann.py" "test-filtered-ann-broad.py" \
                    "test-ef-search.py" "test-online-updates-idle.py" \
                    "test-online-dml.py" "test-online-dml.py --key-type bigint" \
-                   "test-distance-udf.py" "test-index-governance.py"; do
+                   "test-distance-udf.py" "test-crash-regressions.py" \
+                   "test-index-governance.py"; do
             read -r -a T <<< "$t"
             echo "::group::${t} (${KIND} ${MYSQL_VERSION})"
             if python3 "scripts/${T[0]}" "${ARGS[@]}" "${T[@]:1}"; then

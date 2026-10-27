@@ -1362,7 +1362,12 @@ void BuildMyVectorIndexSQL(const char* db,
         char* vec = row[1];
 
         if (!lengths[0] || !lengths[1] || !idval) {
-            // TODO
+            warning_print(
+                "Skipping row with NULL or empty id/vector column while "
+                "building index for %s.%s.",
+                db,
+                table);
+            continue;
         }
 
         vi->insertVector(vec, 0, atol(idval));  /// dim is already known by vi
