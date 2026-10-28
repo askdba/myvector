@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #include <atomic>
+#include <limits>
 #include <list>
 #include <map>
 #include <memory>
