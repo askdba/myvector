@@ -1939,6 +1939,13 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT* initid,
         *length = 0;
         return initid->ptr;
     }
+    /* get() already took the shared lock; every later return on this vi must
+     * go through something that releases it, so construct the guard before
+     * any check that can return -- a bare `return` here would leak the lock
+     * forever (no other path decrements it), hanging a future DROP/rebuild's
+     * lockExclusive() wait for readers to drain (review of audit run-1,
+     * Slice 3: PR #234). */
+    SharedLockGuard l(vi);
 
     /* args->lengths[2] is the query vector's true byte length; nothing above
      * checks it against what the index's own dimension requires before the
@@ -1954,8 +1961,6 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT* initid,
         *length = 0;
         return initid->ptr;
     }
-
-    SharedLockGuard l(vi);
 
     stringstream ss;
     if (searchvec) {
@@ -2101,8 +2106,19 @@ static bool myvector_construct_do_convert(char* ptr,
                 p++;
             char buff[64];
             size_t toklen = (size_t)(p - p1);
-            if (toklen >= sizeof(buff))
-                toklen = sizeof(buff) - 1;
+            /* A legitimate float literal never needs anywhere close to 63
+             * characters; reject instead of silently truncating and parsing
+             * whatever garbage is left -- atof() on a truncated giant digit
+             * string can overflow to +-Inf with *error left at 0 (success),
+             * corrupting later distance ranking instead of failing loudly
+             * (review of audit run-1, Slice 3: PR #234). */
+            if (toklen >= sizeof(buff)) {
+                MYVECTOR_UDF_FAIL("myvector_construct",
+                                  "numeric token too long (max %zu characters).",
+                                  sizeof(buff) - 1);
+                *error = 1;
+                return false;
+            }
             strncpy(buff, p1, toklen);
             buff[toklen] = 0;
             if (len + sizeof(FP32) > capacity) {
@@ -2161,8 +2177,21 @@ char* myvector_construct_bv(const std::string& srctype,
         retlen = srclen;
     } else if (srctype == "float") {
         int dim = MyVectorDimFromStorageLength(srclen);
+        /* dim <= 0 (e.g. srclen too short) must be rejected outright, not
+         * treated as "0 bytes needed": SQFloatVectorToBinaryVector's own
+         * memset(ivec, 0, dim / BITS_PER_BYTE) divides a signed dim by an
+         * unsigned constant, so a negative dim silently becomes a ~4-billion
+         * byte count instead of a negative one, overflowing dst far worse
+         * than any oversized-but-positive dim this check already catches
+         * (review of audit run-1, Slice 3: PR #234). */
+        if (dim <= 0) {
+            MYVECTOR_UDF_FAIL("myvector_construct",
+                              "input vector too short to derive a dimension.");
+            *error = 1;
+            return dst;
+        }
         unsigned long predicted_bytes =
-            (dim > 0) ? (((unsigned long)dim + 63) / 64) * sizeof(unsigned long) : 0;
+            (((unsigned long)dim + 63) / 64) * sizeof(unsigned long);
         if (predicted_bytes > capacity) {
             MYVECTOR_UDF_FAIL("myvector_construct",
                               "input vector too large: dim %d, max %lu bytes.",
@@ -2199,8 +2228,19 @@ char* myvector_construct_bv(const std::string& srctype,
                 ptr++;
             char buff[64];
             size_t toklen = (size_t)(ptr - p1);
-            if (toklen >= sizeof(buff))
-                toklen = sizeof(buff) - 1;
+            /* A legitimate 0-255 byte-value token never needs anywhere close
+             * to 63 characters; reject instead of silently truncating and
+             * parsing whatever garbage is left -- atoi() on a truncated giant
+             * digit string is UB on overflow (commonly, but not reliably,
+             * saturating) with *error left at 0 (success) either way (review
+             * of audit run-1, Slice 3: PR #234). */
+            if (toklen >= sizeof(buff)) {
+                MYVECTOR_UDF_FAIL("myvector_construct",
+                                  "byte-value token too long (max %zu characters).",
+                                  sizeof(buff) - 1);
+                *error = 1;
+                return dst;
+            }
 
             strncpy(buff, p1, toklen);
             buff[toklen] = 0;

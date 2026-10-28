@@ -126,15 +126,21 @@ def main():
         # decode as text, and not what these checks care about anyway.
 
         # --- 1a. oversized single token must not overflow the 64-byte stack
-        # buffer in the string tokenizer ------------------------------------
-        _, err = run("SELECT HEX(myvector_construct(CONCAT('[', REPEAT('1', 1000), ']')));")
-        record("1a. oversized numeric token in myvector_construct",
-               True, f"err={err!r}")
+        # buffer in the string tokenizer, and is now rejected rather than
+        # silently truncated and parsed (which could overflow atof() to Inf
+        # with *error left at 0 -- review of audit run-1, Slice 3) ----------
+        rows, err = run("SELECT HEX(myvector_construct(CONCAT('[', REPEAT('1', 1000), ']')));")
+        record("1a. oversized numeric token in myvector_construct is rejected",
+               rejected(rows, err), f"rows={rows} err={err!r}")
         assert_alive_and_responsive("1a")
 
-        # --- 1b. missing closing bracket must not scan past the NUL --------
+        # --- 1b. missing closing bracket must not scan past the NUL. Each
+        # individual token here is well within the 63-char limit, so this is
+        # just lenient parsing (accepted, not rejected) -- the only real
+        # requirement is that it doesn't scan past the string's end ---------
         _, err = run("SELECT HEX(myvector_construct('[1,2,3'));")
-        record("1b. unterminated literal in myvector_construct", True, f"err={err!r}")
+        record("1b. unterminated literal in myvector_construct doesn't crash",
+               True, f"err={err!r}")
         assert_alive_and_responsive("1b")
 
         # --- 1c. oversized raw bv input must not overflow the 128000-byte
@@ -203,6 +209,40 @@ def main():
         record("5. ordinary myvector_ann_set still returns a result",
                not nn_err and nn_rows and nn_rows[0] and nn_rows[0][0] == "[1]",
                f"rows={nn_rows}{' err=' + nn_err if nn_err else ''}")
+
+        # --- 6. HNSW_BV with a dim not a multiple of 8 must not reject a
+        # correctly-sized vector: the real per-vector storage size is
+        # floor(dim/8) bytes (matches HammingBinaryVectorSpace::data_size_ and
+        # the bv_literal() helper other tests already use); the length check
+        # added for finding #2 above must use the same floor, not a ceiling
+        # that would demand one byte more than any real vector ever has ----
+        BV_DIM = 20  # floor(20/8) = 2 bytes/vector; a ceiling would wrongly
+                     # demand 3 and reject every well-formed row
+        if component:
+            srv.sql(f"""CREATE TABLE tbv (id INT PRIMARY KEY,
+                v VARBINARY(64) NULL COMMENT 'MYVECTOR COLUMN """
+                    f"""type=hnsw_bv,dim={BV_DIM},size=100,idcol=id');""")
+        else:
+            srv.sql(f"""CREATE TABLE tbv (id INT PRIMARY KEY,
+                v MYVECTOR(type=HNSW_BV,dim={BV_DIM},size=100,idcol=id) NULL);""")
+        srv.sql("""INSERT INTO tbv VALUES
+            (1, myvector_construct('[10,20]', 'i=string,o=bv')),
+            (2, myvector_construct('[30,40]', 'i=string,o=bv'));""")
+        build_rows, build_err = run(
+            "CALL mysql.myvector_index_build('vtest.tbv.v','id');")
+        record("6a. HNSW_BV build with dim not a multiple of 8 completes",
+               not build_err and build_rows and build_rows[0]
+               and build_rows[0][0].startswith("SUCCESS"),
+               build_err or f"rows={build_rows}")
+        n = wait_rows("vtest.tbv.v", 2)
+        record("6b. both correctly-sized (floor(dim/8)-byte) rows are "
+               "indexed, not rejected as undersized",
+               n == 2, f"Current Rows = {n} (want 2)")
+        rows, err = run(
+            "SELECT myvector_ann_set('vtest.tbv.v', 'id', "
+            "myvector_construct('[10,20]', 'i=string,o=bv'), 'nn=2');")
+        record("6c. myvector_ann_set accepts a correctly-sized HNSW_BV query vector",
+               not err and rows and rows[0], f"rows={rows}{' err=' + err if err else ''}")
     finally:
         if not args.keep:
             srv.remove()

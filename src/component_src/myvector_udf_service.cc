@@ -240,6 +240,13 @@ char* myvector_ann_set(UDF_INIT* initid,
         *is_null = 1;
         return initid->ptr;
     }
+    /* get() already took the shared lock; every later return on this vi must
+     * go through something that releases it, so construct the guard before
+     * any check that can return -- a bare `return` here would leak the lock
+     * forever (no other path decrements it), hanging a future DROP/rebuild's
+     * lockExclusive() wait for readers to drain (review of audit run-1,
+     * Slice 3: PR #234). */
+    SharedLockGuard l(vi);
 
     /* args->lengths[2] is the query vector's true byte length; nothing above
      * checks it against what the index's own dimension requires before the
@@ -255,7 +262,6 @@ char* myvector_ann_set(UDF_INIT* initid,
         return initid->ptr;
     }
 
-    SharedLockGuard l(vi);
     std::stringstream ss;
     if (searchvec) {
         std::vector<KeyTypeInteger> result_keys;
@@ -347,6 +353,26 @@ char* myvector_construct_bv(const std::string& srctype,
         retlen = srclen;
     } else if (srctype == "float") {
         int dim = MyVectorDimFromStorageLength(srclen);
+        /* Validate the predicted output size BEFORE calling
+         * SQFloatVectorToBinaryVector, not after: that function writes
+         * directly into dst (including an unconditional memset sized from
+         * dim) with no capacity parameter of its own, so checking retlen
+         * afterward cannot prevent an overflow that already happened. Also
+         * reject dim <= 0 outright -- SQFloatVectorToBinaryVector's own
+         * memset(ivec, 0, (dim + BITS_PER_BYTE - 1) / BITS_PER_BYTE) mixes a
+         * signed dim with the unsigned BITS_PER_BYTE constant, so a negative
+         * dim does not reliably behave like a small/zero one (review of
+         * audit run-1, Slice 3: PR #234). */
+        if (dim <= 0) {
+            *error = 1;
+            return nullptr;
+        }
+        unsigned long predicted_bytes =
+            (((unsigned long)dim + 63) / 64) * sizeof(unsigned long);
+        if (predicted_bytes > max_vector_len) {
+            *error = 1;
+            return nullptr;
+        }
         retlen =
             SQFloatVectorToBinaryVector((FP32*)src, (unsigned long*)dst, dim);
         if ((unsigned long)retlen > max_vector_len) {
@@ -505,8 +531,18 @@ static bool myvector_construct_do_convert(char* ptr,
                 p++;
             char buff[64];
             size_t len = (size_t)(p - p1);
-            if (len >= sizeof(buff))
-                len = sizeof(buff) - 1;
+            /* A legitimate float literal never needs anywhere close to 63
+             * characters; reject instead of silently truncating and parsing
+             * whatever garbage is left -- atof() on a truncated giant digit
+             * string can overflow to +-Inf with *error left at 0 (success),
+             * corrupting later distance ranking instead of failing loudly
+             * (review of audit run-1, Slice 3: PR #234). */
+            if (len >= sizeof(buff)) {
+                MYVEC_LOG_ERROR("Numeric token too long (max %zu characters).",
+                                sizeof(buff) - 1);
+                *error = 1;
+                return false;
+            }
             memcpy(buff, p1, len);
             buff[len] = '\0';
 

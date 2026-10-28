@@ -219,16 +219,20 @@ MyVectorDistanceFn myvector_distance_fn(const char* name, size_t len);
 constexpr unsigned int BITS_PER_BYTE = 8;
 
 /* The exact byte length a full vector for this index must have: dim*sizeof(FP32)
- * for FP32-based indexes (KNN/HNSW), ceil(dim/8) bytes for HNSW_BV (bit-packed
- * Hamming vectors). Every caller that treats a raw, externally-sized buffer
+ * for FP32-based indexes (KNN/HNSW), dim/8 bytes for HNSW_BV (bit-packed
+ * Hamming vectors) -- floor, matching HammingBinaryVectorSpace::data_size_ and
+ * MyVectorBVStorageLength(), the actual ground truth for how many bytes HNSW_BV
+ * reads/stores per vector (both assume dim is a multiple of 8; an earlier
+ * version of this helper used ceil(dim/8), which rejected every well-formed
+ * vector on a dim not a multiple of 8 as "too short" -- review of audit run-1,
+ * Slice 3: PR #234). Every caller that treats a raw, externally-sized buffer
  * (a UDF argument, a binlog row image, a SELECT result) as this index's fixed-
  * stride vector array must check its real length against this first -- neither
  * insertVector() nor searchVectorNN() can do so themselves, since they only see
  * a bare pointer with no length (audit run-1, Slice 3). */
 inline unsigned long MyVectorExpectedVectorBytes(AbstractVectorIndex* vi) {
     if (vi->getType() == "HNSW_BV")
-        return (unsigned long)((vi->getDimension() + BITS_PER_BYTE - 1) /
-                               BITS_PER_BYTE);
+        return (unsigned long)(vi->getDimension() / BITS_PER_BYTE);
     return (unsigned long)vi->getDimension() * sizeof(FP32);
 }
 
