@@ -240,6 +240,21 @@ char* myvector_ann_set(UDF_INIT* initid,
         *is_null = 1;
         return initid->ptr;
     }
+
+    /* args->lengths[2] is the query vector's true byte length; nothing above
+     * checks it against what the index's own dimension requires before the
+     * fixed-stride reads below (OOB read otherwise -- audit run-1). Mirrors
+     * myvector_distance's dim1==dim2 check. */
+    unsigned long expected_bytes = MyVectorExpectedVectorBytes(vi);
+    if (args->lengths[2] < expected_bytes) {
+        MYVEC_LOG_ERROR("myvector_ann_set: query vector is %lu bytes, index "
+                        "'%s' requires %lu.",
+                        args->lengths[2], col, expected_bytes);
+        *error = 1;
+        *is_null = 1;
+        return initid->ptr;
+    }
+
     SharedLockGuard l(vi);
     std::stringstream ss;
     if (searchvec) {

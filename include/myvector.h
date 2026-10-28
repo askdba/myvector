@@ -218,6 +218,20 @@ MyVectorDistanceFn myvector_distance_fn(const char* name, size_t len);
 /** Bit packing for binary vectors (1 bit per dimension). */
 constexpr unsigned int BITS_PER_BYTE = 8;
 
+/* The exact byte length a full vector for this index must have: dim*sizeof(FP32)
+ * for FP32-based indexes (KNN/HNSW), ceil(dim/8) bytes for HNSW_BV (bit-packed
+ * Hamming vectors). Every caller that treats a raw, externally-sized buffer
+ * (a UDF argument, a binlog row image, a SELECT result) as this index's fixed-
+ * stride vector array must check its real length against this first -- neither
+ * insertVector() nor searchVectorNN() can do so themselves, since they only see
+ * a bare pointer with no length (audit run-1, Slice 3). */
+inline unsigned long MyVectorExpectedVectorBytes(AbstractVectorIndex* vi) {
+    if (vi->getType() == "HNSW_BV")
+        return (unsigned long)((vi->getDimension() + BITS_PER_BYTE - 1) /
+                               BITS_PER_BYTE);
+    return (unsigned long)vi->getDimension() * sizeof(FP32);
+}
+
 /** RAII shared-lock guard for AbstractVectorIndex. Release-only: caller
  * (get() or open()) must acquire lockShared() before returning the pointer.
  * Constructor does not acquire to avoid double-lock when used with get().

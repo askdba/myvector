@@ -1939,6 +1939,22 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT* initid,
         *length = 0;
         return initid->ptr;
     }
+
+    /* args->lengths[2] is the query vector's true byte length; nothing above
+     * checks it against what the index's own dimension requires before the
+     * fixed-stride reads below (OOB read otherwise -- audit run-1). Mirrors
+     * myvector_distance's dim1==dim2 check. */
+    unsigned long expected_bytes = MyVectorExpectedVectorBytes(vi);
+    if (args->lengths[2] < expected_bytes) {
+        MYVECTOR_UDF_FAIL("myvector_ann_set",
+                          "query vector is %lu bytes, index '%s' requires %lu.",
+                          args->lengths[2], col, expected_bytes);
+        *error = 1;
+        *is_null = 1;
+        *length = 0;
+        return initid->ptr;
+    }
+
     SharedLockGuard l(vi);
 
     stringstream ss;
@@ -2016,6 +2032,17 @@ static bool myvector_construct_do_convert(char* ptr,
                                           unsigned long* retlen,
                                           unsigned char* is_null,
                                           unsigned char* error) {
+    /* retvec always points sizeof(size_t) bytes into the MYVECTOR_CONSTRUCT_MAX_LEN
+     * buffer allocated by myvector_construct_init (both call sites use that same
+     * allocation) -- trailer is the metadata+checksum this function itself appends
+     * below, so every write site must stay within capacity, not MYVECTOR_CONSTRUCT_MAX_LEN. */
+#if MYSQL_VERSION_ID < 90000
+    const unsigned long trailer = sizeof(unsigned int) + sizeof(ha_checksum);
+#else
+    const unsigned long trailer = 0;
+#endif
+    const unsigned long capacity = MYVECTOR_CONSTRUCT_MAX_LEN - trailer;
+
     bool skipConvert = false;
     if (!opt || !optlen)
         opt = "i=string,o=float";
@@ -2035,9 +2062,16 @@ static bool myvector_construct_do_convert(char* ptr,
         }
     }
 
-    int len = 0;
+    unsigned long len = 0;
     if (skipConvert) {
         if ((ptrlen % sizeof(FP32)) != 0) {
+            *error = 1;
+            return false;
+        }
+        if (ptrlen > capacity) {
+            MYVECTOR_UDF_FAIL("myvector_construct",
+                              "input vector too large: %lu bytes, max %lu.",
+                              ptrlen, capacity);
             *error = 1;
             return false;
         }
@@ -2063,11 +2097,21 @@ static bool myvector_construct_do_convert(char* ptr,
             while (*p && (*p == ' ' || *p == ','))
                 p++;
             char* p1 = p;
-            while (*p != ' ' && *p != ',' && *p != endch)
+            while (*p && *p != ' ' && *p != ',' && *p != endch)
                 p++;
             char buff[64];
-            strncpy(buff, p1, (p - p1));
-            buff[(int)(p - p1)] = 0;
+            size_t toklen = (size_t)(p - p1);
+            if (toklen >= sizeof(buff))
+                toklen = sizeof(buff) - 1;
+            strncpy(buff, p1, toklen);
+            buff[toklen] = 0;
+            if (len + sizeof(FP32) > capacity) {
+                MYVECTOR_UDF_FAIL("myvector_construct",
+                                  "input vector too large: max %lu bytes.",
+                                  capacity);
+                *error = 1;
+                return false;
+            }
             FP32 fval = atof(buff);
             memcpy(&retvec[len], &fval, sizeof(FP32));
             len += sizeof(FP32);
@@ -2093,14 +2137,39 @@ char* myvector_construct_bv(const std::string& srctype,
                             unsigned long* length,
                             unsigned char* is_null,
                             unsigned char* error) {
-    int retlen = 0;
+    /* dst always points sizeof(size_t) bytes into the same
+     * MYVECTOR_CONSTRUCT_MAX_LEN-capacity buffer myvector_construct_do_convert
+     * writes into -- see its own capacity comment. */
+#if MYSQL_VERSION_ID < 90000
+    const unsigned long trailer = sizeof(unsigned int) + sizeof(ha_checksum);
+#else
+    const unsigned long trailer = 0;
+#endif
+    const unsigned long capacity = MYVECTOR_CONSTRUCT_MAX_LEN - trailer;
+    unsigned long retlen = 0;
 
     if (srctype == "bv") {
+        if (srclen > capacity) {
+            MYVECTOR_UDF_FAIL("myvector_construct",
+                              "input vector too large: %lu bytes, max %lu.",
+                              srclen, capacity);
+            *error = 1;
+            return dst;
+        }
         memcpy(
             dst, src, srclen);  // src is bytes representing the binary vector
         retlen = srclen;
     } else if (srctype == "float") {
         int dim = MyVectorDimFromStorageLength(srclen);
+        unsigned long predicted_bytes =
+            (dim > 0) ? (((unsigned long)dim + 63) / 64) * sizeof(unsigned long) : 0;
+        if (predicted_bytes > capacity) {
+            MYVECTOR_UDF_FAIL("myvector_construct",
+                              "input vector too large: dim %d, max %lu bytes.",
+                              dim, capacity);
+            *error = 1;
+            return dst;
+        }
         retlen =
             SQFloatVectorToBinaryVector((FP32*)src, (unsigned long*)dst, dim);
     } else if (srctype == "string") {
@@ -2126,13 +2195,23 @@ char* myvector_construct_bv(const std::string& srctype,
             while (*ptr && (*ptr == ' ' || *ptr == ','))
                 ptr++;
             char* p1 = ptr;
-            while (*ptr != ' ' && *ptr != ',' && *ptr != endch)
+            while (*ptr && *ptr != ' ' && *ptr != ',' && *ptr != endch)
                 ptr++;
             char buff[64];
+            size_t toklen = (size_t)(ptr - p1);
+            if (toklen >= sizeof(buff))
+                toklen = sizeof(buff) - 1;
 
-            strncpy(buff, p1, (ptr - p1));
-            buff[(int)(ptr - p1)] = 0;
+            strncpy(buff, p1, toklen);
+            buff[toklen] = 0;
 
+            if (retlen >= capacity) {
+                MYVECTOR_UDF_FAIL("myvector_construct",
+                                  "input vector too large: max %lu bytes.",
+                                  capacity);
+                *error = 1;
+                return dst;
+            }
             dst[retlen] = (unsigned char)(atoi(buff));
 
             retlen += sizeof(unsigned char);
@@ -2814,6 +2893,14 @@ PLUGIN_EXPORT long long myvector_search_add_row_udf(UDF_INIT* initid,
 
     AbstractVectorIndex* vi = (AbstractVectorIndex*)(initid->ptr);
     if (vi) {
+        if (args->lengths[3] < MyVectorExpectedVectorBytes(vi)) {
+            MYVEC_LOG_ERROR("Vector too short for index (%lu bytes, need %lu)"
+                            " (pkid=%lld).", args->lengths[3],
+                            MyVectorExpectedVectorBytes(vi), pkid);
+            *is_null = 1;
+            *error = 1;
+            return 0;
+        }
         if (vi->isCosineMetric() && isZeroVector((const FP32*)vecval, dims)) {
             MYVEC_LOG_ERROR("Zero-magnitude vector rejected for cosine index"
                             " (pkid=%lld).", pkid);
@@ -2956,6 +3043,16 @@ void myvector_table_op(const string& dbname,
         if (isAfter(binlogfile, binlogpos, binlogfileold, binlogposold)) {
             if (isDelete) {
                 vi->deleteVector(pkid);  /// false if the key was not indexed
+            } else if (vec.size() < MyVectorExpectedVectorBytes(vi)) {
+                /* A plain INSERT/UPDATE with ordinary privilege can write any
+                 * byte length to the tracked column; insertVector() has no way
+                 * to see vec's real size from the raw pointer it receives, so
+                 * this is the only place that can catch an undersized vector
+                 * before it causes a fixed-stride OOB read (audit run-1). */
+                MYVEC_LOG_WARN("Skipping undersized vector (%zu bytes, need %lu)"
+                               " for pkid=%zu, row is in table but not in index.",
+                               vec.size(), MyVectorExpectedVectorBytes(vi),
+                               (size_t)pkid);
             } else if (vi->isCosineMetric() &&
                 isZeroVector(reinterpret_cast<const FP32*>(vec.data()),
                              vi->getDimension())) {
