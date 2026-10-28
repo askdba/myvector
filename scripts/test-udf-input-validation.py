@@ -134,13 +134,13 @@ def main():
                rejected(rows, err), f"rows={rows} err={err!r}")
         assert_alive_and_responsive("1a")
 
-        # --- 1b. missing closing bracket must not scan past the NUL. Each
-        # individual token here is well within the 63-char limit, so this is
-        # just lenient parsing (accepted, not rejected) -- the only real
-        # requirement is that it doesn't scan past the string's end ---------
-        _, err = run("SELECT HEX(myvector_construct('[1,2,3'));")
-        record("1b. unterminated literal in myvector_construct doesn't crash",
-               True, f"err={err!r}")
+        # --- 1b. missing closing bracket must not scan past the end of the
+        # argument's real length (not just rely on finding a NUL byte -- not
+        # guaranteed for a BLOB/VARBINARY argument) and must now be rejected
+        # rather than silently accepted (review of audit run-1, Slice 3) ----
+        rows, err = run("SELECT HEX(myvector_construct('[1,2,3'));")
+        record("1b. unterminated literal in myvector_construct is rejected",
+               rejected(rows, err), f"rows={rows} err={err!r}")
         assert_alive_and_responsive("1b")
 
         # --- 1c. oversized raw bv input must not overflow the 128000-byte
@@ -157,6 +157,25 @@ def main():
         record("1d. oversized i=float,o=float myvector_construct input is rejected",
                rejected(rows, err), f"rows={rows} err={err!r}")
         assert_alive_and_responsive("1d")
+
+        # --- 1e. a non-string first argument must be rejected outright: MySQL
+        # does not maintain args->lengths[] for a numeric argument, so the
+        # i=float path could derive a dim from a "length" that has nothing to
+        # do with the 8-byte buffer args->args[0] actually points to (review
+        # of audit run-1, Slice 3) -------------------------------------------
+        rows, err = run("SELECT HEX(myvector_construct(12345));")
+        record("1e. a non-string myvector_construct argument is rejected",
+               rejected(rows, err), f"rows={rows} err={err!r}")
+        assert_alive_and_responsive("1e")
+
+        # --- 1f. an out-of-range byte-value token must be rejected, not
+        # silently narrowed by an unchecked atoi()/atof() (review of audit
+        # run-1, Slice 3) -----------------------------------------------------
+        rows, err = run(
+            "SELECT HEX(myvector_construct('[9999999999]', 'i=string,o=bv'));")
+        record("1f. an out-of-range byte-value token is rejected",
+               rejected(rows, err), f"rows={rows} err={err!r}")
+        assert_alive_and_responsive("1f")
 
         # --- Set up an index for the remaining checks -----------------------
         if component:
@@ -192,6 +211,17 @@ def main():
         record("3a. myvector_ann_set with an undersized query vector is rejected",
                rejected(rows, err), f"rows={rows} err={err!r}")
         assert_alive_and_responsive("3a")
+
+        # --- 3b. a numeric (non-string) query-vector argument must also be
+        # rejected: MySQL does not maintain args->lengths[] for it, so the
+        # length check above could otherwise pass on a bogus "length" while
+        # args->args[2] only ever holds the 8-byte numeric value (review of
+        # audit run-1, Slice 3) -----------------------------------------------
+        rows, err = run(
+            "SELECT myvector_ann_set('vtest.t.v', 'id', 1234567890123, 'nn=5');")
+        record("3b. myvector_ann_set with a numeric query-vector argument is rejected",
+               rejected(rows, err), f"rows={rows} err={err!r}")
+        assert_alive_and_responsive("3b")
 
         # --- 4. the real-time binlog apply path (myvector_table_op) must also
         # skip an undersized row written directly (bypassing myvector_construct),
