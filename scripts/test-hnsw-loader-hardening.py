@@ -76,10 +76,11 @@ ROWS = 300   # enough rows that at least one node almost certainly gets
 #   maxlevel_              int      @48
 #   enterpoint_node_       u32      @52
 #   maxM_                  size_t   @56
+#   maxM0_                 size_t   @64
 #   ... (header continues; not needed below)
-OFF_MAX_ELEMENTS = 8
 OFF_CUR_ELEMENT_COUNT = 16
 OFF_LABEL_OFFSET = 32
+OFF_MAXM0 = 64
 
 
 def main():
@@ -252,12 +253,52 @@ def main():
                        "(looked for the rejection message in the server log)")
                 restore()
 
-            # --- 5. sanity: after all the corrupt-reload cycles, a plain
+                # --- 4c. a .links nodeID within capacity (max_elements_,
+                # SIZE above) but beyond the real element count
+                # (cur_element_count, ROWS above) must also be rejected: a
+                # real save never writes a record for a nodeID that isn't an
+                # actual element, and clear() only frees linkLists_[i] for
+                # i < cur_element_count, so this would otherwise leak a
+                # buffer nothing ever frees (review of audit run-1, Slice 4:
+                # PR #235) ---------------------------------------------------
+                work = os.path.join(tmp, "e.links")
+                idle.sh(["cp", backup_links, work])
+                with open(work, "r+b") as f:
+                    f.write(struct.pack("<II", ROWS + 50, link_list_size))
+                docker_cp_in(work, linksfile)
+                reload_index()
+                assert_alive_and_responsive(
+                    "4c. in-capacity but out-of-count .links nodeID")
+                log = log_tail()
+                record("4d. corruption is logged, not silently accepted",
+                       "nodeID out of range" in log
+                       or "Error loading hnsw index" in log,
+                       "(looked for the rejection message in the server log)")
+                restore()
+
+            # --- 5. maxM0_ chosen to overflow size_links_level0_'s
+            # computation (maxM0_*sizeof(tableint)+sizeof(linklistsizeint))
+            # must be rejected before that wrapped value is trusted to size
+            # the per-element stride (review of audit run-1, Slice 4: PR #235)
+            work = os.path.join(tmp, "f.hnsw.index")
+            idle.sh(["cp", backup_index, work])
+            patch_header(work, OFF_MAXM0, (1 << 62) - 1)
+            docker_cp_in(work, indexfile)
+            reload_index()
+            assert_alive_and_responsive("5a. maxM0_ overflow")
+            log = log_tail()
+            record("5b. corruption is logged, not silently accepted",
+                   "maxM0_/maxM_ overflow" in log
+                   or "Error loading hnsw index" in log,
+                   "(looked for the rejection message in the server log)")
+            restore()
+
+            # --- 6. sanity: after all the corrupt-reload cycles, a plain
             # rebuild from the original (never-corrupted) table data works -
             reload_index()
             rebuild_rows = srv.sql("CALL mysql.myvector_index_build('vtest.t.v','id');")
             n = idle.current_rows(srv, "vtest.t.v")
-            record("5. the index is fully usable again after restoring the "
+            record("6. the index is fully usable again after restoring the "
                    "real files and rebuilding",
                    rebuild_rows and rebuild_rows[0]
                    and rebuild_rows[0][0].startswith("SUCCESS") and n == ROWS,

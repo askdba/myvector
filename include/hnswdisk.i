@@ -929,6 +929,23 @@
         fstdistfunc_ = s->get_dist_func();
         dist_func_param_ = s->get_dist_func_param();
 
+        /* maxM0_/maxM_ are also untrusted file fields: size_links_level0_ /
+         * size_links_per_element_ below multiply them by sizeof(tableint) and
+         * add sizeof(linklistsizeint), so a maxM0_/maxM_ chosen to make that
+         * wrap mod SIZE_MAX would make the consistency check just below pass
+         * (an attacker controls both sides of it) while silently shrinking
+         * the real per-element stride -- e.g. to 0 -- so a later, perfectly
+         * ordinary INSERT's mutuallyConnectNewElement (hnswdisk.h), which
+         * still uses the raw maxM0_/maxM_ as its neighbor-count ceiling,
+         * writes far more neighbor ids than that stride's slot actually
+         * holds (review of audit run-1, Slice 4: PR #235). */
+        if (maxM0_ > (std::numeric_limits<size_t>::max() - sizeof(linklistsizeint)) /
+                         sizeof(tableint) ||
+            maxM_ > (std::numeric_limits<size_t>::max() - sizeof(linklistsizeint)) /
+                        sizeof(tableint))
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported (maxM0_/maxM_ overflow)");
+
         /* offsetData_/label_offset_/size_links_level0_ are pure functions of
          * maxM0_ and data_size_ (see the constructor's identical arithmetic),
          * never independent state -- so recompute them instead of trusting
@@ -1013,33 +1030,59 @@
         if (!inputLinksDir.is_open() || !inputLinksData.is_open()) {
             throw std::runtime_error("Cannot open file");
         }
-        size_t current_data_pos = 0;
-        while (inputLinksDir.good()) {
-            unsigned int nodeID = 0,linkListSize = 0;
-            readBinaryPOD(inputLinksDir, nodeID);
-            readBinaryPOD(inputLinksDir, linkListSize);
+        /* By this point data_level0_memory_/linkLists_ are both allocated and
+         * every linkLists_[i] for i < cur_element_count is either nullptr or
+         * a valid pointer matching element_levels_[i] -- exactly clear()'s
+         * own precondition. A throw partway through this loop (a corrupted
+         * record a few iterations in, say) would otherwise leave every
+         * buffer already malloc'd by prior iterations permanently leaked:
+         * this constructor never completes, so the destructor never runs
+         * either (review of audit run-1, Slice 4: PR #235). */
+        try {
+            size_t current_data_pos = 0;
+            while (inputLinksDir.good()) {
+                unsigned int nodeID = 0,linkListSize = 0;
+                readBinaryPOD(inputLinksDir, nodeID);
+                readBinaryPOD(inputLinksDir, linkListSize);
 
-            if (!inputLinksDir.good() || !linkListSize)
-              break;
+                if (!inputLinksDir.good() || !linkListSize)
+                  break;
 
-            /* nodeID comes straight from the .links file via readBinaryPOD,
-             * with no bound check -- element_levels_ and linkLists_ are both
-             * allocated to exactly max_elements entries, so an out-of-range
-             * nodeID here is a file-controlled out-of-bounds heap write
-             * (audit run-1, Slice 4). */
-            if (nodeID >= max_elements)
-                throw std::runtime_error(
-                    "Index links file seems to be corrupted "
-                    "(nodeID out of range)");
+                /* nodeID comes straight from the .links file via readBinaryPOD,
+                 * with no bound check -- element_levels_ and linkLists_ are both
+                 * allocated to exactly max_elements entries, so an out-of-range
+                 * nodeID here is a file-controlled out-of-bounds heap write
+                 * (audit run-1, Slice 4). Bound against cur_element_count, not
+                 * max_elements: a real save never writes a link record for a
+                 * nodeID that is not an actual element, and clear() only frees
+                 * linkLists_[i] for i < cur_element_count, so an in-capacity but
+                 * out-of-count nodeID would otherwise malloc a buffer nothing
+                 * ever frees again (review of audit run-1, Slice 4: PR #235). */
+                if (nodeID >= cur_element_count)
+                    throw std::runtime_error(
+                        "Index links file seems to be corrupted "
+                        "(nodeID out of range)");
 
-            element_levels_[nodeID] = linkListSize / size_links_per_element_;
-            linkLists_[nodeID] = (char *) malloc(linkListSize);
-            if (linkLists_[nodeID] == nullptr)
-               throw std::runtime_error("Not enough memory: loadIndex failed to allocate linklist");
-            inputLinksData.read(linkLists_[nodeID], linkListSize);
-            m_linksOffsetsInFile[nodeID] = current_data_pos;
-            current_data_pos = current_data_pos + linkListSize;
-        } // while
+                element_levels_[nodeID] = linkListSize / size_links_per_element_;
+                linkLists_[nodeID] = (char *) malloc(linkListSize);
+                if (linkLists_[nodeID] == nullptr)
+                   throw std::runtime_error("Not enough memory: loadIndex failed to allocate linklist");
+                inputLinksData.read(linkLists_[nodeID], linkListSize);
+                /* A .links.data sidecar shorter than what .links declares would
+                 * otherwise leave the tail of this buffer as uninitialized heap
+                 * memory, later read as neighbor ids during ordinary graph
+                 * traversal (review of audit run-1, Slice 4: PR #235). */
+                if (!inputLinksData)
+                    throw std::runtime_error(
+                        "Index links data file seems to be corrupted "
+                        "(short read)");
+                m_linksOffsetsInFile[nodeID] = current_data_pos;
+                current_data_pos = current_data_pos + linkListSize;
+            } // while
+        } catch (...) {
+            clear();
+            throw;
+        }
 
         for (size_t i = 0; i < cur_element_count; i++) {
             if (isMarkedDeleted(i)) {
