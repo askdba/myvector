@@ -57,6 +57,11 @@ SOURCE uninstall.sql;          -- DROP DATABASE mysql_mcp
 
 mysql-mcp-server vendors these files; `mysql-mcp-server install-schema` runs the same script.
 
+Upgrading while servers are running is safe. If a mysql-mcp-server finds a procedure
+missing (error 1305, for example halfway through an upgrade) or `EXECUTE` revoked (1370),
+it logs a warning, stops using the pack on that connection and falls back to its own SQL.
+It picks the pack up again on its next restart.
+
 ### Design
 
 - **`SQL SECURITY INVOKER`** everywhere: a caller sees only what its own grants allow. MCP
