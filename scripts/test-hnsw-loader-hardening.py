@@ -80,6 +80,7 @@ ROWS = 300   # enough rows that at least one node almost certainly gets
 #   ... (header continues; not needed below)
 OFF_CUR_ELEMENT_COUNT = 16
 OFF_LABEL_OFFSET = 32
+OFF_ENTERPOINT_NODE = 52
 OFF_MAXM0 = 64
 
 
@@ -293,12 +294,30 @@ def main():
                    "(looked for the rejection message in the server log)")
             restore()
 
-            # --- 6. sanity: after all the corrupt-reload cycles, a plain
+            # --- 6. enterpoint_node_ out of range must be rejected: unlike
+            # every other case above, this one is dereferenced unconditionally
+            # on the very first search after a load that reported success --
+            # no insert/update needed to reach it (review of audit run-1,
+            # Slice 4: PR #235) --------------------------------------------
+            work = os.path.join(tmp, "g.hnsw.index")
+            idle.sh(["cp", backup_index, work])
+            patch_header(work, OFF_ENTERPOINT_NODE, 0xFFFFFFFF, size=4)
+            docker_cp_in(work, indexfile)
+            reload_index()
+            assert_alive_and_responsive("6a. enterpoint_node_ out of range")
+            log = log_tail()
+            record("6b. corruption is logged, not silently accepted",
+                   "enterpoint_node_ out of range" in log
+                   or "Error loading hnsw index" in log,
+                   "(looked for the rejection message in the server log)")
+            restore()
+
+            # --- 7. sanity: after all the corrupt-reload cycles, a plain
             # rebuild from the original (never-corrupted) table data works -
             reload_index()
             rebuild_rows = srv.sql("CALL mysql.myvector_index_build('vtest.t.v','id');")
             n = idle.current_rows(srv, "vtest.t.v")
-            record("6. the index is fully usable again after restoring the "
+            record("7. the index is fully usable again after restoring the "
                    "real files and rebuilding",
                    rebuild_rows and rebuild_rows[0]
                    and rebuild_rows[0][0].startswith("SUCCESS") and n == ROWS,
