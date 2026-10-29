@@ -164,7 +164,7 @@ MySQL Server
 ## CI / Release workflow
 
 Workflows under `.github/workflows/`:
-- **ci.yml** — builds against MySQL 8.0, 8.4, 9.7 and runs integration tests
+- **ci.yml** — builds against MySQL 8.0, 8.4, 9.7 and runs integration tests; also builds and tests the component against MySQL 26.10 (non-blocking, `continue-on-error`)
 - **docker-publish.yml** — builds and pushes multi-arch Docker images; `workflow_dispatch` only, started by `release.yml` on `v*` tags (dispatching on a non-version ref is refused by its guard)
 - **linter.yml** — actionlint only (no super-linter); see lessons below
 - **release.yml** — release automation
