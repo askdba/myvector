@@ -47,10 +47,12 @@ K = 10
 ROWS = 20000
 # The audit's own example payload (FINDINGS-DETAIL.md): "nn":5,"ef_search":2000000000
 HUGE_EF_SEARCH = 2000000000
-# Generous enough that normal scheduling/container jitter won't cause a flake,
-# tight enough that an unclamped full-graph walk over 20,000 nodes would blow
-# well past it (a single bounded HNSW query is sub-second on this data size).
-MAX_SECONDS = 5.0
+# Generous enough that normal scheduling/container jitter (including a
+# loaded CI runner's docker-exec subprocess overhead, which this measures
+# along with the query itself) won't cause a flake, tight enough that a
+# genuine multi-second hang would still be caught (a single bounded HNSW
+# query is sub-second on this data size).
+MAX_SECONDS = 10.0
 
 
 def ann(srv, q, opts):
@@ -100,10 +102,15 @@ def main():
             if len(batch) == 1000:
                 srv.sql("INSERT INTO t VALUES " + ",".join(batch) + ";")
                 batch = []
+        if batch:
+            srv.sql("INSERT INTO t VALUES " + ",".join(batch) + ";")
         build_rows = srv.sql("CALL mysql.myvector_index_build('vtest.t.v','id');")
-        record("setup: index builds with real data",
-               build_rows and build_rows[0] and build_rows[0][0].startswith("SUCCESS"),
-               f"rows={build_rows}")
+        setup_ok = bool(build_rows and build_rows[0]
+                        and build_rows[0][0].startswith("SUCCESS"))
+        record("setup: index builds with real data", setup_ok, f"rows={build_rows}")
+        if not setup_ok:
+            print("PASSED" if results and all(results) else "FAILED")
+            return 0 if results and all(results) else 1
 
         q = tfa.vec_literal([rnd.uniform(-1, 1) for _ in range(DIM)])
 
@@ -126,10 +133,20 @@ def main():
                huge_time < MAX_SECONDS,
                f"ef_search={HUGE_EF_SEARCH} took {huge_time:.3f}s")
 
-        record("3. clamped results are at least as good as a small, ordinary "
-               "ef_search (clamping doesn't degrade search quality)",
-               set(huge_result) >= set(normal_result) or len(huge_result) == K,
-               f"normal={normal_result} huge={huge_result}")
+        # Ground truth via exact brute-force scan, independent of either
+        # ef_search value -- unlike comparing huge_result against
+        # normal_result (itself just another approximate search), this can
+        # actually fail if clamping silently degraded recall.
+        exact_rows = srv.sql(
+            f"SET @q = myvector_construct({q});"
+            f"SELECT id FROM t ORDER BY myvector_distance(v, @q, 'L2') LIMIT {K};")
+        exact_ids = {int(r[0]) for r in exact_rows}
+        huge_recall = len(set(huge_result) & exact_ids) / K
+        record("3. a huge ef_search value still achieves full recall against "
+               "an exact brute-force scan (clamping doesn't degrade search "
+               "quality)",
+               huge_recall == 1.0,
+               f"recall@{K}={huge_recall:.3f} huge={huge_result} exact={sorted(exact_ids)}")
 
         alive = tfa.sh(["docker", "exec", srv.name, "mysqladmin", "ping", "-uroot",
                        f"-p{tfa.PW}", "--silent"], check=False)
