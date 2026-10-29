@@ -19,7 +19,10 @@ no owner, so other components must not register these names.
 
 [`mysql_mcp.sql`](mysql_mcp.sql) installs the schema `mysql_mcp`. It has one procedure per
 catalog tool of mysql-mcp-server, and each returns exactly the result set of the query the
-Go server runs without the pack: same columns, order and rows. The Go server keeps input
+Go server runs without the pack: same columns, order and rows. The one exception is
+`show_create_table` on a view: `SHOW CREATE TABLE` leaves out the schema name for a view
+in the session's current database, and a procedure always runs in `mysql_mcp`, so the
+pack's view definitions are always schema-qualified. The Go server keeps input
 checks, access control (`MYSQL_MCP_ALLOWED_DATABASES`), row limits and error messages.
 
 | Procedure | Tool |
