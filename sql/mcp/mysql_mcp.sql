@@ -12,6 +12,8 @@
 -- Install or upgrade (re-runnable; every routine is dropped and recreated):
 --   mysql -u <admin> -p < mysql_mcp.sql
 --   or: mysql-mcp-server install-schema
+-- The installing account needs CREATE, DROP, CREATE ROUTINE and ALTER ROUTINE on
+-- mysql_mcp.* (no SUPER: the pack has no stored functions).
 -- Grant to an MCP account:
 --   GRANT EXECUTE ON mysql_mcp.* TO 'mcp'@'%';
 --
@@ -35,6 +37,7 @@
 CREATE DATABASE IF NOT EXISTS mysql_mcp DEFAULT CHARACTER SET utf8mb4;
 
 DROP FUNCTION IF EXISTS mysql_mcp.version;
+DROP PROCEDURE IF EXISTS mysql_mcp.version;
 DROP PROCEDURE IF EXISTS mysql_mcp.list_databases;
 DROP PROCEDURE IF EXISTS mysql_mcp.list_tables;
 DROP PROCEDURE IF EXISTS mysql_mcp.describe_table;
@@ -59,13 +62,17 @@ DROP PROCEDURE IF EXISTS mysql_mcp.require_table;
 
 DELIMITER $$
 
--- Pack version (semantic versioning). Callers use the pack only when the major version
--- is one they support; a new major version may change result sets.
-CREATE FUNCTION mysql_mcp.version() RETURNS VARCHAR(16) CHARACTER SET utf8mb4
-    DETERMINISTIC NO SQL SQL SECURITY INVOKER
+-- Pack version (semantic versioning): CALL mysql_mcp.version() returns one row, `version`.
+-- Callers use the pack only when the major version is one they support; a new major
+-- version may change result sets. A procedure rather than a function: with binary
+-- logging on (the MySQL default), CREATE FUNCTION needs SUPER or
+-- log_bin_trust_function_creators, which least-privilege and managed-service installers
+-- do not have.
+CREATE PROCEDURE mysql_mcp.version()
+    NO SQL SQL SECURITY INVOKER
     COMMENT 'mysql_mcp tool pack version'
 BEGIN
-    RETURN '1.0.0';
+    SELECT '1.0.0' AS version;
 END$$
 
 -- Fails with error 1146 (ER_NO_SUCH_TABLE) unless p_database.p_table is visible to the

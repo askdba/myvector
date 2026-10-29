@@ -38,14 +38,15 @@ checks, access control (`MYSQL_MCP_ALLOWED_DATABASES`), row limits and error mes
 | `list_variables(pattern or NULL)` | `list_variables` (`SHOW GLOBAL VARIABLES`) |
 | `process_list()` | `process_list` |
 | `vector_columns(db, table or NULL)`, `vector_column_index(db, table, column)` | `vector_info` |
-| `version()` (function) | pack version, `1.0.0` |
+| `version()` | pack version: one row, `version` = `1.0.0` |
 
 Not in SQL, by design ([RFC 0001](https://github.com/askdba/mysql-mcp-server/blob/main/docs/rfc/0001-mysql-component-architecture.md) §5.1): `run_query` and `explain_query`, which take caller SQL; `schema_diff` across servers; and the connection tools.
 
 ### Install, upgrade, remove
 
 ```sql
--- as an account with CREATE, CREATE ROUTINE and DROP on mysql_mcp
+-- as an account with CREATE, DROP, CREATE ROUTINE and ALTER ROUTINE on mysql_mcp.*
+-- (no SUPER: the pack has no stored functions, so binary logging does not get in the way)
 SOURCE mysql_mcp.sql;          -- re-run to upgrade: every routine is dropped and recreated
 GRANT EXECUTE ON mysql_mcp.* TO 'mcp'@'%';
 SOURCE uninstall.sql;          -- DROP DATABASE mysql_mcp

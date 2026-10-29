@@ -53,12 +53,15 @@ MARIADB=0
 case $VERSION in *MariaDB*) MARIADB=1 ;; esac
 
 # --- install ---------------------------------------------------------------------------
-out=$(root <"$PACK")
-[ -z "$out" ] && ok "install" || bad "install" "$out"
+check_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
+# First as a least-privilege installer: no SUPER, binary logging on (MySQL default).
+root <<<"DROP USER IF EXISTS 'inst'@'%'; CREATE USER 'inst'@'%' IDENTIFIED BY 'instpass1';
+GRANT CREATE, DROP, CREATE ROUTINE, ALTER ROUTINE ON mysql_mcp.* TO 'inst'@'%';" >/dev/null
+out=$(as inst instpass1 <"$PACK")
+[ -z "$out" ] && ok "install as CREATE/DROP/CREATE ROUTINE/ALTER ROUTINE only" || bad "least-privilege install" "$out"
 out=$(root <"$PACK")
 [ -z "$out" ] && ok "re-install (upgrade path)" || bad "re-install" "$out"
-check_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "got '$2', want '$3'"; fi; }
-check_eq "version()" "$(echo 'SELECT mysql_mcp.version()' | root -N)" "1.0.0"
+check_eq "version()" "$(echo 'CALL mysql_mcp.version()' | root -N)" "1.0.0"
 check_eq "routines are SQL SECURITY INVOKER" \
 	"$(echo "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA='mysql_mcp' AND SECURITY_TYPE<>'INVOKER'" | root -N)" 0
 
