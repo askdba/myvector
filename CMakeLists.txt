@@ -106,7 +106,7 @@ endif()
 
 # Source files for the MyVector component (exclude plugin entry and plugin binlog).
 # The pre-parse query-rewrite hook (inline MYVECTOR(...) DDL, MYVECTOR_IS_ANN)
-# needs the Event Tracking Parse service, present in MySQL 8.4/9.7/26.7's
+# needs the Event Tracking Parse service, present in MySQL 8.4/9.7/26.10's
 # source (include/mysql/components/services/event_tracking_parse_service.h) --
 # omit only if a future/older tree genuinely lacks it. This replaces an old
 # guard on mysql/components/services/query_rewrite.h, a header that never
