@@ -446,7 +446,9 @@ BEGIN
     SET @mysql_mcp_1 = NULL, @mysql_mcp_2 = NULL, @mysql_mcp_3 = NULL;
 END$$
 
--- list_variables: performance_schema.global_variables, optionally LIKE p_pattern. Fails where that table is unavailable; callers then use SHOW GLOBAL VARIABLES, as the Go server does without the pack
+-- list_variables: SHOW GLOBAL VARIABLES, optionally WHERE Variable_name LIKE p_pattern (the
+-- Go server's first choice; some managed deployments stall on
+-- performance_schema.global_variables). SHOW ... LIKE ? cannot be prepared; the WHERE form can.
 CREATE PROCEDURE mysql_mcp.list_variables(
     IN p_pattern VARCHAR(255))
     READS SQL DATA SQL SECURITY INVOKER
@@ -459,11 +461,11 @@ BEGIN
     END;
     IF p_pattern IS NOT NULL THEN
         SET @mysql_mcp_1 = p_pattern;
-        PREPARE mysql_mcp_stmt FROM 'SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.global_variables WHERE VARIABLE_NAME LIKE ? ORDER BY VARIABLE_NAME';
+        PREPARE mysql_mcp_stmt FROM 'SHOW GLOBAL VARIABLES WHERE Variable_name LIKE ?';
         EXECUTE mysql_mcp_stmt USING @mysql_mcp_1;
         DEALLOCATE PREPARE mysql_mcp_stmt;
     ELSE
-        PREPARE mysql_mcp_stmt FROM 'SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.global_variables ORDER BY VARIABLE_NAME';
+        PREPARE mysql_mcp_stmt FROM 'SHOW GLOBAL VARIABLES';
         EXECUTE mysql_mcp_stmt;
         DEALLOCATE PREPARE mysql_mcp_stmt;
     END IF;

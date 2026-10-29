@@ -34,7 +34,8 @@ checks, access control (`MYSQL_MCP_ALLOWED_DATABASES`), row limits and error mes
 | `database_size(db or NULL)` | `database_size` (NULL: all but system schemas) |
 | `table_size(db, table or NULL)`, `foreign_keys(db, table or NULL)` | same names |
 | `search_tables(pattern, db or NULL, limit)`, `search_columns(pattern, db or NULL, limit)` | `search_schema` |
-| `list_status(pattern or NULL)`, `list_variables(pattern or NULL)` | same names (from `performance_schema`) |
+| `list_status(pattern or NULL)` | `list_status` (`performance_schema.global_status`) |
+| `list_variables(pattern or NULL)` | `list_variables` (`SHOW GLOBAL VARIABLES`) |
 | `process_list()` | `process_list` |
 | `vector_columns(db, table or NULL)`, `vector_column_index(db, table, column)` | `vector_info` |
 | `version()` (function) | pack version, `1.0.0` |
@@ -72,7 +73,7 @@ mysql-mcp-server vendors these files; `mysql-mcp-server install-schema` runs the
 | Server | Status |
 |---|---|
 | MySQL 8.0, 8.4, 9.7, 26.10 | ✅ |
-| MariaDB 11.4, 12.3 | ✅ `list_variables` fails as without the pack (no `performance_schema.global_variables`); the Go server falls back to `SHOW GLOBAL VARIABLES` |
+| MariaDB 11.4, 12.3 | ✅ |
 | Managed services | where `CREATE ROUTINE` is allowed; otherwise the Go server keeps its embedded SQL |
 
 ### Tests

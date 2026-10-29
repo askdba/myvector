@@ -148,7 +148,10 @@ same() {
 	got=$(errcode "$got")
 	want=$(errcode "$want")
 	if [ "$got" = "$want" ]; then
-		ok "$label [$who] ($(printf '%s\n' "$got" | sed -n '2,$p' | grep -c .) rows)"
+		case $got in
+		"ERROR "*) ok "$label [$who] (both fail: $got)" ;;
+		*) ok "$label [$who] ($(printf '%s\n' "$got" | sed -n '2,$p' | grep -c .) rows)" ;;
+		esac
 	else
 		printf '%s\n' "$want" >"$W/want"
 		printf '%s\n' "$got" >"$W/got"
@@ -209,19 +212,18 @@ for who in root mcp; do
 done
 
 # Status and variables change between two reads (Uptime, Questions, ...): compare stable
-# rows exactly, and the full list by name only. Where performance_schema lacks the table
-# (MariaDB global_variables), both must fail.
+# rows exactly, and the full list by name only. Where performance_schema.global_status is
+# missing or empty (MariaDB), both sides must agree.
 for who in root mcp; do
 	same "list_status pattern" $who "CALL mysql_mcp.list_status('Innodb_page_size')" \
 		"SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME LIKE ? ORDER BY VARIABLE_NAME" Innodb_page_size
-	same "list_variables pattern" $who "CALL mysql_mcp.list_variables('MAX_CONN%')" \
-		"SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.global_variables WHERE VARIABLE_NAME LIKE ? ORDER BY VARIABLE_NAME" 'MAX_CONN%'
+	same "list_variables pattern" $who "CALL mysql_mcp.list_variables('MAX_CONN%')" "SHOW GLOBAL VARIABLES WHERE Variable_name LIKE ?" 'MAX_CONN%'
 done
 names() { errcode "$(root)" | cut -f1; }
 check_eq "list_status all (names)" "$(names <<<'CALL mysql_mcp.list_status(NULL)' | md5sum)" \
 	"$(names <<<'SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.global_status ORDER BY VARIABLE_NAME' | md5sum)"
 check_eq "list_variables all (names)" "$(names <<<'CALL mysql_mcp.list_variables(NULL)' | md5sum)" \
-	"$(names <<<'SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.global_variables ORDER BY VARIABLE_NAME' | md5sum)"
+	"$(names <<<'SHOW GLOBAL VARIABLES' | md5sum)"
 check_eq "process_list columns" "$(root <<<'CALL mysql_mcp.process_list()' | head -1)" "$(root <<<'SHOW FULL PROCESSLIST' | head -1)"
 
 if [ "$VECTOR" = 1 ]; then
