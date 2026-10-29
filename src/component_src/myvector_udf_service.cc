@@ -425,8 +425,18 @@ char* myvector_construct_bv(const std::string& srctype,
                 ptr++;
             char buff[64];
             size_t len = (size_t)(ptr - p1);
-            if (len >= sizeof(buff))
-                len = sizeof(buff) - 1;
+            /* A legitimate 0-255 byte-value token never needs anywhere close
+             * to 63 characters; reject instead of silently truncating and
+             * parsing whatever is left -- e.g. truncating "...0005" (63
+             * zeroes then a 5) to its leading zeroes changes the stored byte
+             * from 5 to 0 without ever setting *error (review of audit run-1,
+             * Slice 3: PR #234). */
+            if (len >= sizeof(buff)) {
+                MYVEC_LOG_ERROR("Byte-value token too long (max %zu characters).",
+                                sizeof(buff) - 1);
+                *error = 1;
+                break;
+            }
             memcpy(buff, p1, len);
             buff[len] = '\0';
 

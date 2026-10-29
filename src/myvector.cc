@@ -1862,6 +1862,15 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT* initid,
      * run-1, Slice 3: PR #234). */
     args->arg_type[2] = STRING_RESULT;
 
+    /* The component build's identical function already rejects a NULL index
+     * column; this one didn't, letting a NULL first argument implicitly
+     * construct std::string(nullptr) inside g_indexes.get() -- undefined
+     * behavior (review of audit run-1, Slice 3: PR #234). */
+    if (!args->args[0]) {
+        strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
+        return true;  // error
+    }
+
     char* col = args->args[0];
     AbstractVectorIndex* vi = g_indexes.get(col);
     if (!vi) {
@@ -2007,7 +2016,12 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT* initid,
  * greater than 0, then corresponding bit is set to 1 in the binary vector.
  */
 int SQFloatVectorToBinaryVector(FP32* fvec, unsigned long* ivec, int dim) {
-    memset(ivec, 0, (dim / BITS_PER_BYTE));  // 3rd param is bytes
+    /* dim is already rejected as <= 0 by every caller before this runs, so
+     * this division is always of two non-negative values. Ceil, not floor
+     * (the plugin's own prior formula): a dim not a multiple of 8 still
+     * needs a partial trailing byte (review of audit run-1, Slice 3:
+     * PR #234). */
+    memset(ivec, 0, ((size_t)dim + BITS_PER_BYTE - 1) / BITS_PER_BYTE);
 
     unsigned long elem = 0;
     unsigned long idx = 0;
@@ -2024,7 +2038,17 @@ int SQFloatVectorToBinaryVector(FP32* fvec, unsigned long* ivec, int dim) {
             idx++;
         }
     }
-    /// TODO : if dim is not a mulitple of 64
+    /* A dim not a multiple of 64 left its last (dim % 64) bits sitting in
+     * elem, never flushed by the loop above -- silently discarding them and
+     * returning 0 bytes for any dim < 64 (matches the component's own,
+     * already-correct copy of this function; review of audit run-1, Slice 3:
+     * PR #234). */
+    if ((dim % 64) != 0) {
+        unsigned int shift = 64 - (dim % 64);
+        elem = elem << shift;
+        ivec[idx] = elem;
+        idx++;
+    }
     return (idx * sizeof(unsigned long));  // number of bytes
 }
 

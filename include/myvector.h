@@ -231,9 +231,21 @@ constexpr unsigned int BITS_PER_BYTE = 8;
  * insertVector() nor searchVectorNN() can do so themselves, since they only see
  * a bare pointer with no length (audit run-1, Slice 3). */
 inline unsigned long MyVectorExpectedVectorBytes(AbstractVectorIndex* vi) {
+    int dim = vi->getDimension();
+    /* getDimension() returning non-positive isn't reachable through ordinary
+     * validated index creation, but dividing/multiplying a negative int by
+     * an unsigned constant below would otherwise promote it to a huge
+     * wrapped value instead of a small one -- the same signed/unsigned
+     * pitfall fixed elsewhere in this audit. Fail closed (reject every
+     * caller-supplied length, rather than 0, which would instead accept
+     * every length) since reaching this at all means the index's own state
+     * is already unexpectedly broken (review of audit run-1, Slice 3:
+     * PR #234). */
+    if (dim <= 0)
+        return std::numeric_limits<unsigned long>::max();
     if (vi->getType() == "HNSW_BV")
-        return (unsigned long)(vi->getDimension() / BITS_PER_BYTE);
-    return (unsigned long)vi->getDimension() * sizeof(FP32);
+        return (unsigned long)(dim / (int)BITS_PER_BYTE);
+    return (unsigned long)dim * sizeof(FP32);
 }
 
 /** RAII shared-lock guard for AbstractVectorIndex. Release-only: caller
