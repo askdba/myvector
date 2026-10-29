@@ -211,13 +211,13 @@ jobs:
   # Component-based images (INSTALL COMPONENT), distinct from the legacy plugin
   # images built above. mysql8.4/mysql9.7 already ship as plugin images with
   # existing users depending on them, so component images for those versions get
-  # a "-component" tag suffix; mysql26.7 has no plugin equivalent to collide with
+  # a "-component" tag suffix; mysql26.10 has no plugin equivalent to collide with
   # (component-only), so it gets the plain tag.
   build-and-publish-component:
     # Publish only from a dispatch that targets a VERSION tag (refs/tags/v*).
     # Without the version-tag guard, a workflow_dispatch off any branch — or any non-version tag — would
     # push that ref's build to the mutable public component tags
-    # (mysql8.4-component / mysql9.7-component / mysql26.7).
+    # (mysql8.4-component / mysql9.7-component / mysql26.10).
     if: >-
       (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) ||
       (github.event_name == 'workflow_dispatch' && inputs.dry_run)
@@ -234,10 +234,10 @@ jobs:
             mysql-version: '9.7'
             build-script: scripts/build-component-9.7-docker.sh
             image-tag: 'mysql9.7-component'
-          - mysql-tag: 'mysql-26.7.0'
-            mysql-version: '26.7'
-            build-script: scripts/build-component-26.7-docker.sh
-            image-tag: 'mysql26.7'
+          - mysql-tag: 'mysql-26.10.0'
+            mysql-version: '26.10'
+            build-script: scripts/build-component-26.10-docker.sh
+            image-tag: 'mysql26.10'
     steps:
       - name: Checkout MyVector Code
         uses: actions/checkout@v4

@@ -22,7 +22,7 @@ MyVector plugin (`myvector.so`) and the plugin installer (`myvectorplugin.sql`):
 - /docker-entrypoint-initdb.d/myvectorplugin.sql
 ```
 
-**Component images** (`mysql8.4-component`, `mysql9.7-component`, `mysql26.7`) —
+**Component images** (`mysql8.4-component`, `mysql9.7-component`, `mysql26.10`) —
 the component library (still installed as `myvector.so`) plus the component
 install/uninstall scripts, which use `INSTALL COMPONENT` rather than
 `INSTALL PLUGIN`:
@@ -218,7 +218,7 @@ instructions in the main README:
 | `ghcr.io/askdba/myvector:mysql8.4-component` | 8.4.x | Component (`INSTALL COMPONENT`) |
 | `ghcr.io/askdba/myvector:mysql9.7` | 9.7.x (LTS) | Plugin (`INSTALL PLUGIN`) |
 | `ghcr.io/askdba/myvector:mysql9.7-component` | 9.7.x (LTS) | Component (`INSTALL COMPONENT`) |
-| `ghcr.io/askdba/myvector:mysql26.7` | 26.7.x (Innovation) | Component only (`INSTALL COMPONENT`) |
+| `ghcr.io/askdba/myvector:mysql26.10` | 26.10.x (Innovation) | Component only (`INSTALL COMPONENT`) |
 | `ghcr.io/askdba/myvector:latest` | 8.0.x | Plugin (`INSTALL PLUGIN`) |
 
 Component images (`INSTALL COMPONENT`) contain `/usr/lib/mysql/plugin/myvector.so` +

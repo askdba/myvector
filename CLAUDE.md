@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MyVector adds vector similarity search (ANN/KNN) natively to MySQL. It is written in C++ and exposes UDFs and stored procedures. No external vector database is required. It ships as two build modes (see `docs/BUILD_MODES.md`):
 - **Plugin** (`INSTALL PLUGIN`, shared library `myvector.so`) — MySQL 8.0, 8.4, 9.7.
-- **Component** (`INSTALL COMPONENT`, the forward path for new development) — MySQL 8.4, 9.7 (LTS), and 26.7 (Innovation).
+- **Component** (`INSTALL COMPONENT`, the forward path for new development) — MySQL 8.4, 9.7 (LTS), and 26.10 (Innovation).
 
 ## Build commands
 
@@ -170,7 +170,7 @@ Workflows under `.github/workflows/`:
 - **release.yml** — release automation
 - **pre-release-gate.yml** — runs `scripts/pre-release-test.sh` (Phase 1 smoke, Phase 2 RFC-004/edge cases, Phase 3 lifecycle regression) against a freshly built component per MySQL version, on push/PR to `main` touching `src/`, `include/`, `sql/`, or the build scripts; non-blocking, catches regressions before a release tag instead of only at manual pre-release-gate time
 - **myvectorbench.yml** — runs the ANN benchmark (`scripts/myvectorbench.py`) on `v*` tags, or manually via `workflow_dispatch`
-- **integration-scripts.yml** — runs the Docker-based test scripts (`scripts/test-filtered-ann.py`, `test-filtered-ann-broad.py`, `test-ef-search.py`, `test-online-updates-idle.py`) against the plugin (8.4) and components (8.4, 9.7, 26.7) built with the Docker build scripts, on push/PR to `main` touching `src/`, `include/`, `sql/`, the build scripts or `scripts/test-*.py`; blocking
+- **integration-scripts.yml** — runs the Docker-based test scripts (`scripts/test-filtered-ann.py`, `test-filtered-ann-broad.py`, `test-ef-search.py`, `test-online-updates-idle.py`) against the plugin (8.4) and components (8.4, 9.7, 26.10) built with the Docker build scripts, on push/PR to `main` touching `src/`, `include/`, `sql/`, the build scripts or `scripts/test-*.py`; blocking
 - **deploy-docs.yml** — builds the MkDocs Material site and deploys it to GitHub Pages on push to `main` touching `docs/**` or `mkdocs.yml`
 - **benchmark-issue79.yml** — legacy, scoped to the old `fix/issue-79` branch only; not part of the general CI surface
 

@@ -220,9 +220,9 @@ script's own `INSTALL PLUGIN` fails as a duplicate.
 
 > **Installation paths:**
 > The **plugin** (`INSTALL PLUGIN`) is the current stable path and supports MySQL 8.0, 8.4, and 9.0.
-> The **component** (`INSTALL COMPONENT`) is the forward path for MySQL 8.4, 9.7 (LTS), and 26.7 (Innovation).
+> The **component** (`INSTALL COMPONENT`) is the forward path for MySQL 8.4, 9.7 (LTS), and 26.10 (Innovation).
 > MySQL 8.0 plugin support will be maintained through MySQL 8.0 EOL; no component build is planned for 8.0.
-> MySQL 26.7 is component-only — its newer ABI is not supported by the legacy plugin build.
+> MySQL 26.10 is component-only — its newer ABI is not supported by the legacy plugin build.
 
 | Tag | MySQL Version | Install mechanism |
 | :--- | :--- | :--- |
@@ -231,7 +231,7 @@ script's own `INSTALL PLUGIN` fails as a duplicate.
 | `ghcr.io/askdba/myvector:mysql8.4-component` | 8.4.x | Component (`INSTALL COMPONENT`) |
 | `ghcr.io/askdba/myvector:mysql9.7` | 9.7.x (LTS) | Plugin (`INSTALL PLUGIN`) |
 | `ghcr.io/askdba/myvector:mysql9.7-component` | 9.7.x (LTS) | Component (`INSTALL COMPONENT`) |
-| `ghcr.io/askdba/myvector:mysql26.7` | 26.7.x (Innovation) | Component only (`INSTALL COMPONENT`) |
+| `ghcr.io/askdba/myvector:mysql26.10` | 26.10.x (Innovation) | Component only (`INSTALL COMPONENT`) |
 | `ghcr.io/askdba/myvector:latest` | 8.0.x | Plugin (`INSTALL PLUGIN`) |
 
 ### Docker Compose

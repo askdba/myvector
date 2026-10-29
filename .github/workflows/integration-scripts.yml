@@ -77,9 +77,9 @@ jobs:
             mysql-tag: "mysql-9.7.0"
             build-script: "scripts/build-component-9.7-docker.sh"
           - kind: component
-            mysql-version: "26.7"
-            mysql-tag: "mysql-26.7.0"
-            build-script: "scripts/build-component-26.7-docker.sh"
+            mysql-version: "26.10"
+            mysql-tag: "mysql-26.10.0"
+            build-script: "scripts/build-component-26.10-docker.sh"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

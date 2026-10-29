@@ -36,7 +36,7 @@ Host prerequisites already confirmed present in this session: Docker
 **not** installed (the CLAUDE.md "quick build" `make` path is unavailable
 here; only the Docker-based component/plugin build paths work). Local
 source checkouts already present: `mysql-server-mysql-8.4.8/`,
-`mysql-server-mysql-9.7.0/`, `mysql-server-mysql-26.7.0/` (each a real
+`mysql-server-mysql-9.7.0/`, `mysql-server-mysql-26.10.0/` (each a real
 `git clone` of `mysql/mysql-server`, not a tarball).
 
 ## Global Constraints
