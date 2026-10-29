@@ -32,7 +32,7 @@
 --     dynamic SHOW (SHOW INDEX, SHOW CREATE TABLE) is built, and they are quoted.
 --   * NULL means "not given" for optional arguments.
 --
--- Supported: MySQL 8.0, 8.4, 9.7, 26.10; MariaDB 10.6+ (see README.md).
+-- Tested: MySQL 8.0, 8.4, 9.7, 26.10; MariaDB 11.4, 12.3 (see README.md).
 
 CREATE DATABASE IF NOT EXISTS mysql_mcp DEFAULT CHARACTER SET utf8mb4;
 

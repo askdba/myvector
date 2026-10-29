@@ -223,10 +223,10 @@ for who in root mcp; do
 	same "list_variables pattern" $who "CALL mysql_mcp.list_variables('MAX_CONN%')" "SHOW GLOBAL VARIABLES WHERE Variable_name LIKE ?" 'MAX_CONN%'
 done
 names() { errcode "$(root)" | cut -f1; }
-check_eq "list_status all (names)" "$(names <<<'CALL mysql_mcp.list_status(NULL)' | md5sum)" \
-	"$(names <<<'SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.global_status ORDER BY VARIABLE_NAME' | md5sum)"
-check_eq "list_variables all (names)" "$(names <<<'CALL mysql_mcp.list_variables(NULL)' | md5sum)" \
-	"$(names <<<'SHOW GLOBAL VARIABLES' | md5sum)"
+check_eq "list_status all (names)" "$(names <<<'CALL mysql_mcp.list_status(NULL)')" \
+	"$(names <<<'SELECT VARIABLE_NAME, VARIABLE_VALUE FROM performance_schema.global_status ORDER BY VARIABLE_NAME')"
+check_eq "list_variables all (names)" "$(names <<<'CALL mysql_mcp.list_variables(NULL)')" \
+	"$(names <<<'SHOW GLOBAL VARIABLES')"
 check_eq "process_list columns" "$(root <<<'CALL mysql_mcp.process_list()' | head -1)" "$(root <<<'SHOW FULL PROCESSLIST' | head -1)"
 
 if [ "$VECTOR" = 1 ]; then
