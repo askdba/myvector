@@ -206,6 +206,12 @@ for who in root mcp; do
 		same "search_columns $pat everywhere" $who "CALL mysql_mcp.search_columns($(sqlstr "$pat"), NULL, 5)" \
 			"SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE COLUMN_NAME LIKE ? AND TABLE_SCHEMA NOT IN ($SYS) ORDER BY TABLE_SCHEMA, CAST(TABLE_SCHEMA AS BINARY), TABLE_NAME, CAST(TABLE_NAME AS BINARY), ORDINAL_POSITION LIMIT ?" "$pat" 5
 	done
+	# Over-long names and patterns: bound whole, as the Go driver binds them (no truncation).
+	LONG=$(printf 'x%.0s' $(seq 1 300))
+	same "list_tables 300-char name" $who "CALL mysql_mcp.list_tables('${LONG}')" \
+		"SELECT TABLE_NAME, ENGINE, TABLE_ROWS, TABLE_COMMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME, CAST(TABLE_NAME AS BINARY)" "$LONG"
+	same "search_tables 300-char pattern" $who "CALL mysql_mcp.search_tables('%${LONG}', NULL, 5)" \
+		"SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.TABLES WHERE TABLE_NAME LIKE ? AND TABLE_SCHEMA NOT IN ($SYS) ORDER BY TABLE_SCHEMA, CAST(TABLE_SCHEMA AS BINARY), TABLE_NAME, CAST(TABLE_NAME AS BINARY) LIMIT ?" "%$LONG" 5
 	same "search_columns id in CaseDB" $who "CALL mysql_mcp.search_columns('ID', 'CaseDB', 50)" \
 		"SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS WHERE COLUMN_NAME LIKE ? AND TABLE_SCHEMA = ? ORDER BY TABLE_SCHEMA, CAST(TABLE_SCHEMA AS BINARY), TABLE_NAME, CAST(TABLE_NAME AS BINARY), ORDINAL_POSITION LIMIT ?" ID CaseDB 50
 	same "vector_columns" $who "CALL mysql_mcp.vector_columns('CaseDB', NULL)" \

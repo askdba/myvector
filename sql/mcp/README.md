@@ -64,6 +64,10 @@ mysql-mcp-server vendors these files; `mysql-mcp-server install-schema` runs the
   collations" on MariaDB 11.5+ (`information_schema` uses `utf8mb3_uca1400_ai_ci`). A bound
   `?` takes the column's collation on every server. Arguments pass through the session
   variables `@mysql_mcp_1`..`@mysql_mcp_3`, which are reset afterwards, also on error.
+- **String arguments are `TEXT`**, so a long name or pattern is compared whole, as the Go
+  server binds it, never truncated to a column width.
+- **`version()` is created last** (and dropped first), so an interrupted install or upgrade
+  never looks complete to a caller that checks it.
 - **No SQL arguments.** For `SHOW INDEX` and `SHOW CREATE TABLE`, the names are first looked
   up in `information_schema.TABLES` (error 1146 if not visible), then quoted.
 - **Deterministic order.** Every result is fully ordered, with a binary tiebreak where names
