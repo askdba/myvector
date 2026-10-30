@@ -96,6 +96,44 @@ int main() {
   expect_ro("select", "SELECT \"for\" FROM t", false);
   expect_ro("call", "CALL mysql_mcp.list_tables('\\') ", false);
 
+  // mcp.max_execution_time_ms
+  struct TimeCase {
+    const char *cmd, *sql;
+    bool denied;
+  };
+  const TimeCase time_cases[] = {
+      {"set_option", "SET SESSION max_execution_time = 500", false},
+      {"set_option", "SET max_execution_time=1000", false},
+      {"set_option", "SET @@session.max_execution_time = 999, sql_mode = ''", false},
+      {"set_option", "SET @max_execution_time = 0", false},  // a user variable
+      {"set_option", "SET sql_mode = ''", false},
+      {"set_option", "SET SESSION max_execution_time = 0", true},
+      {"set_option", "SET max_execution_time = 5000", true},
+      {"set_option", "SET @@max_execution_time := 2000", true},
+      {"set_option", "SET max_execution_time = DEFAULT", true},
+      {"set_option", "SET max_execution_time = 500 * 100", true},
+      {"set_option", "SET max_execution_time = @x", true},
+      {"set_option", "SET a = 1, max_execution_time = 0", true},
+      {"select", "SELECT /*+ MAX_EXECUTION_TIME(500) */ * FROM t", false},
+      {"select", "SELECT /*+ MAX_EXECUTION_TIME(0) */ * FROM t", true},
+      {"select", "SELECT /*+ max_execution_time( 5000 ) */ * FROM t", true},
+      {"select", "SELECT /*+ SET_VAR(max_execution_time=0) */ * FROM t", true},
+      {"select", "SELECT /*+ SET_VAR(max_execution_time = 800) */ * FROM t", false},
+      {"select", "SELECT /*+ BKA(t) */ * FROM t", false},
+      {"select", "SELECT 'max_execution_time = 0' FROM t", false},
+  };
+  for (const TimeCase &c : time_cases) {
+    const char *why = time_limit_violation(c.cmd, c.sql, std::strlen(c.sql), 1000);
+    if ((why != nullptr) != c.denied) {
+      std::printf("FAIL time limit %-60s want %s\n", c.sql, c.denied ? "deny" : "allow");
+      ++failures;
+    }
+  }
+  if (time_limit_violation("set_option", "SET max_execution_time = 0", 26, 0) != nullptr) {
+    std::printf("FAIL time limit floor 0 must not check\n");
+    ++failures;
+  }
+
   // Tokenizer details.
   {
     const char *q = "SELECT 'it''s' , \"a\\\"b\" FROM `we``ird`";

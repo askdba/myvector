@@ -144,6 +144,31 @@ expect "mcp.enabled ON again" "$(mcp "SELECT 1")" "^1$"
 
 expect "invalid value rejected" "$(sql "SET GLOBAL mcp.read_only = 'maybe'")" "ERROR"
 
+# --- mcp.max_execution_time_ms: a time limit MCP sessions cannot raise ------------------------
+expect "SET GLOBAL mcp.max_execution_time_ms = 1000" "$(sql "SET GLOBAL mcp.max_execution_time_ms = 1000")" "^$"
+expect "mcp: session max_execution_time set at connect" "$(mcp "SELECT @@max_execution_time")" "^1000$"
+expect "mcp: lowering it is allowed" "$(mcp "SET SESSION max_execution_time = 500; SELECT @@max_execution_time")" "^500$"
+denied "mcp: SET max_execution_time = 0" "$(mcp "SET SESSION max_execution_time = 0")" "mcp.max_execution_time_ms"
+denied "mcp: SET max_execution_time above the limit" "$(mcp "SET @@max_execution_time = 5000")" "mcp.max_execution_time_ms"
+denied "mcp: MAX_EXECUTION_TIME(0) hint" "$(mcp "SELECT /*+ MAX_EXECUTION_TIME(0) */ COUNT(*) FROM d1.t")" "mcp.max_execution_time_ms"
+denied "mcp: SET_VAR(max_execution_time=0) hint" "$(mcp "SELECT /*+ SET_VAR(max_execution_time=0) */ COUNT(*) FROM d1.t")" "mcp.max_execution_time_ms"
+start=$(date +%s)
+mcp "SELECT SLEEP(5) FROM d1.t" >/dev/null
+took=$(($(date +%s) - start))
+if [ "$took" -le 3 ]; then ok "mcp: a 5s SELECT is stopped by the 1s limit (${took}s)"; else bad "mcp: time limit enforced" "took ${took}s"; fi
+expect "app (no MCP_USER) keeps max_execution_time 0" "$(as app apppass1 "SELECT @@max_execution_time")" "^0$"
+sql "SET GLOBAL mcp.max_execution_time_ms = 0" >/dev/null
+expect "mcp: no limit once the floor is 0" "$(mcp "SELECT @@max_execution_time")" "^0$"
+
+# --- mcp.log_denials -----------------------------------------------------------------------------
+expect "refusals are written to the error log" "$(docker logs "$CNAME" 2>&1 | grep 'mcp_guard: refused by' | tail -3)" '\[MY-011071\] \[mcp_guard\] mcp_guard: refused by mcp\.(read_only|max_execution_time_ms): MCP connection [0-9]+'
+sql "SET GLOBAL mcp.log_denials = OFF" >/dev/null
+before=$(docker logs "$CNAME" 2>&1 | grep -c 'mcp_guard: refused by')
+mcp "INSERT INTO d1.t VALUES (8)" >/dev/null
+after=$(docker logs "$CNAME" 2>&1 | grep -c 'mcp_guard: refused by')
+expect "mcp.log_denials = OFF writes nothing" "$after" "^$before$"
+sql "SET GLOBAL mcp.log_denials = ON" >/dev/null
+
 status=$(sql "SHOW GLOBAL STATUS LIKE 'mcp.%'")
 expect "status: statements_denied counted" "$status" "mcp.statements_denied	[1-9]"
 expect "status: table_access_denied counted" "$status" "mcp.table_access_denied	[1-9]"
@@ -179,6 +204,9 @@ CREATE USER mcp@'%' IDENTIFIED BY 'mcppass1'; GRANT SELECT ON *.* TO mcp@'%'; GR
 	expect "lower_case_table_names=1: SET GLOBAL mcp.allowed_schemas = 'Shop'" "$(sql "SET GLOBAL mcp.allowed_schemas = 'Shop'")" "^$"
 	expect "lower_case_table_names=1: allowed_schemas 'Shop' allows shop" "$(mcp "SELECT COUNT(*) FROM Shop.t")" "^0$"
 	denied "lower_case_table_names=1: other schemas still denied" "$(mcp "SELECT COUNT(*) FROM other.t")" "mcp.allowed_schemas"
+	# A fresh server: its first minute of refusals is logged up to 10 lines, then held back.
+	for _ in $(seq 1 15); do mcp "SELECT COUNT(*) FROM other.t" >/dev/null; done
+	expect "error log rate limit: 16 refusals in a minute, 10 lines" "$(docker logs "$CNAME" 2>&1 | grep -c 'mcp_guard: refused by')" "^10$"
 else
 	bad "lower_case_table_names=1 server" "did not start"
 fi

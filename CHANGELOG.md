@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`component_mcp_guard` time limit and refusal log** (Phase 2 of RFC 0001, completed).
+  - **`mcp.max_execution_time_ms`:** sets an MCP session's `max_execution_time` at connect. Attempts to raise it are refused with error 1290: via `SET`, or via the `MAX_EXECUTION_TIME(n)` or `SET_VAR(max_execution_time=n)` hints. Lowering it is allowed.
+  - **`mcp.log_denials` (default ON):** writes each refusal to the error log as `[MY-011071] [mcp_guard]`, at most 10 lines a minute.
+  - **Tests:** `scripts/test-mcp-guard.sh` now has 78 checks, including a 5 s `SELECT` stopped by a 1 s limit and the log rate limit on a fresh server, passing on MySQL 8.4.11, 9.7.2 and 26.10.0.
 - **`component_mcp_guard` enforcement** (Phase 2 of [RFC 0001](https://github.com/askdba/mysql-mcp-server/blob/main/docs/rfc/0001-mysql-component-architecture.md)).
   - **MCP sessions:** sessions of accounts holding `MCP_USER` (and not `MCP_ADMIN`) are checked against `mcp.*` settings inside `mysqld`. The checks run on the server's query, table-access and connection events.
   - **`mcp.read_only` (default ON):** only reads, even with write grants. It uses an allowlist of `sql_command` classes and also refuses `SELECT … INTO OUTFILE`, locking reads, `SET GLOBAL` and `CALL` outside `mysql_mcp`.
