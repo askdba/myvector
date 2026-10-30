@@ -404,6 +404,10 @@ bool Event_tracking_table_access_implementation::callback(
 namespace {
 
 mysql_service_status_t mcp_guard_deinit() {
+  // Variables first: if one cannot be unregistered the library stays loaded (its update
+  // callback is still referenced), so keep everything else, including the session marker
+  // the event callbacks enforce with, in place and fail.
+  if (unregister_sysvars()) return 1;
   bool failed = false;
   if (status_registered) {
     if (mysql_service_status_variable_registration->unregister_variable(status_vars))
@@ -411,7 +415,6 @@ mysql_service_status_t mcp_guard_deinit() {
     else
       status_registered = false;
   }
-  if (unregister_sysvars()) failed = true;
   if (session_slot != nullptr) {
     if (mysql_service_mysql_thd_store->unregister_slot(session_slot))
       failed = true;

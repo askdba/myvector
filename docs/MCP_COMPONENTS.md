@@ -91,4 +91,4 @@ The option is `mcp.read_only`, `mcp.deny_system_schemas`, `mcp.allowed_schemas` 
 
 ### Tests
 
-`scripts/test-mcp-guard.sh <mysql-tag> <artifact-dir>` runs install, restart, persistence, uninstall and the enforcement cases against the official image (64 checks, including a `lower_case_table_names=1` server), and `src/mcp/guard/test_mcp_guard_policy.cc` unit-tests the classification and the SQL scanner. CI (`integration-scripts.yml`, job `mcp-guard`) runs both on MySQL 8.4.11, 9.7.2 and 26.10.0.
+`scripts/test-mcp-guard.sh <mysql-tag> <artifact-dir>` runs install, restart, persistence, uninstall and the enforcement cases against the official image (65 checks, including a `lower_case_table_names=1` server), and `src/mcp/guard/test_mcp_guard_policy.cc` unit-tests the classification and the SQL scanner. CI (`integration-scripts.yml`, job `mcp-guard`) runs both on MySQL 8.4.11, 9.7.2 and 26.10.0.
