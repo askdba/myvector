@@ -952,11 +952,18 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
     MYVEC_LOG_DEBUG(
         "Loading HNSW index %s from %s", m_name.c_str(), indexfile.c_str());
 
-    /* hnswlib throws std::runtime_error for errors */
+    /* hnswlib's own validation throws std::runtime_error, but a corrupted
+     * max_elements_ (still only bounded against 0 and against overflow of
+     * its product with size_data_per_element_, never given a sane upper
+     * ceiling) can also drive std::vector<std::mutex>(max_elements) etc. to
+     * throw std::bad_alloc or std::length_error -- neither derives from
+     * std::runtime_error, so neither was caught here, letting a single
+     * crafted file's header abort the entire server via std::terminate()
+     * (review of audit run-1, Slice 4: PR #235). Catch any std::exception. */
     m_alg_hnsw = nullptr;
     try {
         m_alg_hnsw = new hnswlib::HierarchicalDiskNSW<FP32>(m_space, indexfile);
-    } catch (std::runtime_error& e) {
+    } catch (const std::exception& e) {
         MYVEC_LOG_WARN("Error loading hnsw index (%s) from file : %s",
                       m_name.c_str(),
                       e.what());

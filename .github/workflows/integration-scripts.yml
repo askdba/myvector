@@ -22,6 +22,11 @@
 #                                       bulk build or add-row are all rejected
 #                                       cleanly instead of read/written OOB
 #                                       (audit run-1)
+#   scripts/test-hnsw-loader-hardening.py  a corrupted/crafted .hnsw.index or
+#                                       .hnsw.index.links file is rejected
+#                                       cleanly on load instead of corrupting
+#                                       memory, ordinary load/save unaffected
+#                                       (audit run-1)
 # Artifacts are built with the Docker build scripts (Oracle Linux 9, like the
 # mysql images), so they load in the containers; the ci.yml builds are made on
 # the Ubuntu runner and target the runner's own MySQL instead.
@@ -118,7 +123,8 @@ jobs:
                    "test-ef-search.py" "test-online-updates-idle.py" \
                    "test-online-dml.py" "test-online-dml.py --key-type bigint" \
                    "test-distance-udf.py" "test-crash-regressions.py" \
-                   "test-index-governance.py" "test-udf-input-validation.py"; do
+                   "test-index-governance.py" "test-udf-input-validation.py" \
+                   "test-hnsw-loader-hardening.py"; do
             read -r -a T <<< "$t"
             echo "::group::${t} (${KIND} ${MYSQL_VERSION})"
             if python3 "scripts/${T[0]}" "${ARGS[@]}" "${T[@]:1}"; then
