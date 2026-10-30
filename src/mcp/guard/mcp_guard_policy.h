@@ -298,9 +298,9 @@ inline const char *time_limit_violation(std::string_view cmd, const char *query,
 
 // ----- Error log -----------------------------------------------------------------------
 
-// The statement text for the error log: string literals replaced by '?' (they can hold
-// secrets), line breaks and tabs by spaces, at most max_len bytes. Quoted identifiers stay.
-inline std::string redact_for_log(const char *s, size_t n, size_t max_len = 256) {
+// One reading of redact_for_log(): backslash_escapes as in tokenize().
+inline std::string redact_literals(const char *s, size_t n, size_t max_len,
+                                   bool backslash_escapes) {
   std::string out;
   size_t i = 0;
   while (i < n && out.size() < max_len) {
@@ -311,7 +311,7 @@ inline std::string redact_for_log(const char *s, size_t n, size_t max_len = 256)
       out.push_back(c);
       ++i;
       while (i < n) {
-        if (s[i] == '\\' && i + 1 < n) {
+        if (backslash_escapes && s[i] == '\\' && i + 1 < n) {
           i += 2;
         } else if (s[i] == c && i + 1 < n && s[i + 1] == c) {
           i += 2;
@@ -329,6 +329,19 @@ inline std::string redact_for_log(const char *s, size_t n, size_t max_len = 256)
   }
   if (i < n) out += "...";
   return out;
+}
+
+// The statement text for the error log: string literals replaced by '?' (they can hold
+// secrets), line breaks and tabs by spaces, at most max_len bytes. Quoted identifiers stay.
+// Where a literal ends depends on sql_mode (NO_BACKSLASH_ESCAPES), so both readings are
+// made; if they differ, only the text before the first quote is kept.
+inline std::string redact_for_log(const char *s, size_t n, size_t max_len = 256) {
+  std::string with = redact_literals(s, n, max_len, true);
+  if (with == redact_literals(s, n, max_len, false)) return with;
+  size_t q = 0;
+  while (q < n && q < max_len && s[q] != '\'' && s[q] != '"') ++q;
+  std::string out = redact_literals(s, q, max_len, true);
+  return out + "'?'...";
 }
 
 // Parses mcp.allowed_schemas: comma-separated schema names, spaces trimmed, empty

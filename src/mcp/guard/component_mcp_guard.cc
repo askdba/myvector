@@ -335,18 +335,25 @@ SessionState *session_state(MYSQL_THD thd) {
 
 bool is_mcp_session(MYSQL_THD thd) { return session_state(thd) != nullptr; }
 
-void mark_session(MYSQL_THD thd, bool mcp) {
+// Returns true on failure. An MCP session that cannot be marked would not be guarded, so
+// the caller refuses it.
+bool mark_session(MYSQL_THD thd, bool mcp) {
+  if (session_slot == nullptr) return mcp;
   SessionState *state = session_state(thd);
-  if ((state != nullptr) == mcp) return;
+  if ((state != nullptr) == mcp) return false;
   if (mcp) {
     state = new (std::nothrow) SessionState();
-    if (state == nullptr) return;
-    mysql_service_mysql_thd_store->set(thd, session_slot, state);
+    if (state == nullptr) return true;
+    if (mysql_service_mysql_thd_store->set(thd, session_slot, state)) {
+      delete state;
+      return true;
+    }
   } else {
     mysql_service_mysql_thd_store->set(thd, session_slot, nullptr);
     delete state;
   }
   sessions_connected += mcp ? 1 : -1;
+  return false;
 }
 
 // Writes a refusal to the error log, at most kLogBurst lines per minute; the number left
@@ -443,7 +450,9 @@ bool Event_tracking_connection_implementation::callback(
         mark_session(thd, false);  // refused: no disconnect event follows
         return deny("mcp.enabled", statements_denied, data->connection_id, "connection refused");
       }
-      mark_session(thd, mcp);
+      if (mark_session(thd, mcp))  // could not mark an MCP session: fail closed
+        return deny("mcp_guard", statements_denied, data->connection_id,
+                    "connection refused: session state unavailable");
       if (mcp) apply_time_limit(thd, session_state(thd));
       return false;
     }

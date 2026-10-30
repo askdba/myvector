@@ -147,6 +147,19 @@ int main() {
       std::printf("FAIL redact_for_log: %s\n", r.c_str());
       ++failures;
     }
+    // NO_BACKSLASH_ESCAPES: 'a\' is a whole literal there; the readings differ, so only
+    // the text before the first quote is kept.
+    const char *nbe = "SELECT 'a\\', 'token=hunter2' FROM t FOR UPDATE";
+    const std::string rn = redact_for_log(nbe, std::strlen(nbe));
+    if (rn.find("hunter2") != std::string::npos || rn != "SELECT '?'...") {
+      std::printf("FAIL redact_for_log NO_BACKSLASH_ESCAPES: %s\n", rn.c_str());
+      ++failures;
+    }
+    const char *esc = "SELECT 'it\\'s secret' FROM t";
+    if (redact_for_log(esc, std::strlen(esc)).find("secret") != std::string::npos) {
+      std::printf("FAIL redact_for_log escaped quote: %s\n", redact_for_log(esc, std::strlen(esc)).c_str());
+      ++failures;
+    }
     if (redact_for_log(q, std::strlen(q), 10) != "SELECT '?'...") {
       std::printf("FAIL redact_for_log truncation: %s\n", redact_for_log(q, std::strlen(q), 10).c_str());
       ++failures;

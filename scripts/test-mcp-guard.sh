@@ -174,6 +174,7 @@ sql "SET GLOBAL mcp.max_execution_time_ms = 0" >/dev/null
 # --- mcp.log_denials -----------------------------------------------------------------------------
 expect "refusals are written to the error log" "$(docker logs "$CNAME" 2>&1 | grep 'mcp_guard: refused by' | tail -3)" '\[MY-011071\] \[mcp_guard\] mcp_guard: refused by mcp\.(read_only|max_execution_time_ms): MCP connection [0-9]+'
 mcp "SELECT 'token=hunter2' FROM d1.t FOR UPDATE" >/dev/null
+mcp "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'; SELECT 'a\\', 'token=hunter2' FROM d1.t FOR UPDATE" >/dev/null
 expect "error log redacts string literals" "$(docker logs "$CNAME" 2>&1 | grep 'mcp_guard: refused by' | grep -c 'hunter2')" "^0$"
 sql "SET GLOBAL mcp.log_denials = OFF" >/dev/null
 before=$(docker logs "$CNAME" 2>&1 | grep -c 'mcp_guard: refused by')
