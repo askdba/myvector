@@ -44,7 +44,10 @@ inline bool is_word_char(char c) {
 // Tokenizes SQL text: words, `quoted identifiers` and single punctuation characters.
 // String literals ('...', "...") and comments (-- , #, /* */, optimizer hints /*+ */) are
 // skipped. The body of an executable comment (/*!NNNNN ... */) is tokenized as code.
-inline std::vector<Token> tokenize(const char *s, size_t n) {
+// backslash_escapes: whether \ escapes the next character in a quoted string, which
+// depends on the session's sql_mode (NO_BACKSLASH_ESCAPES) and which the scanner cannot
+// see; callers scan both ways (see read_only_violation).
+inline std::vector<Token> tokenize(const char *s, size_t n, bool backslash_escapes = true) {
   std::vector<Token> out;
   size_t i = 0;
   bool in_exec_comment = false;
@@ -82,7 +85,7 @@ inline std::vector<Token> tokenize(const char *s, size_t n) {
       const char q = c;
       ++i;
       while (i < n) {
-        if (s[i] == '\\' && i + 1 < n) {
+        if (backslash_escapes && s[i] == '\\' && i + 1 < n) {
           i += 2;
         } else if (s[i] == q && i + 1 < n && s[i + 1] == q) {
           i += 2;
@@ -195,14 +198,18 @@ inline bool read_only_command(std::string_view cmd) {
 }
 
 // Returns the option that denies the statement under mcp.read_only, or nullptr.
+// Where a quoted string ends depends on sql_mode (NO_BACKSLASH_ESCAPES, ANSI_QUOTES), which
+// a session may change. The text is therefore scanned both with and without backslash
+// escapes: a statement is denied if either reading finds a violation, and a CALL is
+// allowed only if both readings agree it targets mysql_mcp.
 inline const char *read_only_violation(std::string_view cmd, const char *query, size_t len) {
   if (!read_only_command(cmd)) return "mcp.read_only";
-  if (cmd == "select") {
-    if (select_writes_or_locks(tokenize(query, len))) return "mcp.read_only";
-  } else if (cmd == "set_option") {
-    if (set_is_global(tokenize(query, len))) return "mcp.read_only";
-  } else if (cmd == "call") {
-    if (!call_into_tool_pack(tokenize(query, len))) return "mcp.read_only";
+  if (cmd != "select" && cmd != "set_option" && cmd != "call") return nullptr;
+  for (bool escapes : {true, false}) {
+    const std::vector<Token> t = tokenize(query, len, escapes);
+    if (cmd == "select" && select_writes_or_locks(t)) return "mcp.read_only";
+    if (cmd == "set_option" && set_is_global(t)) return "mcp.read_only";
+    if (cmd == "call" && !call_into_tool_pack(t)) return "mcp.read_only";
   }
   return nullptr;
 }
@@ -229,8 +236,18 @@ inline std::vector<std::string> parse_schema_list(std::string_view v) {
 struct TablePolicy {
   bool read_only = true;
   bool deny_system_schemas = true;
-  const std::vector<std::string> *allowed_schemas = nullptr;  // empty or null: all
+  // restrict_schemas: mcp.allowed_schemas is set (not blank). Then only the listed
+  // schemas are allowed; a value with no names in it (",") allows none, failing closed.
+  bool restrict_schemas = false;
+  const std::vector<std::string> *allowed_schemas = nullptr;
 };
+
+// Whether an mcp.allowed_schemas value restricts schemas at all: anything but blank.
+inline bool restricts_schemas(std::string_view v) {
+  for (char c : v)
+    if (!std::isspace(static_cast<unsigned char>(c))) return true;
+  return false;
+}
 
 inline bool is_system_schema(std::string_view db) {
   return db == "mysql" || db == "sys" || db == "information_schema" ||
@@ -248,9 +265,10 @@ inline const char *table_violation(const TablePolicy &p, std::string_view db, bo
     return nullptr;
   }
   if (db == "mysql_mcp") return nullptr;
-  if (p.allowed_schemas && !p.allowed_schemas->empty()) {
-    for (const std::string &s : *p.allowed_schemas)
-      if (db == s) return nullptr;
+  if (p.restrict_schemas) {
+    if (p.allowed_schemas)
+      for (const std::string &s : *p.allowed_schemas)
+        if (db == s) return nullptr;
     return "mcp.allowed_schemas";
   }
   return nullptr;

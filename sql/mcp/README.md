@@ -3,8 +3,9 @@
 Stored procedures and views that implement the tool logic of
 [mysql-mcp-server](https://github.com/askdba/mysql-mcp-server) once, in SQL, for
 MySQL 8.0 through 26.10. The Go server calls it, and `component_mcp` will. Under
-`mcp.read_only`, `component_mcp_guard` lets MCP sessions `CALL` these routines and no
-others (see [`docs/MCP_COMPONENTS.md`](../../docs/MCP_COMPONENTS.md)). See [RFC 0001](https://github.com/askdba/mysql-mcp-server/blob/main/docs/rfc/0001-mysql-component-architecture.md), §5.1.
+`mcp.read_only`, `component_mcp_guard` lets MCP sessions `CALL` routines in the
+`mysql_mcp` schema and no others, so keep only the tool pack there (see
+[`docs/MCP_COMPONENTS.md`](../../docs/MCP_COMPONENTS.md)). See [RFC 0001](https://github.com/askdba/mysql-mcp-server/blob/main/docs/rfc/0001-mysql-component-architecture.md), §5.1.
 
 **License:** everything in this directory is licensed under the Apache License 2.0
 (see [`LICENSE`](LICENSE)), unlike the rest of this repository (GPLv2). The SQL files

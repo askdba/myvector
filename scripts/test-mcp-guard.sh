@@ -46,7 +46,8 @@ echo "   server: $(sql 'select version()')"
 PLUGIN_DIR=$(sql 'select @@plugin_dir')
 docker cp "$SO" "$CNAME:$PLUGIN_DIR/component_mcp_guard.so" &&
 	docker exec -u 0 "$CNAME" chmod 0644 "$PLUGIN_DIR/component_mcp_guard.so"
-docker exec -i "$CNAME" mysql -h127.0.0.1 -uroot -ptestpass <"$REPO/sql/mcp/mysql_mcp.sql" 2>&1 | grep -v "Using a password"
+out=$(docker exec -i "$CNAME" mysql -h127.0.0.1 -uroot -ptestpass <"$REPO/sql/mcp/mysql_mcp.sql" 2>&1 | grep -v "Using a password")
+[ -z "$out" ] && [ "$(sql "CALL mysql_mcp.version()")" = "1.0.0" ] || { echo "tool pack import failed: $out"; exit 1; }
 
 # --- lifecycle -----------------------------------------------------------------------------
 expect "INSTALL COMPONENT" "$(sql "INSTALL COMPONENT 'file://component_mcp_guard'")" "^$"
@@ -99,6 +100,9 @@ denied "mcp: CALL outside mysql_mcp" "$(mcp "CALL d1.nope()")" "mcp.read_only"
 denied "mcp: DELETE through PREPARE/EXECUTE" "$(mcp "PREPARE s FROM 'DELETE FROM d1.t'; EXECUTE s")" "mcp.read_only"
 denied "mcp: write inside a stored function" "$(mcp "SELECT d1.f_write()")" "mcp.read_only"
 denied "mcp: LOCK TABLES" "$(mcp "LOCK TABLES d1.t READ")" "mcp.read_only"
+# With NO_BACKSLASH_ESCAPES, '\' is a complete string, so FOR UPDATE / INTO OUTFILE below are code.
+denied "mcp: FOR UPDATE behind '\\' with NO_BACKSLASH_ESCAPES" "$(mcp "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'; SELECT '\\', 1 FROM d1.t FOR UPDATE -- '")" "mcp.read_only"
+denied "mcp: INTO OUTFILE behind '\\' with NO_BACKSLASH_ESCAPES" "$(mcp "SET SESSION sql_mode = 'NO_BACKSLASH_ESCAPES'; SELECT '\\' INTO OUTFILE '/tmp/y' -- '")" "mcp.read_only"
 expect "mcp: nothing was written" "$(sql "SELECT COUNT(*) FROM d1.t")" "^1$"
 
 # --- schema rules ---------------------------------------------------------------------------
@@ -114,12 +118,16 @@ sql "GRANT MCP_ADMIN ON *.* TO root@'%'; GRANT MCP_ADMIN ON *.* TO root@localhos
 
 expect "SET GLOBAL mcp.read_only = OFF" "$(sql "SET GLOBAL mcp.read_only = OFF")" "^$"
 expect "mcp: INSERT with read_only OFF" "$(mcp "INSERT INTO d1.t VALUES (2); SELECT COUNT(*) FROM d1.t")" "^2$"
-sql "SET GLOBAL mcp.read_only = ON; DELETE FROM d1.t WHERE i = 2" >/dev/null
+expect "SET GLOBAL mcp.read_only = ON" "$(sql "SET GLOBAL mcp.read_only = ON")" "^$"
+expect "read_only is ON again" "$(sql "SELECT @@mcp.read_only")" "^1$"
+sql "DELETE FROM d1.t WHERE i = 2" >/dev/null
 
 expect "SET GLOBAL mcp.allowed_schemas" "$(sql "SET GLOBAL mcp.allowed_schemas = ' d1 , other'")" "^$"
 denied "mcp: schema outside allowed_schemas" "$(mcp "SELECT * FROM d2.t")" "mcp.allowed_schemas"
 expect "mcp: schema in allowed_schemas" "$(mcp "SELECT COUNT(*) FROM d1.t")" "^1$"
 expect "mcp: catalog of other schemas still listed" "$(mcp "CALL mysql_mcp.list_tables('d2')")" "^t	"
+sql "SET GLOBAL mcp.allowed_schemas = ' , '" >/dev/null
+denied "mcp: allowed_schemas with no names allows none" "$(mcp "SELECT COUNT(*) FROM d1.t")" "mcp.allowed_schemas"
 sql "SET GLOBAL mcp.allowed_schemas = ''" >/dev/null
 expect "mcp: allowed_schemas cleared" "$(mcp "SELECT COUNT(*) FROM d2.t")" "^0$"
 

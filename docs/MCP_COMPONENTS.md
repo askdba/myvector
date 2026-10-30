@@ -28,7 +28,7 @@ GRANT EXECUTE   ON mysql_mcp.* TO 'mcp'@'%';  -- if the SQL tool pack is install
 A session is an **MCP session** when its account holds `MCP_USER` and not `MCP_ADMIN`. This is decided at connect and at `COM_CHANGE_USER`, from privileges only; connection attributes and statement comments cannot change it.
 
 - `MCP_ADMIN` holders are never guarded. After the component is installed, `GRANT ALL ON *.*` includes both privileges, so an administrator granted that way is not put under the guard.
-- Sessions that were already connected when the component was installed are not MCP sessions; reconnect them.
+- **Privilege changes take effect at the next connection.** Sessions already connected when the component is installed, or when `MCP_USER` / `MCP_ADMIN` is granted or revoked, keep their previous status. Disconnect them (`KILL CONNECTION`) or have the client reconnect after such a change.
 - Grant `MCP_USER` to the account itself; a role activated later with `SET ROLE` is not considered.
 
 ### Settings
@@ -38,7 +38,7 @@ A session is an **MCP session** when its account holds `MCP_USER` and not `MCP_A
 | `mcp.enabled` | `ON` | `OFF` refuses new MCP connections and every statement of existing ones (kill switch). |
 | `mcp.read_only` | `ON` | Only reads, whatever the account's grants (below). |
 | `mcp.deny_system_schemas` | `ON` | No table access in `mysql` and `sys`. `information_schema` and `performance_schema` stay readable (the tools use them; grants govern them). |
-| `mcp.allowed_schemas` | empty | Comma-separated schemas whose tables MCP sessions may access; empty means all. The system schemas above are governed by `mcp.deny_system_schemas`, and `mysql_mcp` is always allowed. |
+| `mcp.allowed_schemas` | empty | Comma-separated schemas whose tables MCP sessions may access; blank means all. A value with no names in it, such as `,`, allows none. The system schemas above are governed by `mcp.deny_system_schemas`, and `mysql_mcp` is always allowed. |
 
 `SET GLOBAL` and `SET PERSIST` of `mcp.*` need `MCP_ADMIN` on top of `SYSTEM_VARIABLES_ADMIN`. Persisted values load at startup as usual. Values given in `INSTALL COMPONENT ... SET` are taken from the installer.
 
@@ -51,7 +51,7 @@ Statements are classified by the server's `sql_command`, so the decision does no
 - `CALL` into the tool pack: `CALL mysql_mcp.<routine>(...)`, schema-qualified.
 - `PREPARE`, `EXECUTE`, `DEALLOCATE PREPARE`: the executed statement raises its own event and is checked as itself. Statements sent as binary-protocol prepared statements (as the Go driver does) are checked the same way.
 
-Denied: everything else, including any `sql_command` a future server adds. Four cases also look at the statement text, after string literals and comments are removed (executable comments `/*! ... */` and `/*M! ... */` count as code):
+Denied: everything else, including any `sql_command` a future server adds. Four cases also look at the statement text, after string literals and comments are removed (executable comments `/*! ... */` and `/*M! ... */` count as code). Where a string ends depends on `sql_mode` (`NO_BACKSLASH_ESCAPES`), which a session may change, so the text is read both with and without backslash escapes, and a statement is denied if either reading finds one of these:
 
 - `SELECT ... INTO OUTFILE` / `INTO DUMPFILE`.
 - Locking reads: `FOR UPDATE`, `FOR SHARE`, `LOCK IN SHARE MODE`.
@@ -59,6 +59,10 @@ Denied: everything else, including any `sql_command` a future server adds. Four 
 - `CALL` of anything outside `mysql_mcp`, or an unqualified `CALL`.
 
 Table access events catch writes the statement class cannot see, for example a stored function that inserts, called from a `SELECT`.
+
+Because of the double reading, a `SELECT` whose string literal contains a backslash-escaped quote followed by text such as `FOR UPDATE` (`'it\'s FOR UPDATE'`) is denied even though it only reads. Write such a literal with a doubled quote (`'it''s FOR UPDATE'`) instead.
+
+`CALL` is allowed for any routine in the `mysql_mcp` schema, not only the tool pack's. Keep only the tool pack in `mysql_mcp` (it is installed and dropped as a whole).
 
 ### Errors
 
@@ -76,8 +80,8 @@ The option is `mcp.read_only`, `mcp.deny_system_schemas`, `mcp.allowed_schemas` 
 |---|---|
 | `mcp.sessions_connected` | MCP sessions now connected |
 | `mcp.statements_total` | Statements started by MCP sessions (nested statements of stored programs not counted) |
-| `mcp.statements_denied` | Statements refused (including refused connections) |
-| `mcp.table_access_denied` | Table accesses refused |
+| `mcp.statements_denied` | Statements refused by the statement checks (`mcp.read_only`, `mcp.enabled`), including refused connections |
+| `mcp.table_access_denied` | Statements refused by a table access (`mcp.allowed_schemas`, `mcp.deny_system_schemas`, a write under `mcp.read_only` seen only at table level). Add both counters for all refusals |
 
 ### Limits
 

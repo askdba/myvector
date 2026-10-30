@@ -135,18 +135,23 @@ bool opt_deny_system_schemas = true;
 char *opt_allowed_schemas = nullptr;  // server-managed (PLUGIN_VAR_MEMALLOC)
 
 // Parsed mcp.allowed_schemas, swapped as a whole on update; readers copy the pointer.
+struct AllowedSchemas {
+  bool restrict = false;  // the value is not blank
+  std::vector<std::string> names;
+};
 std::mutex allowed_mutex;
-std::shared_ptr<const std::vector<std::string>> allowed_schemas =
-    std::make_shared<const std::vector<std::string>>();
+std::shared_ptr<const AllowedSchemas> allowed_schemas = std::make_shared<const AllowedSchemas>();
 
-std::shared_ptr<const std::vector<std::string>> current_allowed_schemas() {
+std::shared_ptr<const AllowedSchemas> current_allowed_schemas() {
   std::lock_guard<std::mutex> lock(allowed_mutex);
   return allowed_schemas;
 }
 
 void set_allowed_schemas(const char *v) {
-  auto parsed = std::make_shared<const std::vector<std::string>>(
-      mcp_guard::parse_schema_list(v ? std::string_view(v) : std::string_view()));
+  const std::string_view sv = v ? std::string_view(v) : std::string_view();
+  auto parsed = std::make_shared<AllowedSchemas>();
+  parsed->restrict = mcp_guard::restricts_schemas(sv);
+  parsed->names = mcp_guard::parse_schema_list(sv);
   std::lock_guard<std::mutex> lock(allowed_mutex);
   allowed_schemas = parsed;
 }
@@ -204,7 +209,7 @@ bool register_sysvars() {
   str_arg.def_val = nullptr;
   if (mysql_service_component_sys_variable_register->register_variable(
           "mcp", "allowed_schemas", PLUGIN_VAR_STR | PLUGIN_VAR_MEMALLOC | PLUGIN_VAR_RQCMDARG,
-          "Comma-separated schemas whose tables MCP sessions may access; empty: all",
+          "Comma-separated schemas whose tables MCP sessions may access; blank: all",
           nullptr, update_allowed_schemas, &str_arg, &opt_allowed_schemas))
     return true;
   allowed_registered = true;
@@ -352,7 +357,8 @@ bool Event_tracking_table_access_implementation::callback(
   mcp_guard::TablePolicy policy;
   policy.read_only = opt_read_only;
   policy.deny_system_schemas = opt_deny_system_schemas;
-  policy.allowed_schemas = allowed.get();
+  policy.restrict_schemas = allowed->restrict;
+  policy.allowed_schemas = &allowed->names;
   const std::string_view db(data->table_database.str ? data->table_database.str : "",
                             data->table_database.str ? data->table_database.length : 0);
   const bool write = data->event_subclass != EVENT_TRACKING_TABLE_ACCESS_READ;

@@ -84,6 +84,18 @@ int main() {
   expect_ro("call", "CALL list_tables('d')", true);
   expect_ro("call", "CALL `mysql_mcp_evil`.x()", true);
 
+  // NO_BACKSLASH_ESCAPES: '\' is a whole string there, so FOR UPDATE below is code.
+  // With backslash escapes the same text hides it inside a string; both are checked.
+  expect_ro("select", "SELECT '\\', 1 FROM t FOR UPDATE -- '", true);
+  expect_ro("select", "SELECT '\\' INTO OUTFILE '/tmp/x' -- '", true);
+  expect_ro("set_option", "SET @a = '\\', GLOBAL max_connections = 1 -- '", true);
+  // ...and the other way round: a quote escaped by a backslash hides nothing.
+  expect_ro("select", "SELECT 'it\\'s FOR UPDATE'", true);  // denied under one reading
+  expect_ro("select", "SELECT 'a\\\\b'", false);
+  // ANSI_QUOTES: "..." is an identifier; scanning it as a string hides no keywords.
+  expect_ro("select", "SELECT \"for\" FROM t", false);
+  expect_ro("call", "CALL mysql_mcp.list_tables('\\') ", false);
+
   // Tokenizer details.
   {
     const char *q = "SELECT 'it''s' , \"a\\\"b\" FROM `we``ird`";
@@ -98,13 +110,22 @@ int main() {
     ++failures;
   }
 
+  if (restricts_schemas(" , ") != true || restricts_schemas("  ") != false) {
+    std::printf("FAIL restricts_schemas\n");
+    ++failures;
+  }
   std::vector<std::string> allowed = {"shop", "crm"};
+  std::vector<std::string> none;
   TablePolicy p;
   expect_table(p, "shop", false, nullptr);
   expect_table(p, "shop", true, "mcp.read_only");
   expect_table(p, "mysql", false, "mcp.deny_system_schemas");
   expect_table(p, "sys", false, "mcp.deny_system_schemas");
   expect_table(p, "performance_schema", false, nullptr);
+  p.restrict_schemas = true;
+  p.allowed_schemas = &none;  // mcp.allowed_schemas = ',': no schema
+  expect_table(p, "shop", false, "mcp.allowed_schemas");
+  expect_table(p, "information_schema", false, nullptr);
   p.allowed_schemas = &allowed;
   expect_table(p, "crm", false, nullptr);
   expect_table(p, "hr", false, "mcp.allowed_schemas");
