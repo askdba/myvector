@@ -73,7 +73,7 @@ When an MCP session connects, the guard sets its session `max_execution_time` to
 - `SET [SESSION] max_execution_time` (or `@@max_execution_time`) to 0, above the limit, or to anything but a literal (`DEFAULT`, an expression, a variable).
 - The optimizer hints `MAX_EXECUTION_TIME(n)` and `SET_VAR(max_execution_time = n)` with such a value.
 
-A changed limit reaches connected MCP sessions at their next statement. Setting it back to 0 leaves their current session value as it is.
+A changed limit reaches connected MCP sessions at their next statement, and the limit is applied again after `COM_CHANGE_USER` and `COM_RESET_CONNECTION`, which reset session variables. Setting it back to 0 leaves their current session value as it is.
 
 As with the server's own `max_execution_time`, the limit covers top-level read-only `SELECT` statements. MySQL ignores it inside stored programs, so **`CALL mysql_mcp.*` tool-pack calls are not limited**. Those run catalog queries on `information_schema`. If they must be limited too, revoke `EXECUTE` on `mysql_mcp` from the MCP account: mysql-mcp-server then falls back to its own SQL, whose `SELECT`s the limit covers.
 

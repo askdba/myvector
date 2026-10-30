@@ -44,6 +44,7 @@
 #include <mysql/components/services/mysql_system_variable.h>
 #include <mysql/components/services/mysql_thd_store_service.h>
 #include <mysql/components/services/security_context.h>
+#include <mysql/components/util/event_tracking/event_tracking_command_consumer_helper.h>
 #include <mysql/components/util/event_tracking/event_tracking_connection_consumer_helper.h>
 #include <mysql/components/util/event_tracking/event_tracking_global_variable_consumer_helper.h>
 #include <mysql/components/util/event_tracking/event_tracking_query_consumer_helper.h>
@@ -473,6 +474,23 @@ bool Event_tracking_connection_implementation::callback(
   }
 }
 
+// Command events: COM_RESET_CONNECTION resets session variables (raising no connection
+// event), so the time limit is applied again at the next statement.
+mysql_event_tracking_command_subclass_t Event_tracking_command_implementation::filtered_sub_events =
+    EVENT_TRACKING_COMMAND_START;
+
+bool Event_tracking_command_implementation::callback(
+    const mysql_event_tracking_command_data *data) {
+  if (data->status != 0) return false;
+  SessionState *state = session_state(current_thd_or_null());
+  if (state == nullptr) return false;
+  static constexpr std::string_view kReset = "Reset Connection";
+  const std::string_view command(data->command.str ? data->command.str : "",
+                                 data->command.str ? data->command.length : 0);
+  if (command == kReset) state->applied_time_limit = kTimeLimitNotApplied;
+  return false;
+}
+
 // Global variable events: SET GLOBAL / SET PERSIST of mcp.* needs MCP_ADMIN, on top of
 // the SYSTEM_VARIABLES_ADMIN the server requires. Only a client's SET statement
 // (sql_command "set_option") is checked: the server applies persisted values through the
@@ -611,13 +629,15 @@ mysql_service_status_t mcp_guard_init() {
 
 }  // namespace
 
+IMPLEMENTS_SERVICE_EVENT_TRACKING_COMMAND(mcp_guard);
 IMPLEMENTS_SERVICE_EVENT_TRACKING_CONNECTION(mcp_guard);
 IMPLEMENTS_SERVICE_EVENT_TRACKING_GLOBAL_VARIABLE(mcp_guard);
 IMPLEMENTS_SERVICE_EVENT_TRACKING_QUERY(mcp_guard);
 IMPLEMENTS_SERVICE_EVENT_TRACKING_TABLE_ACCESS(mcp_guard);
 
 BEGIN_COMPONENT_PROVIDES(mcp_guard)
-PROVIDES_SERVICE_EVENT_TRACKING_CONNECTION(mcp_guard),
+PROVIDES_SERVICE_EVENT_TRACKING_COMMAND(mcp_guard),
+    PROVIDES_SERVICE_EVENT_TRACKING_CONNECTION(mcp_guard),
     PROVIDES_SERVICE_EVENT_TRACKING_GLOBAL_VARIABLE(mcp_guard),
     PROVIDES_SERVICE_EVENT_TRACKING_QUERY(mcp_guard),
     PROVIDES_SERVICE_EVENT_TRACKING_TABLE_ACCESS(mcp_guard), END_COMPONENT_PROVIDES();
