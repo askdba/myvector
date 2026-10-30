@@ -316,8 +316,11 @@ bool status_registered = false;
 // ----- MCP session marker (per THD) ---------------------------------------------------
 
 // Per-session state of an MCP session, in a THD slot (null for other sessions).
+// applied_time_limit when no limit has been applied to the current session variables.
+constexpr unsigned long kTimeLimitNotApplied = ~0UL;
+
 struct SessionState {
-  unsigned long applied_time_limit = 0;  // mcp.max_execution_time_ms last applied
+  unsigned long applied_time_limit = kTimeLimitNotApplied;  // last mcp.max_execution_time_ms set
 };
 
 mysql_thd_store_slot session_slot = nullptr;
@@ -453,7 +456,13 @@ bool Event_tracking_connection_implementation::callback(
       if (mark_session(thd, mcp))  // could not mark an MCP session: fail closed
         return deny("mcp_guard", statements_denied, data->connection_id,
                     "connection refused: session state unavailable");
-      if (mcp) apply_time_limit(thd, session_state(thd));
+      if (mcp) {
+        SessionState *state = session_state(thd);
+        // COM_CHANGE_USER resets session variables: apply the limit again.
+        if (state != nullptr && data->event_subclass == EVENT_TRACKING_CONNECTION_CHANGE_USER)
+          state->applied_time_limit = kTimeLimitNotApplied;
+        apply_time_limit(thd, state);
+      }
       return false;
     }
     case EVENT_TRACKING_CONNECTION_DISCONNECT:
