@@ -220,9 +220,10 @@ script's own `INSTALL PLUGIN` fails as a duplicate.
 
 > **Installation paths:**
 > The **plugin** (`INSTALL PLUGIN`) is the current stable path and supports MySQL 8.0, 8.4, and 9.0.
-> The **component** (`INSTALL COMPONENT`) is the forward path for MySQL 8.4, 9.7 (LTS), and 26.7 (Innovation).
+> The **component** (`INSTALL COMPONENT`) is the forward path for MySQL 8.4, 9.7 (LTS), and 26.10 (Innovation).
 > MySQL 8.0 plugin support will be maintained through MySQL 8.0 EOL; no component build is planned for 8.0.
-> MySQL 26.7 is component-only — its newer ABI is not supported by the legacy plugin build.
+> MySQL 26.10 is component-only — its newer ABI is not supported by the legacy plugin build.
+> The current component build target is 26.10 (`scripts/build-component-26.10-docker.sh`); the published Docker image below is still `mysql26.7` and will migrate to 26.10.
 
 | Tag | MySQL Version | Install mechanism |
 | :--- | :--- | :--- |

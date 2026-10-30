@@ -10,9 +10,9 @@ on macOS Apple Silicon. It is intended as a reference while building.
 > **plugin** distribution (what `build-docker-local.sh` below builds, and
 > what this whole page is about) is intentionally scoped to MySQL 8.0,
 > 8.4, and 9.0 — see `CLAUDE.md`'s project overview. The **component**
-> distribution additionally supports MySQL 9.7.0 and **26.7.0** (the
-> current latest; see `.github/workflows/ci.yml` and
-> `scripts/build-component-26.7-docker.sh`), but those are built via
+> distribution additionally supports MySQL 9.7.0 and **26.10.0** (the
+> current Innovation release; built by
+> `scripts/build-component-26.10-docker.sh`), but those are built via
 > Docker Linux containers in CI, not locally on macOS — there is no
 > macOS-specific build note for the component variant, and no
 > `build-docker-local.sh` support for it either. The toolchain
