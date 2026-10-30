@@ -206,6 +206,13 @@ static const size_t MYVECTOR_FILTER_EXACT_THRESHOLD = 10000;
  */
 static const unsigned int MYVECTOR_MAX_ANN_RETURN_COUNT = 10000;
 
+/* Max ef_search a caller can request for myvector_ann_set(). Unlike nn (just
+ * above), nothing bounded this before: ef gates searchBaseLayerST's two
+ * candidate-queue size limits, so an arbitrarily large value makes both
+ * structurally unreachable and the HNSW graph walk degrades to visiting every
+ * reachable node for a single query (audit run-1, Slice 5). */
+static const unsigned int MYVECTOR_MAX_EF_SEARCH = 10000;
+
 /* Buffer for the myvector_ann_set() result: up to MYVECTOR_MAX_ANN_RETURN_COUNT
  * keys of up to 20 digits, a comma after each, the brackets and a NUL.
  */
@@ -1957,6 +1964,8 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT* initid,
         nn = min((const unsigned int)nn, MYVECTOR_MAX_ANN_RETURN_COUNT);
 
         ef_search = vo.getIntOption("ef_search", 0);
+        if (ef_search > 0)
+            ef_search = min((const unsigned int)ef_search, MYVECTOR_MAX_EF_SEARCH);
     }
 
     AbstractVectorIndex* vi = g_indexes.get(col);
