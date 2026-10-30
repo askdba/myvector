@@ -1370,6 +1370,25 @@ void BuildMyVectorIndexSQL(const char* db,
             continue;
         }
 
+        /* row[1] is whatever bytes are in the tracked column of a table any
+         * ordinary client with INSERT/UPDATE privilege can write to; nothing
+         * here previously checked its real length against what vi's
+         * dimension requires before insertVector() reads a fixed stride from
+         * it (OOB read otherwise -- audit run-1). insertVector() itself
+         * cannot validate this: it only receives a bare pointer, never a
+         * length. */
+        if (lengths[1] < MyVectorExpectedVectorBytes(vi)) {
+            warning_print(
+                "Skipping undersized vector (%lu bytes, need %lu) for id=%s "
+                "while building index for %s.%s.",
+                lengths[1],
+                MyVectorExpectedVectorBytes(vi),
+                idval,
+                db,
+                table);
+            continue;
+        }
+
         vi->insertVector(vec, 0, atol(idval));  /// dim is already known by vi
         nRows++;
     }

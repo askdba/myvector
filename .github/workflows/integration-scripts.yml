@@ -15,6 +15,18 @@
 #                                       path traversal in index build/governance
 #                                       are closed, ordinary workflow unaffected
 #                                       (audit run-1)
+#   scripts/test-udf-input-validation.py  myvector_construct/_bv stack and heap
+#                                       overflows, an undersized myvector_ann_set
+#                                       query vector, and an undersized vector
+#                                       reaching insertVector() via binlog apply,
+#                                       bulk build or add-row are all rejected
+#                                       cleanly instead of read/written OOB
+#                                       (audit run-1)
+#   scripts/test-hnsw-loader-hardening.py  a corrupted/crafted .hnsw.index or
+#                                       .hnsw.index.links file is rejected
+#                                       cleanly on load instead of corrupting
+#                                       memory, ordinary load/save unaffected
+#                                       (audit run-1)
 #   scripts/test-ef-search-clamp.py     a huge ef_search value doesn't blow past
 #                                       a bounded search-effort ceiling, ordinary
 #                                       ef_search behavior unaffected (audit run-1)
@@ -33,6 +45,7 @@ on:
       - "sql/**"
       - "scripts/test-*.py"
       - "scripts/test-mcp-guard.sh"
+      - "scripts/test-mcp-tool-pack.sh"
       - "scripts/build-component*"
       - "scripts/build-plugin*"
       - "CMakeLists.txt"
@@ -45,6 +58,7 @@ on:
       - "sql/**"
       - "scripts/test-*.py"
       - "scripts/test-mcp-guard.sh"
+      - "scripts/test-mcp-tool-pack.sh"
       - "scripts/build-component*"
       - "scripts/build-plugin*"
       - "CMakeLists.txt"
@@ -112,7 +126,8 @@ jobs:
                    "test-ef-search.py" "test-online-updates-idle.py" \
                    "test-online-dml.py" "test-online-dml.py --key-type bigint" \
                    "test-distance-udf.py" "test-crash-regressions.py" \
-                   "test-index-governance.py" "test-ef-search-clamp.py"; do
+                   "test-index-governance.py" "test-udf-input-validation.py" \
+                   "test-hnsw-loader-hardening.py" "test-ef-search-clamp.py"; do
             read -r -a T <<< "$t"
             echo "::group::${t} (${KIND} ${MYSQL_VERSION})"
             if python3 "scripts/${T[0]}" "${ARGS[@]}" "${T[@]:1}"; then
@@ -173,3 +188,27 @@ jobs:
         run: |
           chmod +x scripts/test-mcp-guard.sh
           scripts/test-mcp-guard.sh "$MYSQL_VERSION" "dist/mcp-guard-${MYSQL_VERSION}"
+
+  mcp-tool-pack:
+    # The mysql_mcp SQL tool pack (sql/mcp/, RFC 0001 Phase 1 in askdba/mysql-mcp-server):
+    # install, re-install, and parity of every procedure with mysql-mcp-server's own query,
+    # as root and as an EXECUTE-only MCP account. Plain SQL, so no build step.
+    name: mcp-tool-pack (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["mysql:8.0", "mysql:8.4", "mysql:9.7", "mysql:26.10", "mariadb:11.4", "mariadb:12.3"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Tool pack test
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          chmod +x scripts/test-mcp-tool-pack.sh
+          scripts/test-mcp-tool-pack.sh "$IMAGE"

@@ -896,18 +896,61 @@
         readBinaryPOD(input, offsetLevel0_);
         readBinaryPOD(input, max_elements_);
         readBinaryPOD(input, cur_element_count);
-#if 0
-        size_t max_elements = max_elements_i;
-        if (max_elements < cur_element_count)
-            max_elements = max_elements_;
+
+        /* Every size/count field read above (and the three below) comes
+         * straight from the file via readBinaryPOD, a raw stream read with no
+         * validation whatsoever -- a corrupted or maliciously crafted header
+         * must be rejected here, before it sizes any allocation or read
+         * (audit run-1, Slice 4). cur_element_count must never exceed the
+         * capacity data_level0_memory_ is about to be allocated with. */
+        if (max_elements_ == 0 || cur_element_count > max_elements_)
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported "
+                "(cur_element_count exceeds max_elements_)");
+
+        // A caller-supplied floor lets the index grow beyond what was saved;
+        // restores functionality the disabled block above used to provide.
+        size_t max_elements = std::max(max_elements_, max_elements_i);
         max_elements_ = max_elements;
-#endif
-        size_t max_elements = max_elements_;
+
+        /* Every internal id in this class (tableint) is a 32-bit unsigned
+         * int, used as both an array index and a loop-counter comparison
+         * bound throughout this file and hnswdisk.h (including clear()'s own
+         * `for (tableint i = 0; i < cur_element_count; i++)`). A
+         * max_elements_/cur_element_count beyond UINT_MAX would silently
+         * wrap the counter on overflow, making that loop (now also reachable
+         * mid-load via the catch block below) never terminate, independent
+         * of any crafted value for the fields checked above (review of audit
+         * run-1, Slice 4: PR #235). */
+        if (max_elements > std::numeric_limits<tableint>::max())
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported "
+                "(max_elements_ exceeds the internal id range)");
+
         readBinaryPOD(input, size_data_per_element_);
-        readBinaryPOD(input, label_offset_);
-        readBinaryPOD(input, offsetData_);
+        readBinaryPOD(input, label_offset_);  // recomputed below, not trusted
+        readBinaryPOD(input, offsetData_);    // recomputed below, not trusted
         readBinaryPOD(input, maxlevel_);
         readBinaryPOD(input, enterpoint_node_);
+
+        /* Neither was validated before, yet both are dereferenced
+         * unconditionally on the very first search after load whenever
+         * cur_element_count > 0 (searchKnnEf's layer-descent loop indexes
+         * get_linklist(enterpoint_node_, level) for level = maxlevel_ down
+         * to 1, and reads getDataByInternalId(enterpoint_node_) before any
+         * neighbor-id bound check in the function ever runs) -- bypassing
+         * every other check this PR adds (review of audit run-1, Slice 4:
+         * PR #235). maxlevel_ is the graph's top layer index, which for any
+         * practical element count/M is at most a few dozen in expectation;
+         * enterpoint_node_ must name an actual existing element. */
+        constexpr int kMaxSaneLevel = 256;
+        if (maxlevel_ < 0 || maxlevel_ > kMaxSaneLevel)
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported (maxlevel_ out of range)");
+        if (cur_element_count > 0 && enterpoint_node_ >= cur_element_count)
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported "
+                "(enterpoint_node_ out of range)");
 
         readBinaryPOD(input, maxM_);
         readBinaryPOD(input, maxM0_);
@@ -915,43 +958,131 @@
         readBinaryPOD(input, mult_);
         readBinaryPOD(input, ef_construction_);
 
+        /* mult_ is never validated, yet every future INSERT's getRandomLevel
+         * computes (int)(-log(uniform())*mult_): a NaN or non-positive value
+         * makes that an undefined double-to-int conversion, corrupting
+         * element_levels_/the resulting malloc size for that new element
+         * (review of audit run-1, Slice 4: PR #235). revSize_ = 1.0/mult_
+         * below also divides by it directly. */
+        if (!(mult_ > 0.0) || !std::isfinite(mult_))
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported (mult_ out of range)");
+
         data_size_ = s->get_data_size();
         fstdistfunc_ = s->get_dist_func();
         dist_func_param_ = s->get_dist_func_param();
 
+        /* maxM0_/maxM_ are also untrusted file fields: size_links_level0_ /
+         * size_links_per_element_ below multiply them by sizeof(tableint) and
+         * add sizeof(linklistsizeint), so a maxM0_/maxM_ chosen to make that
+         * wrap mod SIZE_MAX would make the consistency check just below pass
+         * (an attacker controls both sides of it) while silently shrinking
+         * the real per-element stride -- e.g. to 0 -- so a later, perfectly
+         * ordinary INSERT's mutuallyConnectNewElement (hnswdisk.h), which
+         * still uses the raw maxM0_/maxM_ as its neighbor-count ceiling,
+         * writes far more neighbor ids than that stride's slot actually
+         * holds (review of audit run-1, Slice 4: PR #235). */
+        if (maxM0_ > (std::numeric_limits<size_t>::max() - sizeof(linklistsizeint)) /
+                         sizeof(tableint) ||
+            maxM_ > (std::numeric_limits<size_t>::max() - sizeof(linklistsizeint)) /
+                        sizeof(tableint))
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported (maxM0_/maxM_ overflow)");
+
+        /* offsetData_/label_offset_/size_links_level0_ are pure functions of
+         * maxM0_ and data_size_ (see the constructor's identical arithmetic),
+         * never independent state -- so recompute them instead of trusting
+         * the file's copies. A corrupted label_offset_ otherwise computes an
+         * out-of-bounds address on every getExternalLabel()/setExternalLabel()
+         * call, the latter reachable again from ordinary INSERT traffic via
+         * the replace-deleted-element path, not just at load time (audit
+         * run-1, Slice 4). offsetLevel0_ is likewise always 0 at creation
+         * (never read back trustingly either) -- it also feeds address
+         * arithmetic elsewhere.
+         */
+        offsetLevel0_ = 0;
+        size_links_level0_ = maxM0_ * sizeof(tableint) + sizeof(linklistsizeint);
+        offsetData_ = size_links_level0_;
+
+        /* The maxM0_/maxM_ check above only guards the multiplication that
+         * produces size_links_level0_; the two additions below are a second
+         * place the same kind of wrap can happen (e.g. maxM0_ chosen just
+         * under that check's limit still leaves size_links_level0_ close to
+         * SIZE_MAX, and adding data_size_ can wrap it to a small value while
+         * offsetData_, a plain assignment above, stays huge) -- an attacker
+         * who controls both maxM0_ and the file's size_data_per_element_
+         * could otherwise still pass the consistency check below with
+         * offsetData_ corrupted (review of audit run-1, Slice 4: PR #235). */
+        if (size_links_level0_ > std::numeric_limits<size_t>::max() - data_size_)
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported (label_offset_ overflow)");
+        label_offset_ = size_links_level0_ + data_size_;
+        if (label_offset_ > std::numeric_limits<size_t>::max() - sizeof(labeltype))
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported "
+                "(size_data_per_element_ overflow)");
+        size_t expected_size_per_element = label_offset_ + sizeof(labeltype);
+        if (size_data_per_element_ != expected_size_per_element)
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported "
+                "(size_data_per_element_ inconsistent with maxM0_/data size)");
+
+        /* Structural consistency check the in-memory HierarchicalNSW::loadIndex
+         * (hnswalg.h) has and this disk-persistence fork had disabled via
+         * #if 0 -- reimplemented here for the three-file disk format (the
+         * original block assumed per-node link-list sizes were interleaved
+         * in this same file, which this format never does; links live in the
+         * separate .links/.links.data sidecar files instead). Validate the
+         * level0 data block the header claims actually fits in the real file,
+         * with overflow-safe arithmetic, before malloc/read trust either
+         * size (audit run-1, Slice 4). */
         auto pos = input.tellg();
-#if 0
-        /// Optional - check if index is ok:
-        input.seekg(cur_element_count * size_data_per_element_, input.cur);
-        for (size_t i = 0; i < cur_element_count; i++) {
-            if (input.tellg() < 0 || input.tellg() >= total_filesize) {
-                throw std::runtime_error("Index seems to be corrupted or unsupported");
-            }
-
-            unsigned int linkListSize;
-            readBinaryPOD(input, linkListSize);
-            if (linkListSize != 0) {
-                input.seekg(linkListSize, input.cur);
-            }
-        }
-
-        // throw exception if it either corrupted or old index
-        if (input.tellg() != total_filesize)
+        if (pos < 0 || total_filesize < 0 || pos > total_filesize)
             throw std::runtime_error("Index seems to be corrupted or unsupported");
-
-        input.clear();
-        /// Optional check end
-#endif
-        input.seekg(pos, input.beg);
+        // Both operands are known non-negative above, so this fits in size_t
+        // on any platform where the file itself could actually fit on disk.
+        size_t remaining_bytes = static_cast<size_t>(total_filesize - pos);
+        if (cur_element_count > 0 &&
+            size_data_per_element_ >
+                (std::numeric_limits<size_t>::max() / cur_element_count))
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported (size overflow)");
+        size_t level0_bytes = cur_element_count * size_data_per_element_;
+        if (level0_bytes > remaining_bytes)
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported "
+                "(file too small for declared element count)");
+        if (max_elements > 0 &&
+            size_data_per_element_ >
+                (std::numeric_limits<size_t>::max() / max_elements))
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported (size overflow)");
 
         data_level0_memory_ = (char *) malloc(max_elements * size_data_per_element_);
         if (data_level0_memory_ == nullptr)
             throw std::runtime_error("Not enough memory: loadIndex failed to allocate level0");
-        input.read(data_level0_memory_, cur_element_count * size_data_per_element_);
+        input.read(data_level0_memory_, level0_bytes);
+        /* The remaining_bytes check above guarantees the file *claims* to
+         * have this many bytes left, but never confirms the read actually
+         * delivered them (a file truncated/replaced between that check and
+         * this read, still within the same TOCTOU-prone threat model, would
+         * silently short-read). Without this, the unread tail of
+         * data_level0_memory_ stays as uninitialized heap memory that
+         * getExternalLabel() immediately trusts as a real label key a few
+         * lines below, and later as real vector data in every distance
+         * computation (review of audit run-1, Slice 4: PR #235). clear()
+         * cannot be used for cleanup here yet (linkLists_ is not allocated
+         * and element_levels_ is not sized to max_elements_ until a few
+         * lines below), so free this one buffer directly. */
+        if (!input) {
+            free(data_level0_memory_);
+            data_level0_memory_ = nullptr;
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported (short read)");
+        }
 
         size_links_per_element_ = maxM_ * sizeof(tableint) + sizeof(linklistsizeint);
 
-        size_links_level0_ = maxM0_ * sizeof(tableint) + sizeof(linklistsizeint);
         std::vector<std::mutex>(max_elements).swap(link_list_locks_);
         std::vector<std::mutex>(MAX_LABEL_OPERATION_LOCKS).swap(label_op_locks_);
 
@@ -969,31 +1100,104 @@
             linkLists_[i] = nullptr;
         }
 
-        std::string linksDirLocation = location + ".links";
-        std::ifstream inputLinksDir(linksDirLocation, std::ios::binary);
-        std::string linksDataLocation = location + ".links.data";
-        std::ifstream inputLinksData(linksDataLocation, std::ios::binary);
+        /* By this point data_level0_memory_/linkLists_ are both allocated and
+         * every linkLists_[i] for i < cur_element_count is either nullptr or
+         * a valid pointer matching element_levels_[i] -- exactly clear()'s
+         * own precondition, so it's already safe to use for cleanup here.
+         * The try starts before the sidecar files are even opened: the
+         * missing-sidecar throw a few lines below used to escape before the
+         * loop's own try block began, leaking both buffers on every repeated
+         * MYVECTOR_INDEX_LOAD retry against the same damaged index -- the
+         * same leak-on-throw class this PR's narrower try already fixed for
+         * mid-loop failures (review of audit run-1, Slice 4: PR #235). */
+        try {
+            std::string linksDirLocation = location + ".links";
+            std::ifstream inputLinksDir(linksDirLocation, std::ios::binary);
+            std::string linksDataLocation = location + ".links.data";
+            std::ifstream inputLinksData(linksDataLocation, std::ios::binary);
 
-        if (!inputLinksDir.is_open() || !inputLinksData.is_open()) {
-            throw std::runtime_error("Cannot open file");
+            if (!inputLinksDir.is_open() || !inputLinksData.is_open()) {
+                throw std::runtime_error("Cannot open file");
+            }
+
+            size_t current_data_pos = 0;
+            while (inputLinksDir.good()) {
+                unsigned int nodeID = 0,linkListSize = 0;
+                readBinaryPOD(inputLinksDir, nodeID);
+                readBinaryPOD(inputLinksDir, linkListSize);
+
+                if (!inputLinksDir.good() || !linkListSize)
+                  break;
+
+                /* nodeID comes straight from the .links file via readBinaryPOD,
+                 * with no bound check -- element_levels_ and linkLists_ are both
+                 * allocated to exactly max_elements entries, so an out-of-range
+                 * nodeID here is a file-controlled out-of-bounds heap write
+                 * (audit run-1, Slice 4). Bound against cur_element_count, not
+                 * max_elements: a real save never writes a link record for a
+                 * nodeID that is not an actual element, and clear() only frees
+                 * linkLists_[i] for i < cur_element_count, so an in-capacity but
+                 * out-of-count nodeID would otherwise malloc a buffer nothing
+                 * ever frees again (review of audit run-1, Slice 4: PR #235). */
+                if (nodeID >= cur_element_count)
+                    throw std::runtime_error(
+                        "Index links file seems to be corrupted "
+                        "(nodeID out of range)");
+
+                /* linkListSize is always a whole number of levels'-worth of
+                 * neighbor slots in a real save (size_links_per_element_ is
+                 * the per-level stride); a non-multiple either indicates
+                 * corruption or -- since element_levels_[nodeID] below then
+                 * truncates to 0 even though linkLists_[nodeID] still gets a
+                 * real allocation -- makes clear()'s own `if
+                 * (element_levels_[i] > 0) free(linkLists_[i])` cleanup loop
+                 * skip freeing it, leaking that buffer on every failed
+                 * load/retry. Also reject an implausibly large value
+                 * (bounded by the same sane level ceiling as maxlevel_)
+                 * before the malloc below sizes off it (review of audit
+                 * run-1, Slice 4: PR #235). */
+                if (linkListSize % size_links_per_element_ != 0 ||
+                    linkListSize / size_links_per_element_ >
+                        (unsigned int)kMaxSaneLevel)
+                    throw std::runtime_error(
+                        "Index links file seems to be corrupted "
+                        "(linkListSize inconsistent with maxM_)");
+
+                element_levels_[nodeID] = linkListSize / size_links_per_element_;
+                linkLists_[nodeID] = (char *) malloc(linkListSize);
+                if (linkLists_[nodeID] == nullptr)
+                   throw std::runtime_error("Not enough memory: loadIndex failed to allocate linklist");
+                inputLinksData.read(linkLists_[nodeID], linkListSize);
+                /* A .links.data sidecar shorter than what .links declares would
+                 * otherwise leave the tail of this buffer as uninitialized heap
+                 * memory, later read as neighbor ids during ordinary graph
+                 * traversal (review of audit run-1, Slice 4: PR #235). */
+                if (!inputLinksData)
+                    throw std::runtime_error(
+                        "Index links data file seems to be corrupted "
+                        "(short read)");
+                m_linksOffsetsInFile[nodeID] = current_data_pos;
+                current_data_pos = current_data_pos + linkListSize;
+            } // while
+            inputLinksDir.close();
+            inputLinksData.close();
+        } catch (...) {
+            clear();
+            throw;
         }
-        size_t current_data_pos = 0;
-        while (inputLinksDir.good()) {
-            unsigned int nodeID = 0,linkListSize = 0;
-            readBinaryPOD(inputLinksDir, nodeID);
-            readBinaryPOD(inputLinksDir, linkListSize);
 
-            if (!inputLinksDir.good() || !linkListSize)
-              break;
-
-            element_levels_[nodeID] = linkListSize / size_links_per_element_;
-            linkLists_[nodeID] = (char *) malloc(linkListSize);
-            if (linkLists_[nodeID] == nullptr)
-               throw std::runtime_error("Not enough memory: loadIndex failed to allocate linklist");
-            inputLinksData.read(linkLists_[nodeID], linkListSize);
-            m_linksOffsetsInFile[nodeID] = current_data_pos;
-            current_data_pos = current_data_pos + linkListSize;
-        } // while
+        /* maxlevel_/enterpoint_node_ were already checked against
+         * cur_element_count above, but that alone doesn't confirm the graph
+         * data agrees with the claimed top level: a maxlevel_ naming a level
+         * the entry point was never actually given a link list for (the
+         * .links loop just above leaves element_levels_[i] at its default of
+         * 0 for any node it never saw a record for) makes the next search's
+         * layer-descent loop call get_linklist() against a null linkLists_
+         * slot (review of audit run-1, Slice 4: PR #235). */
+        if (cur_element_count > 0 && maxlevel_ > element_levels_[enterpoint_node_])
+            throw std::runtime_error(
+                "Index seems to be corrupted or unsupported "
+                "(maxlevel_ inconsistent with enterpoint_node_'s real level)");
 
         for (size_t i = 0; i < cur_element_count; i++) {
             if (isMarkedDeleted(i)) {
@@ -1003,8 +1207,6 @@
         }
 
         input.close();
-        inputLinksDir.close();
-        inputLinksData.close();
 
         return;
     }

@@ -218,6 +218,36 @@ MyVectorDistanceFn myvector_distance_fn(const char* name, size_t len);
 /** Bit packing for binary vectors (1 bit per dimension). */
 constexpr unsigned int BITS_PER_BYTE = 8;
 
+/* The exact byte length a full vector for this index must have: dim*sizeof(FP32)
+ * for FP32-based indexes (KNN/HNSW), dim/8 bytes for HNSW_BV (bit-packed
+ * Hamming vectors) -- floor, matching HammingBinaryVectorSpace::data_size_ and
+ * MyVectorBVStorageLength(), the actual ground truth for how many bytes HNSW_BV
+ * reads/stores per vector (both assume dim is a multiple of 8; an earlier
+ * version of this helper used ceil(dim/8), which rejected every well-formed
+ * vector on a dim not a multiple of 8 as "too short" -- review of audit run-1,
+ * Slice 3: PR #234). Every caller that treats a raw, externally-sized buffer
+ * (a UDF argument, a binlog row image, a SELECT result) as this index's fixed-
+ * stride vector array must check its real length against this first -- neither
+ * insertVector() nor searchVectorNN() can do so themselves, since they only see
+ * a bare pointer with no length (audit run-1, Slice 3). */
+inline unsigned long MyVectorExpectedVectorBytes(AbstractVectorIndex* vi) {
+    int dim = vi->getDimension();
+    /* getDimension() returning non-positive isn't reachable through ordinary
+     * validated index creation, but dividing/multiplying a negative int by
+     * an unsigned constant below would otherwise promote it to a huge
+     * wrapped value instead of a small one -- the same signed/unsigned
+     * pitfall fixed elsewhere in this audit. Fail closed (reject every
+     * caller-supplied length, rather than 0, which would instead accept
+     * every length) since reaching this at all means the index's own state
+     * is already unexpectedly broken (review of audit run-1, Slice 3:
+     * PR #234). */
+    if (dim <= 0)
+        return std::numeric_limits<unsigned long>::max();
+    if (vi->getType() == "HNSW_BV")
+        return (unsigned long)(dim / (int)BITS_PER_BYTE);
+    return (unsigned long)dim * sizeof(FP32);
+}
+
 /** RAII shared-lock guard for AbstractVectorIndex. Release-only: caller
  * (get() or open()) must acquire lockShared() before returning the pointer.
  * Constructor does not acquire to avoid double-lock when used with get().

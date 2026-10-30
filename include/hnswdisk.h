@@ -4,6 +4,8 @@
 #include <stdlib.h>
 
 #include <atomic>
+#include <cmath>
+#include <limits>
 #include <list>
 #include <map>
 #include <memory>
@@ -317,6 +319,8 @@ namespace hnswlib {
                 for (size_t j = 0; j < size; j++) {
                     tableint candidate_id = *(datal + j);
 //                    if (candidate_id == 0) continue;
+                    if (candidate_id >= cur_element_count)
+                        throw std::runtime_error("cand error");
 #ifdef USE_SSE
                     _mm_prefetch((char*)(visited_array + *(datal + j + 1)),
                                  _MM_HINT_T0);
@@ -447,6 +451,9 @@ namespace hnswlib {
                 for (size_t j = 1; j <= size; j++) {
                     int candidate_id = *(data + j);
 //                    if (candidate_id == 0) continue;
+                    if (candidate_id < 0 ||
+                        (size_t)candidate_id >= cur_element_count)
+                        throw std::runtime_error("cand error");
 #ifdef USE_SSE
                     _mm_prefetch((char*)(visited_array + *(data + j + 1)),
                                  _MM_HINT_T0);
@@ -1125,6 +1132,8 @@ namespace hnswlib {
                                          _MM_HINT_T0);
 #endif
                             tableint cand = datal[i];
+                            if (cand >= cur_element_count)
+                                throw std::runtime_error("cand error");
                             dist_t d = fstdistfunc_(dataPoint,
                                                     getDataByInternalId(cand),
                                                     dist_func_param_);
@@ -1287,7 +1296,7 @@ namespace hnswlib {
                             tableint* datal = (tableint*)(data + 1);
                             for (int i = 0; i < size; i++) {
                                 tableint cand = datal[i];
-                                if (cand > max_elements_)
+                                if (cand >= cur_element_count)
                                     throw std::runtime_error("cand error");
                                 dist_t d =
                                     fstdistfunc_(data_point,
@@ -1381,7 +1390,7 @@ namespace hnswlib {
                     tableint* datal = (tableint*)(data + 1);
                     for (int i = 0; i < size; i++) {
                         tableint cand = datal[i];
-                        if (cand > max_elements_)
+                        if (cand >= cur_element_count)
                             throw std::runtime_error("cand error");
                         dist_t d = fstdistfunc_(query_data,
                                                 getDataByInternalId(cand),
@@ -1448,7 +1457,7 @@ namespace hnswlib {
                     tableint* datal = (tableint*)(data + 1);
                     for (int i = 0; i < size; i++) {
                         tableint cand = datal[i];
-                        if (cand < 0 || cand > max_elements_)
+                        if (cand < 0 || cand >= cur_element_count)
                             throw std::runtime_error("cand error");
                         dist_t d = fstdistfunc_(query_data,
                                                 getDataByInternalId(cand),
