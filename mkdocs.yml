@@ -76,6 +76,7 @@ nav:
       - Known Limitations: LIMITATIONS.md
       - Structure: STRUCTURE.md
       - Security: SECURITY.md
+      - MCP Components: MCP_COMPONENTS.md
   - Community:
       - Code of Conduct: CODE_OF_CONDUCT.md
       - Contributing: CONTRIBUTING.md

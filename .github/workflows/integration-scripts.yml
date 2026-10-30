@@ -129,9 +129,9 @@ jobs:
           echo "All test scripts passed (${KIND} ${MYSQL_VERSION})"
 
   mcp-guard:
-    # component_mcp_guard (RFC 0001 in askdba/mysql-mcp-server): build it with
-    # MYVECTOR_BUILD_MCP=ON and run the install / grant / restart / uninstall
-    # lifecycle test on the official image of the same patch release.
+    # component_mcp_guard (RFC 0001 in askdba/mysql-mcp-server): unit-test the policy,
+    # build it with MYVECTOR_BUILD_MCP=ON and run the lifecycle and enforcement test
+    # (scripts/test-mcp-guard.sh) on the official image of the same patch release.
     name: mcp-guard (${{ matrix.mysql-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -153,6 +153,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Policy unit test
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -o /tmp/test_mcp_guard_policy src/mcp/guard/test_mcp_guard_policy.cc
+          /tmp/test_mcp_guard_policy
 
       - name: Build component_mcp_guard
         env:
