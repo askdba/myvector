@@ -96,6 +96,76 @@ int main() {
   expect_ro("select", "SELECT \"for\" FROM t", false);
   expect_ro("call", "CALL mysql_mcp.list_tables('\\') ", false);
 
+  // mcp.max_execution_time_ms
+  struct TimeCase {
+    const char *cmd, *sql;
+    bool denied;
+  };
+  const TimeCase time_cases[] = {
+      {"set_option", "SET SESSION max_execution_time = 500", false},
+      {"set_option", "SET max_execution_time=1000", false},
+      {"set_option", "SET @@session.max_execution_time = 999, sql_mode = ''", false},
+      {"set_option", "SET @max_execution_time = 0", false},  // a user variable
+      {"set_option", "SET sql_mode = ''", false},
+      {"set_option", "SET SESSION max_execution_time = 0", true},
+      {"set_option", "SET max_execution_time = 5000", true},
+      {"set_option", "SET @@max_execution_time := 2000", true},
+      {"set_option", "SET max_execution_time = DEFAULT", true},
+      {"set_option", "SET max_execution_time = 500 * 100", true},
+      {"set_option", "SET max_execution_time = @x", true},
+      {"set_option", "SET a = 1, max_execution_time = 0", true},
+      {"select", "SELECT /*+ MAX_EXECUTION_TIME(500) */ * FROM t", false},
+      {"select", "SELECT /*+ MAX_EXECUTION_TIME(0) */ * FROM t", true},
+      {"select", "SELECT /*+ max_execution_time( 5000 ) */ * FROM t", true},
+      {"select", "SELECT /*+ SET_VAR(max_execution_time=0) */ * FROM t", true},
+      {"select", "SELECT /*+ SET_VAR(max_execution_time = 800) */ * FROM t", false},
+      {"select", "SELECT /*+ BKA(t) */ * FROM t", false},
+      {"select", "SELECT 'max_execution_time = 0' FROM t", false},
+      {"select", "SELECT /*+ SET_VAR(max_execution_time=1G) */ SLEEP(5)", true},
+      {"select", "SELECT /*+ MAX_EXECUTION_TIME(1K) */ SLEEP(5)", true},
+      {"select", "SELECT /*+ SET_VAR(max_execution_time=5.5) */ 1", true},
+      {"select", "SELECT /*+ MAX_EXECUTION_TIME(900) BKA(t) */ * FROM t", false},
+      {"set_option", "SET max_execution_time = 1G", true},
+  };
+  for (const TimeCase &c : time_cases) {
+    const char *why = time_limit_violation(c.cmd, c.sql, std::strlen(c.sql), 1000);
+    if ((why != nullptr) != c.denied) {
+      std::printf("FAIL time limit %-60s want %s\n", c.sql, c.denied ? "deny" : "allow");
+      ++failures;
+    }
+  }
+  if (time_limit_violation("set_option", "SET max_execution_time = 0", 26, 0) != nullptr) {
+    std::printf("FAIL time limit floor 0 must not check\n");
+    ++failures;
+  }
+
+  // Error log redaction.
+  {
+    const char *q = "SELECT 'token=secret', \"pw\" FROM `t`\nWHERE a = 'it''s'";
+    const std::string r = redact_for_log(q, std::strlen(q));
+    if (r != "SELECT '?', \"?\" FROM `t` WHERE a = '?'") {
+      std::printf("FAIL redact_for_log: %s\n", r.c_str());
+      ++failures;
+    }
+    // NO_BACKSLASH_ESCAPES: 'a\' is a whole literal there; the readings differ, so only
+    // the text before the first quote is kept.
+    const char *nbe = "SELECT 'a\\', 'token=hunter2' FROM t FOR UPDATE";
+    const std::string rn = redact_for_log(nbe, std::strlen(nbe));
+    if (rn.find("hunter2") != std::string::npos || rn != "SELECT '?'...") {
+      std::printf("FAIL redact_for_log NO_BACKSLASH_ESCAPES: %s\n", rn.c_str());
+      ++failures;
+    }
+    const char *esc = "SELECT 'it\\'s secret' FROM t";
+    if (redact_for_log(esc, std::strlen(esc)).find("secret") != std::string::npos) {
+      std::printf("FAIL redact_for_log escaped quote: %s\n", redact_for_log(esc, std::strlen(esc)).c_str());
+      ++failures;
+    }
+    if (redact_for_log(q, std::strlen(q), 10) != "SELECT '?'...") {
+      std::printf("FAIL redact_for_log truncation: %s\n", redact_for_log(q, std::strlen(q), 10).c_str());
+      ++failures;
+    }
+  }
+
   // Tokenizer details.
   {
     const char *q = "SELECT 'it''s' , \"a\\\"b\" FROM `we``ird`";

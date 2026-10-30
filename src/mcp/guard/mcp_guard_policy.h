@@ -24,6 +24,7 @@
 
 #include <cctype>
 #include <cstddef>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -212,6 +213,135 @@ inline const char *read_only_violation(std::string_view cmd, const char *query, 
     if (cmd == "call" && !call_into_tool_pack(t)) return "mcp.read_only";
   }
   return nullptr;
+}
+
+// ----- mcp.max_execution_time_ms ------------------------------------------------------
+
+inline bool all_digits(std::string_view s) {
+  if (s.empty() || s.size() > 18) return false;
+  for (char c : s)
+    if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+  return true;
+}
+
+// An explicit limit is acceptable when it is a positive literal no larger than the floor.
+inline bool within_floor(std::string_view value, unsigned long long floor) {
+  if (!all_digits(value)) return false;
+  const unsigned long long v = std::stoull(std::string(value));
+  return v > 0 && v <= floor;
+}
+
+// A SET of the session's max_execution_time that would lift the floor: to 0, above it, or
+// to anything but a literal (DEFAULT, an expression, a variable).
+inline bool set_raises_time_limit(const std::vector<Token> &t, unsigned long long floor) {
+  for (size_t i = 0; i < t.size(); ++i) {
+    if (t[i].kind != Token::kWord) continue;
+    if (t[i].text != "MAX_EXECUTION_TIME" && t[i].text != "@@MAX_EXECUTION_TIME") continue;
+    size_t j = i + 1;
+    if (j < t.size() && t[j].kind == Token::kPunct && t[j].text == ":") ++j;
+    if (!(j < t.size() && t[j].kind == Token::kPunct && t[j].text == "=")) continue;  // not assigned
+    ++j;
+    const bool literal = j < t.size() && t[j].kind == Token::kWord &&
+                         (j + 1 == t.size() || (t[j + 1].kind == Token::kPunct &&
+                                                (t[j + 1].text == "," || t[j + 1].text == ";")));
+    if (!literal || !within_floor(t[j].text, floor)) return true;
+  }
+  return false;
+}
+
+// An optimizer hint (/*+ ... */) that sets the statement's time limit, either
+// MAX_EXECUTION_TIME(n) or SET_VAR(max_execution_time = n), to 0, above the floor, or to
+// something that is not a literal. Searched in the raw text, so a hint-like string literal
+// is also refused; that only errs on the safe side.
+inline bool hint_raises_time_limit(const char *s, size_t n, unsigned long long floor) {
+  std::string upper(s, n);
+  for (char &c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  size_t pos = 0;
+  while ((pos = upper.find("/*+", pos)) != std::string::npos) {
+    const size_t end = upper.find("*/", pos + 3);
+    const std::string body = upper.substr(pos + 3, end == std::string::npos ? std::string::npos
+                                                                             : end - pos - 3);
+    size_t k = 0;
+    while ((k = body.find("MAX_EXECUTION_TIME", k)) != std::string::npos) {
+      size_t v = k + std::strlen("MAX_EXECUTION_TIME");
+      while (v < body.size() && std::isspace(static_cast<unsigned char>(body[v]))) ++v;
+      if (v < body.size() && (body[v] == '(' || body[v] == '=')) ++v;
+      while (v < body.size() && std::isspace(static_cast<unsigned char>(body[v]))) ++v;
+      size_t e = v;
+      while (e < body.size() && std::isdigit(static_cast<unsigned char>(body[e]))) ++e;
+      if (!within_floor(std::string_view(body).substr(v, e - v), floor)) return true;
+      // The whole operand must be the number: MySQL reads 1G or 1K as a scaled value.
+      size_t after = e;
+      while (after < body.size() && std::isspace(static_cast<unsigned char>(body[after]))) ++after;
+      if (after >= body.size() || (body[after] != ')' && body[after] != ',')) return true;
+      k = e;
+    }
+    if (end == std::string::npos) break;
+    pos = end + 2;
+  }
+  return false;
+}
+
+// Returns "mcp.max_execution_time_ms" when the statement would lift the floor, or nullptr.
+// floor == 0 disables the check. Text is read in both quoting modes, as for read_only.
+inline const char *time_limit_violation(std::string_view cmd, const char *query, size_t len,
+                                        unsigned long long floor) {
+  if (floor == 0) return nullptr;
+  if (hint_raises_time_limit(query, len, floor)) return "mcp.max_execution_time_ms";
+  if (cmd == "set_option") {
+    for (bool escapes : {true, false})
+      if (set_raises_time_limit(tokenize(query, len, escapes), floor))
+        return "mcp.max_execution_time_ms";
+  }
+  return nullptr;
+}
+
+// ----- Error log -----------------------------------------------------------------------
+
+// One reading of redact_for_log(): backslash_escapes as in tokenize().
+inline std::string redact_literals(const char *s, size_t n, size_t max_len,
+                                   bool backslash_escapes) {
+  std::string out;
+  size_t i = 0;
+  while (i < n && out.size() < max_len) {
+    const char c = s[i];
+    if (c == '\'' || c == '"') {
+      out.push_back(c);
+      out.push_back('?');
+      out.push_back(c);
+      ++i;
+      while (i < n) {
+        if (backslash_escapes && s[i] == '\\' && i + 1 < n) {
+          i += 2;
+        } else if (s[i] == c && i + 1 < n && s[i + 1] == c) {
+          i += 2;
+        } else if (s[i] == c) {
+          ++i;
+          break;
+        } else {
+          ++i;
+        }
+      }
+      continue;
+    }
+    out.push_back(c == '\n' || c == '\r' || c == '\t' ? ' ' : c);
+    ++i;
+  }
+  if (i < n) out += "...";
+  return out;
+}
+
+// The statement text for the error log: string literals replaced by '?' (they can hold
+// secrets), line breaks and tabs by spaces, at most max_len bytes. Quoted identifiers stay.
+// Where a literal ends depends on sql_mode (NO_BACKSLASH_ESCAPES), so both readings are
+// made; if they differ, only the text before the first quote is kept.
+inline std::string redact_for_log(const char *s, size_t n, size_t max_len = 256) {
+  std::string with = redact_literals(s, n, max_len, true);
+  if (with == redact_literals(s, n, max_len, false)) return with;
+  size_t q = 0;
+  while (q < n && q < max_len && s[q] != '\'' && s[q] != '"') ++q;
+  std::string out = redact_literals(s, q, max_len, true);
+  return out + "'?'...";
 }
 
 // Parses mcp.allowed_schemas: comma-separated schema names, spaces trimmed, empty

@@ -23,6 +23,9 @@
 //                            SET, and CALL into the mysql_mcp tool pack; no table writes.
 //   mcp.deny_system_schemas  ON (default): no table access in mysql and sys.
 //   mcp.allowed_schemas      Comma-separated schemas MCP sessions may read; empty: all.
+//   mcp.max_execution_time_ms  Time limit for their SELECTs (session max_execution_time,
+//                            set at connect), which they cannot raise; 0: none.
+//   mcp.log_denials          ON (default): refusals go to the error log, 10 a minute.
 //
 // Denials fail with ER_OPTION_PREVENTS_STATEMENT ("... running with the mcp.read_only
 // option ..."), like the server's own read_only. SET GLOBAL / PERSIST of mcp.* needs
@@ -34,18 +37,24 @@
 #include <mysql/components/services/component_status_var_service.h>
 #include <mysql/components/services/component_sys_var_service.h>
 #include <mysql/components/services/dynamic_privilege.h>
+#include <mysql/components/services/log_builtins.h>
 #include <mysql/components/services/mysql_current_thread_reader.h>
 #include <mysql/components/services/mysql_runtime_error_service.h>
+#include <mysql/components/services/mysql_string.h>
+#include <mysql/components/services/mysql_system_variable.h>
 #include <mysql/components/services/mysql_thd_store_service.h>
 #include <mysql/components/services/security_context.h>
+#include <mysql/components/util/event_tracking/event_tracking_command_consumer_helper.h>
 #include <mysql/components/util/event_tracking/event_tracking_connection_consumer_helper.h>
 #include <mysql/components/util/event_tracking/event_tracking_global_variable_consumer_helper.h>
 #include <mysql/components/util/event_tracking/event_tracking_query_consumer_helper.h>
 #include <mysql/components/util/event_tracking/event_tracking_table_access_consumer_helper.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -61,6 +70,15 @@ REQUIRES_SERVICE_PLACEHOLDER(component_sys_variable_register);
 REQUIRES_SERVICE_PLACEHOLDER(component_sys_variable_unregister);
 REQUIRES_SERVICE_PLACEHOLDER(status_variable_registration);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_runtime_error);
+REQUIRES_SERVICE_PLACEHOLDER(mysql_system_variable_update_integer);
+REQUIRES_SERVICE_PLACEHOLDER(mysql_string_factory);
+REQUIRES_SERVICE_PLACEHOLDER(mysql_string_converter);
+REQUIRES_SERVICE_PLACEHOLDER(log_builtins);
+REQUIRES_SERVICE_PLACEHOLDER(log_builtins_string);
+
+// LogEvent() uses these.
+SERVICE_TYPE(log_builtins) *log_bi = nullptr;
+SERVICE_TYPE(log_builtins_string) *log_bs = nullptr;
 
 namespace {
 
@@ -70,6 +88,9 @@ constexpr int kErOptionPreventsStatement = 1290;
 // ER_SPECIFIC_ACCESS_DENIED_ERROR: "Access denied; you need (at least one of) the %-.128s
 // privilege(s) for this operation".
 constexpr int kErSpecificAccessDenied = 1227;
+// ER_LOG_PRINTF_MSG: the error log code for a free-form component message (MY-011071 on
+// 8.4, 9.7 and 26.10).
+constexpr int kErLogPrintfMsg = 11071;
 
 constexpr const char *kMcpUser = "MCP_USER";
 constexpr const char *kMcpAdmin = "MCP_ADMIN";
@@ -132,6 +153,8 @@ MYSQL_THD current_thd_or_null() {
 bool opt_enabled = true;
 bool opt_read_only = true;
 bool opt_deny_system_schemas = true;
+bool opt_log_denials = true;
+unsigned long opt_max_execution_time_ms = 0;  // 0: no floor
 char *opt_allowed_schemas = nullptr;  // server-managed (PLUGIN_VAR_MEMALLOC)
 
 // Parsed mcp.allowed_schemas, swapped as a whole on update; readers copy the pointer.
@@ -169,17 +192,20 @@ struct BoolVar {
   bool def;
 };
 
-constexpr size_t kBoolVarCount = 3;
+constexpr size_t kBoolVarCount = 4;
 const BoolVar kBoolVars[kBoolVarCount] = {
     {"enabled", "Allow mysql-mcp-server (MCP_USER) sessions; OFF refuses them all",
      &opt_enabled, true},
     {"read_only", "MCP sessions may only read, whatever their grants", &opt_read_only, true},
     {"deny_system_schemas", "MCP sessions may not access tables in mysql and sys",
      &opt_deny_system_schemas, true},
+    {"log_denials", "Write refused MCP statements to the error log (at most 10 a minute)",
+     &opt_log_denials, true},
 };
 
 bool bool_registered[kBoolVarCount] = {};
 bool allowed_registered = false;
+bool time_registered = false;
 
 // Returns true if a variable could not be unregistered; it then stays marked as
 // registered and deinit fails, so the server keeps this library (and the update callback
@@ -200,6 +226,13 @@ bool unregister_sysvars() {
       failed = true;
     else
       allowed_registered = false;
+  }
+  if (time_registered) {
+    if (mysql_service_component_sys_variable_unregister->unregister_variable(
+            "mcp", "max_execution_time_ms"))
+      failed = true;
+    else
+      time_registered = false;
   }
   return failed;
 }
@@ -242,6 +275,19 @@ bool register_sysvars() {
           nullptr, update_allowed_schemas, &str_arg, &opt_allowed_schemas))
     return true;
   allowed_registered = true;
+  INTEGRAL_CHECK_ARG(ulong) time_arg;
+  time_arg.def_val = 0;
+  time_arg.min_val = 0;
+  time_arg.max_val = 4294967295UL;
+  time_arg.blk_sz = 0;
+  if (mysql_service_component_sys_variable_register->register_variable(
+          "mcp", "max_execution_time_ms",
+          PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED | PLUGIN_VAR_RQCMDARG,
+          "Time limit in milliseconds for SELECT statements of MCP sessions, which they cannot "
+          "raise; 0: none",
+          nullptr, nullptr, &time_arg, &opt_max_execution_time_ms))
+    return true;
+  time_registered = true;
   // A persisted or command-line value is stored without the update callback: parse it.
   set_allowed_schemas(opt_allowed_schemas);
   return false;
@@ -270,27 +316,118 @@ bool status_registered = false;
 
 // ----- MCP session marker (per THD) ---------------------------------------------------
 
+// Per-session state of an MCP session, in a THD slot (null for other sessions).
+// applied_time_limit when no limit has been applied to the current session variables.
+constexpr unsigned long kTimeLimitNotApplied = ~0UL;
+
+struct SessionState {
+  unsigned long applied_time_limit = kTimeLimitNotApplied;  // last mcp.max_execution_time_ms set
+};
+
 mysql_thd_store_slot session_slot = nullptr;
-char mcp_session_marker;  // the slot holds &mcp_session_marker for MCP sessions
 
-int free_session_slot(void *) { return 0; }  // the marker is static
-
-bool is_mcp_session(MYSQL_THD thd) {
-  return thd != nullptr && session_slot != nullptr &&
-         mysql_service_mysql_thd_store->get(thd, session_slot) == &mcp_session_marker;
+// Called by the server when the THD ends with a state still attached.
+int free_session_slot(void *state) {
+  delete static_cast<SessionState *>(state);
+  return 0;
 }
 
-void mark_session(MYSQL_THD thd, bool mcp) {
-  if (is_mcp_session(thd) == mcp) return;
-  mysql_service_mysql_thd_store->set(thd, session_slot, mcp ? &mcp_session_marker : nullptr);
+SessionState *session_state(MYSQL_THD thd) {
+  if (thd == nullptr || session_slot == nullptr) return nullptr;
+  return static_cast<SessionState *>(mysql_service_mysql_thd_store->get(thd, session_slot));
+}
+
+bool is_mcp_session(MYSQL_THD thd) { return session_state(thd) != nullptr; }
+
+// Returns true on failure. An MCP session that cannot be marked would not be guarded, so
+// the caller refuses it.
+bool mark_session(MYSQL_THD thd, bool mcp) {
+  if (session_slot == nullptr) return mcp;
+  SessionState *state = session_state(thd);
+  if ((state != nullptr) == mcp) return false;
+  if (mcp) {
+    state = new (std::nothrow) SessionState();
+    if (state == nullptr) return true;
+    if (mysql_service_mysql_thd_store->set(thd, session_slot, state)) {
+      delete state;
+      return true;
+    }
+  } else {
+    mysql_service_mysql_thd_store->set(thd, session_slot, nullptr);
+    delete state;
+  }
   sessions_connected += mcp ? 1 : -1;
+  return false;
 }
 
-bool deny(const char *option, std::atomic<long long> &counter) {
+// Writes a refusal to the error log, at most kLogBurst lines per minute; the number left
+// out is reported with the next line after the minute.
+constexpr int kLogBurst = 10;
+std::mutex log_mutex;
+std::chrono::steady_clock::time_point log_window_start;
+int log_window_count = 0;
+long long log_suppressed = 0;
+
+void log_denial(const char *option, unsigned long long connection_id, std::string_view what) {
+  if (!opt_log_denials || log_bi == nullptr) return;
+  long long suppressed = 0;
+  {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    const auto now = std::chrono::steady_clock::now();
+    if (now - log_window_start >= std::chrono::minutes(1)) {
+      suppressed = log_suppressed;
+      log_suppressed = 0;
+      log_window_start = now;
+      log_window_count = 0;
+    }
+    if (log_window_count >= kLogBurst) {
+      ++log_suppressed;
+      return;
+    }
+    ++log_window_count;
+  }
+  if (suppressed > 0)
+    LogEvent()
+        .type(LOG_TYPE_ERROR)
+        .prio(WARNING_LEVEL)
+        .errcode(kErLogPrintfMsg)
+        .subsys("mcp_guard")
+        .component("component: mcp_guard")
+        .message("mcp_guard: %lld more MCP refusals in the last minute were not logged", suppressed);
+  const std::string shown = mcp_guard::redact_for_log(what.data(), what.size());
+  LogEvent()
+      .type(LOG_TYPE_ERROR)
+      .prio(WARNING_LEVEL)
+      .errcode(kErLogPrintfMsg)
+      .subsys("mcp_guard")
+      .component("component: mcp_guard")
+      .message("mcp_guard: refused by %s: MCP connection %llu: %s", option, connection_id,
+               shown.c_str());
+}
+
+bool deny(const char *option, std::atomic<long long> &counter, unsigned long long connection_id,
+          std::string_view what) {
   ++counter;
+  log_denial(option, connection_id, what);
   mysql_error_service_emit_printf(mysql_service_mysql_runtime_error, kErOptionPreventsStatement,
                                   0, option);
   return true;
+}
+
+// Sets the session's max_execution_time to mcp.max_execution_time_ms when the setting
+// differs from what was last applied to this session: at connect, and at the next
+// statement after an administrator changes it. Between changes the session may lower
+// its own value (and cannot raise it). When the setting goes back to 0 the session
+// value is left as it is.
+my_h_string max_execution_time_name = nullptr;
+
+void apply_time_limit(MYSQL_THD thd, SessionState *state) {
+  const unsigned long limit = opt_max_execution_time_ms;
+  if (state == nullptr || limit == state->applied_time_limit) return;
+  state->applied_time_limit = limit;
+  if (limit == 0 || max_execution_time_name == nullptr) return;
+  mysql_service_mysql_system_variable_update_integer->set_unsigned(
+      thd, "SESSION", nullptr, max_execution_time_name, limit);
 }
 
 }  // namespace
@@ -315,9 +452,18 @@ bool Event_tracking_connection_implementation::callback(
       const bool mcp = thd_has_grant(thd, kMcpUser) && !thd_has_grant(thd, kMcpAdmin);
       if (mcp && !opt_enabled) {
         mark_session(thd, false);  // refused: no disconnect event follows
-        return deny("mcp.enabled", statements_denied);
+        return deny("mcp.enabled", statements_denied, data->connection_id, "connection refused");
       }
-      mark_session(thd, mcp);
+      if (mark_session(thd, mcp))  // could not mark an MCP session: fail closed
+        return deny("mcp_guard", statements_denied, data->connection_id,
+                    "connection refused: session state unavailable");
+      if (mcp) {
+        SessionState *state = session_state(thd);
+        // COM_CHANGE_USER resets session variables: apply the limit again.
+        if (state != nullptr && data->event_subclass == EVENT_TRACKING_CONNECTION_CHANGE_USER)
+          state->applied_time_limit = kTimeLimitNotApplied;
+        apply_time_limit(thd, state);
+      }
       return false;
     }
     case EVENT_TRACKING_CONNECTION_DISCONNECT:
@@ -326,6 +472,23 @@ bool Event_tracking_connection_implementation::callback(
     default:
       return false;
   }
+}
+
+// Command events: COM_RESET_CONNECTION resets session variables (raising no connection
+// event), so the time limit is applied again at the next statement.
+mysql_event_tracking_command_subclass_t Event_tracking_command_implementation::filtered_sub_events =
+    EVENT_TRACKING_COMMAND_START;
+
+bool Event_tracking_command_implementation::callback(
+    const mysql_event_tracking_command_data *data) {
+  if (data->status != 0) return false;
+  static constexpr std::string_view kReset = "Reset Connection";
+  const std::string_view command(data->command.str ? data->command.str : "",
+                                 data->command.str ? data->command.length : 0);
+  if (command != kReset) return false;  // cheap check first: command events are frequent
+  SessionState *state = session_state(current_thd_or_null());
+  if (state != nullptr) state->applied_time_limit = kTimeLimitNotApplied;
+  return false;
 }
 
 // Global variable events: SET GLOBAL / SET PERSIST of mcp.* needs MCP_ADMIN, on top of
@@ -359,16 +522,23 @@ mysql_event_tracking_query_subclass_t Event_tracking_query_implementation::filte
 
 bool Event_tracking_query_implementation::callback(const mysql_event_tracking_query_data *data) {
   MYSQL_THD thd = current_thd_or_null();
-  if (!is_mcp_session(thd)) return false;
-  if (data->event_subclass == EVENT_TRACKING_QUERY_START) ++statements_total;
-  if (!opt_enabled) return deny("mcp.enabled", statements_denied);
-  if (opt_read_only) {
-    const char *cmd = data->sql_command ? data->sql_command : "";
-    const char *query = data->query.str ? data->query.str : "";
-    const size_t len = data->query.str ? data->query.length : 0;
-    const char *why = mcp_guard::read_only_violation(cmd, query, len);
-    if (why != nullptr) return deny(why, statements_denied);
+  SessionState *state = session_state(thd);
+  if (state == nullptr) return false;
+  if (data->event_subclass == EVENT_TRACKING_QUERY_START) {
+    ++statements_total;
+    apply_time_limit(thd, state);  // picks up a changed mcp.max_execution_time_ms
   }
+  const char *cmd = data->sql_command ? data->sql_command : "";
+  const char *query = data->query.str ? data->query.str : "";
+  const size_t len = data->query.str ? data->query.length : 0;
+  const std::string_view text(query, len);
+  if (!opt_enabled) return deny("mcp.enabled", statements_denied, data->connection_id, text);
+  if (opt_read_only) {
+    const char *why = mcp_guard::read_only_violation(cmd, query, len);
+    if (why != nullptr) return deny(why, statements_denied, data->connection_id, text);
+  }
+  const char *why = mcp_guard::time_limit_violation(cmd, query, len, opt_max_execution_time_ms);
+  if (why != nullptr) return deny(why, statements_denied, data->connection_id, text);
   return false;
 }
 
@@ -381,7 +551,18 @@ bool Event_tracking_table_access_implementation::callback(
     const mysql_event_tracking_table_access_data *data) {
   MYSQL_THD thd = current_thd_or_null();
   if (!is_mcp_session(thd)) return false;
-  if (!opt_enabled) return deny("mcp.enabled", table_access_denied);
+  const std::string_view db(data->table_database.str ? data->table_database.str : "",
+                            data->table_database.str ? data->table_database.length : 0);
+  const std::string_view table(data->table_name.str ? data->table_name.str : "",
+                               data->table_name.str ? data->table_name.length : 0);
+  const bool write = data->event_subclass != EVENT_TRACKING_TABLE_ACCESS_READ;
+  // Built only for a refusal: table events are frequent.
+  const auto refuse = [&](const char *option) {
+    const std::string what =
+        std::string(write ? "write " : "read ") + std::string(db) + "." + std::string(table);
+    return deny(option, table_access_denied, data->connection_id, what);
+  };
+  if (!opt_enabled) return refuse("mcp.enabled");
   const auto allowed = current_allowed_schemas();
   mcp_guard::TablePolicy policy;
   policy.read_only = opt_read_only;
@@ -389,11 +570,8 @@ bool Event_tracking_table_access_implementation::callback(
   policy.restrict_schemas = allowed->restrict;
   policy.allowed_schemas = &allowed->names;
   policy.case_insensitive_names = case_insensitive_names;
-  const std::string_view db(data->table_database.str ? data->table_database.str : "",
-                            data->table_database.str ? data->table_database.length : 0);
-  const bool write = data->event_subclass != EVENT_TRACKING_TABLE_ACCESS_READ;
   const char *why = mcp_guard::table_violation(policy, db, write);
-  if (why != nullptr) return deny(why, table_access_denied);
+  if (why != nullptr) return refuse(why);
   return false;
 }
 
@@ -422,10 +600,20 @@ mysql_service_status_t mcp_guard_deinit() {
       session_slot = nullptr;
   }
   if (unregister_privileges()) failed = true;
+  if (max_execution_time_name != nullptr) {
+    mysql_service_mysql_string_factory->destroy(max_execution_time_name);
+    max_execution_time_name = nullptr;
+  }
   return failed ? 1 : 0;
 }
 
 mysql_service_status_t mcp_guard_init() {
+  log_bi = mysql_service_log_builtins;
+  log_bs = mysql_service_log_builtins_string;
+  static const char kName[] = "max_execution_time";
+  if (mysql_service_mysql_string_converter->convert_from_buffer(
+          &max_execution_time_name, kName, sizeof(kName) - 1, "latin1"))
+    max_execution_time_name = nullptr;
   if (register_privileges() ||
       mysql_service_mysql_thd_store->register_slot("component_mcp_guard", free_session_slot,
                                                    &session_slot) ||
@@ -441,13 +629,15 @@ mysql_service_status_t mcp_guard_init() {
 
 }  // namespace
 
+IMPLEMENTS_SERVICE_EVENT_TRACKING_COMMAND(mcp_guard);
 IMPLEMENTS_SERVICE_EVENT_TRACKING_CONNECTION(mcp_guard);
 IMPLEMENTS_SERVICE_EVENT_TRACKING_GLOBAL_VARIABLE(mcp_guard);
 IMPLEMENTS_SERVICE_EVENT_TRACKING_QUERY(mcp_guard);
 IMPLEMENTS_SERVICE_EVENT_TRACKING_TABLE_ACCESS(mcp_guard);
 
 BEGIN_COMPONENT_PROVIDES(mcp_guard)
-PROVIDES_SERVICE_EVENT_TRACKING_CONNECTION(mcp_guard),
+PROVIDES_SERVICE_EVENT_TRACKING_COMMAND(mcp_guard),
+    PROVIDES_SERVICE_EVENT_TRACKING_CONNECTION(mcp_guard),
     PROVIDES_SERVICE_EVENT_TRACKING_GLOBAL_VARIABLE(mcp_guard),
     PROVIDES_SERVICE_EVENT_TRACKING_QUERY(mcp_guard),
     PROVIDES_SERVICE_EVENT_TRACKING_TABLE_ACCESS(mcp_guard), END_COMPONENT_PROVIDES();
@@ -458,6 +648,9 @@ REQUIRES_SERVICE(dynamic_privilege_register), REQUIRES_SERVICE(global_grants_che
     REQUIRES_SERVICE(mysql_thd_store), REQUIRES_SERVICE(component_sys_variable_register),
     REQUIRES_SERVICE(component_sys_variable_unregister),
     REQUIRES_SERVICE(status_variable_registration), REQUIRES_SERVICE(mysql_runtime_error),
+    REQUIRES_SERVICE(mysql_system_variable_update_integer),
+    REQUIRES_SERVICE(mysql_string_factory), REQUIRES_SERVICE(mysql_string_converter),
+    REQUIRES_SERVICE(log_builtins), REQUIRES_SERVICE(log_builtins_string),
     END_COMPONENT_REQUIRES();
 
 BEGIN_COMPONENT_METADATA(mcp_guard)
