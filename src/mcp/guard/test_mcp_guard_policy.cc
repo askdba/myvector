@@ -121,6 +121,11 @@ int main() {
       {"select", "SELECT /*+ SET_VAR(max_execution_time = 800) */ * FROM t", false},
       {"select", "SELECT /*+ BKA(t) */ * FROM t", false},
       {"select", "SELECT 'max_execution_time = 0' FROM t", false},
+      {"select", "SELECT /*+ SET_VAR(max_execution_time=1G) */ SLEEP(5)", true},
+      {"select", "SELECT /*+ MAX_EXECUTION_TIME(1K) */ SLEEP(5)", true},
+      {"select", "SELECT /*+ SET_VAR(max_execution_time=5.5) */ 1", true},
+      {"select", "SELECT /*+ MAX_EXECUTION_TIME(900) BKA(t) */ * FROM t", false},
+      {"set_option", "SET max_execution_time = 1G", true},
   };
   for (const TimeCase &c : time_cases) {
     const char *why = time_limit_violation(c.cmd, c.sql, std::strlen(c.sql), 1000);
@@ -132,6 +137,20 @@ int main() {
   if (time_limit_violation("set_option", "SET max_execution_time = 0", 26, 0) != nullptr) {
     std::printf("FAIL time limit floor 0 must not check\n");
     ++failures;
+  }
+
+  // Error log redaction.
+  {
+    const char *q = "SELECT 'token=secret', \"pw\" FROM `t`\nWHERE a = 'it''s'";
+    const std::string r = redact_for_log(q, std::strlen(q));
+    if (r != "SELECT '?', \"?\" FROM `t` WHERE a = '?'") {
+      std::printf("FAIL redact_for_log: %s\n", r.c_str());
+      ++failures;
+    }
+    if (redact_for_log(q, std::strlen(q), 10) != "SELECT '?'...") {
+      std::printf("FAIL redact_for_log truncation: %s\n", redact_for_log(q, std::strlen(q), 10).c_str());
+      ++failures;
+    }
   }
 
   // Tokenizer details.

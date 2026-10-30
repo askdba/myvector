@@ -153,15 +153,28 @@ denied "mcp: SET max_execution_time above the limit" "$(mcp "SET @@max_execution
 denied "mcp: MAX_EXECUTION_TIME(0) hint" "$(mcp "SELECT /*+ MAX_EXECUTION_TIME(0) */ COUNT(*) FROM d1.t")" "mcp.max_execution_time_ms"
 denied "mcp: SET_VAR(max_execution_time=0) hint" "$(mcp "SELECT /*+ SET_VAR(max_execution_time=0) */ COUNT(*) FROM d1.t")" "mcp.max_execution_time_ms"
 start=$(date +%s)
-mcp "SELECT SLEEP(5) FROM d1.t" >/dev/null
+slept=$(mcp "SELECT SLEEP(5) FROM d1.t")
 took=$(($(date +%s) - start))
-if [ "$took" -le 3 ]; then ok "mcp: a 5s SELECT is stopped by the 1s limit (${took}s)"; else bad "mcp: time limit enforced" "took ${took}s"; fi
+# Interrupted by the time limit: SLEEP() alone returns 1; reading a table, as here, the
+# statement fails with 3024 (ER_QUERY_TIMEOUT). Either way it must not run 5s.
+if [ "$took" -le 3 ] && { [ "$slept" = 1 ] || printf '%s' "$slept" | grep -q '^ERROR 3024 '; }; then ok "mcp: a 5s SELECT is stopped by the 1s limit (${took}s)"; else bad "mcp: time limit enforced" "took ${took}s, result '$slept'"; fi
 expect "app (no MCP_USER) keeps max_execution_time 0" "$(as app apppass1 "SELECT @@max_execution_time")" "^0$"
 sql "SET GLOBAL mcp.max_execution_time_ms = 0" >/dev/null
 expect "mcp: no limit once the floor is 0" "$(mcp "SELECT @@max_execution_time")" "^0$"
+# A session already connected gets a new limit at its next statement.
+mcp "SELECT @@max_execution_time; DO SLEEP(3); SELECT @@max_execution_time" >"/tmp/$CNAME-live" 2>&1 &
+live=$!
+sleep 1
+sql "SET GLOBAL mcp.max_execution_time_ms = 1500" >/dev/null
+wait "$live"
+expect "mcp: an existing session gets a tightened limit" "$(tr '\n' ' ' <"/tmp/$CNAME-live")" "^0 1500 $"
+rm -f "/tmp/$CNAME-live"
+sql "SET GLOBAL mcp.max_execution_time_ms = 0" >/dev/null
 
 # --- mcp.log_denials -----------------------------------------------------------------------------
 expect "refusals are written to the error log" "$(docker logs "$CNAME" 2>&1 | grep 'mcp_guard: refused by' | tail -3)" '\[MY-011071\] \[mcp_guard\] mcp_guard: refused by mcp\.(read_only|max_execution_time_ms): MCP connection [0-9]+'
+mcp "SELECT 'token=hunter2' FROM d1.t FOR UPDATE" >/dev/null
+expect "error log redacts string literals" "$(docker logs "$CNAME" 2>&1 | grep 'mcp_guard: refused by' | grep -c 'hunter2')" "^0$"
 sql "SET GLOBAL mcp.log_denials = OFF" >/dev/null
 before=$(docker logs "$CNAME" 2>&1 | grep -c 'mcp_guard: refused by')
 mcp "INSERT INTO d1.t VALUES (8)" >/dev/null

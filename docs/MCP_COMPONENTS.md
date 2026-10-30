@@ -39,7 +39,7 @@ A session is an **MCP session** when its account holds `MCP_USER` and not `MCP_A
 | `mcp.read_only` | `ON` | Only reads, whatever the account's grants (below). |
 | `mcp.deny_system_schemas` | `ON` | No table access in `mysql` and `sys`. `information_schema` and `performance_schema` stay readable (the tools use them; grants govern them). |
 | `mcp.allowed_schemas` | empty | Comma-separated schemas whose tables MCP sessions may access; blank means all. A value with no names in it, such as `,`, allows none. Names are compared exactly, or case-insensitively when `lower_case_table_names` is 1 or 2. The system schemas above are governed by `mcp.deny_system_schemas`, and `mysql_mcp` is always allowed. |
-| `mcp.max_execution_time_ms` | 0 | Time limit for their `SELECT` statements, which they cannot raise; 0 means none (below). |
+| `mcp.max_execution_time_ms` | 0 | Time limit for their `SELECT` statements, which they cannot raise; 0 turns the guard's limit off (the server's own `max_execution_time` default still applies) (below). |
 | `mcp.log_denials` | `ON` | Write refusals to the error log, at most 10 lines a minute (below). |
 
 `SET GLOBAL` and `SET PERSIST` of `mcp.*` need `MCP_ADMIN` on top of `SYSTEM_VARIABLES_ADMIN`. Persisted values load at startup as usual. Values given in `INSTALL COMPONENT ... SET` are taken from the installer.
@@ -73,17 +73,19 @@ When an MCP session connects, the guard sets its session `max_execution_time` to
 - `SET [SESSION] max_execution_time` (or `@@max_execution_time`) to 0, above the limit, or to anything but a literal (`DEFAULT`, an expression, a variable).
 - The optimizer hints `MAX_EXECUTION_TIME(n)` and `SET_VAR(max_execution_time = n)` with such a value.
 
-A changed limit applies to sessions that connect afterwards. As with the server's own `max_execution_time`, it covers top-level read-only `SELECT` statements, not statements inside stored programs (such as the `mysql_mcp` procedures).
+A changed limit reaches connected MCP sessions at their next statement. Setting it back to 0 leaves their current session value as it is.
+
+As with the server's own `max_execution_time`, the limit covers top-level read-only `SELECT` statements. MySQL ignores it inside stored programs, so **`CALL mysql_mcp.*` tool-pack calls are not limited**. Those run catalog queries on `information_schema`. If they must be limited too, revoke `EXECUTE` on `mysql_mcp` from the MCP account: mysql-mcp-server then falls back to its own SQL, whose `SELECT`s the limit covers.
 
 ### Error log (mcp.log_denials)
 
-Each refusal is written as a warning, with the setting, the connection id and the start of the statement (up to 256 bytes) or the table:
+Each refusal is written as a warning, with the setting, the connection id and the start of the statement (up to 256 bytes, string literals replaced by `'?'`, line breaks by spaces) or the table:
 
 ```
 [Warning] [MY-011071] [mcp_guard] mcp_guard: refused by mcp.read_only: MCP connection 11: INSERT INTO d.t VALUES (1)
 ```
 
-At most 10 lines are written per minute; the number left out is reported with the next line after the minute. The statement text can contain literal values, as in the general log; turn `mcp.log_denials` off if that is not acceptable.
+At most 10 lines are written per minute; the number left out is reported with the next line after the minute. String literals are redacted, but numbers and identifiers are kept; turn `mcp.log_denials` off if even those must not reach the error log.
 
 ### Errors
 
@@ -112,4 +114,4 @@ The option is `mcp.read_only`, `mcp.deny_system_schemas`, `mcp.allowed_schemas` 
 
 ### Tests
 
-`scripts/test-mcp-guard.sh <mysql-tag> <artifact-dir>` runs install, restart, persistence, uninstall and the enforcement cases against the official image (78 checks, including a `lower_case_table_names=1` server), and `src/mcp/guard/test_mcp_guard_policy.cc` unit-tests the classification and the SQL scanner. CI (`integration-scripts.yml`, job `mcp-guard`) runs both on MySQL 8.4.11, 9.7.2 and 26.10.0.
+`scripts/test-mcp-guard.sh <mysql-tag> <artifact-dir>` runs install, restart, persistence, uninstall and the enforcement cases against the official image (80 checks, including a `lower_case_table_names=1` server), and `src/mcp/guard/test_mcp_guard_policy.cc` unit-tests the classification and the SQL scanner. CI (`integration-scripts.yml`, job `mcp-guard`) runs both on MySQL 8.4.11, 9.7.2 and 26.10.0.

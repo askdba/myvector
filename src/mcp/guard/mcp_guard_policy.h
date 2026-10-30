@@ -270,6 +270,10 @@ inline bool hint_raises_time_limit(const char *s, size_t n, unsigned long long f
       size_t e = v;
       while (e < body.size() && std::isdigit(static_cast<unsigned char>(body[e]))) ++e;
       if (!within_floor(std::string_view(body).substr(v, e - v), floor)) return true;
+      // The whole operand must be the number: MySQL reads 1G or 1K as a scaled value.
+      size_t after = e;
+      while (after < body.size() && std::isspace(static_cast<unsigned char>(body[after]))) ++after;
+      if (after >= body.size() || (body[after] != ')' && body[after] != ',')) return true;
       k = e;
     }
     if (end == std::string::npos) break;
@@ -290,6 +294,41 @@ inline const char *time_limit_violation(std::string_view cmd, const char *query,
         return "mcp.max_execution_time_ms";
   }
   return nullptr;
+}
+
+// ----- Error log -----------------------------------------------------------------------
+
+// The statement text for the error log: string literals replaced by '?' (they can hold
+// secrets), line breaks and tabs by spaces, at most max_len bytes. Quoted identifiers stay.
+inline std::string redact_for_log(const char *s, size_t n, size_t max_len = 256) {
+  std::string out;
+  size_t i = 0;
+  while (i < n && out.size() < max_len) {
+    const char c = s[i];
+    if (c == '\'' || c == '"') {
+      out.push_back(c);
+      out.push_back('?');
+      out.push_back(c);
+      ++i;
+      while (i < n) {
+        if (s[i] == '\\' && i + 1 < n) {
+          i += 2;
+        } else if (s[i] == c && i + 1 < n && s[i + 1] == c) {
+          i += 2;
+        } else if (s[i] == c) {
+          ++i;
+          break;
+        } else {
+          ++i;
+        }
+      }
+      continue;
+    }
+    out.push_back(c == '\n' || c == '\r' || c == '\t' ? ' ' : c);
+    ++i;
+  }
+  if (i < n) out += "...";
+  return out;
 }
 
 // Parses mcp.allowed_schemas: comma-separated schema names, spaces trimmed, empty

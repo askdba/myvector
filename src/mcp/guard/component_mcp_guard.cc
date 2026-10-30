@@ -53,6 +53,7 @@
 #include <chrono>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -314,19 +315,37 @@ bool status_registered = false;
 
 // ----- MCP session marker (per THD) ---------------------------------------------------
 
+// Per-session state of an MCP session, in a THD slot (null for other sessions).
+struct SessionState {
+  unsigned long applied_time_limit = 0;  // mcp.max_execution_time_ms last applied
+};
+
 mysql_thd_store_slot session_slot = nullptr;
-char mcp_session_marker;  // the slot holds &mcp_session_marker for MCP sessions
 
-int free_session_slot(void *) { return 0; }  // the marker is static
-
-bool is_mcp_session(MYSQL_THD thd) {
-  return thd != nullptr && session_slot != nullptr &&
-         mysql_service_mysql_thd_store->get(thd, session_slot) == &mcp_session_marker;
+// Called by the server when the THD ends with a state still attached.
+int free_session_slot(void *state) {
+  delete static_cast<SessionState *>(state);
+  return 0;
 }
 
+SessionState *session_state(MYSQL_THD thd) {
+  if (thd == nullptr || session_slot == nullptr) return nullptr;
+  return static_cast<SessionState *>(mysql_service_mysql_thd_store->get(thd, session_slot));
+}
+
+bool is_mcp_session(MYSQL_THD thd) { return session_state(thd) != nullptr; }
+
 void mark_session(MYSQL_THD thd, bool mcp) {
-  if (is_mcp_session(thd) == mcp) return;
-  mysql_service_mysql_thd_store->set(thd, session_slot, mcp ? &mcp_session_marker : nullptr);
+  SessionState *state = session_state(thd);
+  if ((state != nullptr) == mcp) return;
+  if (mcp) {
+    state = new (std::nothrow) SessionState();
+    if (state == nullptr) return;
+    mysql_service_mysql_thd_store->set(thd, session_slot, state);
+  } else {
+    mysql_service_mysql_thd_store->set(thd, session_slot, nullptr);
+    delete state;
+  }
   sessions_connected += mcp ? 1 : -1;
 }
 
@@ -364,15 +383,15 @@ void log_denial(const char *option, unsigned long long connection_id, std::strin
         .subsys("mcp_guard")
         .component("component: mcp_guard")
         .message("mcp_guard: %lld more MCP refusals in the last minute were not logged", suppressed);
-  const int shown = static_cast<int>(what.size() > 256 ? 256 : what.size());
+  const std::string shown = mcp_guard::redact_for_log(what.data(), what.size());
   LogEvent()
       .type(LOG_TYPE_ERROR)
       .prio(WARNING_LEVEL)
       .errcode(kErLogPrintfMsg)
       .subsys("mcp_guard")
       .component("component: mcp_guard")
-      .message("mcp_guard: refused by %s: MCP connection %llu: %.*s%s", option, connection_id, shown,
-               what.data(), what.size() > 256 ? "..." : "");
+      .message("mcp_guard: refused by %s: MCP connection %llu: %s", option, connection_id,
+               shown.c_str());
 }
 
 bool deny(const char *option, std::atomic<long long> &counter, unsigned long long connection_id,
@@ -384,14 +403,20 @@ bool deny(const char *option, std::atomic<long long> &counter, unsigned long lon
   return true;
 }
 
-// Sets the session's max_execution_time to the mcp.max_execution_time_ms floor.
+// Sets the session's max_execution_time to mcp.max_execution_time_ms when the setting
+// differs from what was last applied to this session: at connect, and at the next
+// statement after an administrator changes it. Between changes the session may lower
+// its own value (and cannot raise it). When the setting goes back to 0 the session
+// value is left as it is.
 my_h_string max_execution_time_name = nullptr;
 
-void apply_time_limit(MYSQL_THD thd) {
-  const unsigned long floor = opt_max_execution_time_ms;
-  if (floor == 0 || max_execution_time_name == nullptr) return;
+void apply_time_limit(MYSQL_THD thd, SessionState *state) {
+  const unsigned long limit = opt_max_execution_time_ms;
+  if (state == nullptr || limit == state->applied_time_limit) return;
+  state->applied_time_limit = limit;
+  if (limit == 0 || max_execution_time_name == nullptr) return;
   mysql_service_mysql_system_variable_update_integer->set_unsigned(
-      thd, "SESSION", nullptr, max_execution_time_name, floor);
+      thd, "SESSION", nullptr, max_execution_time_name, limit);
 }
 
 }  // namespace
@@ -419,7 +444,7 @@ bool Event_tracking_connection_implementation::callback(
         return deny("mcp.enabled", statements_denied, data->connection_id, "connection refused");
       }
       mark_session(thd, mcp);
-      if (mcp) apply_time_limit(thd);
+      if (mcp) apply_time_limit(thd, session_state(thd));
       return false;
     }
     case EVENT_TRACKING_CONNECTION_DISCONNECT:
@@ -461,8 +486,12 @@ mysql_event_tracking_query_subclass_t Event_tracking_query_implementation::filte
 
 bool Event_tracking_query_implementation::callback(const mysql_event_tracking_query_data *data) {
   MYSQL_THD thd = current_thd_or_null();
-  if (!is_mcp_session(thd)) return false;
-  if (data->event_subclass == EVENT_TRACKING_QUERY_START) ++statements_total;
+  SessionState *state = session_state(thd);
+  if (state == nullptr) return false;
+  if (data->event_subclass == EVENT_TRACKING_QUERY_START) {
+    ++statements_total;
+    apply_time_limit(thd, state);  // picks up a changed mcp.max_execution_time_ms
+  }
   const char *cmd = data->sql_command ? data->sql_command : "";
   const char *query = data->query.str ? data->query.str : "";
   const size_t len = data->query.str ? data->query.length : 0;
