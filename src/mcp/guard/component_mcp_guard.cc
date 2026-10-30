@@ -482,12 +482,12 @@ mysql_event_tracking_command_subclass_t Event_tracking_command_implementation::f
 bool Event_tracking_command_implementation::callback(
     const mysql_event_tracking_command_data *data) {
   if (data->status != 0) return false;
-  SessionState *state = session_state(current_thd_or_null());
-  if (state == nullptr) return false;
   static constexpr std::string_view kReset = "Reset Connection";
   const std::string_view command(data->command.str ? data->command.str : "",
                                  data->command.str ? data->command.length : 0);
-  if (command == kReset) state->applied_time_limit = kTimeLimitNotApplied;
+  if (command != kReset) return false;  // cheap check first: command events are frequent
+  SessionState *state = session_state(current_thd_or_null());
+  if (state != nullptr) state->applied_time_limit = kTimeLimitNotApplied;
   return false;
 }
 
