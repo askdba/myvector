@@ -181,18 +181,47 @@ const BoolVar kBoolVars[kBoolVarCount] = {
 bool bool_registered[kBoolVarCount] = {};
 bool allowed_registered = false;
 
-void unregister_sysvars() {
+// Returns true if a variable could not be unregistered; it then stays marked as
+// registered and deinit fails, so the server keeps this library (and the update callback
+// the variable points to) loaded.
+bool unregister_sysvars() {
+  bool failed = false;
   for (size_t i = 0; i < kBoolVarCount; ++i) {
     if (!bool_registered[i]) continue;
-    mysql_service_component_sys_variable_unregister->unregister_variable("mcp",
-                                                                        kBoolVars[i].name);
-    bool_registered[i] = false;
+    if (mysql_service_component_sys_variable_unregister->unregister_variable("mcp",
+                                                                            kBoolVars[i].name))
+      failed = true;
+    else
+      bool_registered[i] = false;
   }
   if (allowed_registered) {
-    mysql_service_component_sys_variable_unregister->unregister_variable("mcp",
-                                                                        "allowed_schemas");
-    allowed_registered = false;
+    if (mysql_service_component_sys_variable_unregister->unregister_variable("mcp",
+                                                                            "allowed_schemas"))
+      failed = true;
+    else
+      allowed_registered = false;
   }
+  return failed;
+}
+
+// lower_case_table_names (read-only, set at initialization): names in table access
+// events are lowercase when it is 1 or 2, so mcp.allowed_schemas is then compared
+// case-insensitively.
+bool case_insensitive_names = false;
+
+void read_lower_case_table_names() {
+  char buf[16] = {0};
+  void *p = buf;
+  size_t len = sizeof(buf) - 1;
+  // get_variable() is deprecated in 9.x in favour of mysql_system_variable_reader, which
+  // 8.4 LTS does not have; it is still provided by every supported server.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  const bool err = mysql_service_component_sys_variable_register->get_variable(
+      "mysql_server", "lower_case_table_names", &p, &len);
+#pragma GCC diagnostic pop
+  if (!err && len > 0)
+    case_insensitive_names = !(len == 1 && static_cast<const char *>(p)[0] == '0');
 }
 
 bool register_sysvars() {
@@ -359,6 +388,7 @@ bool Event_tracking_table_access_implementation::callback(
   policy.deny_system_schemas = opt_deny_system_schemas;
   policy.restrict_schemas = allowed->restrict;
   policy.allowed_schemas = &allowed->names;
+  policy.case_insensitive_names = case_insensitive_names;
   const std::string_view db(data->table_database.str ? data->table_database.str : "",
                             data->table_database.str ? data->table_database.length : 0);
   const bool write = data->event_subclass != EVENT_TRACKING_TABLE_ACCESS_READ;
@@ -381,7 +411,7 @@ mysql_service_status_t mcp_guard_deinit() {
     else
       status_registered = false;
   }
-  unregister_sysvars();
+  if (unregister_sysvars()) failed = true;
   if (session_slot != nullptr) {
     if (mysql_service_mysql_thd_store->unregister_slot(session_slot))
       failed = true;
@@ -402,6 +432,7 @@ mysql_service_status_t mcp_guard_init() {
     return 1;
   }
   status_registered = true;
+  read_lower_case_table_names();
   return 0;
 }
 

@@ -165,5 +165,25 @@ expect "MCP_ADMIN unknown after uninstall" "$(sql "GRANT MCP_ADMIN ON *.* TO app
 expect "mcp.* variables gone after uninstall" "$(sql "SHOW VARIABLES LIKE 'mcp.%'")" "^$"
 expect "no enforcement after uninstall" "$(mcp "INSERT INTO d1.t VALUES (5); SELECT COUNT(*) FROM d1.t")" "^2$"
 
+# --- lower_case_table_names = 1: allowed_schemas compares case-insensitively ---------------------
+CNAME2=$CNAME-lctn
+trap 'cleanup; docker rm -f -v "$CNAME2" >/dev/null 2>&1' EXIT
+docker run -d --name "$CNAME2" -e MYSQL_ROOT_PASSWORD=testpass "mysql:$TAG" --lower-case-table-names=1 >/dev/null
+CNAME_MAIN=$CNAME
+CNAME=$CNAME2
+if wait_ready; then
+	docker cp "$SO" "$CNAME:$PLUGIN_DIR/component_mcp_guard.so" &&
+		docker exec -u 0 "$CNAME" chmod 0644 "$PLUGIN_DIR/component_mcp_guard.so"
+	sql "INSTALL COMPONENT 'file://component_mcp_guard'; GRANT MCP_ADMIN ON *.* TO root@'%';
+CREATE DATABASE Shop; CREATE TABLE Shop.t (i INT); CREATE DATABASE other; CREATE TABLE other.t (i INT);
+CREATE USER mcp@'%' IDENTIFIED BY 'mcppass1'; GRANT SELECT ON *.* TO mcp@'%'; GRANT MCP_USER ON *.* TO mcp@'%'" >/dev/null
+	sql "SET GLOBAL mcp.allowed_schemas = 'Shop'" >/dev/null
+	expect "lower_case_table_names=1: allowed_schemas 'Shop' allows shop" "$(mcp "SELECT COUNT(*) FROM Shop.t")" "^0$"
+	denied "lower_case_table_names=1: other schemas still denied" "$(mcp "SELECT COUNT(*) FROM other.t")" "mcp.allowed_schemas"
+else
+	bad "lower_case_table_names=1 server" "did not start"
+fi
+CNAME=$CNAME_MAIN
+
 echo "== mysql:$TAG: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

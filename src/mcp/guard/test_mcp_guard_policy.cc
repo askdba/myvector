@@ -128,6 +128,10 @@ int main() {
   expect_table(p, "information_schema", false, nullptr);
   p.allowed_schemas = &allowed;
   expect_table(p, "crm", false, nullptr);
+  expect_table(p, "CRM", false, "mcp.allowed_schemas");  // lower_case_table_names = 0
+  p.case_insensitive_names = true;                         // 1 or 2
+  expect_table(p, "CRM", false, nullptr);
+  p.case_insensitive_names = false;
   expect_table(p, "hr", false, "mcp.allowed_schemas");
   expect_table(p, "mysql_mcp", false, nullptr);
   expect_table(p, "information_schema", false, nullptr);

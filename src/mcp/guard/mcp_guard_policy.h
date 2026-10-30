@@ -240,6 +240,9 @@ struct TablePolicy {
   // schemas are allowed; a value with no names in it (",") allows none, failing closed.
   bool restrict_schemas = false;
   const std::vector<std::string> *allowed_schemas = nullptr;
+  // Compare schema names case-insensitively: lower_case_table_names is 1 or 2, where the
+  // server lowercases (or compares in lowercase) the names it reports in table events.
+  bool case_insensitive_names = false;
 };
 
 // Whether an mcp.allowed_schemas value restricts schemas at all: anything but blank.
@@ -268,7 +271,7 @@ inline const char *table_violation(const TablePolicy &p, std::string_view db, bo
   if (p.restrict_schemas) {
     if (p.allowed_schemas)
       for (const std::string &s : *p.allowed_schemas)
-        if (db == s) return nullptr;
+        if (p.case_insensitive_names ? ieq(db, s) : db == s) return nullptr;
     return "mcp.allowed_schemas";
   }
   return nullptr;

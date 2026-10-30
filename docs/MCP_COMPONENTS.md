@@ -38,7 +38,7 @@ A session is an **MCP session** when its account holds `MCP_USER` and not `MCP_A
 | `mcp.enabled` | `ON` | `OFF` refuses new MCP connections and every statement of existing ones (kill switch). |
 | `mcp.read_only` | `ON` | Only reads, whatever the account's grants (below). |
 | `mcp.deny_system_schemas` | `ON` | No table access in `mysql` and `sys`. `information_schema` and `performance_schema` stay readable (the tools use them; grants govern them). |
-| `mcp.allowed_schemas` | empty | Comma-separated schemas whose tables MCP sessions may access; blank means all. A value with no names in it, such as `,`, allows none. The system schemas above are governed by `mcp.deny_system_schemas`, and `mysql_mcp` is always allowed. |
+| `mcp.allowed_schemas` | empty | Comma-separated schemas whose tables MCP sessions may access; blank means all. A value with no names in it, such as `,`, allows none. Names are compared exactly, or case-insensitively when `lower_case_table_names` is 1 or 2. The system schemas above are governed by `mcp.deny_system_schemas`, and `mysql_mcp` is always allowed. |
 
 `SET GLOBAL` and `SET PERSIST` of `mcp.*` need `MCP_ADMIN` on top of `SYSTEM_VARIABLES_ADMIN`. Persisted values load at startup as usual. Values given in `INSTALL COMPONENT ... SET` are taken from the installer.
 
@@ -91,4 +91,4 @@ The option is `mcp.read_only`, `mcp.deny_system_schemas`, `mcp.allowed_schemas` 
 
 ### Tests
 
-`scripts/test-mcp-guard.sh <mysql-tag> <artifact-dir>` runs install, restart, persistence, uninstall and the enforcement cases against the official image (57 checks), and `src/mcp/guard/test_mcp_guard_policy.cc` unit-tests the classification and the SQL scanner. CI (`integration-scripts.yml`, job `mcp-guard`) runs both on MySQL 8.4.11, 9.7.2 and 26.10.0.
+`scripts/test-mcp-guard.sh <mysql-tag> <artifact-dir>` runs install, restart, persistence, uninstall and the enforcement cases against the official image (64 checks, including a `lower_case_table_names=1` server), and `src/mcp/guard/test_mcp_guard_policy.cc` unit-tests the classification and the SQL scanner. CI (`integration-scripts.yml`, job `mcp-guard`) runs both on MySQL 8.4.11, 9.7.2 and 26.10.0.
