@@ -15,6 +15,13 @@
 #                                       path traversal in index build/governance
 #                                       are closed, ordinary workflow unaffected
 #                                       (audit run-1)
+#   scripts/test-udf-input-validation.py  myvector_construct/_bv stack and heap
+#                                       overflows, an undersized myvector_ann_set
+#                                       query vector, and an undersized vector
+#                                       reaching insertVector() via binlog apply,
+#                                       bulk build or add-row are all rejected
+#                                       cleanly instead of read/written OOB
+#                                       (audit run-1)
 # Artifacts are built with the Docker build scripts (Oracle Linux 9, like the
 # mysql images), so they load in the containers; the ci.yml builds are made on
 # the Ubuntu runner and target the runner's own MySQL instead.
@@ -111,7 +118,7 @@ jobs:
                    "test-ef-search.py" "test-online-updates-idle.py" \
                    "test-online-dml.py" "test-online-dml.py --key-type bigint" \
                    "test-distance-udf.py" "test-crash-regressions.py" \
-                   "test-index-governance.py"; do
+                   "test-index-governance.py" "test-udf-input-validation.py"; do
             read -r -a T <<< "$t"
             echo "::group::${t} (${KIND} ${MYSQL_VERSION})"
             if python3 "scripts/${T[0]}" "${ARGS[@]}" "${T[@]:1}"; then

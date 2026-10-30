@@ -21,6 +21,7 @@
 */
 
 #include <algorithm>
+#include <cerrno>
 #include <iomanip>
 #include <list>
 #include <memory>
@@ -1851,6 +1852,25 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT* initid,
     if (args->arg_count == 5)
         args->arg_type[4] = STRING_RESULT;
 
+    /* The query vector (3rd arg) is read by its byte length (args->lengths[2]),
+     * both here and in the length check in myvector_ann_set itself. MySQL does
+     * not maintain lengths[] for a non-string argument (INT_RESULT/REAL_RESULT):
+     * a BIGINT expression can report a "length" of 20, passing a 16-byte check
+     * for a dim=4 index while args->args[2] only ever holds 8 bytes -- an OOB
+     * read that predates and survives that check. Coerce to text, the same
+     * pattern already used for the filter key list above (review of audit
+     * run-1, Slice 3: PR #234). */
+    args->arg_type[2] = STRING_RESULT;
+
+    /* The component build's identical function already rejects a NULL index
+     * column; this one didn't, letting a NULL first argument implicitly
+     * construct std::string(nullptr) inside g_indexes.get() -- undefined
+     * behavior (review of audit run-1, Slice 3: PR #234). */
+    if (!args->args[0]) {
+        strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
+        return true;  // error
+    }
+
     char* col = args->args[0];
     AbstractVectorIndex* vi = g_indexes.get(col);
     if (!vi) {
@@ -1939,7 +1959,28 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT* initid,
         *length = 0;
         return initid->ptr;
     }
+    /* get() already took the shared lock; every later return on this vi must
+     * go through something that releases it, so construct the guard before
+     * any check that can return -- a bare `return` here would leak the lock
+     * forever (no other path decrements it), hanging a future DROP/rebuild's
+     * lockExclusive() wait for readers to drain (review of audit run-1,
+     * Slice 3: PR #234). */
     SharedLockGuard l(vi);
+
+    /* args->lengths[2] is the query vector's true byte length; nothing above
+     * checks it against what the index's own dimension requires before the
+     * fixed-stride reads below (OOB read otherwise -- audit run-1). Mirrors
+     * myvector_distance's dim1==dim2 check. */
+    unsigned long expected_bytes = MyVectorExpectedVectorBytes(vi);
+    if (args->lengths[2] < expected_bytes) {
+        MYVECTOR_UDF_FAIL("myvector_ann_set",
+                          "query vector is %lu bytes, index '%s' requires %lu.",
+                          args->lengths[2], col, expected_bytes);
+        *error = 1;
+        *is_null = 1;
+        *length = 0;
+        return initid->ptr;
+    }
 
     stringstream ss;
     if (searchvec) {
@@ -1975,7 +2016,12 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT* initid,
  * greater than 0, then corresponding bit is set to 1 in the binary vector.
  */
 int SQFloatVectorToBinaryVector(FP32* fvec, unsigned long* ivec, int dim) {
-    memset(ivec, 0, (dim / BITS_PER_BYTE));  // 3rd param is bytes
+    /* dim is already rejected as <= 0 by every caller before this runs, so
+     * this division is always of two non-negative values. Ceil, not floor
+     * (the plugin's own prior formula): a dim not a multiple of 8 still
+     * needs a partial trailing byte (review of audit run-1, Slice 3:
+     * PR #234). */
+    memset(ivec, 0, ((size_t)dim + BITS_PER_BYTE - 1) / BITS_PER_BYTE);
 
     unsigned long elem = 0;
     unsigned long idx = 0;
@@ -1992,7 +2038,17 @@ int SQFloatVectorToBinaryVector(FP32* fvec, unsigned long* ivec, int dim) {
             idx++;
         }
     }
-    /// TODO : if dim is not a mulitple of 64
+    /* A dim not a multiple of 64 left its last (dim % 64) bits sitting in
+     * elem, never flushed by the loop above -- silently discarding them and
+     * returning 0 bytes for any dim < 64 (matches the component's own,
+     * already-correct copy of this function; review of audit run-1, Slice 3:
+     * PR #234). */
+    if ((dim % 64) != 0) {
+        unsigned int shift = 64 - (dim % 64);
+        elem = elem << shift;
+        ivec[idx] = elem;
+        idx++;
+    }
     return (idx * sizeof(unsigned long));  // number of bytes
 }
 
@@ -2016,6 +2072,17 @@ static bool myvector_construct_do_convert(char* ptr,
                                           unsigned long* retlen,
                                           unsigned char* is_null,
                                           unsigned char* error) {
+    /* retvec always points sizeof(size_t) bytes into the MYVECTOR_CONSTRUCT_MAX_LEN
+     * buffer allocated by myvector_construct_init (both call sites use that same
+     * allocation) -- trailer is the metadata+checksum this function itself appends
+     * below, so every write site must stay within capacity, not MYVECTOR_CONSTRUCT_MAX_LEN. */
+#if MYSQL_VERSION_ID < 90000
+    const unsigned long trailer = sizeof(unsigned int) + sizeof(ha_checksum);
+#else
+    const unsigned long trailer = 0;
+#endif
+    const unsigned long capacity = MYVECTOR_CONSTRUCT_MAX_LEN - trailer;
+
     bool skipConvert = false;
     if (!opt || !optlen)
         opt = "i=string,o=float";
@@ -2035,22 +2102,35 @@ static bool myvector_construct_do_convert(char* ptr,
         }
     }
 
-    int len = 0;
+    unsigned long len = 0;
     if (skipConvert) {
         if ((ptrlen % sizeof(FP32)) != 0) {
+            *error = 1;
+            return false;
+        }
+        if (ptrlen > capacity) {
+            MYVECTOR_UDF_FAIL("myvector_construct",
+                              "input vector too large: %lu bytes, max %lu.",
+                              ptrlen, capacity);
             *error = 1;
             return false;
         }
         memcpy(retvec, ptr, ptrlen);
         len = ptrlen;
     } else {
+        /* ptr is a raw UDF argument buffer, not necessarily NUL-terminated
+         * within its allocation (MySQL does not guarantee this for a BLOB/
+         * VARBINARY-typed argument) -- every scan below must stay within
+         * [ptr, end) and never dereference at or past end (review of audit
+         * run-1, Slice 3: PR #234). */
+        const char* end = ptr + ptrlen;
         char* start = nullptr;
         char endch;
-        if ((start = strchr(ptr, '[')))
+        if ((start = (char*)memchr(ptr, '[', ptrlen)))
             endch = ']';
-        else if ((start = strchr(ptr, '{')))
+        else if ((start = (char*)memchr(ptr, '{', ptrlen)))
             endch = '}';
-        else if ((start = strchr(ptr, '(')))
+        else if ((start = (char*)memchr(ptr, '(', ptrlen)))
             endch = ')';
         else {
             start = ptr;
@@ -2059,18 +2139,50 @@ static bool myvector_construct_do_convert(char* ptr,
         if (endch)
             start++;
         char* p = start;
-        while (*p && *p != endch) {
-            while (*p && (*p == ' ' || *p == ','))
+        bool closed = (endch == '\0');
+        while (p < end && *p != endch) {
+            while (p < end && (*p == ' ' || *p == ','))
                 p++;
+            if (p >= end || *p == endch)
+                break;
             char* p1 = p;
-            while (*p != ' ' && *p != ',' && *p != endch)
+            while (p < end && *p != ' ' && *p != ',' && *p != endch)
                 p++;
             char buff[64];
-            strncpy(buff, p1, (p - p1));
-            buff[(int)(p - p1)] = 0;
+            size_t toklen = (size_t)(p - p1);
+            /* A legitimate float literal never needs anywhere close to 63
+             * characters; reject instead of silently truncating and parsing
+             * whatever garbage is left -- atof() on a truncated giant digit
+             * string can overflow to +-Inf with *error left at 0 (success),
+             * corrupting later distance ranking instead of failing loudly
+             * (review of audit run-1, Slice 3: PR #234). */
+            if (toklen >= sizeof(buff)) {
+                MYVECTOR_UDF_FAIL("myvector_construct",
+                                  "numeric token too long (max %zu characters).",
+                                  sizeof(buff) - 1);
+                *error = 1;
+                return false;
+            }
+            strncpy(buff, p1, toklen);
+            buff[toklen] = 0;
+            if (len + sizeof(FP32) > capacity) {
+                MYVECTOR_UDF_FAIL("myvector_construct",
+                                  "input vector too large: max %lu bytes.",
+                                  capacity);
+                *error = 1;
+                return false;
+            }
             FP32 fval = atof(buff);
             memcpy(&retvec[len], &fval, sizeof(FP32));
             len += sizeof(FP32);
+        }
+        if (p < end && *p == endch)
+            closed = true;
+        if (!closed) {
+            MYVECTOR_UDF_FAIL("myvector_construct",
+                              "missing closing delimiter.");
+            *error = 1;
+            return false;
         }
     }
 
@@ -2093,25 +2205,69 @@ char* myvector_construct_bv(const std::string& srctype,
                             unsigned long* length,
                             unsigned char* is_null,
                             unsigned char* error) {
-    int retlen = 0;
+    /* dst always points sizeof(size_t) bytes into the same
+     * MYVECTOR_CONSTRUCT_MAX_LEN-capacity buffer myvector_construct_do_convert
+     * writes into -- see its own capacity comment. */
+#if MYSQL_VERSION_ID < 90000
+    const unsigned long trailer = sizeof(unsigned int) + sizeof(ha_checksum);
+#else
+    const unsigned long trailer = 0;
+#endif
+    const unsigned long capacity = MYVECTOR_CONSTRUCT_MAX_LEN - trailer;
+    unsigned long retlen = 0;
 
     if (srctype == "bv") {
+        if (srclen > capacity) {
+            MYVECTOR_UDF_FAIL("myvector_construct",
+                              "input vector too large: %lu bytes, max %lu.",
+                              srclen, capacity);
+            *error = 1;
+            return dst;
+        }
         memcpy(
             dst, src, srclen);  // src is bytes representing the binary vector
         retlen = srclen;
     } else if (srctype == "float") {
         int dim = MyVectorDimFromStorageLength(srclen);
+        /* dim <= 0 (e.g. srclen too short) must be rejected outright, not
+         * treated as "0 bytes needed": SQFloatVectorToBinaryVector's own
+         * memset(ivec, 0, dim / BITS_PER_BYTE) divides a signed dim by an
+         * unsigned constant, so a negative dim silently becomes a ~4-billion
+         * byte count instead of a negative one, overflowing dst far worse
+         * than any oversized-but-positive dim this check already catches
+         * (review of audit run-1, Slice 3: PR #234). */
+        if (dim <= 0) {
+            MYVECTOR_UDF_FAIL("myvector_construct",
+                              "input vector too short to derive a dimension.");
+            *error = 1;
+            return dst;
+        }
+        unsigned long predicted_bytes =
+            (((unsigned long)dim + 63) / 64) * sizeof(unsigned long);
+        if (predicted_bytes > capacity) {
+            MYVECTOR_UDF_FAIL("myvector_construct",
+                              "input vector too large: dim %d, max %lu bytes.",
+                              dim, capacity);
+            *error = 1;
+            return dst;
+        }
         retlen =
             SQFloatVectorToBinaryVector((FP32*)src, (unsigned long*)dst, dim);
     } else if (srctype == "string") {
+        /* src is a raw UDF argument buffer, not necessarily NUL-terminated
+         * within its allocation (MySQL does not guarantee this for a BLOB/
+         * VARBINARY-typed argument) -- every scan below must stay within
+         * [src, end) and never dereference at or past end (review of audit
+         * run-1, Slice 3: PR #234). */
+        const char* end = src + srclen;
         char *start = nullptr, *ptr = nullptr;
         char endch;
 
-        if ((start = strchr(src, '[')))
+        if ((start = (char*)memchr(src, '[', srclen)))
             endch = ']';
-        else if ((start = strchr(src, '{')))
+        else if ((start = (char*)memchr(src, '{', srclen)))
             endch = '}';
-        else if ((start = strchr(src, '(')))
+        else if ((start = (char*)memchr(src, '(', srclen)))
             endch = ')';
         else {
             start = src;
@@ -2121,22 +2277,71 @@ char* myvector_construct_bv(const std::string& srctype,
             start++;
 
         ptr = start;
+        bool closed = (endch == '\0');
 
-        while (*ptr && *ptr != endch) {
-            while (*ptr && (*ptr == ' ' || *ptr == ','))
+        while (ptr < end && *ptr != endch) {
+            while (ptr < end && (*ptr == ' ' || *ptr == ','))
                 ptr++;
+            if (ptr >= end || *ptr == endch)
+                break;
             char* p1 = ptr;
-            while (*ptr != ' ' && *ptr != ',' && *ptr != endch)
+            while (ptr < end && *ptr != ' ' && *ptr != ',' && *ptr != endch)
                 ptr++;
             char buff[64];
+            size_t toklen = (size_t)(ptr - p1);
+            /* A legitimate 0-255 byte-value token never needs anywhere close
+             * to 63 characters; reject instead of silently truncating and
+             * parsing whatever garbage is left -- atoi() on a truncated giant
+             * digit string is UB on overflow (commonly, but not reliably,
+             * saturating) with *error left at 0 (success) either way (review
+             * of audit run-1, Slice 3: PR #234). */
+            if (toklen >= sizeof(buff)) {
+                MYVECTOR_UDF_FAIL("myvector_construct",
+                                  "byte-value token too long (max %zu characters).",
+                                  sizeof(buff) - 1);
+                *error = 1;
+                return dst;
+            }
 
-            strncpy(buff, p1, (ptr - p1));
-            buff[(int)(ptr - p1)] = 0;
+            strncpy(buff, p1, toklen);
+            buff[toklen] = 0;
 
-            dst[retlen] = (unsigned char)(atoi(buff));
+            if (retlen >= capacity) {
+                MYVECTOR_UDF_FAIL("myvector_construct",
+                                  "input vector too large: max %lu bytes.",
+                                  capacity);
+                *error = 1;
+                return dst;
+            }
+            /* atoi() has no error signal at all: a malformed or out-of-range
+             * token (e.g. "9999999999") silently returns some int value,
+             * narrowed into the unsigned char written below with *error left
+             * at 0 (success) -- validate with strtol()'s real error signals
+             * instead, matching the component's own parser (review of audit
+             * run-1, Slice 3: PR #234). */
+            char* endptr = nullptr;
+            errno = 0;
+            long byteval = strtol(buff, &endptr, 10);
+            if (endptr == buff || *endptr != '\0' || errno == ERANGE ||
+                byteval < 0 || byteval > 255) {
+                MYVECTOR_UDF_FAIL("myvector_construct",
+                                  "byte-value token out of range: '%s' (want 0-255).",
+                                  buff);
+                *error = 1;
+                return dst;
+            }
+            dst[retlen] = (unsigned char)byteval;
 
             retlen += sizeof(unsigned char);
         }  // while
+        if (ptr < end && *ptr == endch)
+            closed = true;
+        if (!closed) {
+            MYVECTOR_UDF_FAIL("myvector_construct",
+                              "missing closing delimiter.");
+            *error = 1;
+            return dst;
+        }
     }  // else
 
 #if MYSQL_VERSION_ID < 90000
@@ -2156,6 +2361,21 @@ PLUGIN_EXPORT bool myvector_construct_init(UDF_INIT* initid,
                                            UDF_ARGS* args,
                                            char* message) {
     if (args->arg_count < 1 || args->arg_count > 2) {
+        strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
+        return true;  // error
+    }
+    /* args->lengths[0] is trusted throughout myvector_construct_do_convert/
+     * myvector_construct_bv to size reads and derive a dimension from the
+     * first argument's raw bytes. MySQL does not maintain lengths[] for a
+     * non-string argument (INT_RESULT/REAL_RESULT) -- its "length" is the
+     * value's maximum printable width, not the size of the 8-byte buffer
+     * args->args[0] actually points to, so those checks could pass while
+     * still reading past it. Unlike myvector_ann_set's query vector, this
+     * can't be fixed by coercing to STRING_RESULT: the i=float input mode
+     * expects raw FP32 bytes, and coercing would convert a numeric literal
+     * to its decimal text instead. Reject outright (review of audit run-1,
+     * Slice 3: PR #234). */
+    if (args->arg_type[0] != STRING_RESULT) {
         strcpy(message, ER_MYVECTOR_INCORRECT_ARGUMENTS);
         return true;  // error
     }
@@ -2780,6 +3000,13 @@ PLUGIN_EXPORT void myvector_search_save_udf_deinit() {}
 PLUGIN_EXPORT bool myvector_search_add_row_udf_init(UDF_INIT* initid,
                                                     UDF_ARGS* args,
                                                     char* message) {
+    /* The vector (4th arg) is read by its byte length (args->lengths[3]) in
+     * myvector_search_add_row_udf's own length check; coerce to text for the
+     * same reason as myvector_ann_set_init's query-vector argument above
+     * (review of audit run-1, Slice 3: PR #234). */
+    if (args->arg_count >= 4)
+        args->arg_type[3] = STRING_RESULT;
+
     char* vecid = args->args[0];
     char* details = args->args[1];
 
@@ -2814,6 +3041,14 @@ PLUGIN_EXPORT long long myvector_search_add_row_udf(UDF_INIT* initid,
 
     AbstractVectorIndex* vi = (AbstractVectorIndex*)(initid->ptr);
     if (vi) {
+        if (args->lengths[3] < MyVectorExpectedVectorBytes(vi)) {
+            MYVEC_LOG_ERROR("Vector too short for index (%lu bytes, need %lu)"
+                            " (pkid=%lld).", args->lengths[3],
+                            MyVectorExpectedVectorBytes(vi), pkid);
+            *is_null = 1;
+            *error = 1;
+            return 0;
+        }
         if (vi->isCosineMetric() && isZeroVector((const FP32*)vecval, dims)) {
             MYVEC_LOG_ERROR("Zero-magnitude vector rejected for cosine index"
                             " (pkid=%lld).", pkid);
@@ -2956,6 +3191,16 @@ void myvector_table_op(const string& dbname,
         if (isAfter(binlogfile, binlogpos, binlogfileold, binlogposold)) {
             if (isDelete) {
                 vi->deleteVector(pkid);  /// false if the key was not indexed
+            } else if (vec.size() < MyVectorExpectedVectorBytes(vi)) {
+                /* A plain INSERT/UPDATE with ordinary privilege can write any
+                 * byte length to the tracked column; insertVector() has no way
+                 * to see vec's real size from the raw pointer it receives, so
+                 * this is the only place that can catch an undersized vector
+                 * before it causes a fixed-stride OOB read (audit run-1). */
+                MYVEC_LOG_WARN("Skipping undersized vector (%zu bytes, need %lu)"
+                               " for pkid=%zu, row is in table but not in index.",
+                               vec.size(), MyVectorExpectedVectorBytes(vi),
+                               (size_t)pkid);
             } else if (vi->isCosineMetric() &&
                 isZeroVector(reinterpret_cast<const FP32*>(vec.data()),
                              vi->getDimension())) {
