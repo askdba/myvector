@@ -61,7 +61,7 @@ you're testing.
 
 | | **component** | **plugin** |
 |---|---|---|
-| Build scripts | `scripts/build-component-8.4-docker.sh`, `scripts/build-component-9.7-docker.sh`, `scripts/build-component-26.7-docker.sh` | `scripts/build-plugin-8.4-docker.sh` |
+| Build scripts | `scripts/build-component-8.4-docker.sh`, `scripts/build-component-9.7-docker.sh`, `scripts/build-component-26.10-docker.sh` | `scripts/build-plugin-8.4-docker.sh` |
 | Install method | `INSTALL COMPONENT 'file://myvector'` | `INSTALL PLUGIN myvector SONAME 'myvector.so'` |
 | Artifact | `libmyvector_component.so` + `myvector.json` | `myvector.so` + `sql/myvectorplugin.sql` |
 | UDFs, KNN brute-force, HNSW index build/status/load/drop, online updates (binlog) | Yes | Yes |

@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: 60
     # 8.4 and 9.7 block (#208): the gate passed every job of its last 19 runs
     # (57/57) on shared runners, which was the condition for blocking (#116).
-    # 26.7 stays non-blocking, like the rest of CI, until release tags.
+    # 26.10 stays non-blocking, like the rest of CI, until release tags.
     continue-on-error: ${{ !matrix.blocking }}
     strategy:
       fail-fast: false
@@ -59,9 +59,9 @@ jobs:
             mysql-tag: "mysql-9.7.0"
             build-script: "scripts/build-component-9.7-docker.sh"
             blocking: true
-          - mysql-version: "26.7"
-            mysql-tag: "mysql-26.7.0"
-            build-script: "scripts/build-component-26.7-docker.sh"
+          - mysql-version: "26.10"
+            mysql-tag: "mysql-26.10.0"
+            build-script: "scripts/build-component-26.10-docker.sh"
             blocking: false
     steps:
       - name: Checkout

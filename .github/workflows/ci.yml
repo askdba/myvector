@@ -167,27 +167,27 @@ jobs:
         name: myvector-component-mysql9.7-linux
         path: build/component/
 
-  # MySQL 26.7 Innovation release: build inside oraclelinux:9 container for ABI compatibility
-  build-component-26-7:
+  # MySQL 26.10 Innovation release: build inside oraclelinux:9 container for ABI compatibility
+  build-component-26-10:
     runs-on: ubuntu-latest
     continue-on-error: true  # brand-new version; 8.4 component build also validates this path
     steps:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Cache MySQL 26.7 source
+    - name: Cache MySQL 26.10 source
       uses: actions/cache@v4
       with:
-        path: mysql-server-mysql-26.7.0
-        key: mysql-source-26.7.0-v1
+        path: mysql-server-mysql-26.10.0
+        key: mysql-source-26.10.0-v1
 
-    - name: Build component inside mysql:26.7 container
-      run: chmod +x scripts/build-component-26.7-docker.sh && ./scripts/build-component-26.7-docker.sh mysql-26.7.0
+    - name: Build component inside mysql:26.10 container
+      run: chmod +x scripts/build-component-26.10-docker.sh && ./scripts/build-component-26.10-docker.sh mysql-26.10.0
 
     - name: Upload Component Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: myvector-component-mysql26.7-linux
+        name: myvector-component-mysql26.10-linux
         path: build/component/
 
   # Step 5: Install component and run basic verification
@@ -381,11 +381,11 @@ jobs:
       if: always()
       run: docker rm -f myv97 2>/dev/null || true
 
-  # MySQL 26.7 Innovation release: actions-setup-mysql does not support 26.7; use Docker mysql:26.7
-  test-component-26-7:
+  # MySQL 26.10 Innovation release: actions-setup-mysql does not support 26.10; use Docker mysql:26.10
+  test-component-26-10:
     runs-on: ubuntu-latest
-    continue-on-error: true  # mirrors build-component-26-7
-    needs: build-component-26-7
+    continue-on-error: true  # mirrors build-component-26-10
+    needs: build-component-26-10
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -393,23 +393,23 @@ jobs:
     - name: Download Component Artifact
       uses: actions/download-artifact@v4
       with:
-        name: myvector-component-mysql26.7-linux
+        name: myvector-component-mysql26.10-linux
         path: ./component
 
-    - name: Start MySQL 26.7 container
+    - name: Start MySQL 26.10 container
       run: |
-        docker run -d --name myv267 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_ROOT_HOST=% mysql:26.7
+        docker run -d --name myv2610 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_ROOT_HOST=% mysql:26.10
         for _i in $(seq 1 45); do
-          docker exec myv267 mysql -uroot -proot -h 127.0.0.1 -e "SELECT 1" 2>/dev/null && break
+          docker exec myv2610 mysql -uroot -proot -h 127.0.0.1 -e "SELECT 1" 2>/dev/null && break
           sleep 2
         done
 
-    - name: Install and Test Component (26.7)
+    - name: Install and Test Component (26.10)
       run: |
-        MYQ="docker exec myv267 mysql -uroot -proot -h 127.0.0.1"
+        MYQ="docker exec myv2610 mysql -uroot -proot -h 127.0.0.1"
         PLUGIN_DIR=$($MYQ -N -e "SELECT @@plugin_dir;")
-        docker cp ./component/libmyvector_component.so myv267:"$PLUGIN_DIR/myvector.so"
-        docker cp ./component/myvector.json myv267:"$PLUGIN_DIR/myvector.json"
+        docker cp ./component/libmyvector_component.so myv2610:"$PLUGIN_DIR/myvector.so"
+        docker cp ./component/myvector.json myv2610:"$PLUGIN_DIR/myvector.json"
 
         $MYQ -e "INSTALL COMPONENT 'file://myvector';"
         $MYQ -e "SELECT component_urn FROM mysql.component WHERE component_urn LIKE '%myvector%';"
@@ -417,8 +417,8 @@ jobs:
         $MYQ -e "SELECT myvector_distance(myvector_construct('[1.0, 2.0, 3.0]'), myvector_construct('[4.0, 5.0, 6.0]'));"
 
         $MYQ -e "CREATE DATABASE IF NOT EXISTS test;"
-        docker exec -i myv267 mysql -uroot -proot -h 127.0.0.1 test < examples/stanford50d/create-basic.sql
-        gunzip -c examples/stanford50d/insert50d.sql.gz | awk 'BEGIN{RS=";"} NR<=5000{printf "%s;", $0} NR==5000{exit}' | docker exec -i myv267 mysql -uroot -proot -h 127.0.0.1 test
+        docker exec -i myv2610 mysql -uroot -proot -h 127.0.0.1 test < examples/stanford50d/create-basic.sql
+        gunzip -c examples/stanford50d/insert50d.sql.gz | awk 'BEGIN{RS=";"} NR<=5000{printf "%s;", $0} NR==5000{exit}' | docker exec -i myv2610 mysql -uroot -proot -h 127.0.0.1 test
         $MYQ test -e "
           SELECT word, myvector_distance(wordvec, (SELECT wordvec FROM words50d WHERE word='the')) AS dist
           FROM words50d ORDER BY dist LIMIT 5;
@@ -441,11 +441,11 @@ jobs:
           echo "Component still registered after reinstall test: $output"; exit 1
         fi
 
-        echo "=== MySQL 26.7 component tests passed ==="
+        echo "=== MySQL 26.10 component tests passed ==="
 
-    - name: Cleanup MySQL 26.7 container
+    - name: Cleanup MySQL 26.10 container
       if: always()
-      run: docker rm -f myv267 2>/dev/null || true
+      run: docker rm -f myv2610 2>/dev/null || true
 
   # Fast build job - builds plugin only (in-tree)
   build:

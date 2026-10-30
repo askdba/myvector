@@ -2,7 +2,7 @@
 
 **Author:** MyVector Engineering  
 **Status:** Draft  
-**Target Version:** Component builds (MySQL 8.4, 9.7, 26.7) first; plugin decided in Phase 3  
+**Target Version:** Component builds (MySQL 8.4, 9.7, 26.10) first; plugin decided in Phase 3  
 **Last Updated:** 2026-10-07  
 
 ---
@@ -626,7 +626,7 @@ guards against future layout changes.
 ## 7. Test Plan
 
 1. **Phase 3 lifecycle tests** (`scripts/pre-release-test.sh`) with
-   `storage=innodb` on 8.4, 9.7 and 26.7: reload persistence,
+   `storage=innodb` on 8.4, 9.7 and 26.10: reload persistence,
    uninstall/reinstall, DROP stability, concurrent reads during install.
 2. **Startup:** restart mysqld with online `storage=innodb` indexes. Check that
    they load once the server accepts connections, and that searches before that

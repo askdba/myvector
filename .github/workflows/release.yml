@@ -53,11 +53,11 @@ jobs:
           - mysql-version: '9.7.0'
             mysql-tag: 'mysql-9.7.0'
             continue-on-error: true
-          # 26.7 (Innovation) is validated in CI (build-component-26-7 /
-          # test-component-26-7) but intentionally kept OUT of the release
+          # 26.10 (Innovation) is validated in CI (build-component-26-10 /
+          # test-component-26-10) but intentionally kept OUT of the release
           # matrix until its component build is proven end-to-end. Adding it
           # here (even with continue-on-error) would let create-release publish
-          # a GitHub Release with no usable 26.7 archive. Re-add once proven.
+          # a GitHub Release with no usable 26.10 archive. Re-add once proven.
 
     steps:
       - name: Checkout code

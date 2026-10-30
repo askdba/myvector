@@ -109,7 +109,7 @@ to the issue tracking it. Items marked *(untested)* are not verified by this pro
 | MySQL 8.0 | yes | no build planned |
 | MySQL 8.4 | yes | yes |
 | MySQL 9.x | 9.0 and 9.7 | 9.7 |
-| MySQL 26.7 (Innovation) | no (ABI) | yes; new, short track record |
+| MySQL 26.10 (Innovation) | no (ABI) | yes; new, short track record |
 
 - **Windows is not supported** (#80).
 - **MariaDB and Percona Server are not built or tested.**

@@ -5,7 +5,7 @@
  * This file previously targeted a service (`mysql/components/services/
  * query_rewrite.h`, a `mysql::Query_rewriter_service` interface) that never
  * existed in MySQL server source -- CMakeLists.txt's EXISTS guard on that
- * header was always false on every real MySQL 8.4/9.7/26.7 checkout, so this
+ * header was always false on every real MySQL 8.4/9.7/26.10 checkout, so this
  * file was never compiled into any real build. It also used this project's
  * own internal `SERVICE_REGISTRATION` shim (mysql_component_service_base.h),
  * which is a no-op stub for MyVector's own internal C++ interfaces (see
