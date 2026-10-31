@@ -344,6 +344,30 @@ inline std::string redact_for_log(const char *s, size_t n, size_t max_len = 256)
   return out + "'?'...";
 }
 
+// ----- Tool call labels -------------------------------------------------------------------
+
+// mysql-mcp-server starts each statement of a tool call with
+//   /* mcp:tool=<name> req=<id> */ ...
+// (values [A-Za-z0-9_.-], at most 64 bytes). Returns false when the text has no label.
+inline bool parse_call_label(const char *s, size_t n, std::string *tool, std::string *req) {
+  static constexpr std::string_view kStart = "/* mcp:tool=";
+  if (n < kStart.size() || std::string_view(s, kStart.size()) != kStart) return false;
+  const auto value_at = [&](size_t pos, std::string *out) -> size_t {
+    size_t e = pos;
+    while (e < n && e - pos < 64 &&
+           (std::isalnum(static_cast<unsigned char>(s[e])) || s[e] == '_' || s[e] == '-' ||
+            s[e] == '.'))
+      ++e;
+    out->assign(s + pos, e - pos);
+    return e;
+  };
+  size_t i = value_at(kStart.size(), tool);
+  if (tool->empty() || i + 5 > n || std::string_view(s + i, 5) != " req=") return false;
+  i = value_at(i + 5, req);
+  if (req->empty() || i + 3 > n || std::string_view(s + i, 3) != " */") return false;
+  return true;
+}
+
 // Parses mcp.allowed_schemas: comma-separated schema names, spaces trimmed, empty
 // entries dropped. An empty list means every schema.
 inline std::vector<std::string> parse_schema_list(std::string_view v) {

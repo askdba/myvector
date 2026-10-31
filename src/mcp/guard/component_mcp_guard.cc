@@ -36,6 +36,7 @@
 #include <mysql/components/service_implementation.h>
 #include <mysql/components/services/component_status_var_service.h>
 #include <mysql/components/services/component_sys_var_service.h>
+#include <mysql/components/services/audit_api_message_service.h>
 #include <mysql/components/services/dynamic_privilege.h>
 #include <mysql/components/services/log_builtins.h>
 #include <mysql/components/services/mysql_current_thread_reader.h>
@@ -43,6 +44,7 @@
 #include <mysql/components/services/mysql_string.h>
 #include <mysql/components/services/mysql_system_variable.h>
 #include <mysql/components/services/mysql_thd_store_service.h>
+#include <mysql/components/services/pfs_plugin_table_service.h>
 #include <mysql/components/services/security_context.h>
 #include <mysql/components/util/event_tracking/event_tracking_command_consumer_helper.h>
 #include <mysql/components/util/event_tracking/event_tracking_connection_consumer_helper.h>
@@ -50,6 +52,7 @@
 #include <mysql/components/util/event_tracking/event_tracking_query_consumer_helper.h>
 #include <mysql/components/util/event_tracking/event_tracking_table_access_consumer_helper.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -75,6 +78,12 @@ REQUIRES_SERVICE_PLACEHOLDER(mysql_string_factory);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_string_converter);
 REQUIRES_SERVICE_PLACEHOLDER(log_builtins);
 REQUIRES_SERVICE_PLACEHOLDER(log_builtins_string);
+REQUIRES_SERVICE_PLACEHOLDER(mysql_security_context_options);
+REQUIRES_SERVICE_PLACEHOLDER(mysql_audit_api_message);
+REQUIRES_SERVICE_PLACEHOLDER(pfs_plugin_table_v1);
+REQUIRES_SERVICE_PLACEHOLDER(pfs_plugin_column_string_v2);
+REQUIRES_SERVICE_PLACEHOLDER(pfs_plugin_column_bigint_v1);
+REQUIRES_SERVICE_PLACEHOLDER(pfs_plugin_column_timestamp_v2);
 
 // LogEvent() uses these.
 SERVICE_TYPE(log_builtins) *log_bi = nullptr;
@@ -155,6 +164,7 @@ bool opt_read_only = true;
 bool opt_deny_system_schemas = true;
 bool opt_log_denials = true;
 unsigned long opt_max_execution_time_ms = 0;  // 0: no floor
+unsigned long opt_tool_calls_history_size = 1000;  // rows of performance_schema.mcp_tool_calls
 char *opt_allowed_schemas = nullptr;  // server-managed (PLUGIN_VAR_MEMALLOC)
 
 // Parsed mcp.allowed_schemas, swapped as a whole on update; readers copy the pointer.
@@ -206,6 +216,7 @@ const BoolVar kBoolVars[kBoolVarCount] = {
 bool bool_registered[kBoolVarCount] = {};
 bool allowed_registered = false;
 bool time_registered = false;
+bool history_registered = false;
 
 // Returns true if a variable could not be unregistered; it then stays marked as
 // registered and deinit fails, so the server keeps this library (and the update callback
@@ -233,6 +244,13 @@ bool unregister_sysvars() {
       failed = true;
     else
       time_registered = false;
+  }
+  if (history_registered) {
+    if (mysql_service_component_sys_variable_unregister->unregister_variable(
+            "mcp", "tool_calls_history_size"))
+      failed = true;
+    else
+      history_registered = false;
   }
   return failed;
 }
@@ -288,6 +306,20 @@ bool register_sysvars() {
           nullptr, nullptr, &time_arg, &opt_max_execution_time_ms))
     return true;
   time_registered = true;
+  {
+    INTEGRAL_CHECK_ARG(ulong) history_arg;
+    history_arg.def_val = 1000;
+    history_arg.min_val = 0;
+    history_arg.max_val = 100000;
+    history_arg.blk_sz = 0;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp", "tool_calls_history_size",
+            PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED | PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
+            "Tool calls kept in performance_schema.mcp_tool_calls (read-only; 0: none)", nullptr,
+            nullptr, &history_arg, &opt_tool_calls_history_size))
+      return true;
+    history_registered = true;
+  }
   // A persisted or command-line value is stored without the update callback: parse it.
   set_allowed_schemas(opt_allowed_schemas);
   return false;
@@ -322,6 +354,11 @@ constexpr unsigned long kTimeLimitNotApplied = ~0UL;
 
 struct SessionState {
   unsigned long applied_time_limit = kTimeLimitNotApplied;  // last mcp.max_execution_time_ms set
+  std::string account;              // priv_user@priv_host
+  unsigned long long call_seq = 0;  // performance_schema.mcp_tool_calls row of the current call
+  std::string call_tool, call_req;  // its tool and request id
+  bool in_call_statement = false;   // a labeled top-level statement is running
+  std::chrono::steady_clock::time_point statement_start;
 };
 
 mysql_thd_store_slot session_slot = nullptr;
@@ -337,7 +374,6 @@ SessionState *session_state(MYSQL_THD thd) {
   return static_cast<SessionState *>(mysql_service_mysql_thd_store->get(thd, session_slot));
 }
 
-bool is_mcp_session(MYSQL_THD thd) { return session_state(thd) != nullptr; }
 
 // Returns true on failure. An MCP session that cannot be marked would not be guarded, so
 // the caller refuses it.
@@ -358,6 +394,280 @@ bool mark_session(MYSQL_THD thd, bool mcp) {
   }
   sessions_connected += mcp ? 1 : -1;
   return false;
+}
+
+// ----- performance_schema.mcp_tool_calls ----------------------------------------------
+
+// One tool call of mysql-mcp-server: the labeled statements (/* mcp:tool=... req=... */)
+// with one request id on one connection.
+struct CallRecord {
+  unsigned long long seq = 0;  // 0: empty slot
+  unsigned long long connection_id = 0;
+  std::string account, tool, request_id;
+  unsigned long long statements = 0, errors = 0, denied = 0, latency_us = 0;
+  unsigned long long first_seen_us = 0, last_seen_us = 0;  // microseconds since the epoch
+};
+
+unsigned long long now_us() {
+  return static_cast<unsigned long long>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                             std::chrono::system_clock::now().time_since_epoch())
+                                             .count());
+}
+
+// A fixed-size ring of the most recent tool calls (mcp.tool_calls_history_size).
+class CallLog {
+ public:
+  void resize(size_t n) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    buf_.assign(n, CallRecord());
+  }
+
+  unsigned long long start(unsigned long long connection_id, const std::string &account,
+                           const std::string &tool, const std::string &request_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (buf_.empty()) return 0;
+    const unsigned long long seq = next_seq_++;
+    CallRecord &r = buf_[(seq - 1) % buf_.size()];
+    r = CallRecord();
+    r.seq = seq;
+    r.connection_id = connection_id;
+    r.account = account;
+    r.tool = tool;
+    r.request_id = request_id;
+    r.first_seen_us = r.last_seen_us = now_us();
+    return seq;
+  }
+
+  // Applies f to the record of seq, if it is still in the ring.
+  template <typename F>
+  void update(unsigned long long seq, F f) {
+    if (seq == 0) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (buf_.empty()) return;
+    CallRecord &r = buf_[(seq - 1) % buf_.size()];
+    if (r.seq == seq) f(r);
+  }
+
+  std::vector<CallRecord> snapshot() {
+    std::vector<CallRecord> out;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      for (const CallRecord &r : buf_)
+        if (r.seq != 0) out.push_back(r);
+    }
+    std::sort(out.begin(), out.end(),
+              [](const CallRecord &a, const CallRecord &b) { return a.seq < b.seq; });
+    return out;
+  }
+
+  unsigned long long size() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    unsigned long long n = 0;
+    for (const CallRecord &r : buf_) n += r.seq != 0;
+    return n;
+  }
+
+ private:
+  std::mutex mutex_;
+  std::vector<CallRecord> buf_;
+  unsigned long long next_seq_ = 1;
+};
+
+CallLog call_log;
+
+// The table handle holds a snapshot taken when the table is opened. pos is the current
+// row and is also the position the server saves (m_ref_length bytes, exposed by
+// open_table) and restores before rnd_pos; next_pos is where rnd_next continues.
+struct CallTableHandle {
+  std::vector<CallRecord> rows = call_log.snapshot();
+  size_t pos = 0;
+  size_t next_pos = 0;
+};
+
+unsigned long long call_table_row_count() { return call_log.size(); }
+
+int call_table_rnd_init(PSI_table_handle *h, bool) {
+  auto *t = reinterpret_cast<CallTableHandle *>(h);
+  t->pos = t->next_pos = 0;
+  return 0;
+}
+
+int call_table_rnd_next(PSI_table_handle *h) {
+  auto *t = reinterpret_cast<CallTableHandle *>(h);
+  t->pos = t->next_pos;
+  if (t->pos >= t->rows.size()) return PFS_HA_ERR_END_OF_FILE;
+  t->next_pos = t->pos + 1;
+  return 0;
+}
+
+// The server has written a saved position into pos.
+int call_table_rnd_pos(PSI_table_handle *h) {
+  auto *t = reinterpret_cast<CallTableHandle *>(h);
+  return t->pos < t->rows.size() ? 0 : PFS_HA_ERR_END_OF_FILE;
+}
+
+void call_table_reset_position(PSI_table_handle *h) {
+  auto *t = reinterpret_cast<CallTableHandle *>(h);
+  t->pos = t->next_pos = 0;
+}
+
+int call_table_read_column(PSI_table_handle *h, PSI_field *f, unsigned int index) {
+  auto *t = reinterpret_cast<CallTableHandle *>(h);
+  if (t->pos >= t->rows.size()) return PFS_HA_ERR_END_OF_FILE;
+  const CallRecord &r = t->rows[t->pos];
+  auto *str = mysql_service_pfs_plugin_column_string_v2;
+  auto *big = mysql_service_pfs_plugin_column_bigint_v1;
+  auto *ts = mysql_service_pfs_plugin_column_timestamp_v2;
+  switch (index) {
+    case 0: big->set_unsigned(f, {r.connection_id, false}); break;
+    case 1: str->set_varchar_utf8mb4(f, r.account.c_str()); break;
+    case 2: str->set_varchar_utf8mb4(f, r.tool.c_str()); break;
+    case 3: str->set_varchar_utf8mb4(f, r.request_id.c_str()); break;
+    case 4: big->set_unsigned(f, {r.statements, false}); break;
+    case 5: big->set_unsigned(f, {r.errors, false}); break;
+    case 6: big->set_unsigned(f, {r.denied, false}); break;
+    case 7: big->set_unsigned(f, {r.latency_us, false}); break;
+    case 8: ts->set2(f, r.first_seen_us); break;
+    case 9: ts->set2(f, r.last_seen_us); break;
+    default: break;
+  }
+  return 0;
+}
+
+PSI_table_handle *call_table_open(PSI_pos **pos) {
+  auto *t = new (std::nothrow) CallTableHandle();
+  if (t != nullptr) *pos = reinterpret_cast<PSI_pos *>(&t->pos);
+  return reinterpret_cast<PSI_table_handle *>(t);
+}
+
+void call_table_close(PSI_table_handle *h) { delete reinterpret_cast<CallTableHandle *>(h); }
+
+PFS_engine_table_share_proxy call_table_share;
+PFS_engine_table_share_proxy *call_table_shares[1] = {&call_table_share};
+bool call_table_registered = false;
+
+bool register_call_table() {
+  call_table_share.m_table_name = "mcp_tool_calls";
+  call_table_share.m_table_name_length = sizeof("mcp_tool_calls") - 1;
+  call_table_share.m_table_definition =
+      "CONNECTION_ID BIGINT UNSIGNED NOT NULL, ACCOUNT VARCHAR(288) NOT NULL, "
+      "TOOL VARCHAR(64) NOT NULL, REQUEST_ID VARCHAR(64) NOT NULL, "
+      "STATEMENTS BIGINT UNSIGNED NOT NULL, ERRORS BIGINT UNSIGNED NOT NULL, "
+      "DENIED BIGINT UNSIGNED NOT NULL, LATENCY_US BIGINT UNSIGNED NOT NULL, "
+      "FIRST_SEEN TIMESTAMP(6) NOT NULL, LAST_SEEN TIMESTAMP(6) NOT NULL";
+  call_table_share.m_ref_length = sizeof(size_t);
+  call_table_share.m_acl = READONLY;
+  call_table_share.get_row_count = call_table_row_count;
+  call_table_share.delete_all_rows = nullptr;
+  call_table_share.m_proxy_engine_table = {.rnd_next = call_table_rnd_next,
+                                           .rnd_init = call_table_rnd_init,
+                                           .rnd_pos = call_table_rnd_pos,
+                                           .index_init = nullptr,
+                                           .index_read = nullptr,
+                                           .index_next = nullptr,
+                                           .read_column_value = call_table_read_column,
+                                           .reset_position = call_table_reset_position,
+                                           .write_column_value = nullptr,
+                                           .write_row_values = nullptr,
+                                           .update_column_value = nullptr,
+                                           .update_row_values = nullptr,
+                                           .delete_row_values = nullptr,
+                                           .open_table = call_table_open,
+                                           .close_table = call_table_close};
+  if (mysql_service_pfs_plugin_table_v1->add_tables(call_table_shares, 1)) return true;
+  call_table_registered = true;
+  return false;
+}
+
+// Returns true if the table could not be removed (the library must then stay loaded).
+bool unregister_call_table() {
+  if (!call_table_registered) return false;
+  if (mysql_service_pfs_plugin_table_v1->delete_tables(call_table_shares, 1)) return true;
+  call_table_registered = false;
+  return false;
+}
+
+// Records the start of a top-level statement of an MCP session: a labeled statement
+// opens a new call row (or continues the current one, same request id).
+void track_statement_start(SessionState *state, unsigned long long connection_id,
+                           const char *query, size_t len) {
+  std::string tool, req;
+  if (!mcp_guard::parse_call_label(query, len, &tool, &req)) {
+    state->in_call_statement = false;
+    return;
+  }
+  if (req != state->call_req || state->call_seq == 0) {
+    state->call_seq = call_log.start(connection_id, state->account, tool, req);
+    state->call_tool = tool;
+    state->call_req = req;
+  }
+  state->in_call_statement = true;
+  state->statement_start = std::chrono::steady_clock::now();
+  const unsigned long long now = now_us();
+  call_log.update(state->call_seq, [&](CallRecord &r) {
+    ++r.statements;
+    r.last_seen_us = now;
+  });
+}
+
+void track_statement_end(SessionState *state, int status) {
+  if (!state->in_call_statement) return;
+  state->in_call_statement = false;
+  const auto took = std::chrono::steady_clock::now() - state->statement_start;
+  const unsigned long long us = static_cast<unsigned long long>(
+      std::chrono::duration_cast<std::chrono::microseconds>(took).count());
+  const unsigned long long now = now_us();
+  call_log.update(state->call_seq, [&](CallRecord &r) {
+    r.latency_us += us;
+    if (status != 0) ++r.errors;
+    r.last_seen_us = now;
+  });
+}
+
+// The account of the session on thd, as priv_user@priv_host.
+std::string session_account(MYSQL_THD thd) {
+  Security_context_handle ctx = nullptr;
+  if (mysql_service_mysql_thd_security_context->get(thd, &ctx) || ctx == nullptr) return "";
+  MYSQL_LEX_CSTRING user{nullptr, 0}, host{nullptr, 0};
+  mysql_service_mysql_security_context_options->get(ctx, "priv_user", &user);
+  mysql_service_mysql_security_context_options->get(ctx, "priv_host", &host);
+  std::string out(user.str ? user.str : "", user.str ? user.length : 0);
+  out += "@";
+  out.append(host.str ? host.str : "", host.str ? host.length : 0);
+  return out;
+}
+
+// Emits a refusal as an audit message (MYSQL_AUDIT_MESSAGE_INTERNAL, component
+// "mcp_guard", producer "component_mcp_guard"), for audit log consumers.
+void audit_denial(const char *option, unsigned long long connection_id, const SessionState *state,
+                  const std::string &what) {
+  auto str = [](const char *k, const std::string &v) {
+    mysql_event_message_key_value_t kv;
+    kv.key = {k, std::strlen(k)};
+    kv.value_type = MYSQL_AUDIT_MESSAGE_VALUE_TYPE_STR;
+    kv.value.str = {v.c_str(), v.size()};
+    return kv;
+  };
+  const std::string opt = option;
+  const bool call = state != nullptr && state->in_call_statement;
+  mysql_event_message_key_value_t kvs[5];
+  size_t n = 0;
+  kvs[n++] = str("option", opt);
+  kvs[n].key = {"connection_id", sizeof("connection_id") - 1};
+  kvs[n].value_type = MYSQL_AUDIT_MESSAGE_VALUE_TYPE_NUM;
+  kvs[n++].value.num = static_cast<long long>(connection_id);
+  kvs[n++] = str("statement", what);
+  if (call) {
+    kvs[n++] = str("tool", state->call_tool);
+    kvs[n++] = str("request_id", state->call_req);
+  }
+  static const char kComponent[] = "mcp_guard";
+  static const char kProducer[] = "component_mcp_guard";
+  static const char kMessage[] = "refused";
+  mysql_service_mysql_audit_api_message->emit(MYSQL_AUDIT_MESSAGE_INTERNAL, kComponent,
+                                              sizeof(kComponent) - 1, kProducer,
+                                              sizeof(kProducer) - 1, kMessage,
+                                              sizeof(kMessage) - 1, kvs, n);
 }
 
 // Writes a refusal to the error log, at most kLogBurst lines per minute; the number left
@@ -406,9 +716,12 @@ void log_denial(const char *option, unsigned long long connection_id, std::strin
 }
 
 bool deny(const char *option, std::atomic<long long> &counter, unsigned long long connection_id,
-          std::string_view what) {
+          std::string_view what, SessionState *state = nullptr) {
   ++counter;
   log_denial(option, connection_id, what);
+  audit_denial(option, connection_id, state, mcp_guard::redact_for_log(what.data(), what.size()));
+  if (state != nullptr && state->in_call_statement)
+    call_log.update(state->call_seq, [](CallRecord &r) { ++r.denied; });
   mysql_error_service_emit_printf(mysql_service_mysql_runtime_error, kErOptionPreventsStatement,
                                   0, option);
   return true;
@@ -460,8 +773,12 @@ bool Event_tracking_connection_implementation::callback(
       if (mcp) {
         SessionState *state = session_state(thd);
         // COM_CHANGE_USER resets session variables: apply the limit again.
-        if (state != nullptr && data->event_subclass == EVENT_TRACKING_CONNECTION_CHANGE_USER)
+        if (state != nullptr && data->event_subclass == EVENT_TRACKING_CONNECTION_CHANGE_USER) {
           state->applied_time_limit = kTimeLimitNotApplied;
+          state->call_seq = 0;  // a new account starts new tool calls
+          state->call_req.clear();
+        }
+        if (state != nullptr) state->account = session_account(thd);
         apply_time_limit(thd, state);
       }
       return false;
@@ -518,27 +835,38 @@ bool Event_tracking_global_variable_implementation::callback(
 // Query events: statements, including those nested in stored programs and those run by
 // EXECUTE, which raise their own event with their own sql_command.
 mysql_event_tracking_query_subclass_t Event_tracking_query_implementation::filtered_sub_events =
-    EVENT_TRACKING_QUERY_STATUS_END | EVENT_TRACKING_QUERY_NESTED_STATUS_END;
+    EVENT_TRACKING_QUERY_NESTED_STATUS_END;
 
 bool Event_tracking_query_implementation::callback(const mysql_event_tracking_query_data *data) {
   MYSQL_THD thd = current_thd_or_null();
   SessionState *state = session_state(thd);
   if (state == nullptr) return false;
-  if (data->event_subclass == EVENT_TRACKING_QUERY_START) {
-    ++statements_total;
-    apply_time_limit(thd, state);  // picks up a changed mcp.max_execution_time_ms
+  if (data->event_subclass == EVENT_TRACKING_QUERY_STATUS_END) {
+    track_statement_end(state, data->status);  // performance_schema.mcp_tool_calls
+    return false;
   }
   const char *cmd = data->sql_command ? data->sql_command : "";
   const char *query = data->query.str ? data->query.str : "";
   const size_t len = data->query.str ? data->query.length : 0;
+  if (data->event_subclass == EVENT_TRACKING_QUERY_START) {
+    ++statements_total;
+    apply_time_limit(thd, state);  // picks up a changed mcp.max_execution_time_ms
+    track_statement_start(state, data->connection_id, query, len);
+  }
   const std::string_view text(query, len);
-  if (!opt_enabled) return deny("mcp.enabled", statements_denied, data->connection_id, text);
+  // A statement refused at its start raises no STATUS_END event: end it here.
+  const auto refuse = [&](const char *option) {
+    const bool r = deny(option, statements_denied, data->connection_id, text, state);
+    if (data->event_subclass == EVENT_TRACKING_QUERY_START) track_statement_end(state, 1);
+    return r;
+  };
+  if (!opt_enabled) return refuse("mcp.enabled");
   if (opt_read_only) {
     const char *why = mcp_guard::read_only_violation(cmd, query, len);
-    if (why != nullptr) return deny(why, statements_denied, data->connection_id, text);
+    if (why != nullptr) return refuse(why);
   }
   const char *why = mcp_guard::time_limit_violation(cmd, query, len, opt_max_execution_time_ms);
-  if (why != nullptr) return deny(why, statements_denied, data->connection_id, text);
+  if (why != nullptr) return refuse(why);
   return false;
 }
 
@@ -550,7 +878,8 @@ mysql_event_tracking_table_access_subclass_t
 bool Event_tracking_table_access_implementation::callback(
     const mysql_event_tracking_table_access_data *data) {
   MYSQL_THD thd = current_thd_or_null();
-  if (!is_mcp_session(thd)) return false;
+  SessionState *state = session_state(thd);
+  if (state == nullptr) return false;
   const std::string_view db(data->table_database.str ? data->table_database.str : "",
                             data->table_database.str ? data->table_database.length : 0);
   const std::string_view table(data->table_name.str ? data->table_name.str : "",
@@ -560,7 +889,7 @@ bool Event_tracking_table_access_implementation::callback(
   const auto refuse = [&](const char *option) {
     const std::string what =
         std::string(write ? "write " : "read ") + std::string(db) + "." + std::string(table);
-    return deny(option, table_access_denied, data->connection_id, what);
+    return deny(option, table_access_denied, data->connection_id, what, state);
   };
   if (!opt_enabled) return refuse("mcp.enabled");
   const auto allowed = current_allowed_schemas();
@@ -586,6 +915,8 @@ mysql_service_status_t mcp_guard_deinit() {
   // callback is still referenced), so keep everything else, including the session marker
   // the event callbacks enforce with, in place and fail.
   if (unregister_sysvars()) return 1;
+  if (unregister_call_table()) return 1;  // its callbacks are in this library
+  call_log.resize(0);
   bool failed = false;
   if (status_registered) {
     if (mysql_service_status_variable_registration->unregister_variable(status_vars))
@@ -623,6 +954,11 @@ mysql_service_status_t mcp_guard_init() {
     return 1;
   }
   status_registered = true;
+  call_log.resize(opt_tool_calls_history_size);
+  if (register_call_table()) {
+    mcp_guard_deinit();
+    return 1;
+  }
   read_lower_case_table_names();
   return 0;
 }
@@ -651,6 +987,10 @@ REQUIRES_SERVICE(dynamic_privilege_register), REQUIRES_SERVICE(global_grants_che
     REQUIRES_SERVICE(mysql_system_variable_update_integer),
     REQUIRES_SERVICE(mysql_string_factory), REQUIRES_SERVICE(mysql_string_converter),
     REQUIRES_SERVICE(log_builtins), REQUIRES_SERVICE(log_builtins_string),
+    REQUIRES_SERVICE(mysql_security_context_options), REQUIRES_SERVICE(mysql_audit_api_message),
+    REQUIRES_SERVICE(pfs_plugin_table_v1), REQUIRES_SERVICE(pfs_plugin_column_string_v2),
+    REQUIRES_SERVICE(pfs_plugin_column_bigint_v1),
+    REQUIRES_SERVICE(pfs_plugin_column_timestamp_v2),
     END_COMPONENT_REQUIRES();
 
 BEGIN_COMPONENT_METADATA(mcp_guard)
