@@ -1,5 +1,5 @@
 # MYSQL_VERSION (required, no default) is the exact release the component was built
-# against, for example 8.4.11: a component built for another patch release can crash
+# against, for example 8.4.13: a component built for another patch release can crash
 # the server.
 ARG MYSQL_VERSION
 

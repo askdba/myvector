@@ -224,7 +224,7 @@ instructions in the main README:
 Each component image is based on the exact MySQL release its component was built
 against: a component built for one patch release can crash another (an 8.4.8 build
 crashed 8.4.11). The image is also tagged with that release, e.g.
-`mysql8.4.11-component`, `mysql9.7.2-component`, `mysql26.10.0`; the version tags
+`mysql8.4.13-component`, `mysql9.7.4-component`, `mysql26.10.0`; the version tags
 above move to the new release when the build is updated.
 
 Component images (`INSTALL COMPONENT`) contain `/usr/lib/mysql/plugin/myvector.so` +
