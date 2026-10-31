@@ -22,10 +22,12 @@ expect() {
 }
 
 # as CONTAINER USER PASS SQL
-as() { docker exec -i "$1" mysql -h127.0.0.1 -u"$2" -p"$3" -N --batch -e "$4" 2>&1 | grep -v "Using a password"; }
+# PORT: the server's port (default 3306).
+as() { docker exec -i "$1" mysql -h127.0.0.1 -P"${PORT:-3306}" -u"$2" -p"$3" -N --batch -e "$4" 2>&1 | grep -v "Using a password"; }
+health() { docker exec "$1" /usr/local/bin/mysql-mcp-healthcheck >/dev/null 2>&1; echo "rc=$?"; }
 wait_ready() {
 	for _ in $(seq 1 120); do
-		docker exec "$1" mysql -h127.0.0.1 -uroot -p"$2" -e 'select 1' >/dev/null 2>&1 && return 0
+		docker exec "$1" mysql -h127.0.0.1 -P"${PORT:-3306}" -uroot -p"$2" -e 'select 1' >/dev/null 2>&1 && return 0
 		sleep 2
 	done
 	return 1
@@ -59,7 +61,12 @@ docker restart "$CNAME" >/dev/null && wait_ready "$CNAME" testpass
 expect "after restart: guard loaded, settings kept" "$(root "SELECT CONCAT_WS(',', @@mcp.allowed_schemas, @@mcp.max_execution_time_ms)")" "^app_db,5000$"
 expect "after restart: setup not run again" "$(docker logs "$CNAME" 2>&1 | grep -c 'mysql-mcp: installing component_mcp_guard')" "^1$"
 
-expect "healthy once setup is done" "$(docker exec "$CNAME" mysqladmin ping -h127.0.0.1 --silent 2>&1; echo "rc=$?")" "rc=0"
+expect "healthy once setup is done" "$(health "$CNAME")" "rc=0"
+# With failed-login locking on root, probes must not lock it (they do not log in as root).
+root "ALTER USER root@'%' FAILED_LOGIN_ATTEMPTS 2 PASSWORD_LOCK_TIME 1" >/dev/null
+health "$CNAME" >/dev/null; health "$CNAME" >/dev/null; health "$CNAME" >/dev/null
+expect "health probes do not lock root" "$(root "SELECT 1")" "^1$"
+root "ALTER USER root@'%' FAILED_LOGIN_ATTEMPTS 0 PASSWORD_LOCK_TIME 0" >/dev/null
 
 # Without MYSQL_MCP_* settings: component and tool pack only.
 docker run -d --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass "$IMAGE" >/dev/null
@@ -72,10 +79,13 @@ else
 fi
 docker rm -f -v "$CNAME_PLAIN" >/dev/null 2>&1
 
-# NO_BACKSLASH_ESCAPES: the password with a backslash still works as configured.
+# NO_BACKSLASH_ESCAPES: the password with a backslash still works as configured. This
+# server also runs on another port, which the health check must follow.
+PORT=3307
 docker run -d --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass -e MYSQL_MCP_USER=mcp \
-	-e 'MYSQL_MCP_PASSWORD=a\b'"'"'c' -e 'MYSQL_MCP_ALLOWED_SCHEMAS=x\y' "$IMAGE" --sql-mode=NO_BACKSLASH_ESCAPES >/dev/null
+	-e 'MYSQL_MCP_PASSWORD=a\b'"'"'c' -e 'MYSQL_MCP_ALLOWED_SCHEMAS=x\y' "$IMAGE" --sql-mode=NO_BACKSLASH_ESCAPES --port=3307 >/dev/null
 if wait_ready "$CNAME_PLAIN" testpass; then
+	expect "health check follows --port" "$(health "$CNAME_PLAIN")" "rc=0"
 	expect "NO_BACKSLASH_ESCAPES: MCP account logs in with its password" "$(as "$CNAME_PLAIN" mcp 'a\b'"'"'c' "SELECT CURRENT_USER()")" "^mcp@%$"
 	expect "NO_BACKSLASH_ESCAPES: settings keep the backslash" "$(as "$CNAME_PLAIN" root testpass "SELECT @@mcp.allowed_schemas")" '^x\\?\\y$'
 else

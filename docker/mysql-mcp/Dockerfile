@@ -20,9 +20,9 @@ LABEL org.opencontainers.image.title="mysql-mcp" \
 COPY component_mcp_guard-${TARGETARCH}.so /usr/lib64/mysql/plugin/component_mcp_guard.so
 COPY sql/mcp/mysql_mcp.sql sql/mcp/uninstall.sql sql/mcp/LICENSE /usr/share/mysql-mcp/
 COPY docker/mysql-mcp/mysql-mcp-init.sh /docker-entrypoint-initdb.d/50-mysql-mcp.sh
+COPY docker/mysql-mcp/mysql-mcp-healthcheck.sh /usr/local/bin/mysql-mcp-healthcheck
 
 # checkov:skip=CKV_DOCKER_3:MySQL entrypoint needs root for initialization
-# Over TCP, which the entrypoint's temporary server does not listen on, so the container is
-# healthy only after first-start setup. ping succeeds even when access is denied, so it
-# needs no password (MYSQL_RANDOM_ROOT_PASSWORD included).
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD mysqladmin ping -h127.0.0.1 --silent
+# Healthy only after first-start setup, on the server's port, without touching root's
+# login (see the script).
+HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD ["/usr/local/bin/mysql-mcp-healthcheck"]
