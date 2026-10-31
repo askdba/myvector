@@ -161,7 +161,7 @@ expect "KNOWN LIMITATION: a stored function's reads are not seen by the schema r
 sql "SET GLOBAL mcp.allowed_schemas = ''" >/dev/null
 denied "multi-statement packet: write in the second statement" "$(packet "SELECT 1; INSERT INTO d1.t VALUES (5)")" "mcp.read_only"
 denied "multi-statement packet: write after a session SET" "$(packet "SET @a = 1; DELETE FROM d1.t")" "mcp.read_only"
-expect "multi-statement packets wrote nothing" "$(sql "SELECT COUNT(*) FROM d1.t")" "^1$"
+expect "multi-statement packets wrote nothing" "$(sql "SELECT GROUP_CONCAT(i ORDER BY i) FROM d1.t")" "^1$"
 
 # --- parity with mysql-mcp-server's run_query validator (sql/mcp/guard-parity.tsv) -----------
 # The guard column of the shared table; mysql-mcp-server checks the go column. Each statement
@@ -169,6 +169,7 @@ expect "multi-statement packets wrote nothing" "$(sql "SELECT COUNT(*) FROM d1.t
 sql "GRANT SELECT ON sys.* TO mcp@'%'; GRANT ALTER ON d1.* TO mcp@'%'" >/dev/null
 parity_rows=0
 parity_bad=""
+[ -s "$REPO/sql/mcp/guard-parity.tsv" ] || parity_bad="cannot read $REPO/sql/mcp/guard-parity.tsv"
 while IFS=$'\t' read -r _go guard stmt _note; do
 	case "$_go" in '#'* | '') continue ;; esac
 	parity_rows=$((parity_rows + 1))
@@ -176,8 +177,13 @@ while IFS=$'\t' read -r _go guard stmt _note; do
 	packet "$stmt" | grep -q "ERROR 1290" && got=deny
 	[ "$got" = "$guard" ] || parity_bad="$parity_bad [$stmt: $got, table says $guard]"
 done <"$REPO/sql/mcp/guard-parity.tsv"
+[ "$parity_rows" -ge 30 ] || parity_bad="$parity_bad [only $parity_rows rows read]"
 expect "parity table: guard verdicts ($parity_rows statements)" "${parity_bad:-ok}" "^ok$"
-expect "parity table: nothing was written" "$(sql "SELECT COUNT(*) FROM d1.t; SHOW TABLES FROM d1 LIKE 'x'")" "^1$"
+# d1.t still holds exactly its row (1) and one column, d1.x was not created, d1 has no new table.
+d1_state() { sql "SELECT CONCAT_WS(',', (SELECT GROUP_CONCAT(i ORDER BY i) FROM d1.t),
+	(SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = 'd1' AND TABLE_NAME = 't'),
+	(SELECT GROUP_CONCAT(TABLE_NAME ORDER BY TABLE_NAME) FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'd1'))"; }
+expect "parity table: nothing was written" "$(d1_state)" "^1,1,t,v_d2,v_nested,v_sys$"
 
 sql "SET GLOBAL mcp.enabled = OFF" >/dev/null
 denied "mcp.enabled OFF refuses MCP connections" "$(mcp "SELECT 1")" "mcp.enabled"
