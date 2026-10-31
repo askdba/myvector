@@ -136,6 +136,49 @@ sql "SET GLOBAL mcp.deny_system_schemas = OFF" >/dev/null
 expect "mcp: mysql schema with deny_system_schemas OFF" "$(mcp "SELECT COUNT(*) > 0 FROM mysql.user")" "^1$"
 sql "SET GLOBAL mcp.deny_system_schemas = ON" >/dev/null
 
+# --- views, stored functions, multi-statement packets (RFC 0001 §5.2 item 7, Q3) --------------
+# The schema rules see the base tables of a statement, through views too. Statements of a
+# stored function or trigger run on tables the calling statement already locked, which raise
+# no table access events: their reads are not seen (known limitation, docs/MCP_COMPONENTS.md).
+out=$(sql "
+CREATE SQL SECURITY DEFINER VIEW d1.v_d2 AS SELECT i FROM d2.t;
+CREATE SQL SECURITY DEFINER VIEW d1.v_nested AS SELECT i FROM d1.v_d2;
+CREATE SQL SECURITY DEFINER VIEW d1.v_sys AS SELECT user FROM mysql.user;
+CREATE SQL SECURITY DEFINER VIEW d2.v_d1 AS SELECT i FROM d1.t;
+INSERT INTO d2.t VALUES (42);")
+out="$out$(printf 'DELIMITER $$\nCREATE FUNCTION d1.f_read_d2() RETURNS INT READS SQL DATA SQL SECURITY DEFINER BEGIN RETURN (SELECT MAX(i) FROM d2.t); END$$\n' |
+	docker exec -i "$CNAME" mysql -h127.0.0.1 -uroot -ptestpass 2>&1 | grep -v "Using a password")"
+expect "view fixtures" "$out" "^$"
+# packet SQL: run SQL as one COM_QUERY packet (a multi-statement packet if it has several).
+packet() { printf 'DELIMITER ~~\n%s~~\n' "$1" | docker exec -i "$CNAME" mysql -h127.0.0.1 -umcp -pmcppass1 -N --batch 2>&1 | grep -v "Using a password"; }
+denied "view in d1 over mysql.user (deny_system_schemas)" "$(mcp "SELECT COUNT(*) FROM d1.v_sys")" "mcp.deny_system_schemas"
+sql "SET GLOBAL mcp.allowed_schemas = 'd1'" >/dev/null
+denied "view in an allowed schema over another schema" "$(mcp "SELECT * FROM d1.v_d2")" "mcp.allowed_schemas"
+denied "nested view over another schema" "$(mcp "SELECT * FROM d1.v_nested")" "mcp.allowed_schemas"
+expect "view in another schema over allowed tables (rules apply to base tables)" "$(mcp "SELECT COUNT(*) FROM d2.v_d1")" "^[0-9]+$"
+denied "multi-statement packet: disallowed read in the second statement" "$(packet "SELECT 1; SELECT * FROM d2.t")" "mcp.allowed_schemas"
+expect "KNOWN LIMITATION: a stored function's reads are not seen by the schema rules" "$(mcp "SELECT d1.f_read_d2()")" "^42$"
+sql "SET GLOBAL mcp.allowed_schemas = ''" >/dev/null
+denied "multi-statement packet: write in the second statement" "$(packet "SELECT 1; INSERT INTO d1.t VALUES (5)")" "mcp.read_only"
+denied "multi-statement packet: write after a session SET" "$(packet "SET @a = 1; DELETE FROM d1.t")" "mcp.read_only"
+expect "multi-statement packets wrote nothing" "$(sql "SELECT COUNT(*) FROM d1.t")" "^1$"
+
+# --- parity with mysql-mcp-server's run_query validator (sql/mcp/guard-parity.tsv) -----------
+# The guard column of the shared table; mysql-mcp-server checks the go column. Each statement
+# is sent as one packet under the default settings; "deny" means refused with error 1290.
+sql "GRANT SELECT ON sys.* TO mcp@'%'; GRANT ALTER ON d1.* TO mcp@'%'" >/dev/null
+parity_rows=0
+parity_bad=""
+while IFS=$'\t' read -r _go guard stmt _note; do
+	case "$_go" in '#'* | '') continue ;; esac
+	parity_rows=$((parity_rows + 1))
+	got=allow
+	packet "$stmt" | grep -q "ERROR 1290" && got=deny
+	[ "$got" = "$guard" ] || parity_bad="$parity_bad [$stmt: $got, table says $guard]"
+done <"$REPO/sql/mcp/guard-parity.tsv"
+expect "parity table: guard verdicts ($parity_rows statements)" "${parity_bad:-ok}" "^ok$"
+expect "parity table: nothing was written" "$(sql "SELECT COUNT(*) FROM d1.t; SHOW TABLES FROM d1 LIKE 'x'")" "^1$"
+
 sql "SET GLOBAL mcp.enabled = OFF" >/dev/null
 denied "mcp.enabled OFF refuses MCP connections" "$(mcp "SELECT 1")" "mcp.enabled"
 expect "mcp.enabled OFF leaves other accounts alone" "$(as app apppass1 "SELECT 1")" "^1$"
