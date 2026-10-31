@@ -46,6 +46,8 @@ on:
       - "scripts/test-*.py"
       - "scripts/test-mcp-guard.sh"
       - "scripts/test-mcp-tool-pack.sh"
+      - "scripts/test-mysql-mcp-image.sh"
+      - "docker/mysql-mcp/**"
       - "scripts/build-component*"
       - "scripts/build-plugin*"
       - "CMakeLists.txt"
@@ -59,6 +61,8 @@ on:
       - "scripts/test-*.py"
       - "scripts/test-mcp-guard.sh"
       - "scripts/test-mcp-tool-pack.sh"
+      - "scripts/test-mysql-mcp-image.sh"
+      - "docker/mysql-mcp/**"
       - "scripts/build-component*"
       - "scripts/build-plugin*"
       - "CMakeLists.txt"
@@ -193,6 +197,18 @@ jobs:
         run: |
           chmod +x scripts/test-mcp-guard.sh
           scripts/test-mcp-guard.sh "$MYSQL_VERSION" "dist/mcp-guard-${MYSQL_VERSION}"
+
+      - name: mysql-mcp image test
+        # The image docker-publish.yml publishes as ghcr.io/<owner>/mysql-mcp, built on the
+        # official image of the same patch release.
+        env:
+          MYSQL_VERSION: ${{ matrix.mysql-version }}
+        run: |
+          cp "dist/mcp-guard-${MYSQL_VERSION}/component_mcp_guard.so" component_mcp_guard-amd64.so
+          docker build -f docker/mysql-mcp/Dockerfile --build-arg MYSQL_VERSION="$MYSQL_VERSION" \
+            --build-arg TARGETARCH=amd64 -t "mysql-mcp-smoke:$MYSQL_VERSION" .
+          chmod +x scripts/test-mysql-mcp-image.sh
+          scripts/test-mysql-mcp-image.sh "mysql-mcp-smoke:$MYSQL_VERSION"
 
   mcp-tool-pack:
     # The mysql_mcp SQL tool pack (sql/mcp/, RFC 0001 Phase 1 in askdba/mysql-mcp-server):

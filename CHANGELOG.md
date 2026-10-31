@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`mysql-mcp` Docker images** (Phase 3 of RFC 0001). `ghcr.io/askdba/mysql-mcp:<8.4|9.7|26.10>` (also tagged with the exact release) is the official MySQL image of the release the component is built for, with `component_mcp_guard` and the `mysql_mcp` tool pack installed on first start. `MYSQL_MCP_USER`/`MYSQL_MCP_PASSWORD` create an MCP account (`MCP_USER`, tool pack, read access to `MYSQL_MCP_DATABASES`), and `MYSQL_MCP_ALLOWED_SCHEMAS`/`MYSQL_MCP_MAX_EXECUTION_TIME_MS` persist guard settings. The images are a separate family from the MyVector images. They are published by `docker-publish.yml` with releases and tested in CI by `scripts/test-mysql-mcp-image.sh` (22 checks on 8.4.11, 9.7.2 and 26.10.0).
+- **`component_mcp_guard` tool calls and audit messages** (Phase 3 of RFC 0001, server side).
+  - **`performance_schema.mcp_tool_calls`:** one row per mysql-mcp-server tool call (account, tool, request id, statements, errors, refusals, latency, first and last seen). The guard groups the MCP session statements that start with the label `/* mcp:tool=... req=... */`, keeping the last `mcp.tool_calls_history_size` calls (new read-only variable, default 1000).
+  - **Audit messages:** each refusal is emitted through `mysql_audit_api_message` (component `mcp_guard`, message `refused`, with the option, connection id, redacted statement and the tool call), so audit log consumers record refusals.
+  - **Tests:** `scripts/test-mcp-guard.sh` now has 90 checks, passing on MySQL 8.4.11, 9.7.2 and 26.10.0. The label parser is unit-tested.
 - **`component_mcp_guard` time limit and refusal log** (Phase 2 of RFC 0001, completed).
   - **`mcp.max_execution_time_ms`:** sets an MCP session's `max_execution_time` at connect. Attempts to raise it are refused with error 1290: via `SET`, or via the `MAX_EXECUTION_TIME(n)` or `SET_VAR(max_execution_time=n)` hints. Lowering it is allowed.
   - **`mcp.log_denials` (default ON):** writes each refusal to the error log as `[MY-011071] [mcp_guard]`, with string literals redacted, at most 10 lines a minute.

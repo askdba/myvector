@@ -183,6 +183,27 @@ after=$(docker logs "$CNAME" 2>&1 | grep -c 'mcp_guard: refused by')
 expect "mcp.log_denials = OFF writes nothing" "$after" "^$before$"
 sql "SET GLOBAL mcp.log_denials = ON" >/dev/null
 
+# --- performance_schema.mcp_tool_calls -------------------------------------------------------------
+# Statements labeled by mysql-mcp-server (/* mcp:tool=... req=... */) are grouped per tool call.
+# --comments: older clients strip comments by default.
+mcpc() { docker exec -i "$CNAME" mysql -h127.0.0.1 -umcp -pmcppass1 -N --batch --comments -e "$1" 2>&1 | grep -v "Using a password"; }
+calls() { sql "SELECT CONCAT_WS(',', TOOL, ACCOUNT, STATEMENTS, ERRORS, DENIED) FROM performance_schema.mcp_tool_calls WHERE REQUEST_ID = '$1'"; }
+expect "mcp.tool_calls_history_size default" "$(sql "SELECT @@mcp.tool_calls_history_size")" "^1000$"
+expect "mcp_tool_calls empty before any labeled statement" "$(sql "SELECT COUNT(*) FROM performance_schema.mcp_tool_calls")" "^0$"
+mcpc "/* mcp:tool=list_tables req=t-1 */ SELECT 1; /* mcp:tool=list_tables req=t-1 */ SELECT COUNT(*) FROM d1.t" >/dev/null
+expect "a tool call with two statements" "$(calls t-1)" "^list_tables,mcp@%,2,0,0$"
+mcpc "/* mcp:tool=run_query req=t-2 */ INSERT INTO d1.t VALUES (7)" >/dev/null
+expect "a refused tool call counts denied and errors" "$(calls t-2)" "^run_query,mcp@%,1,1,1$"
+mcpc "/* mcp:tool=run_query req=t-3 */ SELECT * FROM mysql.user" >/dev/null
+expect "a table-level refusal is counted" "$(calls t-3)" "^run_query,mcp@%,1,1,1$"
+mcpc "/* mcp:tool=run_query req=t-4 */ SELECT SLEEP(0.2)" >/dev/null
+expect "latency is measured" "$(sql "SELECT LATENCY_US >= 200000 AND LAST_SEEN >= FIRST_SEEN FROM performance_schema.mcp_tool_calls WHERE REQUEST_ID = 't-4'")" "^1$"
+mcpc "SELECT 1; /* not a label */ SELECT 2; /* mcp:tool=x */ SELECT 3" >/dev/null
+docker exec -i "$CNAME" mysql -h127.0.0.1 -uapp -papppass1 --comments -e "/* mcp:tool=list_tables req=t-app */ SELECT 1" >/dev/null 2>&1
+expect "unlabeled statements and other accounts add no rows" "$(sql "SELECT COUNT(*) FROM performance_schema.mcp_tool_calls")" "^4$"
+expect "rows read in order and by a self-join" "$(sql "SELECT GROUP_CONCAT(REQUEST_ID ORDER BY REQUEST_ID DESC), (SELECT COUNT(*) FROM performance_schema.mcp_tool_calls a JOIN performance_schema.mcp_tool_calls b USING (REQUEST_ID)) FROM performance_schema.mcp_tool_calls")" "^t-4,t-3,t-2,t-1	4$"
+expect "mcp_tool_calls is read-only" "$(sql "DELETE FROM performance_schema.mcp_tool_calls")" "ERROR"
+
 status=$(sql "SHOW GLOBAL STATUS LIKE 'mcp.%'")
 expect "status: statements_denied counted" "$status" "mcp.statements_denied	[1-9]"
 expect "status: table_access_denied counted" "$status" "mcp.table_access_denied	[1-9]"
@@ -203,6 +224,7 @@ sql "RESET PERSIST mcp.allowed_schemas; SET GLOBAL mcp.allowed_schemas = ''" >/d
 expect "UNINSTALL COMPONENT" "$(sql "UNINSTALL COMPONENT 'file://component_mcp_guard'")" "^$"
 expect "MCP_ADMIN unknown after uninstall" "$(sql "GRANT MCP_ADMIN ON *.* TO app@'%'")" "ERROR"
 expect "mcp.* variables gone after uninstall" "$(sql "SHOW VARIABLES LIKE 'mcp.%'")" "^$"
+expect "performance_schema.mcp_tool_calls gone after uninstall" "$(sql "SELECT COUNT(*) FROM performance_schema.mcp_tool_calls")" "ERROR 1146"
 expect "no enforcement after uninstall" "$(mcp "INSERT INTO d1.t VALUES (5); SELECT COUNT(*) FROM d1.t")" "^2$"
 
 # --- lower_case_table_names = 1: allowed_schemas compares case-insensitively ---------------------
