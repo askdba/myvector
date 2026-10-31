@@ -475,42 +475,45 @@ class CallLog {
 
 CallLog call_log;
 
-// The table handle holds a snapshot taken when the table is opened.
+// The table handle holds a snapshot taken when the table is opened. pos is the current
+// row and is also the position the server saves (m_ref_length bytes, exposed by
+// open_table) and restores before rnd_pos; next_pos is where rnd_next continues.
 struct CallTableHandle {
   std::vector<CallRecord> rows = call_log.snapshot();
   size_t pos = 0;
-  bool before_first = true;
+  size_t next_pos = 0;
 };
 
 unsigned long long call_table_row_count() { return call_log.size(); }
 
 int call_table_rnd_init(PSI_table_handle *h, bool) {
   auto *t = reinterpret_cast<CallTableHandle *>(h);
-  t->pos = 0;
-  t->before_first = true;
-  return t->rows.empty() ? PFS_HA_ERR_END_OF_FILE : 0;
+  t->pos = t->next_pos = 0;
+  return 0;
 }
 
 int call_table_rnd_next(PSI_table_handle *h) {
   auto *t = reinterpret_cast<CallTableHandle *>(h);
-  if (t->before_first)
-    t->before_first = false;  // the server calls rnd_next right after rnd_init
-  else if (t->pos < t->rows.size())
-    ++t->pos;
+  t->pos = t->next_pos;
+  if (t->pos >= t->rows.size()) return PFS_HA_ERR_END_OF_FILE;
+  t->next_pos = t->pos + 1;
+  return 0;
+}
+
+// The server has written a saved position into pos.
+int call_table_rnd_pos(PSI_table_handle *h) {
+  auto *t = reinterpret_cast<CallTableHandle *>(h);
   return t->pos < t->rows.size() ? 0 : PFS_HA_ERR_END_OF_FILE;
 }
 
-int call_table_rnd_pos(PSI_table_handle *h) { return call_table_rnd_next(h); }
-
 void call_table_reset_position(PSI_table_handle *h) {
   auto *t = reinterpret_cast<CallTableHandle *>(h);
-  t->pos = 0;
-  t->before_first = true;
+  t->pos = t->next_pos = 0;
 }
 
 int call_table_read_column(PSI_table_handle *h, PSI_field *f, unsigned int index) {
   auto *t = reinterpret_cast<CallTableHandle *>(h);
-  if (t->before_first || t->pos >= t->rows.size()) return PFS_HA_ERR_END_OF_FILE;
+  if (t->pos >= t->rows.size()) return PFS_HA_ERR_END_OF_FILE;
   const CallRecord &r = t->rows[t->pos];
   auto *str = mysql_service_pfs_plugin_column_string_v2;
   auto *big = mysql_service_pfs_plugin_column_bigint_v1;
@@ -531,8 +534,10 @@ int call_table_read_column(PSI_table_handle *h, PSI_field *f, unsigned int index
   return 0;
 }
 
-PSI_table_handle *call_table_open(PSI_pos **) {
-  return reinterpret_cast<PSI_table_handle *>(new (std::nothrow) CallTableHandle());
+PSI_table_handle *call_table_open(PSI_pos **pos) {
+  auto *t = new (std::nothrow) CallTableHandle();
+  if (t != nullptr) *pos = reinterpret_cast<PSI_pos *>(&t->pos);
+  return reinterpret_cast<PSI_table_handle *>(t);
 }
 
 void call_table_close(PSI_table_handle *h) { delete reinterpret_cast<CallTableHandle *>(h); }

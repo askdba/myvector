@@ -201,6 +201,7 @@ expect "latency is measured" "$(sql "SELECT LATENCY_US >= 200000 AND LAST_SEEN >
 mcpc "SELECT 1; /* not a label */ SELECT 2; /* mcp:tool=x */ SELECT 3" >/dev/null
 docker exec -i "$CNAME" mysql -h127.0.0.1 -uapp -papppass1 --comments -e "/* mcp:tool=list_tables req=t-app */ SELECT 1" >/dev/null 2>&1
 expect "unlabeled statements and other accounts add no rows" "$(sql "SELECT COUNT(*) FROM performance_schema.mcp_tool_calls")" "^4$"
+expect "rows read in order and by a self-join" "$(sql "SELECT GROUP_CONCAT(REQUEST_ID ORDER BY REQUEST_ID DESC), (SELECT COUNT(*) FROM performance_schema.mcp_tool_calls a JOIN performance_schema.mcp_tool_calls b USING (REQUEST_ID)) FROM performance_schema.mcp_tool_calls")" "^t-4,t-3,t-2,t-1	4$"
 expect "mcp_tool_calls is read-only" "$(sql "DELETE FROM performance_schema.mcp_tool_calls")" "ERROR"
 
 status=$(sql "SHOW GLOBAL STATUS LIKE 'mcp.%'")
