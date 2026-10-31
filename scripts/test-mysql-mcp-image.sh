@@ -15,7 +15,9 @@ PASS=0
 FAIL=0
 ok() { PASS=$((PASS + 1)); printf '  PASS  %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf '  FAIL  %s  -- %s\n' "$1" "$2"; }
-cleanup() { docker rm -f -v "$CNAME" "$CNAME_PLAIN" >/dev/null 2>&1; }
+TMPF=$(mktemp)
+chmod 644 "$TMPF" # copied into containers, where mysqld (user mysql) must read it
+cleanup() { docker rm -f -v "$CNAME" "$CNAME_PLAIN" >/dev/null 2>&1; rm -f "$TMPF"; }
 trap cleanup EXIT
 expect() {
 	if printf '%s\n' "$2" | grep -Eq -- "$3"; then ok "$1"; else bad "$1" "got: $(printf '%s' "$2" | head -c 300)"; fi
@@ -69,12 +71,12 @@ expect "health probes do not lock root" "$(root "SELECT 1")" "^1$"
 root "ALTER USER root@'%' FAILED_LOGIN_ATTEMPTS 0 PASSWORD_LOCK_TIME 0" >/dev/null
 
 # Without MYSQL_MCP_* settings: component and tool pack only. This server's port comes from
-# an option file (as with a mounted my.cnf), which the health check must read.
+# the [server] group of an option file (as with a mounted my.cnf), which the health check
+# must apply as mysqld does.
 PORT=3308
 docker create --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass "$IMAGE" >/dev/null
-printf '[mysqld]\nport=3308\n' >"/tmp/$CNAME-port.cnf"
-docker cp "/tmp/$CNAME-port.cnf" "$CNAME_PLAIN:/etc/mysql/conf.d/port.cnf" >/dev/null
-rm -f "/tmp/$CNAME-port.cnf"
+printf '[server]\nport=3308\n' >"$TMPF"
+docker cp "$TMPF" "$CNAME_PLAIN:/etc/mysql/conf.d/port.cnf" >/dev/null
 docker start "$CNAME_PLAIN" >/dev/null
 if wait_ready "$CNAME_PLAIN" testpass; then
 	expect "health check reads the port from an option file" "$(health "$CNAME_PLAIN")" "rc=0"
@@ -87,14 +89,34 @@ fi
 docker rm -f -v "$CNAME_PLAIN" >/dev/null 2>&1
 unset PORT
 
-# MYSQL_MCP_USER = MYSQL_USER is refused before the data directory is initialized (the
-# official entrypoint would create that account with all privileges on MYSQL_DATABASE).
+# MYSQL_MCP_USER = MYSQL_USER (or the user in MYSQL_USER_FILE) is refused before the data
+# directory is initialized (the official entrypoint would create that account with all
+# privileges on MYSQL_DATABASE).
+# exit_code CONTAINER: its exit code once it stops, or "timeout" after 60 s.
+exit_code() {
+	for _ in $(seq 1 60); do
+		case "$(docker inspect -f '{{.State.Status}}' "$1" 2>/dev/null)" in
+		running | restarting | created | paused) sleep 1 ;;
+		'') break ;;
+		*) docker inspect -f '{{.State.ExitCode}}' "$1"; return ;;
+		esac
+	done
+	echo timeout
+}
+refused() { # LABEL: CNAME_PLAIN must have stopped with the clash message, uninitialized
+	expect "$1 is refused at start" "rc=$(exit_code "$CNAME_PLAIN") $(docker logs "$CNAME_PLAIN" 2>&1 | grep -c 'MYSQL_MCP_USER must differ from MYSQL_USER')" "^rc=[1-9][0-9]* 1$"
+	expect "$1: nothing initialized" "$(docker logs "$CNAME_PLAIN" 2>&1 | grep -c 'Initializing database files')" "^0$"
+	docker rm -f -v "$CNAME_PLAIN" >/dev/null 2>&1
+}
 docker run -d --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass -e MYSQL_DATABASE=app \
 	-e MYSQL_USER=app -e MYSQL_PASSWORD=apppass -e MYSQL_MCP_USER=app -e MYSQL_MCP_PASSWORD=x "$IMAGE" >/dev/null
-rc=$(timeout 60 docker wait "$CNAME_PLAIN" 2>/dev/null || echo timeout)
-expect "MYSQL_MCP_USER = MYSQL_USER is refused at start" "rc=$rc $(docker logs "$CNAME_PLAIN" 2>&1 | grep -c 'MYSQL_MCP_USER must differ from MYSQL_USER')" "^rc=[1-9][0-9]* 1$"
-expect "nothing initialized when refused" "$(docker logs "$CNAME_PLAIN" 2>&1 | grep -c 'Initializing database files')" "^0$"
-docker rm -f -v "$CNAME_PLAIN" >/dev/null 2>&1
+refused "MYSQL_MCP_USER = MYSQL_USER"
+docker create --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass -e MYSQL_DATABASE=app \
+	-e MYSQL_USER_FILE=/run/app-user -e MYSQL_PASSWORD=apppass -e MYSQL_MCP_USER=app -e MYSQL_MCP_PASSWORD=x "$IMAGE" >/dev/null
+printf 'app' >"$TMPF"
+docker cp "$TMPF" "$CNAME_PLAIN:/run/app-user" >/dev/null
+docker start "$CNAME_PLAIN" >/dev/null
+refused "MYSQL_MCP_USER = the user in MYSQL_USER_FILE"
 
 # NO_BACKSLASH_ESCAPES: the password with a backslash still works as configured. This
 # server also runs on another port, which the health check must follow.
