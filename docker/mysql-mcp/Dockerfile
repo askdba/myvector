@@ -2,9 +2,10 @@
 # (askdba/mysql-mcp-server): component_mcp_guard and the mysql_mcp SQL tool pack.
 # Published as ghcr.io/askdba/mysql-mcp:<8.4|9.7|26.10> by docker-publish.yml.
 # Build context: the repository root, with component_mcp_guard-<arch>.so staged there.
-# MYSQL_VERSION must be the exact release the component was built against (for example
-# 8.4.8): a component built for another patch release can crash the server.
-ARG MYSQL_VERSION=9.7.2
+# MYSQL_VERSION (required, no default) must be the exact release the component was built
+# against, for example 8.4.8: a component built for another patch release can crash the
+# server.
+ARG MYSQL_VERSION
 
 FROM mysql:${MYSQL_VERSION}
 ARG TARGETARCH
@@ -21,7 +22,7 @@ COPY sql/mcp/mysql_mcp.sql sql/mcp/uninstall.sql sql/mcp/LICENSE /usr/share/mysq
 COPY docker/mysql-mcp/mysql-mcp-init.sh /docker-entrypoint-initdb.d/50-mysql-mcp.sh
 
 # checkov:skip=CKV_DOCKER_3:MySQL entrypoint needs root for initialization
-HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD \
-  if [ -n "$MYSQL_RANDOM_ROOT_PASSWORD" ] && [ -z "${MYSQL_ROOT_PASSWORD:-}" ]; then exit 0; fi; \
-  if [ -n "${MYSQL_ROOT_PASSWORD:-}" ]; then mysqladmin ping -uroot -p"$MYSQL_ROOT_PASSWORD" --silent; \
-  else mysqladmin ping -uroot --silent; fi
+# Over TCP, which the entrypoint's temporary server does not listen on, so the container is
+# healthy only after first-start setup. ping succeeds even when access is denied, so it
+# needs no password (MYSQL_RANDOM_ROOT_PASSWORD included).
+HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD mysqladmin ping -h127.0.0.1 --silent

@@ -10,7 +10,10 @@
 #   - MYSQL_MCP_ALLOWED_SCHEMAS, MYSQL_MCP_MAX_EXECUTION_TIME_MS: persisted as
 #     mcp.allowed_schemas and mcp.max_execution_time_ms.
 
-_mcp_sql_literal() { # a single-quoted SQL string literal
+# Batches with literals start with this, so _mcp_sql_literal's escaping holds even when
+# the server runs with NO_BACKSLASH_ESCAPES.
+_mcp_backslash_escapes="SET SESSION sql_mode = REPLACE(@@SESSION.sql_mode, 'NO_BACKSLASH_ESCAPES', '');"
+_mcp_sql_literal() { # a single-quoted SQL string literal (with backslash escapes)
 	local s=${1//\\/\\\\}
 	printf "'%s'" "${s//\'/\'\'}"
 }
@@ -29,7 +32,7 @@ done
 mysql_note "mysql-mcp: installing the mysql_mcp tool pack"
 docker_process_sql --database=mysql </usr/share/mysql-mcp/mysql_mcp.sql
 
-_mcp_settings=
+_mcp_settings=$_mcp_backslash_escapes
 if [ -n "${MYSQL_MCP_ALLOWED_SCHEMAS:-}" ]; then
 	_mcp_settings+="SET PERSIST mcp.allowed_schemas = $(_mcp_sql_literal "$MYSQL_MCP_ALLOWED_SCHEMAS");"
 fi
@@ -39,14 +42,15 @@ if [ -n "${MYSQL_MCP_MAX_EXECUTION_TIME_MS:-}" ]; then
 	esac
 	_mcp_settings+="SET PERSIST mcp.max_execution_time_ms = $MYSQL_MCP_MAX_EXECUTION_TIME_MS;"
 fi
-[ -z "$_mcp_settings" ] || docker_process_sql --database=mysql <<<"$_mcp_settings"
+[ "$_mcp_settings" = "$_mcp_backslash_escapes" ] || docker_process_sql --database=mysql <<<"$_mcp_settings"
 
 if [ -n "${MYSQL_MCP_USER:-}" ]; then
 	[ -n "${MYSQL_MCP_PASSWORD:-}" ] || mysql_error "MYSQL_MCP_USER is set but MYSQL_MCP_PASSWORD is not"
 	[ "$MYSQL_MCP_USER" != root ] || mysql_error "MYSQL_MCP_USER cannot be root"
 	_mcp_account="$(_mcp_sql_literal "$MYSQL_MCP_USER")@'%'"
 	mysql_note "mysql-mcp: creating MCP account $MYSQL_MCP_USER"
-	_mcp_grants="CREATE USER $_mcp_account IDENTIFIED BY $(_mcp_sql_literal "$MYSQL_MCP_PASSWORD");
+	_mcp_grants="$_mcp_backslash_escapes
+CREATE USER $_mcp_account IDENTIFIED BY $(_mcp_sql_literal "$MYSQL_MCP_PASSWORD");
 GRANT MCP_USER ON *.* TO $_mcp_account;
 GRANT EXECUTE ON mysql_mcp.* TO $_mcp_account;"
 	IFS=',' read -r -a _mcp_dbs <<<"${MYSQL_MCP_DATABASES:-${MYSQL_DATABASE:-}}"
@@ -63,4 +67,4 @@ GRANT SELECT, SHOW VIEW ON $(_mcp_sql_ident "$_mcp_pattern").* TO $_mcp_account;
 	done
 	docker_process_sql --database=mysql <<<"$_mcp_grants"
 fi
-unset _mcp_roots _mcp_root _mcp_settings _mcp_account _mcp_grants _mcp_dbs _mcp_db _mcp_pattern
+unset _mcp_backslash_escapes _mcp_roots _mcp_root _mcp_settings _mcp_account _mcp_grants _mcp_dbs _mcp_db _mcp_pattern

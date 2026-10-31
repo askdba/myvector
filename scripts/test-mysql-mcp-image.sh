@@ -59,6 +59,8 @@ docker restart "$CNAME" >/dev/null && wait_ready "$CNAME" testpass
 expect "after restart: guard loaded, settings kept" "$(root "SELECT CONCAT_WS(',', @@mcp.allowed_schemas, @@mcp.max_execution_time_ms)")" "^app_db,5000$"
 expect "after restart: setup not run again" "$(docker logs "$CNAME" 2>&1 | grep -c 'mysql-mcp: installing component_mcp_guard')" "^1$"
 
+expect "healthy once setup is done" "$(docker exec "$CNAME" mysqladmin ping -h127.0.0.1 --silent 2>&1; echo "rc=$?")" "rc=0"
+
 # Without MYSQL_MCP_* settings: component and tool pack only.
 docker run -d --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass "$IMAGE" >/dev/null
 if wait_ready "$CNAME_PLAIN" testpass; then
@@ -67,6 +69,17 @@ if wait_ready "$CNAME_PLAIN" testpass; then
 	expect "plain: no MCP account" "$(as "$CNAME_PLAIN" root testpass "SELECT COUNT(*) FROM mysql.user WHERE user = 'mcp'")" "^0$"
 else
 	bad "plain container" "did not start"
+fi
+docker rm -f -v "$CNAME_PLAIN" >/dev/null 2>&1
+
+# NO_BACKSLASH_ESCAPES: the password with a backslash still works as configured.
+docker run -d --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass -e MYSQL_MCP_USER=mcp \
+	-e 'MYSQL_MCP_PASSWORD=a\b'"'"'c' -e 'MYSQL_MCP_ALLOWED_SCHEMAS=x\y' "$IMAGE" --sql-mode=NO_BACKSLASH_ESCAPES >/dev/null
+if wait_ready "$CNAME_PLAIN" testpass; then
+	expect "NO_BACKSLASH_ESCAPES: MCP account logs in with its password" "$(as "$CNAME_PLAIN" mcp 'a\b'"'"'c' "SELECT CURRENT_USER()")" "^mcp@%$"
+	expect "NO_BACKSLASH_ESCAPES: settings keep the backslash" "$(as "$CNAME_PLAIN" root testpass "SELECT @@mcp.allowed_schemas")" '^x\\?\\y$'
+else
+	bad "NO_BACKSLASH_ESCAPES container" "did not start"
 fi
 
 echo "== $IMAGE: $PASS passed, $FAIL failed"
