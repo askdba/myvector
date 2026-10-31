@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`component_mcp_guard` tool calls and audit messages** (Phase 3 of RFC 0001, server side).
+  - **`performance_schema.mcp_tool_calls`:** one row per mysql-mcp-server tool call (account, tool, request id, statements, errors, refusals, latency, first and last seen). The guard groups the MCP session statements that start with the label `/* mcp:tool=... req=... */`, keeping the last `mcp.tool_calls_history_size` calls (new read-only variable, default 1000).
+  - **Audit messages:** each refusal is emitted through `mysql_audit_api_message` (component `mcp_guard`, message `refused`, with the option, connection id, redacted statement and the tool call), so audit log consumers record refusals.
+  - **Tests:** `scripts/test-mcp-guard.sh` now has 90 checks, passing on MySQL 8.4.11, 9.7.2 and 26.10.0. The label parser is unit-tested.
 - **`component_mcp_guard` time limit and refusal log** (Phase 2 of RFC 0001, completed).
   - **`mcp.max_execution_time_ms`:** sets an MCP session's `max_execution_time` at connect. Attempts to raise it are refused with error 1290: via `SET`, or via the `MAX_EXECUTION_TIME(n)` or `SET_VAR(max_execution_time=n)` hints. Lowering it is allowed.
   - **`mcp.log_denials` (default ON):** writes each refusal to the error log as `[MY-011071] [mcp_guard]`, with string literals redacted, at most 10 lines a minute.

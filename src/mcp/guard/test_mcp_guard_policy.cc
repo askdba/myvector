@@ -166,6 +166,25 @@ int main() {
     }
   }
 
+  // Tool call labels.
+  {
+    std::string tool, req;
+    const char *ok_label = "/* mcp:tool=list_tables req=3f9a2c11-17 */ SELECT 1";
+    if (!parse_call_label(ok_label, std::strlen(ok_label), &tool, &req) || tool != "list_tables" ||
+        req != "3f9a2c11-17") {
+      std::printf("FAIL parse_call_label: %s %s\n", tool.c_str(), req.c_str());
+      ++failures;
+    }
+    for (const char *bad : {"SELECT 1", "/* mcp:tool= req=1 */ x", "/* mcp:tool=a req= */ x",
+                            "/* mcp:tool=a */ x", " /* mcp:tool=a req=1 */ x",
+                            "/* mcp:tool=a req=1 x"}) {
+      if (parse_call_label(bad, std::strlen(bad), &tool, &req)) {
+        std::printf("FAIL parse_call_label accepted: %s\n", bad);
+        ++failures;
+      }
+    }
+  }
+
   // Tokenizer details.
   {
     const char *q = "SELECT 'it''s' , \"a\\\"b\" FROM `we``ird`";
