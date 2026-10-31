@@ -1,4 +1,6 @@
-ARG MYSQL_VERSION=8.0
+# MYSQL_VERSION (required, no default) is the exact release the plugin was built against,
+# for example 8.4.13: a plugin built for another release can crash the server.
+ARG MYSQL_VERSION
 FROM mysql:${MYSQL_VERSION}
 ARG TARGETARCH
 

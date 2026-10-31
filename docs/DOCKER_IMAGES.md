@@ -221,6 +221,11 @@ instructions in the main README:
 | `ghcr.io/askdba/myvector:mysql26.10` | 26.10.x (Innovation) | Component only (`INSTALL COMPONENT`) |
 | `ghcr.io/askdba/myvector:latest` | 8.0.x | Plugin (`INSTALL PLUGIN`) |
 
+Each plugin image is based on the exact MySQL release its plugin was built against: a
+plugin or component built for one release can crash another. The image is also
+tagged with that release (`mysql8.0.46`, `mysql8.4.13`, `mysql9.7.4`); `mysql8.0`,
+`mysql8.4`, `mysql9.7` and `latest` move to the new release when the build is updated.
+
 Component images (`INSTALL COMPONENT`) contain `/usr/lib/mysql/plugin/myvector.so` +
 `myvector.json` and `/docker-entrypoint-initdb.d/myvector_install_component.sql`,
 rather than the plugin's `myvectorplugin.sql`.
