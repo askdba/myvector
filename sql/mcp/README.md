@@ -16,6 +16,8 @@ are standalone scripts that are not linked into any component, and mysql-mcp-ser
 `MCP_ADMIN` and unregisters them on `UNINSTALL COMPONENT`. MySQL's privilege registry has
 no owner, so other components must not register these names.
 
+**Parity table:** [`guard-parity.tsv`](guard-parity.tsv) holds the shared verdicts of mysql-mcp-server's `run_query` validator and `component_mcp_guard` for the same statements. It is test data that both repositories check (see [`docs/MCP_COMPONENTS.md`](../../docs/MCP_COMPONENTS.md), Tests).
+
 ## Version 1.0.0 (Phase 1)
 
 [`mysql_mcp.sql`](mysql_mcp.sql) installs the schema `mysql_mcp`. It has one procedure per
