@@ -221,6 +221,11 @@ instructions in the main README:
 | `ghcr.io/askdba/myvector:mysql26.10` | 26.10.x (Innovation) | Component only (`INSTALL COMPONENT`) |
 | `ghcr.io/askdba/myvector:latest` | 8.0.x | Plugin (`INSTALL PLUGIN`) |
 
+Each plugin image is based on the exact MySQL release its plugin was built against: a
+plugin or component built for one release can crash another. The image is also
+tagged with that release (`mysql8.0.46`, `mysql8.4.13`, `mysql9.7.4`); `mysql8.0`,
+`mysql8.4`, `mysql9.7` and `latest` move to the new release when the build is updated.
+
 Each component image is based on the exact MySQL release its component was built
 against: a component built for one patch release can crash another (an 8.4.8 build
 crashed 8.4.11). The image is also tagged with that release, e.g.

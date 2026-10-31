@@ -20,22 +20,30 @@ jobs:
     # Publish plugin images only from a dispatch that targets a VERSION tag
     # (refs/tags/v*). The version-tag guard stops a branch / non-version-tag
     # dispatch from overwriting the mutable public plugin tags
-    # (mysql8.0/8.4/9.7/latest).
-    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')
+    # (mysql8.0/8.4/9.7/latest). A dry_run dispatch builds and tests without pushing.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.dry_run)
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          - mysql-tag: 'mysql-8.0.45'
+          # A plugin works only on the exact release it was built against, so each image
+          # is based on mysql:<mysql-release>, the release of mysql-tag, and also tagged
+          # with it (mysql<mysql-release>).
+          - mysql-tag: 'mysql-8.0.46'
+            mysql-release: '8.0.46'
             mysql-version: '8.0'
             dockerfile: Dockerfile.oraclelinux8
             compiler: 10
-          - mysql-tag: 'mysql-8.4.8'
+          - mysql-tag: 'mysql-8.4.13'
+            mysql-release: '8.4.13'
             mysql-version: '8.4'
             dockerfile: Dockerfile.oraclelinux9
             compiler: 10
-          - mysql-tag: 'mysql-9.7.0'
+          - mysql-tag: 'mysql-9.7.4'
+            mysql-release: '9.7.4'
             mysql-version: '9.7'
             dockerfile: Dockerfile.oraclelinux9
             compiler: 11
@@ -162,7 +170,7 @@ jobs:
             docker buildx build \
               --platform "linux/${arch}" \
               --file ${{ matrix.dockerfile }} \
-              --build-arg MYSQL_VERSION=${{ matrix.mysql-version }} \
+              --build-arg MYSQL_VERSION=${{ matrix.mysql-release }} \
               -t "myvector-smoke:${{ matrix.mysql-version }}-${arch}" \
               --load \
               .
@@ -191,10 +199,13 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}
+          # Never push on a dry_run dispatch — build only, to prove the pipeline.
+          push: ${{ !inputs.dry_run }}
+          tags: |
+            ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-version }}
+            ghcr.io/${{ github.repository }}:mysql${{ matrix.mysql-release }}
           build-args: |
-            MYSQL_VERSION=${{ matrix.mysql-version }}
+            MYSQL_VERSION=${{ matrix.mysql-release }}
 
       - name: Tag and push latest
         if: matrix.mysql-version == '8.0'
@@ -203,10 +214,10 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: ${{ !inputs.dry_run }}
           tags: ghcr.io/${{ github.repository }}:latest
           build-args: |
-            MYSQL_VERSION=${{ matrix.mysql-version }}
+            MYSQL_VERSION=${{ matrix.mysql-release }}
 
   # Component-based images (INSTALL COMPONENT), distinct from the legacy plugin
   # images built above. mysql8.4/mysql9.7 already ship as plugin images with

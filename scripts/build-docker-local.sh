@@ -4,7 +4,7 @@
 # On x86_64: builds amd64 plugin and image.
 #
 # Usage: ./scripts/build-docker-local.sh [mysql-version]
-# Example: ./scripts/build-docker-local.sh 8.4
+# Example: ./scripts/build-docker-local.sh 8.4   (8.0, 8.4 or 9.7)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,9 +12,18 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 MYSQL_VERSION="${1:-8.4}"
-MYSQL_TAG="mysql-8.4.8"
-[ "$MYSQL_VERSION" = "8.0" ] && MYSQL_TAG="mysql-8.0.45"
-[ "$MYSQL_VERSION" = "9.0" ] && MYSQL_TAG="mysql-9.0.0"
+case "$MYSQL_VERSION" in
+8.0) MYSQL_TAG="mysql-8.0.46" ;;
+8.4) MYSQL_TAG="mysql-8.4.13" ;;
+9.7) MYSQL_TAG="mysql-9.7.4" ;;
+*)
+	echo "unsupported MySQL version: $MYSQL_VERSION (use 8.0, 8.4 or 9.7)" >&2
+	exit 1
+	;;
+esac
+# The image is based on the release the plugin is built against (a plugin built for
+# another release can crash the server).
+MYSQL_RELEASE="${MYSQL_TAG#mysql-}"
 
 # Build for native arch on Apple Silicon; amd64 on x86
 # Set MYVECTOR_ARCH=amd64 to force amd64 (QEMU) on arm64 - slower but avoids compiler bugs
@@ -91,7 +100,7 @@ cp sql/myvectorplugin.sql .
 echo "Building Docker image ($PLATFORM)..."
 docker build -f Dockerfile.oraclelinux9 \
 	--platform "$PLATFORM" \
-	--build-arg MYSQL_VERSION="$MYSQL_VERSION" \
+	--build-arg MYSQL_VERSION="$MYSQL_RELEASE" \
 	-t "myvector:mysql${MYSQL_VERSION}-local" .
 
 echo ""
