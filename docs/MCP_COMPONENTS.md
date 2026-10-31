@@ -14,7 +14,8 @@ Enforces a policy on the sessions of mysql-mcp-server, inside `mysqld`, so a cli
 ### Install
 
 ```sql
--- copy component_mcp_guard.so into @@plugin_dir first
+-- copy component_mcp_guard.so into @@plugin_dir first: the build for this server's
+-- exact release (a build for another patch release, even 8.4.8 on 8.4.11, can crash it)
 INSTALL COMPONENT 'file://component_mcp_guard';
 GRANT MCP_ADMIN ON *.* TO 'dba'@'%';          -- who may change mcp.* settings
 GRANT MCP_USER  ON *.* TO 'mcp'@'%';          -- the account mysql-mcp-server uses
@@ -22,6 +23,27 @@ GRANT EXECUTE   ON mysql_mcp.* TO 'mcp'@'%';  -- if the SQL tool pack is install
 ```
 
 `UNINSTALL COMPONENT 'file://component_mcp_guard'` removes the privileges, variables and status variables. Grants of `MCP_USER` and `MCP_ADMIN` stay in the grant tables until revoked.
+
+### Docker images (mysql-mcp)
+
+`ghcr.io/askdba/mysql-mcp:<8.4|9.7|26.10>` (amd64, arm64; also tagged with the exact release, such as `8.4.13`) is the official `mysql` image of the release the component was built for, with `component_mcp_guard` and the `mysql_mcp` SQL tool pack. It is separate from the MyVector images. On first start, with an empty data directory, it installs both, grants `MCP_ADMIN` to the root accounts, and reads these settings:
+
+| Variable | Effect |
+|---|---|
+| `MYSQL_MCP_USER`, `MYSQL_MCP_PASSWORD` | Create this account (host `%`) for mysql-mcp-server, with `MCP_USER`, `EXECUTE` on `mysql_mcp` and `SELECT, SHOW VIEW` on the databases below. |
+| `MYSQL_MCP_DATABASES` | Comma-separated databases the account may read. The default is `MYSQL_DATABASE`. |
+| `MYSQL_MCP_ALLOWED_SCHEMAS` | Persisted as `mcp.allowed_schemas`. |
+| `MYSQL_MCP_MAX_EXECUTION_TIME_MS` | Persisted as `mcp.max_execution_time_ms`. |
+
+The other settings keep their defaults (read-only on). The official image's own variables (`MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE`, ...) work as usual.
+
+```sh
+docker run -d -p 3306:3306 -e MYSQL_ROOT_PASSWORD=secret -e MYSQL_DATABASE=shop \
+  -e MYSQL_MCP_USER=mcp -e MYSQL_MCP_PASSWORD=mcp-secret ghcr.io/askdba/mysql-mcp:9.7
+MYSQL_DSN='mcp:mcp-secret@tcp(127.0.0.1:3306)/shop' mysql-mcp-server
+```
+
+The images are built and published with MyVector releases (`docker-publish.yml`). `scripts/test-mysql-mcp-image.sh <image>` tests the first-start setup, and CI (`integration-scripts.yml`, job `mcp-guard`) runs it on each version.
 
 ### MCP sessions
 
@@ -41,6 +63,7 @@ A session is an **MCP session** when its account holds `MCP_USER` and not `MCP_A
 | `mcp.allowed_schemas` | empty | Comma-separated schemas whose tables MCP sessions may access; blank means all. A value with no names in it, such as `,`, allows none. Names are compared exactly, or case-insensitively when `lower_case_table_names` is 1 or 2. The system schemas above are governed by `mcp.deny_system_schemas`, and `mysql_mcp` is always allowed. |
 | `mcp.max_execution_time_ms` | 0 | Time limit for their `SELECT` statements, which they cannot raise; 0 turns the guard's limit off (the server's own `max_execution_time` default still applies) (below). |
 | `mcp.log_denials` | `ON` | Write refusals to the error log, at most 10 lines a minute (below). |
+| `mcp.tool_calls_history_size` | 1000 | Tool calls kept in `performance_schema.mcp_tool_calls` (below); 0 keeps none. Read-only: set it at startup or in `INSTALL COMPONENT ... SET`. |
 
 `SET GLOBAL` and `SET PERSIST` of `mcp.*` need `MCP_ADMIN` on top of `SYSTEM_VARIABLES_ADMIN`. Persisted values load at startup as usual. Values given in `INSTALL COMPONENT ... SET` are taken from the installer.
 
@@ -87,6 +110,39 @@ Each refusal is written as a warning, with the setting, the connection id and th
 
 At most 10 lines are written per minute; the number left out is reported with the next line after the minute. String literals are redacted, but numbers and identifiers are kept; turn `mcp.log_denials` off if even those must not reach the error log.
 
+### Audit log
+
+Each refusal is also emitted as an audit message (the `mysql_audit_api_message` service, subclass `MYSQL_AUDIT_MESSAGE_INTERNAL`), so an audit log plugin or component that records message events records it, whatever `mcp.log_denials` says. The component is `mcp_guard`, the producer `component_mcp_guard` and the message `refused`, with these keys:
+
+| Key | Value |
+|---|---|
+| `option` | the setting that refused it, as in the error |
+| `connection_id` | the connection (a number) |
+| `statement` | the statement with string literals redacted as in the error log, or `read db.table` / `write db.table` |
+| `tool`, `request_id` | the tool call, when the statement is labeled (next section) |
+
+### performance_schema.mcp_tool_calls
+
+mysql-mcp-server starts every statement of a tool call with a label, `/* mcp:tool=<tool> req=<request id> */`. For MCP sessions the guard groups labeled statements into one row per tool call (one request id on one connection), keeping the latest `mcp.tool_calls_history_size` calls:
+
+| Column | Meaning |
+|---|---|
+| `CONNECTION_ID` | the connection |
+| `ACCOUNT` | the session's account, `user@host` as granted |
+| `TOOL`, `REQUEST_ID` | from the label |
+| `STATEMENTS` | labeled top-level statements of the call |
+| `ERRORS` | those that failed, refusals included |
+| `DENIED` | refusals by the guard |
+| `LATENCY_US` | total time of the statements, in microseconds |
+| `FIRST_SEEN`, `LAST_SEEN` | first statement start and last statement end |
+
+```sql
+SELECT TOOL, COUNT(*) AS calls, SUM(DENIED) AS denied, SUM(LATENCY_US) / 1000 AS ms
+FROM performance_schema.mcp_tool_calls GROUP BY TOOL ORDER BY ms DESC;
+```
+
+The table is read-only and lives in memory: it is empty after a restart or reinstall. The label only attributes statements; who is an MCP session is decided by `MCP_USER`, so labels from other accounts are ignored, and a session can write any label it likes (the account column is the trusted one). The label must be at the very start of the statement, which the `mysql` client keeps only with `--comments`.
+
 ### Errors
 
 A denial fails the statement with error **1290** (`ER_OPTION_PREVENTS_STATEMENT`), the server's own `read_only` error, naming the setting:
@@ -110,8 +166,7 @@ The option is `mcp.read_only`, `mcp.deny_system_schemas`, `mcp.allowed_schemas` 
 
 - `mcp.allowed_schemas` limits **table access**, not catalog metadata: `information_schema` and `SHOW` still list what the account's grants allow.
 - With `mcp.deny_system_schemas = ON`, mysql-mcp-server's opt-in `slow_query_log` tool (which reads `mysql.slow_log`) is denied.
-- Planned (RFC 0001 Phase 3): denials in the audit log, `performance_schema.mcp_tool_calls`.
 
 ### Tests
 
-`scripts/test-mcp-guard.sh <mysql-tag> <artifact-dir>` runs install, restart, persistence, uninstall and the enforcement cases against the official image (80 checks, including a `lower_case_table_names=1` server), and `src/mcp/guard/test_mcp_guard_policy.cc` unit-tests the classification and the SQL scanner. CI (`integration-scripts.yml`, job `mcp-guard`) runs both on MySQL 8.4.11, 9.7.2 and 26.10.0.
+`scripts/test-mcp-guard.sh <mysql-tag> <artifact-dir>` runs install, restart, persistence, uninstall and the enforcement cases, the tool-call table and its labels against the official image (90 checks, including a `lower_case_table_names=1` server), and `src/mcp/guard/test_mcp_guard_policy.cc` unit-tests the classification and the SQL scanner. CI (`integration-scripts.yml`, job `mcp-guard`) runs both on MySQL 8.4.11, 9.7.2 and 26.10.0.
