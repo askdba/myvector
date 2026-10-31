@@ -213,6 +213,9 @@ jobs:
   # existing users depending on them, so component images for those versions get
   # a "-component" tag suffix; mysql26.10 has no plugin equivalent to collide with
   # (component-only), so it gets the plain tag.
+  # The same job also builds component_mcp_guard and publishes the separate mysql-mcp
+  # image family (docker/mysql-mcp/Dockerfile, RFC 0001 in askdba/mysql-mcp-server) as
+  # ghcr.io/<owner>/mysql-mcp:<mysql-version>.
   build-and-publish-component:
     # Publish only from a dispatch that targets a VERSION tag (refs/tags/v*).
     # Without the version-tag guard, a workflow_dispatch off any branch — or any non-version tag — would
@@ -251,6 +254,8 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build MyVector component (amd64/arm64)
+        env:
+          MYVECTOR_BUILD_MCP: "ON"
         run: |
           set -euo pipefail
           chmod +x ${{ matrix.build-script }}
@@ -263,6 +268,8 @@ jobs:
           cp build/component-amd64/libmyvector_component.so myvector-component-amd64.so
           cp build/component-arm64/libmyvector_component.so myvector-component-arm64.so
           cp build/component-amd64/myvector.json myvector.json
+          cp build/component-amd64/component_mcp_guard.so component_mcp_guard-amd64.so
+          cp build/component-arm64/component_mcp_guard.so component_mcp_guard-arm64.so
           cp sql/myvector_install_component.sql myvector_install_component.sql
           cp sql/myvector_uninstall_component.sql myvector_uninstall_component.sql
 
@@ -309,5 +316,36 @@ jobs:
           # Never push on a dry_run dispatch — build only, to prove the pipeline.
           push: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
           tags: ghcr.io/${{ github.repository }}:${{ matrix.image-tag }}
+          build-args: |
+            MYSQL_VERSION=${{ matrix.mysql-version }}
+
+      - name: Test mysql-mcp image
+        env:
+          MYSQL_VERSION: ${{ matrix.mysql-version }}
+        run: |
+          for arch in amd64 arm64; do
+            docker buildx build \
+              --platform "linux/${arch}" \
+              --file docker/mysql-mcp/Dockerfile \
+              --build-arg MYSQL_VERSION="$MYSQL_VERSION" \
+              -t "mysql-mcp-smoke:${MYSQL_VERSION}-${arch}" \
+              --load \
+              .
+          done
+          # Full first-start test natively; arm64 under QEMU checks the contents only.
+          chmod +x scripts/test-mysql-mcp-image.sh
+          scripts/test-mysql-mcp-image.sh "mysql-mcp-smoke:${MYSQL_VERSION}-amd64"
+          docker run --rm --platform linux/arm64 --entrypoint /bin/sh "mysql-mcp-smoke:${MYSQL_VERSION}-arm64" -c \
+            "test -f /usr/lib64/mysql/plugin/component_mcp_guard.so && test -f /usr/share/mysql-mcp/mysql_mcp.sql && test -f /docker-entrypoint-initdb.d/50-mysql-mcp.sh"
+
+      - name: Build and push mysql-mcp image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/mysql-mcp/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          # Never push on a dry_run dispatch — build only, to prove the pipeline.
+          push: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+          tags: ghcr.io/${{ github.repository_owner }}/mysql-mcp:${{ matrix.mysql-version }}
           build-args: |
             MYSQL_VERSION=${{ matrix.mysql-version }}

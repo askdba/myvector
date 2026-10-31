@@ -23,6 +23,27 @@ GRANT EXECUTE   ON mysql_mcp.* TO 'mcp'@'%';  -- if the SQL tool pack is install
 
 `UNINSTALL COMPONENT 'file://component_mcp_guard'` removes the privileges, variables and status variables. Grants of `MCP_USER` and `MCP_ADMIN` stay in the grant tables until revoked.
 
+### Docker images (mysql-mcp)
+
+`ghcr.io/askdba/mysql-mcp:<8.4|9.7|26.10>` (amd64, arm64) is the official `mysql` image with `component_mcp_guard` and the `mysql_mcp` SQL tool pack. It is separate from the MyVector images. On first start, with an empty data directory, it installs both, grants `MCP_ADMIN` to the root accounts, and reads these settings:
+
+| Variable | Effect |
+|---|---|
+| `MYSQL_MCP_USER`, `MYSQL_MCP_PASSWORD` | Create this account (host `%`) for mysql-mcp-server, with `MCP_USER`, `EXECUTE` on `mysql_mcp` and `SELECT, SHOW VIEW` on the databases below. |
+| `MYSQL_MCP_DATABASES` | Comma-separated databases the account may read. The default is `MYSQL_DATABASE`. |
+| `MYSQL_MCP_ALLOWED_SCHEMAS` | Persisted as `mcp.allowed_schemas`. |
+| `MYSQL_MCP_MAX_EXECUTION_TIME_MS` | Persisted as `mcp.max_execution_time_ms`. |
+
+The other settings keep their defaults (read-only on). The official image's own variables (`MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE`, ...) work as usual.
+
+```sh
+docker run -d -p 3306:3306 -e MYSQL_ROOT_PASSWORD=secret -e MYSQL_DATABASE=shop \
+  -e MYSQL_MCP_USER=mcp -e MYSQL_MCP_PASSWORD=mcp-secret ghcr.io/askdba/mysql-mcp:9.7
+MYSQL_DSN='mcp:mcp-secret@tcp(127.0.0.1:3306)/shop' mysql-mcp-server
+```
+
+The images are built and published with MyVector releases (`docker-publish.yml`). `scripts/test-mysql-mcp-image.sh <image>` tests the first-start setup, and CI (`integration-scripts.yml`, job `mcp-guard`) runs it on each version.
+
 ### MCP sessions
 
 A session is an **MCP session** when its account holds `MCP_USER` and not `MCP_ADMIN`. This is decided at connect and at `COM_CHANGE_USER`, from privileges only; connection attributes and statement comments cannot change it.
