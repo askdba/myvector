@@ -319,10 +319,13 @@ jobs:
           build-args: |
             MYSQL_VERSION=${{ matrix.mysql-version }}
 
+      # A component works only on the patch release it was built against (the 8.4.8 guard
+      # crashes 8.4.11), so the mysql-mcp image is based on that exact release.
       - name: Test mysql-mcp image
         env:
-          MYSQL_VERSION: ${{ matrix.mysql-version }}
+          MYSQL_TAG: ${{ matrix.mysql-tag }}
         run: |
+          MYSQL_VERSION=${MYSQL_TAG#mysql-}
           for arch in amd64 arm64; do
             docker buildx build \
               --platform "linux/${arch}" \
@@ -338,6 +341,12 @@ jobs:
           docker run --rm --platform linux/arm64 --entrypoint /bin/sh "mysql-mcp-smoke:${MYSQL_VERSION}-arm64" -c \
             "test -f /usr/lib64/mysql/plugin/component_mcp_guard.so && test -f /usr/share/mysql-mcp/mysql_mcp.sql && test -f /docker-entrypoint-initdb.d/50-mysql-mcp.sh"
 
+      - name: mysql-mcp base release
+        id: mcp-version
+        env:
+          MYSQL_TAG: ${{ matrix.mysql-tag }}
+        run: echo "version=${MYSQL_TAG#mysql-}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push mysql-mcp image
         uses: docker/build-push-action@v5
         with:
@@ -346,6 +355,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           # Never push on a dry_run dispatch — build only, to prove the pipeline.
           push: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
-          tags: ghcr.io/${{ github.repository_owner }}/mysql-mcp:${{ matrix.mysql-version }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/mysql-mcp:${{ matrix.mysql-version }}
+            ghcr.io/${{ github.repository_owner }}/mysql-mcp:${{ steps.mcp-version.outputs.version }}
           build-args: |
-            MYSQL_VERSION=${{ matrix.mysql-version }}
+            MYSQL_VERSION=${{ steps.mcp-version.outputs.version }}

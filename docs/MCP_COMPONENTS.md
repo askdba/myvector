@@ -14,7 +14,8 @@ Enforces a policy on the sessions of mysql-mcp-server, inside `mysqld`, so a cli
 ### Install
 
 ```sql
--- copy component_mcp_guard.so into @@plugin_dir first
+-- copy component_mcp_guard.so into @@plugin_dir first: the build for this server's
+-- exact release (a build for another patch release, even 8.4.8 on 8.4.11, can crash it)
 INSTALL COMPONENT 'file://component_mcp_guard';
 GRANT MCP_ADMIN ON *.* TO 'dba'@'%';          -- who may change mcp.* settings
 GRANT MCP_USER  ON *.* TO 'mcp'@'%';          -- the account mysql-mcp-server uses
@@ -25,7 +26,7 @@ GRANT EXECUTE   ON mysql_mcp.* TO 'mcp'@'%';  -- if the SQL tool pack is install
 
 ### Docker images (mysql-mcp)
 
-`ghcr.io/askdba/mysql-mcp:<8.4|9.7|26.10>` (amd64, arm64) is the official `mysql` image with `component_mcp_guard` and the `mysql_mcp` SQL tool pack. It is separate from the MyVector images. On first start, with an empty data directory, it installs both, grants `MCP_ADMIN` to the root accounts, and reads these settings:
+`ghcr.io/askdba/mysql-mcp:<8.4|9.7|26.10>` (amd64, arm64; also tagged with the exact release, such as `8.4.8`) is the official `mysql` image of the release the component was built for, with `component_mcp_guard` and the `mysql_mcp` SQL tool pack. It is separate from the MyVector images. On first start, with an empty data directory, it installs both, grants `MCP_ADMIN` to the root accounts, and reads these settings:
 
 | Variable | Effect |
 |---|---|
