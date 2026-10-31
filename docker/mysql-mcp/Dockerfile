@@ -3,7 +3,7 @@
 # Published as ghcr.io/askdba/mysql-mcp:<8.4|9.7|26.10> by docker-publish.yml.
 # Build context: the repository root, with component_mcp_guard-<arch>.so staged there.
 # MYSQL_VERSION (required, no default) must be the exact release the component was built
-# against, for example 8.4.8: a component built for another patch release can crash the
+# against, for example 8.4.13: a component built for another patch release can crash the
 # server.
 ARG MYSQL_VERSION
 

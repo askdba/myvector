@@ -229,18 +229,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - mysql-tag: 'mysql-8.4.8'
+          # A component works only on the exact release it was built against (a build for
+          # 8.4.8 crashed 8.4.11 in askdba/myvector#244), so each image is based on
+          # mysql:<mysql-release>, the release of mysql-tag, and also tagged with it.
+          - mysql-tag: 'mysql-8.4.13'
+            mysql-release: '8.4.13'
             mysql-version: '8.4'
             build-script: scripts/build-component-8.4-docker.sh
             image-tag: 'mysql8.4-component'
-          - mysql-tag: 'mysql-9.7.0'
+            release-image-tag: 'mysql8.4.13-component'
+          - mysql-tag: 'mysql-9.7.4'
+            mysql-release: '9.7.4'
             mysql-version: '9.7'
             build-script: scripts/build-component-9.7-docker.sh
             image-tag: 'mysql9.7-component'
+            release-image-tag: 'mysql9.7.4-component'
           - mysql-tag: 'mysql-26.10.0'
+            mysql-release: '26.10.0'
             mysql-version: '26.10'
             build-script: scripts/build-component-26.10-docker.sh
             image-tag: 'mysql26.10'
+            release-image-tag: 'mysql26.10.0'
     steps:
       - name: Checkout MyVector Code
         uses: actions/checkout@v4
@@ -276,7 +285,7 @@ jobs:
       - name: Smoke test component artifact
         run: |
           chmod +x scripts/smoke-component.sh
-          COMPONENT_DIR=build/component-amd64 ./scripts/smoke-component.sh "${{ matrix.mysql-version }}"
+          COMPONENT_DIR=build/component-amd64 ./scripts/smoke-component.sh "${{ matrix.mysql-release }}"
 
       - name: Smoke test image contents
         run: |
@@ -284,7 +293,7 @@ jobs:
             docker buildx build \
               --platform "linux/${arch}" \
               --file Dockerfile.component \
-              --build-arg MYSQL_VERSION=${{ matrix.mysql-version }} \
+              --build-arg MYSQL_VERSION=${{ matrix.mysql-release }} \
               -t "myvector-component-smoke:${{ matrix.mysql-version }}-${arch}" \
               --load \
               .
@@ -315,17 +324,18 @@ jobs:
           platforms: linux/amd64,linux/arm64
           # Never push on a dry_run dispatch — build only, to prove the pipeline.
           push: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
-          tags: ghcr.io/${{ github.repository }}:${{ matrix.image-tag }}
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ matrix.image-tag }}
+            ghcr.io/${{ github.repository }}:${{ matrix.release-image-tag }}
           build-args: |
-            MYSQL_VERSION=${{ matrix.mysql-version }}
+            MYSQL_VERSION=${{ matrix.mysql-release }}
 
-      # A component works only on the patch release it was built against (the 8.4.8 guard
-      # crashes 8.4.11), so the mysql-mcp image is based on that exact release.
+      # Like the component image, the mysql-mcp image is based on the exact release the
+      # guard was built against (mysql-release).
       - name: Test mysql-mcp image
         env:
-          MYSQL_TAG: ${{ matrix.mysql-tag }}
+          MYSQL_VERSION: ${{ matrix.mysql-release }}
         run: |
-          MYSQL_VERSION=${MYSQL_TAG#mysql-}
           for arch in amd64 arm64; do
             docker buildx build \
               --platform "linux/${arch}" \
@@ -341,12 +351,6 @@ jobs:
           docker run --rm --platform linux/arm64 --entrypoint /bin/sh "mysql-mcp-smoke:${MYSQL_VERSION}-arm64" -c \
             "test -f /usr/lib64/mysql/plugin/component_mcp_guard.so && test -f /usr/share/mysql-mcp/mysql_mcp.sql && test -f /docker-entrypoint-initdb.d/50-mysql-mcp.sh"
 
-      - name: mysql-mcp base release
-        id: mcp-version
-        env:
-          MYSQL_TAG: ${{ matrix.mysql-tag }}
-        run: echo "version=${MYSQL_TAG#mysql-}" >> "$GITHUB_OUTPUT"
-
       - name: Build and push mysql-mcp image
         uses: docker/build-push-action@v5
         with:
@@ -357,6 +361,6 @@ jobs:
           push: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/mysql-mcp:${{ matrix.mysql-version }}
-            ghcr.io/${{ github.repository_owner }}/mysql-mcp:${{ steps.mcp-version.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/mysql-mcp:${{ matrix.mysql-release }}
           build-args: |
-            MYSQL_VERSION=${{ steps.mcp-version.outputs.version }}
+            MYSQL_VERSION=${{ matrix.mysql-release }}

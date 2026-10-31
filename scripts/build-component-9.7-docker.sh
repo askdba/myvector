@@ -95,6 +95,8 @@ docker run --rm \
     # so a failed configure would otherwise be skipped on the next run.
     if [ ! -f "$MYSQL_BLD/.configure-ok" ]; then
       cd "$MYSQL_BLD"
+      # WebAuthn: on by default from 9.7.4 (as in 26.10), it needs libudev/libfido2
+      # headers this container does not have; the component build needs none of it.
       cmake .. \
         -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc \
         -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++ \
@@ -106,6 +108,7 @@ docker run --rm \
         -DWITH_NDB=OFF \
         -DWITH_NDBCLUSTER=OFF \
         -DWITH_GROUP_REPLICATION=OFF \
+        -DWITH_AUTHENTICATION_WEBAUTHN=OFF \
         -DWITH_EXAMPLE_STORAGE_ENGINE=OFF \
         -DCMAKE_BUILD_TYPE=Release
       touch "$MYSQL_BLD/.configure-ok"

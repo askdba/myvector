@@ -91,10 +91,11 @@ a restart. Until a release includes them, build a local image from `main`:
 ```bash
 # from the repository root; ARCH is arm64 or amd64, matching your machine
 ARCH=arm64
-./scripts/build-component-9.7-docker.sh mysql-9.7.0 build/component-local
+./scripts/build-component-9.7-docker.sh mysql-9.7.4 build/component-local
 cp build/component-local/libmyvector_component.so myvector-component-$ARCH.so
 cp build/component-local/myvector.json sql/myvector_install_component.sql sql/myvector_uninstall_component.sql .
-docker build -f Dockerfile.component --build-arg MYSQL_VERSION=9.7 \
+# MYSQL_VERSION must be the release the component was built for (mysql-9.7.4 above)
+docker build -f Dockerfile.component --build-arg MYSQL_VERSION=9.7.4 \
     --build-arg TARGETARCH=$ARCH -t myvector-local:mysql9.7-component .
 
 cd examples/movie-finder
