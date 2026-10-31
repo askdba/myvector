@@ -68,15 +68,32 @@ health "$CNAME" >/dev/null; health "$CNAME" >/dev/null; health "$CNAME" >/dev/nu
 expect "health probes do not lock root" "$(root "SELECT 1")" "^1$"
 root "ALTER USER root@'%' FAILED_LOGIN_ATTEMPTS 0 PASSWORD_LOCK_TIME 0" >/dev/null
 
-# Without MYSQL_MCP_* settings: component and tool pack only.
-docker run -d --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass "$IMAGE" >/dev/null
+# Without MYSQL_MCP_* settings: component and tool pack only. This server's port comes from
+# an option file (as with a mounted my.cnf), which the health check must read.
+PORT=3308
+docker create --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass "$IMAGE" >/dev/null
+printf '[mysqld]\nport=3308\n' >"/tmp/$CNAME-port.cnf"
+docker cp "/tmp/$CNAME-port.cnf" "$CNAME_PLAIN:/etc/mysql/conf.d/port.cnf" >/dev/null
+rm -f "/tmp/$CNAME-port.cnf"
+docker start "$CNAME_PLAIN" >/dev/null
 if wait_ready "$CNAME_PLAIN" testpass; then
+	expect "health check reads the port from an option file" "$(health "$CNAME_PLAIN")" "rc=0"
 	expect "plain: component and tool pack" "$(as "$CNAME_PLAIN" root testpass "SELECT COUNT(*) FROM mysql.component WHERE component_urn LIKE '%mcp_guard'; CALL mysql_mcp.version()" | tr '\n' ' ')" "^1 [0-9]+\.[0-9]+\.[0-9]+ $"
 	expect "plain: default settings" "$(as "$CNAME_PLAIN" root testpass "SELECT CONCAT_WS(',', @@mcp.enabled, @@mcp.read_only, IFNULL(@@mcp.allowed_schemas, ''))")" "^1,1,$"
 	expect "plain: no MCP account" "$(as "$CNAME_PLAIN" root testpass "SELECT COUNT(*) FROM mysql.user WHERE user = 'mcp'")" "^0$"
 else
 	bad "plain container" "did not start"
 fi
+docker rm -f -v "$CNAME_PLAIN" >/dev/null 2>&1
+unset PORT
+
+# MYSQL_MCP_USER = MYSQL_USER is refused before the data directory is initialized (the
+# official entrypoint would create that account with all privileges on MYSQL_DATABASE).
+docker run -d --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass -e MYSQL_DATABASE=app \
+	-e MYSQL_USER=app -e MYSQL_PASSWORD=apppass -e MYSQL_MCP_USER=app -e MYSQL_MCP_PASSWORD=x "$IMAGE" >/dev/null
+rc=$(timeout 60 docker wait "$CNAME_PLAIN" 2>/dev/null || echo timeout)
+expect "MYSQL_MCP_USER = MYSQL_USER is refused at start" "rc=$rc $(docker logs "$CNAME_PLAIN" 2>&1 | grep -c 'MYSQL_MCP_USER must differ from MYSQL_USER')" "^rc=[1-9][0-9]* 1$"
+expect "nothing initialized when refused" "$(docker logs "$CNAME_PLAIN" 2>&1 | grep -c 'Initializing database files')" "^0$"
 docker rm -f -v "$CNAME_PLAIN" >/dev/null 2>&1
 
 # NO_BACKSLASH_ESCAPES: the password with a backslash still works as configured. This

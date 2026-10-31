@@ -35,7 +35,7 @@ GRANT EXECUTE   ON mysql_mcp.* TO 'mcp'@'%';  -- if the SQL tool pack is install
 | `MYSQL_MCP_ALLOWED_SCHEMAS` | Persisted as `mcp.allowed_schemas`. |
 | `MYSQL_MCP_MAX_EXECUTION_TIME_MS` | Persisted as `mcp.max_execution_time_ms`. |
 
-The other settings keep their defaults (read-only on). The official image's own variables (`MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE`, ...) work as usual.
+The other settings keep their defaults (read-only on). The settings are checked before the data directory is initialized, and a container with an invalid combination does not start. For example, `MYSQL_MCP_USER` must differ from `MYSQL_USER`, because the official entrypoint gives `MYSQL_USER` all privileges on `MYSQL_DATABASE`. The health check pings the port mysqld uses (`--port`, or `port=` in a mounted option file) without logging in as root. The official image's own variables (`MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE`, ...) work as usual.
 
 ```sh
 docker run -d -p 3306:3306 -e MYSQL_ROOT_PASSWORD=secret -e MYSQL_DATABASE=shop \

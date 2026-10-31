@@ -12,10 +12,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 MYSQL_VERSION="${1:-8.4}"
+# GCC_MAJOR: the GCC the release builds with, as in docker-publish.yml (9.7 needs 11+).
 case "$MYSQL_VERSION" in
-8.0) MYSQL_TAG="mysql-8.0.46" ;;
-8.4) MYSQL_TAG="mysql-8.4.13" ;;
-9.7) MYSQL_TAG="mysql-9.7.4" ;;
+8.0) MYSQL_TAG="mysql-8.0.46" GCC_MAJOR=10 ;;
+8.4) MYSQL_TAG="mysql-8.4.13" GCC_MAJOR=10 ;;
+9.7) MYSQL_TAG="mysql-9.7.4" GCC_MAJOR=11 ;;
 *)
 	echo "unsupported MySQL version: $MYSQL_VERSION (use 8.0, 8.4 or 9.7)" >&2
 	exit 1
@@ -56,9 +57,9 @@ echo "Using make -j$MAKE_JOBS (set MYVECTOR_BUILD_JOBS to override)"
 echo ""
 
 # Apple Silicon host: GCC ICEs for both arm64 and amd64 (QEMU). Use Clang for both.
-# x86_64 host: use gcc-10. Allow manual override via MYVECTOR_CC/MYVECTOR_CXX.
-CC="${MYVECTOR_CC:-gcc-10}"
-CXX="${MYVECTOR_CXX:-g++-10}"
+# Linux: gcc-$GCC_MAJOR for the release. Allow manual override via MYVECTOR_CC/MYVECTOR_CXX.
+CC="${MYVECTOR_CC:-gcc-$GCC_MAJOR}"
+CXX="${MYVECTOR_CXX:-g++-$GCC_MAJOR}"
 CMAKE_EXTRA=""
 [ "$HOST_ARM64" -eq 1 ] && [ -z "${MYVECTOR_CC:-}" ] && [ -z "${MYVECTOR_CXX:-}" ] &&
 	CC=clang CXX=clang++ CMAKE_EXTRA=""
@@ -75,7 +76,7 @@ docker run --rm --privileged --platform "$PLATFORM" \
 	ubuntu:22.04 bash -c "
     set -e
     apt-get update -qq
-    apt-get install -y -qq cmake clang g++-10 gcc-10 git libssl-dev libncurses5-dev \
+    apt-get install -y -qq cmake clang g++-$GCC_MAJOR gcc-$GCC_MAJOR git libssl-dev libncurses5-dev \
       pkg-config bison libtirpc-dev libldap2-dev libsasl2-dev libudev-dev \
       libre2-dev libcurl4-openssl-dev libprotobuf-dev protobuf-compiler linux-libc-dev
     rm -rf /tmp/mysql-server

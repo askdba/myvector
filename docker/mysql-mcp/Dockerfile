@@ -21,8 +21,13 @@ COPY component_mcp_guard-${TARGETARCH}.so /usr/lib64/mysql/plugin/component_mcp_
 COPY sql/mcp/mysql_mcp.sql sql/mcp/uninstall.sql sql/mcp/LICENSE /usr/share/mysql-mcp/
 COPY docker/mysql-mcp/mysql-mcp-init.sh /docker-entrypoint-initdb.d/50-mysql-mcp.sh
 COPY docker/mysql-mcp/mysql-mcp-healthcheck.sh /usr/local/bin/mysql-mcp-healthcheck
+COPY docker/mysql-mcp/mysql-mcp-entrypoint.sh /usr/local/bin/mysql-mcp-entrypoint
 
 # checkov:skip=CKV_DOCKER_3:MySQL entrypoint needs root for initialization
 # Healthy only after first-start setup, on the server's port, without touching root's
 # login (see the script).
 HEALTHCHECK --interval=30s --timeout=5s --retries=5 CMD ["/usr/local/bin/mysql-mcp-healthcheck"]
+
+# Checks the MYSQL_MCP_* settings before the official entrypoint initializes anything.
+ENTRYPOINT ["mysql-mcp-entrypoint"]
+CMD ["mysqld"]
