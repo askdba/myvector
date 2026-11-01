@@ -135,6 +135,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **`component_mcp_guard`: table reads the schema rules could not see** (found reviewing the code behind #247). The server raises table access events only for `SELECT`, data changes, `ANALYZE` and `HANDLER READ`. An MCP session could therefore read any table, `mysql.user` included, past `mcp.allowed_schemas` and `mcp.deny_system_schemas`:
+  - directly, with a subquery in `SET` or `DO` (`SET @x = (SELECT … FROM mysql.user); SELECT @x`), also through `PREPARE`/`EXECUTE`;
+  - as a yes/no oracle, with a subquery in `SHOW … WHERE` or in a `CALL` argument;
+  - checksums only, with `CHECKSUM TABLE` / `CHECK TABLE`.
+
+  These statements are now refused while a schema rule is in effect. System schema names compare case-insensitively under `lower_case_table_names` 1 or 2. `scripts/test-mcp-guard.sh` has 110 checks. The unfixed guard fails all 8 new ones. Three parity rows were added.
 - **Post-merge review of #244, #245, #246, #248** (#249; these were merged after rate-limited, not completed, CodeRabbit runs). Fixes:
   - **`mysql-mcp` image:** the settings are checked by an entrypoint wrapper before the data directory is initialized. `MYSQL_MCP_USER` equal to `MYSQL_USER` (or the user in `MYSQL_USER_FILE`) is refused. So is a `MYSQL_USER` with a backslash or quote, which the official entrypoint passes to SQL unescaped (`app\q` creates `appq`), or with leading or trailing spaces, which MySQL trims. The checks run only before initialization, so an initialized volume keeps starting. `MYSQL_MCP_USER` must be a plain name. Before, `CREATE USER` failed in first-start setup and a restart skipped the setup. The health check now asks mysqld for its port (`mysqld <args> --verbose --help`, with a throwaway `--log-bin-index` as the official entrypoint uses), so option files, option groups, `--defaults-file` and `--no-defaults` apply exactly as for the server. It reports not ready while first-start setup runs.
   - **`scripts/build-docker-local.sh`:** builds 9.7 with GCC 11 (9.7.4 needs 11+), 8.0/8.4 with GCC 10, as `docker-publish.yml` does.

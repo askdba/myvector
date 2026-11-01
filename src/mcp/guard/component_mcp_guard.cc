@@ -865,6 +865,13 @@ bool Event_tracking_query_implementation::callback(const mysql_event_tracking_qu
     const char *why = mcp_guard::read_only_violation(cmd, query, len);
     if (why != nullptr) return refuse(why);
   }
+  // Table reads the schema rules cannot see (no table access event): refused while a rule
+  // is in effect.
+  if (opt_deny_system_schemas || current_allowed_schemas()->restrict) {
+    if (mcp_guard::hides_table_reads(cmd, query, len))
+      return refuse(current_allowed_schemas()->restrict ? "mcp.allowed_schemas"
+                                                        : "mcp.deny_system_schemas");
+  }
   const char *why = mcp_guard::time_limit_violation(cmd, query, len, opt_max_execution_time_ms);
   if (why != nullptr) return refuse(why);
   return false;
