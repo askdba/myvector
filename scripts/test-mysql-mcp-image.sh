@@ -17,7 +17,7 @@ ok() { PASS=$((PASS + 1)); printf '  PASS  %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf '  FAIL  %s  -- %s\n' "$1" "$2"; }
 TMPF=$(mktemp)
 chmod 644 "$TMPF" # copied into containers, where mysqld (user mysql) must read it
-cleanup() { docker rm -f -v "$CNAME" "$CNAME_PLAIN" >/dev/null 2>&1; rm -f "$TMPF"; }
+cleanup() { docker rm -f -v "$CNAME" "$CNAME_PLAIN" "$CNAME_PLAIN-2" >/dev/null 2>&1; rm -f "$TMPF"; }
 trap cleanup EXIT
 expect() {
 	if printf '%s\n' "$2" | grep -Eq -- "$3"; then ok "$1"; else bad "$1" "got: $(printf '%s' "$2" | head -c 300)"; fi
@@ -86,8 +86,18 @@ if wait_ready "$CNAME_PLAIN" testpass; then
 else
 	bad "plain container" "did not start"
 fi
-docker rm -f -v "$CNAME_PLAIN" >/dev/null 2>&1
 unset PORT
+# The MYSQL_MCP_* checks apply only before initialization: an initialized volume starts with
+# settings the checks would refuse (an earlier image accepted more names).
+docker stop "$CNAME_PLAIN" >/dev/null
+docker run -d --name "$CNAME_PLAIN-2" --volumes-from "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass \
+	-e "MYSQL_MCP_USER=mcp account" -e MYSQL_MCP_PASSWORD=x "$IMAGE" >/dev/null
+if wait_ready "$CNAME_PLAIN-2" testpass; then
+	ok "initialized volume starts with settings the first-start checks would refuse"
+else
+	bad "initialized volume starts with settings the first-start checks would refuse" "$(docker logs "$CNAME_PLAIN-2" 2>&1 | grep -i error | head -2)"
+fi
+docker rm -f -v "$CNAME_PLAIN-2" "$CNAME_PLAIN" >/dev/null 2>&1
 
 # MYSQL_MCP_USER = MYSQL_USER (or the user in MYSQL_USER_FILE) is refused before the data
 # directory is initialized (the official entrypoint would create that account with all
@@ -121,6 +131,9 @@ refused "MYSQL_MCP_USER = the user in MYSQL_USER_FILE"
 docker run -d --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass -e MYSQL_DATABASE=app \
 	-e 'MYSQL_USER=app\q' -e MYSQL_PASSWORD=apppass -e MYSQL_MCP_USER=appq -e MYSQL_MCP_PASSWORD=x "$IMAGE" >/dev/null
 refused "MYSQL_USER with a backslash" "MYSQL_USER contains a backslash or quote"
+docker run -d --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass -e MYSQL_DATABASE=app \
+	-e 'MYSQL_USER= app ' -e MYSQL_PASSWORD=apppass -e MYSQL_MCP_USER=app -e MYSQL_MCP_PASSWORD=x "$IMAGE" >/dev/null
+refused "MYSQL_USER with surrounding spaces" "MYSQL_USER starts or ends with whitespace"
 docker run -d --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass -e "MYSQL_MCP_USER=mcp'x" -e MYSQL_MCP_PASSWORD=x "$IMAGE" >/dev/null
 refused "MYSQL_MCP_USER that is not a plain name" "MYSQL_MCP_USER must be 1-32 characters"
 
