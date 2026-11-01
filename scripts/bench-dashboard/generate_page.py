@@ -45,12 +45,45 @@ def load(results_dir):
     return [rows[v] for v in ORDER if v in rows]
 
 
+def load_page_cfg(results_dir):
+    """Optional per-dataset page.json sidecar: title/subtitle/description/
+    tab_title/caveats override the synthetic defaults. Absent = defaults, so
+    the original synthetic dashboard is unchanged."""
+    p = os.path.join(results_dir, "page.json")
+    if os.path.exists(p):
+        try:
+            return json.load(open(p))
+        except Exception:
+            pass
+    return {}
+
+
 def main():
     results_dir, out_html = sys.argv[1], sys.argv[2]
     data = load(results_dir)
     if not data:
         print("no result JSONs found", file=sys.stderr)
         sys.exit(1)
+    cfg = load_page_cfg(results_dir)
+
+    # Optional: derive the headline ANN cards/table from a fixed WARM sweep point
+    # (page.json "headline_ef") instead of the separate cold first-batch ANN
+    # measurement. This makes the glance cards a consistent, warm, directly
+    # comparable operating point across engines (some engines — e.g. MariaDB —
+    # pay a large one-time graph-cache load on their first query after build,
+    # which would make a cold headline misrepresent steady state). Absent =
+    # unchanged (synthetic dashboard keeps its own knn_ann_qps).
+    headline_ef = cfg.get("headline_ef")
+    if headline_ef is not None:
+        for d in data:
+            sw = {p.get("ef_search"): p for p in d["metrics"].get("ef_search_sweep", [])}
+            p = sw.get(headline_ef)
+            if p:
+                d["metrics"] = dict(
+                    d["metrics"],
+                    knn_ann_qps=p.get("qps"), knn_ann_p50_ms=p.get("p50_ms"),
+                    knn_ann_p99_ms=p.get("p99_ms"), recall_at_10=p.get("recall_at_10"))
+
     generated = max((d.get("timestamp", "") for d in data), default="")[:19].replace("T", " ") + " UTC"
     # Escape "<" so a field value can't terminate the inline <script> payload.
     payload = json.dumps(data).replace("<", "\\u003c")
@@ -108,14 +141,27 @@ def main():
          '(build time = load time, no separate build phase or ef_construction) — a comparison against '
          'MyVector-on-MySQL, not a different MyVector build.'),
     ]
+    caveats = cfg.get("caveats", caveats)
     caveats_html = "".join(f"<li>{c}</li>" for c in caveats)
+
+    nav = cfg.get("nav", "")
+    nav_html = f'<p class="sub" style="margin-top:-6px">{nav}</p>' if nav else ""
+    tab_title = cfg.get("tab_title", "MyVector Benchmark")
+    page_h1 = cfg.get("title", "MyVector — cross-version benchmark")
+    page_sub = cfg.get("subtitle", "MySQL 8.4 vs 9.7 vs 26.7 · HNSW vector search")
+    page_desc = cfg.get("description",
+        "A comparison of MyVector's native HNSW vector search across three MySQL versions "
+        "(plus MariaDB's native vector as a cross-engine reference) — same data and index parameters, each "
+        "pinned to an identical 4 vCPU / 24 GB slice (hardware noted below). It measures index build time, "
+        "insert throughput, exact KNN, approximate (ANN) QPS and latency, recall@10, and the "
+        "accuracy/throughput tradeoff as <code>ef_search</code> varies.")
 
     html = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MyVector Benchmark</title>
+<title>{e(tab_title)}</title>
 {favlink}
 <style>
 :root{{ --bg:#f6f8fa; --card:#fff; --fg:#1b2733; --muted:#5a6b7b; --line:#e3e8ee; }}
@@ -148,13 +194,10 @@ footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
 </head>
 <body>
 <div class="wrap">
-  <h1>MyVector — cross-version benchmark</h1>
-  <p class="sub">MySQL 8.4 vs 9.7 vs 26.7 · HNSW vector search · generated {generated}</p>
-  <p class="desc">A comparison of MyVector's native HNSW vector search across three MySQL versions
-  (plus MariaDB's native vector as a cross-engine reference) — same data and index parameters, each
-  pinned to an identical 4 vCPU / 24 GB slice (hardware noted below). It measures index build time,
-  insert throughput, exact KNN, approximate (ANN) QPS and latency, recall@10, and the
-  accuracy/throughput tradeoff as <code>ef_search</code> varies.</p>
+  <h1>{page_h1}</h1>
+  <p class="sub">{page_sub} · generated {generated}</p>
+  {nav_html}
+  <p class="desc">{page_desc}</p>
   <div class="legend">{legend}</div>
   <div class="cards">{cards}</div>
 

@@ -1,0 +1,84 @@
+{
+  "version": "MariaDB",
+  "label": "MariaDB 12.3.3",
+  "engine": "MariaDB native VECTOR/HNSW",
+  "container": "bench-mariadb",
+  "host_label": "myvector-dev (A1 16/96)",
+  "arch": "aarch64",
+  "timestamp": "2026-11-01T20:16:20.092246+00:00",
+  "dataset": "fashion-mnist-784",
+  "rows_indexed": 60000,
+  "query_set": "held-out test set (published)",
+  "recall_ground_truth": "published",
+  "workload": {
+    "rows": 60000,
+    "dim": 784,
+    "M": 16,
+    "distance": "L2",
+    "holdout_queries": 1000
+  },
+  "mhnsw_cache_mib": 1024,
+  "metrics": {
+    "index_build_time_s": 239.46,
+    "insert_qps": 250.5628351601919,
+    "knn_qps": 0.20540078692985167,
+    "knn_p50_ms": 4821.9505,
+    "knn_p99_ms": 5364.857,
+    "knn_ann_qps": 10.81827308015004,
+    "knn_ann_p50_ms": 18.7485,
+    "knn_ann_p99_ms": 1242.397,
+    "ann_rewrite_active": true,
+    "recall_at_10": 0.9997999999999999,
+    "ef_search_sweep": [
+      {
+        "ef_search": 10,
+        "recall_at_10": 0.9976,
+        "qps": 192.7600854004282,
+        "p50_ms": 5.429499999999999,
+        "p99_ms": 9.241
+      },
+      {
+        "ef_search": 20,
+        "recall_at_10": 0.999,
+        "qps": 198.63300764141178,
+        "p50_ms": 5.2375,
+        "p99_ms": 9.077
+      },
+      {
+        "ef_search": 50,
+        "recall_at_10": 0.9996,
+        "qps": 549.7387091915213,
+        "p50_ms": 0.986,
+        "p99_ms": 7.8
+      },
+      {
+        "ef_search": 100,
+        "recall_at_10": 0.9996,
+        "qps": 805.3747489244221,
+        "p50_ms": 1.157,
+        "p99_ms": 2.287
+      },
+      {
+        "ef_search": 200,
+        "recall_at_10": 0.9997999999999999,
+        "qps": 610.2271631637594,
+        "p50_ms": 1.517,
+        "p99_ms": 3.1229999999999998
+      },
+      {
+        "ef_search": 400,
+        "recall_at_10": 0.9997999999999999,
+        "qps": 431.9632036464605,
+        "p50_ms": 2.178,
+        "p99_ms": 4.63
+      },
+      {
+        "ef_search": 800,
+        "recall_at_10": 0.9997999999999999,
+        "qps": 299.2925920294791,
+        "p50_ms": 3.105,
+        "p99_ms": 6.896
+      }
+    ]
+  }
+}
