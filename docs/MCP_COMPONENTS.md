@@ -6,6 +6,7 @@ Server-side components for [mysql-mcp-server](https://github.com/askdba/mysql-mc
 |---|---|---|
 | `component_mcp_guard` | Phase 2: identity, read-only and schema enforcement, time limit, error log, status variables | MySQL 8.4, 9.7, 26.10 |
 | `mysql_mcp` SQL tool pack ([`sql/mcp/`](https://github.com/askdba/myvector/tree/main/sql/mcp)) | 1.0.0 | MySQL 8.0 to 26.10, MariaDB 11.4, 12.3 |
+| `component_mcp` | **Phase 4 spike** (not for production): an MCP endpoint inside `mysqld` | MySQL 26.10 |
 
 ## component_mcp_guard
 
@@ -182,3 +183,71 @@ The option is `mcp.read_only`, `mcp.deny_system_schemas`, `mcp.allowed_schemas` 
 `scripts/test-mcp-guard.sh <mysql-tag> <artifact-dir>` runs install, restart, persistence, uninstall and the enforcement cases, the tool-call table and its labels, views, multi-statement packets, statements without table access events, sessions opened by components and the parity table below against the official image (122 checks, including a `lower_case_table_names=1` server), and `src/mcp/guard/test_mcp_guard_policy.cc` unit-tests the classification and the SQL scanner. CI (`integration-scripts.yml`, job `mcp-guard`) runs both on MySQL 8.4.11, 9.7.2 and 26.10.0.
 
 **Parity with mysql-mcp-server** (RFC 0001 §5.2 item 7): [`sql/mcp/guard-parity.tsv`](https://github.com/askdba/myvector/blob/main/sql/mcp/guard-parity.tsv) lists statements a `run_query` call might send, with the verdict of mysql-mcp-server's validator (`go`) and of the guard under the default settings (`guard`). Every row where they differ says why. The test checks the guard column, sending each statement as one packet. mysql-mcp-server vendors the file and checks the go column. Both reject every write and locking read. The guard allows a few things the validator does not (session `SET`, `information_schema`, `CALL mysql_mcp.*`) and catches what text checks cannot (a write inside a function called from `SELECT`).
+
+## component_mcp (Phase 4 spike)
+
+An MCP **Streamable HTTP** endpoint (JSON-RPC 2.0 over `POST /mcp`) inside `mysqld`. It runs on MySQL Router's HTTP server, the libraries `component_mysql_rest_service` links (RFC 0001 §5.3). This is the Phase 4 build spike and is **not for production**. It is limited to the following:
+
+- **Network and auth:** loopback only (`127.0.0.1`) and plain HTTP, with no TLS yet. One bearer token, mapped to one account.
+- **Tools:** `list_databases` (through the `mysql_mcp` tool pack) and `run_query` (one statement).
+- **Missing:** the `account_locked` check, a per-account session cap and column masking. All are in Phase 5.
+
+### Build and install
+
+It links the Router HTTP libraries, so it is built in the MySQL 26.10 source tree, like MRS:
+
+```sh
+MYVECTOR_BUILD_MCP=ON MYVECTOR_BUILD_MCP_ENDPOINT=ON \
+  ./scripts/build-component-26.10-docker.sh mysql-26.10.0 dist/mcp-26.10.0
+```
+
+```sql
+INSTALL COMPONENT 'file://component_mcp_guard';   -- required: it enforces the policy
+INSTALL COMPONENT 'file://component_mcp'
+  SET GLOBAL mcp_http.port = 33480,
+      GLOBAL mcp_http.account = 'mcp@%',
+      GLOBAL mcp_http.token_sha256 = SHA2('<token>', 256);
+```
+
+| Variable | Meaning |
+|---|---|
+| `mcp_http.port` | TCP port on `127.0.0.1` (read-only, default 33480) |
+| `mcp_http.account` | The account (`user@host`) every request runs as (read-only) |
+| `mcp_http.token_sha256` | Hex SHA-256 of the bearer token (read-only, not persisted). Requests without the matching `Authorization: Bearer <token>` get 401 |
+
+### How a tool call runs
+
+Each `tools/call` opens a `"local"` command-service session that **impersonates** `mcp_http.account`, with no password, on one of the endpoint's I/O threads. It runs one statement, `CALL mysql_mcp.list_databases()` or the `run_query` SQL, then closes the session. Neither `CLIENT_MULTI_STATEMENTS` nor anything similar is set, so `a; b` is a parse error.
+
+The guard enforces its policy on these sessions only because of two things, both checked by `scripts/test-mcp-endpoint.sh`:
+
+- The endpoint emits `MYSQL_AUDIT_CONNECTION_CONNECT` for each session. The server starts such sessions **unaudited**, so without this event no statement event would reach the guard.
+- The guard classifies a session at its first statement. Such a session raises no connection event the guard could use.
+
+So an account with `MCP_USER` is read-only through the endpoint, and its schema rules and time limit apply. An account without it is not treated as an MCP session.
+
+Facts recorded for Phase 5:
+
+- **Locked accounts:** impersonation skips the login checks, so a locked account (`ACCOUNT LOCK`) can be impersonated. The endpoint must check `account_locked` itself (26.10 has the lookup).
+- **Connection limits:** `max_user_connections` is not enforced for these sessions, so the endpoint needs its own per-account cap. They do count against `max_connections`.
+- **Auth backends:** Router's `http_auth_realm` / `http_auth_backend` support Basic auth only, so the endpoint checks bearer tokens itself (SHA-256, constant-time compare).
+
+### Spike measurements (MySQL 26.10.0, arm64, 16 cores)
+
+| | `component_mcp` | `component_mysql_rest_service` |
+|---|---|---|
+| Build of the one target, fresh tree (after a 36 s configure) | 95 s | 265 s |
+| `.so` size | 3.1 MB | 21 MB |
+| Threads added to `mysqld` (one I/O worker) | 3, released on uninstall | — |
+
+### Tests
+
+`scripts/test-mcp-endpoint.sh <mysql-image> <artifact-dir>` (20 checks) installs the guard, the tool pack and `component_mcp` on the official image, then checks:
+
+- bearer auth, `initialize`, `notifications/initialized`, `tools/list` and the JSON-RPC errors;
+- both tools, and that `run_query` runs as the mapped account;
+- that through the endpoint an `MCP_USER` account's write and a `mysql` read are refused by the guard, and a multi-statement is a parse error;
+- that nothing is written and no session leaks;
+- that remapped to an account without `MCP_USER`, the same write is not restricted.
+
+CI (`integration-scripts.yml`, job `mcp-endpoint`) builds and runs it on 26.10.0.

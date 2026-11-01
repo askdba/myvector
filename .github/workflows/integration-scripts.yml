@@ -45,6 +45,7 @@ on:
       - "sql/**"
       - "scripts/test-*.py"
       - "scripts/test-mcp-guard.sh"
+      - "scripts/test-mcp-endpoint.sh"
       - "scripts/test-mcp-tool-pack.sh"
       - "scripts/test-mysql-mcp-image.sh"
       - "docker/mysql-mcp/**"
@@ -60,6 +61,7 @@ on:
       - "sql/**"
       - "scripts/test-*.py"
       - "scripts/test-mcp-guard.sh"
+      - "scripts/test-mcp-endpoint.sh"
       - "scripts/test-mcp-tool-pack.sh"
       - "scripts/test-mysql-mcp-image.sh"
       - "docker/mysql-mcp/**"
@@ -209,6 +211,36 @@ jobs:
             --build-arg TARGETARCH=amd64 -t "mysql-mcp-smoke:$MYSQL_VERSION" .
           chmod +x scripts/test-mysql-mcp-image.sh
           scripts/test-mysql-mcp-image.sh "mysql-mcp-smoke:$MYSQL_VERSION"
+
+  mcp-endpoint:
+    # component_mcp (RFC 0001 Phase 4 spike): built in the MySQL 26.10 tree with the Router
+    # HTTP libraries, then tested end to end with component_mcp_guard and the tool pack
+    # (scripts/test-mcp-endpoint.sh): bearer auth, the MCP handshake, both tools, and the
+    # guard's policy in the endpoint's impersonated sessions.
+    name: mcp-endpoint (26.10.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build component_mcp_guard and component_mcp
+        env:
+          MYVECTOR_BUILD_MCP: "ON"
+          MYVECTOR_BUILD_MCP_ENDPOINT: "ON"
+        run: |
+          chmod +x scripts/build-component-26.10-docker.sh
+          scripts/build-component-26.10-docker.sh mysql-26.10.0 dist/mcp-26.10.0
+          ls -la dist/mcp-26.10.0
+          test -f dist/mcp-26.10.0/component_mcp.so
+          test -f dist/mcp-26.10.0/component_mcp_guard.so
+
+      - name: Endpoint test
+        run: |
+          chmod +x scripts/test-mcp-endpoint.sh
+          scripts/test-mcp-endpoint.sh mysql:26.10.0 dist/mcp-26.10.0
 
   mcp-tool-pack:
     # The mysql_mcp SQL tool pack (sql/mcp/, RFC 0001 Phase 1 in askdba/mysql-mcp-server):
