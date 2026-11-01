@@ -1,0 +1,17 @@
+{
+  "tab_title": "MyVector Real-Data Benchmark",
+  "title": "MyVector — real-dataset benchmark",
+  "subtitle": "MySQL 8.4 / 9.7 / 26.7 + MariaDB 12.3 · fashion-mnist-784 · published ground truth",
+  "nav": "<a href=\"/\">← synthetic 50k×128 benchmark</a>",
+  "headline_ef": 200,
+  "description": "MyVector's native HNSW vector search on a <b>real</b> ann-benchmarks dataset (fashion-mnist-784-euclidean: 60,000 × 784-d image embeddings, L2), scored against the dataset's <b>published exact ground truth</b> — the ann-benchmarks recall methodology, not a brute-force self-check. Queries come from the dataset's held-out test set (never indexed). Same engines and hardware as the <a href=\"/\">synthetic dashboard</a>; this one answers \"what recall/throughput do you actually get on real embeddings?\"",
+  "caveats": [
+    "<b>Dataset:</b> <code>fashion-mnist-784-euclidean</code> (ann-benchmarks) — 60,000 train × 784-d, 10,000 held-out test queries, L2/Euclidean. Index HNSW M=16, ef_construction=200.",
+    "<b>Recall@10 vs published ground truth:</b> each query is scored against the dataset's published exact top-10 neighbors, so recall is directly comparable to ann-benchmarks numbers — not the brute-force self-check the synthetic dashboard uses.",
+    "<b>ef_search sweep 10→800</b> is measured warm (a discarded warmup pass runs first). The headline <b>ANN QPS / latency / recall@10</b> cards and table are taken from the warm <b>ef_search=200</b> sweep point, so every engine is compared at the same operating point. MyVector loads its whole index into memory at build; MariaDB warms its <code>mhnsw</code> graph cache lazily over the first ~1k queries, so a cold first-query measurement would understate it.",
+    "<b>Exact KNN is the brute-force baseline</b> (full scan, ~0.3 QPS at 60k×784) — it exists to show how much the HNSW index buys you, not as a practical option.",
+    "<b>MariaDB cache:</b> <code>mhnsw_max_cache_size</code> raised to 1 GiB (its 16 MB default thrashes to disk). MariaDB builds HNSW <b>online during insert</b>, so its \"index build\" is load time (no separate build phase) — much slower here (~240 s) but, once warm, its search is competitive-to-faster than MyVector on this dataset at recall ≈ 1.0.",
+    "<b>MariaDB low-ef_search anomaly:</b> MariaDB's throughput at ef_search 10–20 measures lower than at ef 50–100 (its QPS peaks around ef=100), even after an aggressive warmup — a quirk of its graph-cache population at low ef, not a cold-cache artifact. Read its curve as the high-recall cluster it is; the headline uses the warm ef=200 point.",
+    "<b>Hardware:</b> all engines on the same Ampere A1 host, each pinned to an identical 4 vCPU / 24 GB slice. \"26.7\" is the Innovation build currently deployed; the next round targets 26.10."
+  ]
+}
