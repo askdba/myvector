@@ -30,12 +30,12 @@ GRANT EXECUTE   ON mysql_mcp.* TO 'mcp'@'%';  -- if the SQL tool pack is install
 
 | Variable | Effect |
 |---|---|
-| `MYSQL_MCP_USER`, `MYSQL_MCP_PASSWORD` | Create this account (host `%`) for mysql-mcp-server, with `MCP_USER`, `EXECUTE` on `mysql_mcp` and `SELECT, SHOW VIEW` on the databases below. |
+| `MYSQL_MCP_USER`, `MYSQL_MCP_PASSWORD` | Create this account (host `%`; a plain name of up to 32 characters from `A-Z a-z 0-9 _ . -`) for mysql-mcp-server, with `MCP_USER`, `EXECUTE` on `mysql_mcp` and `SELECT, SHOW VIEW` on the databases below. |
 | `MYSQL_MCP_DATABASES` | Comma-separated databases the account may read. The default is `MYSQL_DATABASE`. |
 | `MYSQL_MCP_ALLOWED_SCHEMAS` | Persisted as `mcp.allowed_schemas`. |
 | `MYSQL_MCP_MAX_EXECUTION_TIME_MS` | Persisted as `mcp.max_execution_time_ms`. |
 
-The other settings keep their defaults (read-only on). The official image's own variables (`MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE`, ...) work as usual.
+The other settings keep their defaults (read-only on). The settings are checked before the data directory is initialized, and a container with an invalid combination does not start. Once the data directory exists they are not used or checked again. For example, `MYSQL_MCP_USER` must differ from `MYSQL_USER` (or the user in `MYSQL_USER_FILE`), because the official entrypoint gives that account all privileges on `MYSQL_DATABASE`. The health check asks mysqld for the port it uses (command line and option files, as mysqld resolves them) and pings it without logging in as root. The official image's own variables (`MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE`, ...) work as usual.
 
 ```sh
 docker run -d -p 3306:3306 -e MYSQL_ROOT_PASSWORD=secret -e MYSQL_DATABASE=shop \
