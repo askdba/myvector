@@ -38,6 +38,7 @@
 #include <mysql/components/services/component_sys_var_service.h>
 #include <mysql/components/services/log_builtins.h>
 #include <mysql/components/services/mysql_command_services.h>
+#include <mysql/components/services/mysql_system_variable.h>
 #include <mysqld_error.h>
 
 #include <openssl/crypto.h>
@@ -74,6 +75,7 @@ REQUIRES_SERVICE_PLACEHOLDER(mysql_command_field_metadata);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_error_info);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_thread);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_audit_api_connection);
+REQUIRES_SERVICE_PLACEHOLDER(mysql_system_variable_reader);
 
 // Defined by Router's harness (its component log handler); set at init.
 extern SERVICE_TYPE(log_builtins) *log_bi;
@@ -141,6 +143,18 @@ void log_info(const std::string &msg) {
   LogComponentErr(INFORMATION_LEVEL, ER_LOG_PRINTF_MSG, ("component_mcp: " + msg).c_str());
 }
 
+// component_mcp_guard enforces the policy (read-only, schema rules, time limit) on the
+// sessions the endpoint opens; without it a tool call would run with the account's plain
+// grants. Its presence is checked at install and before every tool call (it can be
+// uninstalled later), by its mcp.enabled variable.
+bool guard_installed() {
+  char buf[16];
+  void *value = buf;
+  size_t length = sizeof(buf) - 1;
+  return !mysql_service_mysql_system_variable_reader->get(nullptr, "GLOBAL", "mcp", "enabled",
+                                                          &value, &length);
+}
+
 // ----- auth -------------------------------------------------------------------------------
 
 std::string sha256_hex(const std::string &s) {
@@ -171,11 +185,18 @@ bool token_ok(const std::string *authorization) {
 
 // ----- SQL in an impersonated local session ----------------------------------------------
 
+// Result bounds: the session's sql_select_limit stops the server past kMaxRows + 1 rows (the
+// extra row shows truncation), and the reply stops at kMaxBytes of values, so a large result
+// is never held in full.
+constexpr unsigned long long kMaxRows = 1000;
+constexpr size_t kMaxBytes = 4u << 20;
+
 struct SqlResult {
   bool ok = false;
   unsigned int sql_errno = 0;
   std::string error;
   rapidjson::Document rows{rapidjson::kArrayType};  // first result set, as objects
+  bool truncated = false;
 };
 
 MYSQL_THD session_thd(MYSQL_H h) {
@@ -220,9 +241,13 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
   } else {
     // The session starts unaudited: CONNECT turns auditing on, so the guard sees it.
     MYSQL_THD thd = session_thd(h);
+    static const std::string kLimit =
+        "SET SESSION sql_select_limit = " + std::to_string(kMaxRows + 1);
     if (thd == nullptr || mysql_service_mysql_audit_api_connection->emit(
                               thd, MYSQL_AUDIT_CONNECTION_CONNECT) != 0) {
       r.error = "session refused";
+    } else if (mysql_service_mysql_command_query->query(h, kLimit.data(), kLimit.size())) {
+      read_error(h, &r);
     } else if (mysql_service_mysql_command_query->query(h, sql.data(), sql.size())) {
       read_error(h, &r);
     } else {
@@ -245,8 +270,14 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
         auto &a = r.rows.GetAllocator();
         MYSQL_ROW_H row = nullptr;
         ulong *lengths = nullptr;
+        size_t bytes = 0;
         while (!mysql_service_mysql_command_query_result->fetch_row(res, &row) && row) {
+          if (r.rows.Size() >= kMaxRows || bytes > kMaxBytes) {
+            r.truncated = true;
+            break;
+          }
           mysql_service_mysql_command_query_result->fetch_lengths(res, &lengths);
+          for (unsigned int i = 0; i < n; ++i) bytes += lengths ? lengths[i] : 0;
           rapidjson::Value obj(rapidjson::kObjectType);
           for (unsigned int i = 0; i < n; ++i) {
             rapidjson::Value k(names[i].c_str(), a), v;
@@ -296,6 +327,10 @@ void tool_result(Json &out, const std::string &text, bool is_error) {
 }
 
 void call_tool(const rapidjson::Value &params, Json &out) {
+  if (!guard_installed()) {
+    tool_result(out, "component_mcp_guard is not installed: tool calls are refused", true);
+    return;
+  }
   const std::string account = opt_account != nullptr ? opt_account : "";
   const std::string name =
       params.HasMember("name") && params["name"].IsString() ? params["name"].GetString() : "";
@@ -319,7 +354,10 @@ void call_tool(const rapidjson::Value &params, Json &out) {
     tool_result(out, "Error " + std::to_string(r.sql_errno) + ": " + r.error, true);
     return;
   }
-  tool_result(out, to_string(r.rows), false);
+  Json reply(rapidjson::kObjectType);
+  reply.AddMember("rows", rapidjson::Value(r.rows, reply.GetAllocator()), reply.GetAllocator());
+  reply.AddMember("truncated", r.truncated, reply.GetAllocator());
+  tool_result(out, to_string(reply), false);
 }
 
 void list_tools(Json &out) {
@@ -478,6 +516,11 @@ void stop_server() {
 mysql_service_status_t mcp_init() {
   log_bi = mysql_service_log_builtins;
   log_bs = mysql_service_log_builtins_string;
+  if (!guard_installed()) {
+    LogComponentErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG,
+                    "component_mcp: component_mcp_guard must be installed first");
+    return 1;
+  }
   if (register_sysvars()) {
     unregister_sysvars();
     return 1;
@@ -508,6 +551,7 @@ REQUIRES_SERVICE(log_builtins), REQUIRES_SERVICE(log_builtins_string),
     REQUIRES_SERVICE(mysql_command_query_result), REQUIRES_SERVICE(mysql_command_field_info),
     REQUIRES_SERVICE(mysql_command_field_metadata), REQUIRES_SERVICE(mysql_command_error_info),
     REQUIRES_SERVICE(mysql_command_thread), REQUIRES_SERVICE(mysql_audit_api_connection),
+    REQUIRES_SERVICE(mysql_system_variable_reader),
     END_COMPONENT_REQUIRES();
 
 BEGIN_COMPONENT_METADATA(mcp)

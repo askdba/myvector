@@ -190,6 +190,7 @@ An MCP **Streamable HTTP** endpoint (JSON-RPC 2.0 over `POST /mcp`) inside `mysq
 
 - **Network and auth:** loopback only (`127.0.0.1`) and plain HTTP, with no TLS yet. One bearer token, mapped to one account.
 - **Tools:** `list_databases` (through the `mysql_mcp` tool pack) and `run_query` (one statement).
+- **Results:** `run_query` returns at most 1000 rows and about 4 MB of values, as `{"rows": [...], "truncated": true|false}`. The session's `sql_select_limit` stops the server at 1001 rows, so a large result is never held in full.
 - **Missing:** the `account_locked` check, a per-account session cap and column masking. All are in Phase 5.
 
 ### Build and install
@@ -201,13 +202,21 @@ MYVECTOR_BUILD_MCP=ON MYVECTOR_BUILD_MCP_ENDPOINT=ON \
   ./scripts/build-component-26.10-docker.sh mysql-26.10.0 dist/mcp-26.10.0
 ```
 
+Hash the token outside MySQL, so the plaintext never appears in statement text (general and slow logs, audit logs, `performance_schema` history):
+
+```sh
+printf '%s' "$MCP_TOKEN" | sha256sum | cut -d' ' -f1
+```
+
 ```sql
-INSTALL COMPONENT 'file://component_mcp_guard';   -- required: it enforces the policy
+INSTALL COMPONENT 'file://component_mcp_guard';   -- required: install refuses without it
 INSTALL COMPONENT 'file://component_mcp'
   SET GLOBAL mcp_http.port = 33480,
       GLOBAL mcp_http.account = 'mcp@%',
-      GLOBAL mcp_http.token_sha256 = SHA2('<token>', 256);
+      GLOBAL mcp_http.token_sha256 = '<hex digest from above>';
 ```
+
+`component_mcp` refuses to install without `component_mcp_guard`, and refuses tool calls if the guard is uninstalled later: the guard is what enforces the policy on its sessions.
 
 | Variable | Meaning |
 |---|---|
@@ -242,7 +251,7 @@ Facts recorded for Phase 5:
 
 ### Tests
 
-`scripts/test-mcp-endpoint.sh <mysql-image> <artifact-dir>` (20 checks) installs the guard, the tool pack and `component_mcp` on the official image, then checks:
+`scripts/test-mcp-endpoint.sh <mysql-image> <artifact-dir>` (23 checks) installs the guard, the tool pack and `component_mcp` on the official image, then checks:
 
 - bearer auth, `initialize`, `notifications/initialized`, `tools/list` and the JSON-RPC errors;
 - both tools, and that `run_query` runs as the mapped account;

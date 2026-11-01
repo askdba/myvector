@@ -12,6 +12,8 @@ IMAGE=${1:?mysql image, e.g. mysql:26.10.0}; ART=${2:?artifact dir}
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 PACK=$REPO/sql/mcp/mysql_mcp.sql
 CURL_IMAGE=curlimages/curl:8.11.1
+# The token is hashed outside MySQL, as the docs say, so it never appears in statement text.
+TOKEN_HEX=$(printf '%s' tok-123 | sha256sum | cut -d' ' -f1)
 C=mcp-endpoint-test-$$
 PASS=0; FAIL=0
 ok() { PASS=$((PASS + 1)); printf '  PASS  %s\n' "$1"; }
@@ -31,12 +33,15 @@ for _ in $(seq 1 90); do sql 'select 1' >/dev/null 2>&1 && sql 'select 1' | grep
 PD=$(sql 'select @@plugin_dir')
 for f in component_mcp_guard.so component_mcp.so; do docker cp "$ART/$f" "$C:$PD/$f" && docker exec -u 0 "$C" chmod 0644 "$PD/$f"; done
 docker exec -i "$C" mysql -h127.0.0.1 -uroot -ptestpass <"$PACK" 2>&1 | grep -v "Using a password"
+expect "install refused without component_mcp_guard" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.account = 'mcp@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX'")" "ERROR"
 sql "INSTALL COMPONENT 'file://component_mcp_guard'; GRANT MCP_ADMIN ON *.* TO root@'%';
 CREATE DATABASE d1; CREATE TABLE d1.t (i INT); INSERT INTO d1.t VALUES (1);
+CREATE TABLE d1.big (n INT); INSERT INTO d1.big WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 999) SELECT n FROM s;
+INSERT INTO d1.big SELECT n + 1000 FROM d1.big WHERE n <= 500;
 CREATE USER mcp@'%' IDENTIFIED BY 'p'; GRANT SELECT, INSERT ON d1.* TO mcp@'%'; GRANT SELECT ON mysql.* TO mcp@'%';
 GRANT EXECUTE ON mysql_mcp.* TO mcp@'%'; GRANT MCP_USER ON *.* TO mcp@'%';
 CREATE USER app@'%' IDENTIFIED BY 'p'; GRANT SELECT, INSERT ON d1.* TO app@'%'; GRANT EXECUTE ON mysql_mcp.* TO app@'%';"
-expect "install component_mcp" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'mcp@%', GLOBAL mcp_http.token_sha256 = SHA2('tok-123', 256)")" "^$"
+expect "install component_mcp" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'mcp@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX'")" "^$"
 
 expect "no token: 401" "$(rpc '' '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^401$"
 expect "wrong token: 401" "$(rpc nope '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^401$"
@@ -45,6 +50,7 @@ expect "notification: 202" "$(rpc tok-123 '{"jsonrpc":"2.0","method":"notificati
 expect "tools/list" "$(rpc tok-123 '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')" '"name":"list_databases".*"name":"run_query"'
 expect "unknown method" "$(rpc tok-123 '{"jsonrpc":"2.0","id":3,"method":"nope"}')" '"code":-32601'
 expect "list_databases via the tool pack" "$(call list_databases '{}')" 'SCHEMA_NAME.*d1.*"isError":false'
+expect "large result truncated at 1000 rows" "$(call run_query '{"sql":"SELECT n FROM d1.big"}' | grep -o '\\"n\\":' | wc -l) $(call run_query '{"sql":"SELECT n FROM d1.big"}' | grep -o 'truncated\\":true' | head -1)" "^1000 truncated"
 expect "run_query read as the mapped account" "$(call run_query '{"sql":"SELECT i, CURRENT_USER() AS who FROM d1.t"}')" 'i\\":\\"1\\",\\"who\\":\\"mcp@%'
 # Phase 4 exit criterion: the guard's policy reaches run_query in impersonated sessions.
 expect "guard: an MCP account's write is refused" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (2)"}')" 'Error 1290: [^"]*mcp.read_only[^"]*"}],"isError":true'
@@ -57,8 +63,10 @@ expect "no MCP session left" "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.sessions_conne
 
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).
 sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
-expect "reinstall mapped to app" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = SHA2('tok-123', 256)")" "^$"
+expect "reinstall mapped to app" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX'")" "^$"
 expect "guard: an account without MCP_USER is not restricted" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (7)"}')" '"isError":false'
+sql "UNINSTALL COMPONENT 'file://component_mcp_guard'" >/dev/null
+expect "tool calls refused once the guard is uninstalled" "$(call run_query '{"sql":"SELECT 1"}')" 'component_mcp_guard is not installed.*"isError":true'
 expect "uninstall component_mcp" "$(sql "UNINSTALL COMPONENT 'file://component_mcp'")" "^$"
 expect "server alive at the end" "$(alive)" "^up$"
 echo "== $IMAGE: $PASS passed, $FAIL failed"
