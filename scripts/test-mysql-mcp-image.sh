@@ -103,8 +103,8 @@ exit_code() {
 	done
 	echo timeout
 }
-refused() { # LABEL: CNAME_PLAIN must have stopped with the clash message, uninitialized
-	expect "$1 is refused at start" "rc=$(exit_code "$CNAME_PLAIN") $(docker logs "$CNAME_PLAIN" 2>&1 | grep -c 'MYSQL_MCP_USER must differ from MYSQL_USER')" "^rc=[1-9][0-9]* 1$"
+refused() { # LABEL [MESSAGE]: CNAME_PLAIN must have stopped with MESSAGE, uninitialized
+	expect "$1 is refused at start" "rc=$(exit_code "$CNAME_PLAIN") $(docker logs "$CNAME_PLAIN" 2>&1 | grep -cF "${2:-MYSQL_MCP_USER must differ from MYSQL_USER}")" "^rc=[1-9][0-9]* 1$"
 	expect "$1: nothing initialized" "$(docker logs "$CNAME_PLAIN" 2>&1 | grep -c 'Initializing database files')" "^0$"
 	docker rm -f -v "$CNAME_PLAIN" >/dev/null 2>&1
 }
@@ -117,6 +117,12 @@ printf 'app' >"$TMPF"
 docker cp "$TMPF" "$CNAME_PLAIN:/run/app-user" >/dev/null
 docker start "$CNAME_PLAIN" >/dev/null
 refused "MYSQL_MCP_USER = the user in MYSQL_USER_FILE"
+# The official entrypoint puts MYSQL_USER into SQL unescaped: app\q would create appq.
+docker run -d --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass -e MYSQL_DATABASE=app \
+	-e 'MYSQL_USER=app\q' -e MYSQL_PASSWORD=apppass -e MYSQL_MCP_USER=appq -e MYSQL_MCP_PASSWORD=x "$IMAGE" >/dev/null
+refused "MYSQL_USER with a backslash" "MYSQL_USER contains a backslash or quote"
+docker run -d --name "$CNAME_PLAIN" -e MYSQL_ROOT_PASSWORD=testpass -e "MYSQL_MCP_USER=mcp'x" -e MYSQL_MCP_PASSWORD=x "$IMAGE" >/dev/null
+refused "MYSQL_MCP_USER that is not a plain name" "MYSQL_MCP_USER must be 1-32 characters"
 
 # NO_BACKSLASH_ESCAPES: the password with a backslash still works as configured. This
 # server also runs on another port, which the health check must follow.

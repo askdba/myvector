@@ -12,6 +12,8 @@ mcp_error() {
 if [ -n "${MYSQL_MCP_USER:-}" ]; then
 	[ -n "${MYSQL_MCP_PASSWORD:-}" ] || mcp_error "MYSQL_MCP_USER is set but MYSQL_MCP_PASSWORD is not"
 	[ "$MYSQL_MCP_USER" != root ] || mcp_error "MYSQL_MCP_USER cannot be root"
+	[[ "$MYSQL_MCP_USER" =~ ^[A-Za-z0-9_.-]{1,32}$ ]] ||
+		mcp_error "MYSQL_MCP_USER must be 1-32 characters from A-Z, a-z, 0-9, _ . -"
 	# The official entrypoint creates MYSQL_USER with ALL on MYSQL_DATABASE; the MCP account
 	# must be a separate, read-only one. MYSQL_USER may come from MYSQL_USER_FILE (when both
 	# are set, the official entrypoint refuses them itself).
@@ -19,6 +21,11 @@ if [ -n "${MYSQL_MCP_USER:-}" ]; then
 	if [ -z "$app_user" ] && [ -n "${MYSQL_USER_FILE:-}" ] && [ -r "$MYSQL_USER_FILE" ]; then
 		app_user=$(<"$MYSQL_USER_FILE")
 	fi
+	# The official entrypoint puts MYSQL_USER into SQL unescaped, so a backslash or quote in it
+	# changes the account name (app\q creates appq): such a name cannot be compared.
+	case "$app_user" in
+	*\\* | *\'* | *\"*) mcp_error "MYSQL_USER contains a backslash or quote; use a plain name with MYSQL_MCP_USER" ;;
+	esac
 	[ "$MYSQL_MCP_USER" != "$app_user" ] ||
 		mcp_error "MYSQL_MCP_USER must differ from MYSQL_USER (that account gets all privileges on MYSQL_DATABASE)"
 fi

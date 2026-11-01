@@ -11,6 +11,9 @@
 #   (probing as root could lock out administrators with FAILED_LOGIN_ATTEMPTS).
 mapfile -d '' args </proc/1/cmdline 2>/dev/null || exit 1
 [ "${args[0]##*/}" = mysqld ] || exit 1
-port=$("${args[0]}" "${args[@]:1}" --verbose --help 2>/dev/null | awk '$1 == "port" { print $2; exit }')
+# A throwaway binary log index, as the official entrypoint uses for the same lookup, so the
+# live index is never touched.
+port=$("${args[0]}" "${args[@]:1}" --verbose --help --log-bin-index="$(mktemp -u)" 2>/dev/null |
+	awk '$1 == "port" { print $2; exit }')
 exec mysqladmin ping --protocol=TCP -h127.0.0.1 -P"${port:-3306}" \
 	-umysql-mcp-healthcheck --connect-timeout=3 --silent

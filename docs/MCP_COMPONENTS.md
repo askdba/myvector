@@ -30,7 +30,7 @@ GRANT EXECUTE   ON mysql_mcp.* TO 'mcp'@'%';  -- if the SQL tool pack is install
 
 | Variable | Effect |
 |---|---|
-| `MYSQL_MCP_USER`, `MYSQL_MCP_PASSWORD` | Create this account (host `%`) for mysql-mcp-server, with `MCP_USER`, `EXECUTE` on `mysql_mcp` and `SELECT, SHOW VIEW` on the databases below. |
+| `MYSQL_MCP_USER`, `MYSQL_MCP_PASSWORD` | Create this account (host `%`; a plain name of up to 32 characters from `A-Z a-z 0-9 _ . -`) for mysql-mcp-server, with `MCP_USER`, `EXECUTE` on `mysql_mcp` and `SELECT, SHOW VIEW` on the databases below. |
 | `MYSQL_MCP_DATABASES` | Comma-separated databases the account may read. The default is `MYSQL_DATABASE`. |
 | `MYSQL_MCP_ALLOWED_SCHEMAS` | Persisted as `mcp.allowed_schemas`. |
 | `MYSQL_MCP_MAX_EXECUTION_TIME_MS` | Persisted as `mcp.max_execution_time_ms`. |
