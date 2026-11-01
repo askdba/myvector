@@ -38,6 +38,13 @@ static void expect_table(const TablePolicy &p, const char *db, bool write, const
   }
 }
 
+static void expect_hidden(const char *cmd, const char *sql, bool hidden) {
+  if (hides_table_reads(cmd, sql, std::strlen(sql)) != hidden) {
+    std::printf("FAIL hidden %-12s %-60s want %s\n", cmd, sql, hidden ? "refuse" : "allow");
+    ++failures;
+  }
+}
+
 int main() {
   // Allowed reads.
   expect_ro("select", "SELECT * FROM t WHERE note = 'FOR UPDATE'", false);
@@ -229,6 +236,41 @@ int main() {
   expect_table(p, "mysql", false, nullptr);
   expect_table(p, "shop", true, nullptr);
   expect_table(p, "hr", true, "mcp.allowed_schemas");
+  // System schema names compare as the server does: MYSQL is mysql only with
+  // lower_case_table_names 1 or 2.
+  p.deny_system_schemas = true;
+  p.restrict_schemas = false;
+  expect_table(p, "MYSQL", false, nullptr);  // lower_case_table_names = 0: another schema
+  p.case_insensitive_names = true;
+  expect_table(p, "MYSQL", false, "mcp.deny_system_schemas");
+  expect_table(p, "Sys", false, "mcp.deny_system_schemas");
+  expect_table(p, "Information_Schema", false, nullptr);
+  p.case_insensitive_names = false;
+
+  // Table reads without table access events (subqueries in SET, DO, CALL, SHOW; CHECK and
+  // CHECKSUM TABLE) are refused under the schema rules.
+  expect_hidden("set_option", "SET @x = (SELECT MAX(i) FROM d2.t)", true);
+  expect_hidden("set_option", "SET @a = 1, @b = (SELECT 1 FROM mysql.user)", true);
+  expect_hidden("set_option", "SET SESSION sql_select_limit = (TABLE d2.t)", true);
+  expect_hidden("set_option", "SET @x = ( WITH c AS (SELECT 1) SELECT * FROM c)", true);
+  expect_hidden("do", "DO @x := (SELECT MAX(i) FROM d2.t)", true);
+  expect_hidden("call", "CALL mysql_mcp.list_tables((SELECT 'd2'))", true);
+  expect_hidden("show_databases", "SHOW DATABASES WHERE (SELECT COUNT(*) FROM mysql.user) > 0", true);
+  expect_hidden("show_tables", "SHOW TABLES WHERE 1 IN (VALUES ROW(1))", true);
+  expect_hidden("checksum", "CHECKSUM TABLE d2.t", true);
+  expect_hidden("check", "CHECK TABLE d2.t", true);
+  expect_hidden("set_option", "SET @x = 1", false);
+  expect_hidden("set_option", "SET SESSION sql_mode = ''", false);
+  expect_hidden("set_option", "SET @x = '(SELECT 1)'", false);          // a string
+  expect_hidden("set_option", "SET @x = 1 /* (SELECT 1) */", false);    // a comment
+  expect_hidden("set_option", "SET @x = UPPER('a')", false);
+  expect_hidden("do", "DO SLEEP(0)", false);
+  expect_hidden("call", "CALL mysql_mcp.list_tables('d1')", false);
+  expect_hidden("show_tables", "SHOW TABLES FROM d1 LIKE 't%'", false);
+  expect_hidden("show_create_table", "SHOW CREATE TABLE d1.t", false);
+  expect_hidden("select", "SELECT (SELECT 1 FROM d2.t)", false);  // SELECT raises table events
+  // A string that ends differently under NO_BACKSLASH_ESCAPES hides no subquery from the scan.
+  expect_hidden("set_option", "SET @x = '\\', @y = (SELECT 1) -- '", true);
 
   std::printf("%s (%d failures)\n", failures ? "FAILED" : "ok", failures);
   return failures ? 1 : 0;

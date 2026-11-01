@@ -158,7 +158,16 @@ denied "nested view over another schema" "$(mcp "SELECT * FROM d1.v_nested")" "m
 expect "view in another schema over allowed tables (rules apply to base tables)" "$(mcp "SELECT COUNT(*) FROM d2.v_d1")" "^[0-9]+$"
 denied "multi-statement packet: disallowed read in the second statement" "$(packet "SELECT 1; SELECT * FROM d2.t")" "mcp.allowed_schemas"
 expect "KNOWN LIMITATION: a stored function's reads are not seen by the schema rules" "$(mcp "SELECT d1.f_read_d2()")" "^42$"
+# Statements whose table reads raise no table access events are refused under the rules.
+denied "SET with a subquery over another schema" "$(mcp "SET @x = (SELECT MAX(i) FROM d2.t); SELECT @x")" "mcp.allowed_schemas"
+denied "DO with a subquery" "$(mcp "DO @x := (SELECT MAX(i) FROM d2.t)")" "mcp.allowed_schemas"
+denied "SHOW ... WHERE with a subquery" "$(mcp "SHOW DATABASES WHERE (SELECT MAX(i) FROM d2.t) = 42")" "mcp.allowed_schemas"
+denied "CALL mysql_mcp with a subquery argument" "$(mcp "CALL mysql_mcp.list_tables((SELECT 'd2'))")" "mcp.allowed_schemas"
+denied "SET with a subquery through PREPARE/EXECUTE" "$(mcp "PREPARE s FROM 'SET @p = (SELECT MAX(i) FROM d2.t)'; EXECUTE s; SELECT @p")" "mcp.allowed_schemas"
+denied "CHECKSUM TABLE" "$(mcp "CHECKSUM TABLE d2.t")" "mcp.allowed_schemas"
+expect "SET, SHOW and CALL without subqueries still work" "$(mcp "SET @x = 1; SHOW TABLES FROM d1 LIKE 't'; CALL mysql_mcp.version()" | tr '\n' ' ')" "^t [0-9]+\.[0-9]+\.[0-9]+ $"
 sql "SET GLOBAL mcp.allowed_schemas = ''" >/dev/null
+denied "SET with a subquery over mysql (deny_system_schemas)" "$(mcp "SET @x = (SELECT COUNT(*) FROM mysql.user); SELECT @x")" "mcp.deny_system_schemas"
 denied "multi-statement packet: write in the second statement" "$(packet "SELECT 1; INSERT INTO d1.t VALUES (5)")" "mcp.read_only"
 denied "multi-statement packet: write after a session SET" "$(packet "SET @a = 1; DELETE FROM d1.t")" "mcp.read_only"
 expect "multi-statement packets wrote nothing" "$(sql "SELECT GROUP_CONCAT(i ORDER BY i) FROM d1.t")" "^1$"

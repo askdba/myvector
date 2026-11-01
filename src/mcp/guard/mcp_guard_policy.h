@@ -198,6 +198,30 @@ inline bool read_only_command(std::string_view cmd) {
   return false;
 }
 
+// A subquery: every subquery is parenthesized, "(" followed by SELECT, TABLE, VALUES or WITH.
+inline bool has_subquery(const std::vector<Token> &t) {
+  for (size_t i = 0; i + 1 < t.size(); ++i)
+    if (t[i].kind == Token::kPunct && t[i].text == "(" &&
+        (word_is(t, i + 1, "SELECT") || word_is(t, i + 1, "TABLE") ||
+         word_is(t, i + 1, "VALUES") || word_is(t, i + 1, "WITH")))
+      return true;
+  return false;
+}
+
+// Statements that read tables without the table access events the schema rules
+// (mcp.allowed_schemas, mcp.deny_system_schemas) are enforced on: the server raises them
+// only for SELECT, data changes, ANALYZE and HANDLER READ. So a subquery in SET, DO, a CALL
+// argument or SHOW ... WHERE reads any table unseen, as do CHECK TABLE and CHECKSUM TABLE.
+// Under the schema rules such statements are refused (scanned in both quoting modes).
+inline bool hides_table_reads(std::string_view cmd, const char *query, size_t len) {
+  if (cmd == "check" || cmd == "checksum") return true;
+  if (cmd != "set_option" && cmd != "do" && cmd != "call" && cmd.substr(0, 5) != "show_")
+    return false;
+  for (bool escapes : {true, false})
+    if (has_subquery(tokenize(query, len, escapes))) return true;
+  return false;
+}
+
 // Returns the option that denies the statement under mcp.read_only, or nullptr.
 // Where a quoted string ends depends on sql_mode (NO_BACKSLASH_ESCAPES, ANSI_QUOTES), which
 // a session may change. The text is therefore scanned both with and without backslash
@@ -415,13 +439,16 @@ inline bool is_system_schema(std::string_view db) {
 // write is true for insert, update and delete accesses.
 inline const char *table_violation(const TablePolicy &p, std::string_view db, bool write) {
   if (write && p.read_only) return "mcp.read_only";
-  if (is_system_schema(db)) {
+  // With lower_case_table_names 1 or 2 schema names compare case-insensitively (MYSQL is
+  // mysql); with 0 they are distinct schemas.
+  const auto is = [&](std::string_view name) { return p.case_insensitive_names ? ieq(db, name) : db == name; };
+  if (is("mysql") || is("sys") || is("information_schema") || is("performance_schema")) {
     // information_schema and performance_schema stay readable: the tools use them, and
     // grants govern them. mysql (account and grant tables) and sys are denied.
-    if (p.deny_system_schemas && (db == "mysql" || db == "sys")) return "mcp.deny_system_schemas";
+    if (p.deny_system_schemas && (is("mysql") || is("sys"))) return "mcp.deny_system_schemas";
     return nullptr;
   }
-  if (db == "mysql_mcp") return nullptr;
+  if (is("mysql_mcp")) return nullptr;
   if (p.restrict_schemas) {
     if (p.allowed_schemas)
       for (const std::string &s : *p.allowed_schemas)
