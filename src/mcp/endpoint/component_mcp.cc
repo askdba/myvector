@@ -185,9 +185,11 @@ bool token_ok(const std::string *authorization) {
 
 // ----- SQL in an impersonated local session ----------------------------------------------
 
-// Result bounds: the session's sql_select_limit stops the server past kMaxRows + 1 rows (the
-// extra row shows truncation), and the reply stops at kMaxBytes of values, so a large result
-// is never held in full.
+// Result bounds: the reply keeps at most kMaxRows rows and kMaxBytes of values. The session's
+// sql_select_limit stops the server past kMaxRows + 1 rows for statements without their own
+// LIMIT. The command service's default consumer collects every row while the statement runs
+// (store_result only hands that buffer over), so a statement with a large explicit LIMIT is
+// still held in full by the server: a bounded custom consumer is Phase 5 work.
 constexpr unsigned long long kMaxRows = 1000;
 constexpr size_t kMaxBytes = 4u << 20;
 
@@ -272,12 +274,15 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
         ulong *lengths = nullptr;
         size_t bytes = 0;
         while (!mysql_service_mysql_command_query_result->fetch_row(res, &row) && row) {
-          if (r.rows.Size() >= kMaxRows || bytes > kMaxBytes) {
+          mysql_service_mysql_command_query_result->fetch_lengths(res, &lengths);
+          size_t row_bytes = 0;
+          for (unsigned int i = 0; i < n; ++i) row_bytes += lengths ? lengths[i] : 0;
+          // Stop before a row that does not fit, so the reply stays within the bounds.
+          if (r.rows.Size() >= kMaxRows || bytes + row_bytes > kMaxBytes) {
             r.truncated = true;
             break;
           }
-          mysql_service_mysql_command_query_result->fetch_lengths(res, &lengths);
-          for (unsigned int i = 0; i < n; ++i) bytes += lengths ? lengths[i] : 0;
+          bytes += row_bytes;
           rapidjson::Value obj(rapidjson::kObjectType);
           for (unsigned int i = 0; i < n; ++i) {
             rapidjson::Value k(names[i].c_str(), a), v;

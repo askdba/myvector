@@ -51,6 +51,8 @@ expect "tools/list" "$(rpc tok-123 '{"jsonrpc":"2.0","id":2,"method":"tools/list
 expect "unknown method" "$(rpc tok-123 '{"jsonrpc":"2.0","id":3,"method":"nope"}')" '"code":-32601'
 expect "list_databases via the tool pack" "$(call list_databases '{}')" 'SCHEMA_NAME.*d1.*"isError":false'
 expect "large result truncated at 1000 rows" "$(call run_query '{"sql":"SELECT n FROM d1.big"}' | grep -o '\\"n\\":' | wc -l) $(call run_query '{"sql":"SELECT n FROM d1.big"}' | grep -o 'truncated\\":true' | head -1)" "^1000 truncated"
+expect "explicit LIMIT: the reply is still bounded" "$(call run_query '{"sql":"SELECT n FROM d1.big LIMIT 5000"}' | grep -o 'truncated\\":true' | head -1)" "^truncated"
+expect "a value over the byte bound is not sent" "$(call run_query '{"sql":"SELECT REPEAT(\"x\", 5000000) AS v"}' | head -c 300)" 'rows\\":\[\],\\"truncated\\":true'
 expect "run_query read as the mapped account" "$(call run_query '{"sql":"SELECT i, CURRENT_USER() AS who FROM d1.t"}')" 'i\\":\\"1\\",\\"who\\":\\"mcp@%'
 # Phase 4 exit criterion: the guard's policy reaches run_query in impersonated sessions.
 expect "guard: an MCP account's write is refused" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (2)"}')" 'Error 1290: [^"]*mcp.read_only[^"]*"}],"isError":true'
