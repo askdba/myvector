@@ -316,20 +316,23 @@ expect "MCP_ADMIN unknown after uninstall" "$(sql "GRANT MCP_ADMIN ON *.* TO app
 expect "mcp.* variables gone after uninstall" "$(sql "SHOW VARIABLES LIKE 'mcp.%'")" "^$"
 expect "performance_schema.mcp_tool_calls gone after uninstall" "$(sql "SELECT COUNT(*) FROM performance_schema.mcp_tool_calls")" "ERROR 1146"
 expect "no enforcement after uninstall" "$(mcp "INSERT INTO d1.t VALUES (5); SELECT COUNT(*) FROM d1.t")" "^2$"
-# A session connected before INSTALL COMPONENT is classified at its next statement. The
-# session is confirmed connected and idle (in SLEEP) before the install, and still in SLEEP
-# after it, so its INSERT runs only once the guard is installed.
-early_out=$(mktemp)
-docker exec -i "$CNAME" mysql -h127.0.0.1 -umcp -pmcppass1 -N -e "SELECT SLEEP(8); INSERT INTO d1.t VALUES (6)" >"$early_out" 2>&1 &
+# A session connected before INSTALL COMPONENT is classified at its first statement after it.
+# The client is connected and idle (no statement running) through the install; its INSERT is
+# then sent over the same connection, through a FIFO.
+early_dir=$(mktemp -d)
+mkfifo "$early_dir/in"
+docker exec -i "$CNAME" mysql -h127.0.0.1 -umcp -pmcppass1 -N <"$early_dir/in" >"$early_dir/out" 2>&1 &
 early=$!
-in_sleep() { sql "SELECT COUNT(*) FROM performance_schema.processlist WHERE USER = 'mcp' AND INFO LIKE 'SELECT SLEEP(8)%'"; }
-for _ in $(seq 1 20); do [ "$(in_sleep)" = 1 ] && break; sleep 0.25; done
-expect "the MCP session is connected before the install" "$(in_sleep)" "^1$"
+exec 3>"$early_dir/in"
+idle_mcp() { sql "SELECT COUNT(*) FROM performance_schema.processlist WHERE USER = 'mcp' AND COMMAND = 'Sleep'"; }
+for _ in $(seq 1 40); do [ "$(idle_mcp)" = 1 ] && break; sleep 0.25; done
+expect "the MCP session is connected and idle before the install" "$(idle_mcp)" "^1$"
 expect "reinstalled while an MCP session is connected" "$(sql "INSTALL COMPONENT 'file://component_mcp_guard'")" "^$"
-expect "the MCP session is still waiting after the install" "$(in_sleep)" "^1$"
+printf 'INSERT INTO d1.t VALUES (6);\n' >&3
+exec 3>&-
 wait "$early"
-denied "a session connected before INSTALL is guarded at its next statement" "$(grep -v "Using a password" "$early_out")" "mcp.read_only"
-rm -f "$early_out"
+denied "a session connected before INSTALL is guarded at its first statement after it" "$(grep -v "Using a password" "$early_dir/out")" "mcp.read_only"
+rm -rf "$early_dir"
 
 # --- lower_case_table_names = 1: allowed_schemas compares case-insensitively ---------------------
 docker run -d --name "$CNAME_LCTN" -e MYSQL_ROOT_PASSWORD=testpass "mysql:$TAG" --lower-case-table-names=1 >/dev/null
