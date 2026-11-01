@@ -316,12 +316,17 @@ expect "MCP_ADMIN unknown after uninstall" "$(sql "GRANT MCP_ADMIN ON *.* TO app
 expect "mcp.* variables gone after uninstall" "$(sql "SHOW VARIABLES LIKE 'mcp.%'")" "^$"
 expect "performance_schema.mcp_tool_calls gone after uninstall" "$(sql "SELECT COUNT(*) FROM performance_schema.mcp_tool_calls")" "ERROR 1146"
 expect "no enforcement after uninstall" "$(mcp "INSERT INTO d1.t VALUES (5); SELECT COUNT(*) FROM d1.t")" "^2$"
-# A session connected before INSTALL COMPONENT is classified at its next statement.
+# A session connected before INSTALL COMPONENT is classified at its next statement. The
+# session is confirmed connected and idle (in SLEEP) before the install, and still in SLEEP
+# after it, so its INSERT runs only once the guard is installed.
 early_out=$(mktemp)
-docker exec -i "$CNAME" mysql -h127.0.0.1 -umcp -pmcppass1 -N -e "SELECT SLEEP(4); INSERT INTO d1.t VALUES (6)" >"$early_out" 2>&1 &
+docker exec -i "$CNAME" mysql -h127.0.0.1 -umcp -pmcppass1 -N -e "SELECT SLEEP(8); INSERT INTO d1.t VALUES (6)" >"$early_out" 2>&1 &
 early=$!
-sleep 1
+in_sleep() { sql "SELECT COUNT(*) FROM performance_schema.processlist WHERE USER = 'mcp' AND INFO LIKE 'SELECT SLEEP(8)%'"; }
+for _ in $(seq 1 20); do [ "$(in_sleep)" = 1 ] && break; sleep 0.25; done
+expect "the MCP session is connected before the install" "$(in_sleep)" "^1$"
 expect "reinstalled while an MCP session is connected" "$(sql "INSTALL COMPONENT 'file://component_mcp_guard'")" "^$"
+expect "the MCP session is still waiting after the install" "$(in_sleep)" "^1$"
 wait "$early"
 denied "a session connected before INSTALL is guarded at its next statement" "$(grep -v "Using a password" "$early_out")" "mcp.read_only"
 rm -f "$early_out"

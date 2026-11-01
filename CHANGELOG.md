@@ -139,7 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The guard now classifies an unclassified session from its privileges at its first statement. A "not MCP" marker keeps the cost at one grant check per session.
   - `mcp.sessions_connected` is decremented when the session's THD ends, which also covers sessions without a disconnect event.
   - These sessions also start **unaudited** (no events at all), so a component must emit connection audit events for them. This is documented in `docs/MCP_COMPONENTS.md`, and `component_mcp` will do it.
-  - `scripts/test-mcp-guard.sh`: 122 checks on 8.4.11, 9.7.2 and 26.10.0, with the test-only `component_mcp_session_probe`. The unfixed guard fails the local-session checks.
+  - `scripts/test-mcp-guard.sh`: 124 checks on 8.4.11, 9.7.2 and 26.10.0, with the test-only `component_mcp_session_probe`. The unfixed guard fails the local-session checks.
 - **`component_mcp_guard`: table reads the schema rules could not see** (found reviewing the code behind #247). The server raises table access events only for `SELECT`, data changes, `ANALYZE` and `HANDLER READ`. An MCP session could therefore read any table, `mysql.user` included, past `mcp.allowed_schemas` and `mcp.deny_system_schemas`:
   - directly, with a subquery in `SET` or `DO` (`SET @x = (SELECT … FROM mysql.user); SELECT @x`), also through `PREPARE`/`EXECUTE`;
   - as a yes/no oracle, with a subquery in `SHOW … WHERE` or in a `CALL` argument;
