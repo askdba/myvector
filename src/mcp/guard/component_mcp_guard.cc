@@ -363,15 +363,36 @@ struct SessionState {
 
 mysql_thd_store_slot session_slot = nullptr;
 
-// Called by the server when the THD ends with a state still attached.
+// The slot holds an MCP session's state, kNotMcp for a session classified as not MCP, or
+// null for a session not classified yet. Sessions opened without connection events (the
+// "local" sessions of the command services, which components such as component_mcp open
+// with an impersonated account) are classified at their first statement.
+SessionState not_mcp_marker;
+SessionState *const kNotMcp = &not_mcp_marker;
+
+// Frees an MCP session's state (the only allocated kind) and uncounts it.
+void drop_state(SessionState *state) {
+  if (state == nullptr || state == kNotMcp) return;
+  delete state;
+  --sessions_connected;
+}
+
+// Called by the server when the THD ends with a state still attached; command-service
+// sessions end this way, without a disconnect event.
 int free_session_slot(void *state) {
-  delete static_cast<SessionState *>(state);
+  drop_state(static_cast<SessionState *>(state));
   return 0;
 }
 
-SessionState *session_state(MYSQL_THD thd) {
+SessionState *raw_session_state(MYSQL_THD thd) {
   if (thd == nullptr || session_slot == nullptr) return nullptr;
   return static_cast<SessionState *>(mysql_service_mysql_thd_store->get(thd, session_slot));
+}
+
+// The MCP session state of thd, or null if it is not an MCP session (or not classified).
+SessionState *session_state(MYSQL_THD thd) {
+  SessionState *state = raw_session_state(thd);
+  return state == kNotMcp ? nullptr : state;
 }
 
 
@@ -380,7 +401,12 @@ SessionState *session_state(MYSQL_THD thd) {
 bool mark_session(MYSQL_THD thd, bool mcp) {
   if (session_slot == nullptr) return mcp;
   SessionState *state = session_state(thd);
-  if ((state != nullptr) == mcp) return false;
+  if ((state != nullptr) == mcp) {
+    // Already right; an unclassified non-MCP session still gets the marker.
+    if (!mcp && raw_session_state(thd) == nullptr)
+      mysql_service_mysql_thd_store->set(thd, session_slot, kNotMcp);
+    return false;
+  }
   if (mcp) {
     state = new (std::nothrow) SessionState();
     if (state == nullptr) return true;
@@ -388,11 +414,11 @@ bool mark_session(MYSQL_THD thd, bool mcp) {
       delete state;
       return true;
     }
+    ++sessions_connected;
   } else {
-    mysql_service_mysql_thd_store->set(thd, session_slot, nullptr);
-    delete state;
+    mysql_service_mysql_thd_store->set(thd, session_slot, kNotMcp);
+    drop_state(state);
   }
-  sessions_connected += mcp ? 1 : -1;
   return false;
 }
 
@@ -743,6 +769,29 @@ void apply_time_limit(MYSQL_THD thd, SessionState *state) {
       thd, "SESSION", nullptr, max_execution_time_name, limit);
 }
 
+// The MCP session state of thd, classifying a session that has not been classified yet
+// (no connection event: a command-service "local" session, possibly impersonating an
+// account) from its grants. failed is set if an MCP session could not be marked; the
+// caller then refuses the statement, so it is never run unguarded.
+SessionState *classify(MYSQL_THD thd, bool *failed) {
+  *failed = false;
+  if (thd == nullptr || session_slot == nullptr) return nullptr;
+  SessionState *state = raw_session_state(thd);
+  if (state == kNotMcp) return nullptr;
+  if (state != nullptr) return state;
+  const bool mcp = thd_has_grant(thd, kMcpUser) && !thd_has_grant(thd, kMcpAdmin);
+  if (mark_session(thd, mcp)) {
+    *failed = mcp;
+    return nullptr;
+  }
+  state = session_state(thd);
+  if (state != nullptr) {
+    state->account = session_account(thd);
+    apply_time_limit(thd, state);
+  }
+  return state;
+}
+
 }  // namespace
 
 // ----- Event tracking -----------------------------------------------------------------
@@ -839,7 +888,11 @@ mysql_event_tracking_query_subclass_t Event_tracking_query_implementation::filte
 
 bool Event_tracking_query_implementation::callback(const mysql_event_tracking_query_data *data) {
   MYSQL_THD thd = current_thd_or_null();
-  SessionState *state = session_state(thd);
+  bool failed = false;
+  SessionState *state = classify(thd, &failed);
+  if (failed)
+    return deny("mcp_guard", statements_denied, data->connection_id,
+                "statement refused: session state unavailable");
   if (state == nullptr) return false;
   if (data->event_subclass == EVENT_TRACKING_QUERY_STATUS_END) {
     track_statement_end(state, data->status);  // performance_schema.mcp_tool_calls
@@ -885,7 +938,11 @@ mysql_event_tracking_table_access_subclass_t
 bool Event_tracking_table_access_implementation::callback(
     const mysql_event_tracking_table_access_data *data) {
   MYSQL_THD thd = current_thd_or_null();
-  SessionState *state = session_state(thd);
+  bool failed = false;
+  SessionState *state = classify(thd, &failed);
+  if (failed)
+    return deny("mcp_guard", table_access_denied, data->connection_id,
+                "table access refused: session state unavailable");
   if (state == nullptr) return false;
   const std::string_view db(data->table_database.str ? data->table_database.str : "",
                             data->table_database.str ? data->table_database.length : 0);

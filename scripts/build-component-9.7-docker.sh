@@ -163,13 +163,15 @@ docker run --rm \
     cp src/component_src/myvector.json "/workspace/$OUTPUT_DIR/"
     # MCP guard component (RFC 0001), built when MYVECTOR_BUILD_MCP=ON. Clear any
     # copy from an earlier build first, so an OFF build never ships a stale guard.
-    rm -f "/workspace/$OUTPUT_DIR/component_mcp_guard.so" "/workspace/$OUTPUT_DIR/mcp_guard.json"
+    rm -f "/workspace/$OUTPUT_DIR/component_mcp_guard.so" "/workspace/$OUTPUT_DIR/mcp_guard.json" "/workspace/$OUTPUT_DIR/component_mcp_session_probe.so"
     if [ "$MYVECTOR_BUILD_MCP" = ON ]; then
       if [ ! -f "$COMPONENT_BUILD/component_mcp_guard.so" ]; then
         echo "ERROR: MYVECTOR_BUILD_MCP=ON but component_mcp_guard.so was not built" >&2
         exit 1
       fi
       cp "$COMPONENT_BUILD/component_mcp_guard.so" src/mcp/guard/mcp_guard.json "/workspace/$OUTPUT_DIR/"
+      # Test-only component for scripts/test-mcp-guard.sh (not packaged).
+      cp "$COMPONENT_BUILD/component_mcp_session_probe.so" "/workspace/$OUTPUT_DIR/"
       echo "==> Built: /workspace/$OUTPUT_DIR/component_mcp_guard.so"
     fi
     echo "==> Built: /workspace/$OUTPUT_DIR/libmyvector_component.so"

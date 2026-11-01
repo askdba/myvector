@@ -5,6 +5,8 @@
 #
 # Usage: scripts/test-mcp-guard.sh <mysql-image-tag> <artifact-dir>
 #   e.g. scripts/test-mcp-guard.sh 9.7 dist/mcp-guard-9.7.2
+# The artifact dir holds component_mcp_guard.so and the test-only component_mcp_session_probe.so
+# (both built with MYVECTOR_BUILD_MCP=ON).
 # Requires Docker. bash 3.2+.
 set -u
 
@@ -12,6 +14,9 @@ TAG=${1:?mysql image tag, e.g. 9.7}
 ART=${2:?artifact dir containing component_mcp_guard.so}
 SO=$ART/component_mcp_guard.so
 [ -f "$SO" ] || { echo "missing $SO"; exit 1; }
+# Test-only component that opens command-service sessions as component_mcp does.
+PROBE=$ART/component_mcp_session_probe.so
+[ -f "$PROBE" ] || { echo "missing $PROBE"; exit 1; }
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 CNAME=mcp-guard-test-$(printf '%s' "$TAG" | tr -c 'a-zA-Z0-9.-' '-')-$$
 PASS=0
@@ -47,6 +52,8 @@ echo "   server: $(sql 'select version()')"
 PLUGIN_DIR=$(sql 'select @@plugin_dir')
 docker cp "$SO" "$CNAME:$PLUGIN_DIR/component_mcp_guard.so" &&
 	docker exec -u 0 "$CNAME" chmod 0644 "$PLUGIN_DIR/component_mcp_guard.so"
+docker cp "$PROBE" "$CNAME:$PLUGIN_DIR/component_mcp_session_probe.so" &&
+	docker exec -u 0 "$CNAME" chmod 0644 "$PLUGIN_DIR/component_mcp_session_probe.so"
 out=$(docker exec -i "$CNAME" mysql -h127.0.0.1 -uroot -ptestpass <"$REPO/sql/mcp/mysql_mcp.sql" 2>&1 | grep -v "Using a password")
 [ -z "$out" ] && [ "$(sql "CALL mysql_mcp.version()")" = "1.0.0" ] || { echo "tool pack import failed: $out"; exit 1; }
 
@@ -194,6 +201,31 @@ d1_state() { sql "SELECT CONCAT_WS(',', (SELECT GROUP_CONCAT(i ORDER BY i) FROM 
 	(SELECT GROUP_CONCAT(TABLE_NAME ORDER BY TABLE_NAME) FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'd1'))"; }
 expect "parity table: nothing was written" "$(d1_state)" "^1,1,t,v_d2,v_nested,v_sys$"
 
+# --- sessions opened by components (command services), as component_mcp opens them -----------
+# A component's "local" session that impersonates an MCP account raises no connection event;
+# the guard classifies it at its first statement. The component must emit connection audit
+# events for it (Srv_session starts unaudited), as component_mcp will.
+expect "probe component installed" "$(sql "INSTALL COMPONENT 'file://component_mcp_session_probe'")" "^$"
+local_session() { sql "SELECT mcp_test_local_session($1)"; }
+# Refused by the guard: its message, with errno 1290 (8.4 reports errno 0 through the
+# command service for an error raised by an event consumer; the message is the same).
+denied_local() { expect "$1" "$2" "^err:query:(1290|0):The MySQL server is running with the mcp\."; }
+denied_local "local MCP session: write refused" "$(local_session "'mcp', '%', 'INSERT INTO d1.t VALUES (2)'")"
+denied_local "local MCP session: mysql schema refused" "$(local_session "'mcp', '%', 'SELECT COUNT(*) FROM mysql.user'")"
+denied_local "local MCP session: SET subquery refused" "$(local_session "'mcp', '%', 'SET @x = (SELECT COUNT(*) FROM mysql.user)'")"
+expect "local MCP session: reads allowed" "$(local_session "'mcp', '%', 'SELECT COUNT(*) FROM d1.t'")" "^ok:1$"
+sql "SET GLOBAL mcp.max_execution_time_ms = 1500" >/dev/null
+expect "local MCP session: time limit applied" "$(local_session "'mcp', '%', 'SELECT @@max_execution_time'")" "^ok:1500$"
+sql "SET GLOBAL mcp.max_execution_time_ms = 0" >/dev/null
+expect "local session of another account: not restricted" "$(local_session "'app', '%', 'INSERT INTO d1.t VALUES (9)'")" "^ok:no-result$"
+sql "DELETE FROM d1.t WHERE i = 9" >/dev/null
+# Without the connection event the session is unaudited: no event reaches the guard. This is
+# why component_mcp must emit it (checked here so that a server change is noticed).
+expect "REQUIREMENT: an unaudited local session is not seen (components must emit connection events)" "$(local_session "'mcp', '%', 'INSERT INTO d1.t VALUES (8)', 'unaudited'")" "^ok:no-result$"
+sql "DELETE FROM d1.t WHERE i = 8" >/dev/null
+expect "local sessions: nothing written, no MCP session left" "$(sql "SELECT GROUP_CONCAT(i ORDER BY i) FROM d1.t; SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'" | tr '\n' ' ')" "^1 mcp.sessions_connected	0 $"
+expect "probe component uninstalled" "$(sql "UNINSTALL COMPONENT 'file://component_mcp_session_probe'")" "^$"
+
 sql "SET GLOBAL mcp.enabled = OFF" >/dev/null
 denied "mcp.enabled OFF refuses MCP connections" "$(mcp "SELECT 1")" "mcp.enabled"
 expect "mcp.enabled OFF leaves other accounts alone" "$(as app apppass1 "SELECT 1")" "^1$"
@@ -284,6 +316,23 @@ expect "MCP_ADMIN unknown after uninstall" "$(sql "GRANT MCP_ADMIN ON *.* TO app
 expect "mcp.* variables gone after uninstall" "$(sql "SHOW VARIABLES LIKE 'mcp.%'")" "^$"
 expect "performance_schema.mcp_tool_calls gone after uninstall" "$(sql "SELECT COUNT(*) FROM performance_schema.mcp_tool_calls")" "ERROR 1146"
 expect "no enforcement after uninstall" "$(mcp "INSERT INTO d1.t VALUES (5); SELECT COUNT(*) FROM d1.t")" "^2$"
+# A session connected before INSTALL COMPONENT is classified at its first statement after it.
+# The client is connected and idle (no statement running) through the install; its INSERT is
+# then sent over the same connection, through a FIFO.
+early_dir=$(mktemp -d)
+mkfifo "$early_dir/in"
+docker exec -i "$CNAME" mysql -h127.0.0.1 -umcp -pmcppass1 -N <"$early_dir/in" >"$early_dir/out" 2>&1 &
+early=$!
+exec 3>"$early_dir/in"
+idle_mcp() { sql "SELECT COUNT(*) FROM performance_schema.processlist WHERE USER = 'mcp' AND COMMAND = 'Sleep'"; }
+for _ in $(seq 1 40); do [ "$(idle_mcp)" = 1 ] && break; sleep 0.25; done
+expect "the MCP session is connected and idle before the install" "$(idle_mcp)" "^1$"
+expect "reinstalled while an MCP session is connected" "$(sql "INSTALL COMPONENT 'file://component_mcp_guard'")" "^$"
+printf 'INSERT INTO d1.t VALUES (6);\n' >&3
+exec 3>&-
+wait "$early"
+denied "a session connected before INSTALL is guarded at its first statement after it" "$(grep -v "Using a password" "$early_dir/out")" "mcp.read_only"
+rm -rf "$early_dir"
 
 # --- lower_case_table_names = 1: allowed_schemas compares case-insensitively ---------------------
 docker run -d --name "$CNAME_LCTN" -e MYSQL_ROOT_PASSWORD=testpass "mysql:$TAG" --lower-case-table-names=1 >/dev/null

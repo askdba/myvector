@@ -176,6 +176,18 @@ if(MYVECTOR_BUILD_MCP)
   install(FILES src/mcp/guard/mcp_guard.json
     DESTINATION share/mysql/component
   )
+
+  # Test only, not installed: runs SQL in impersonated command-service sessions, as
+  # component_mcp does, for scripts/test-mcp-guard.sh.
+  find_package(Threads REQUIRED)
+  add_library(component_mcp_session_probe SHARED src/mcp/guard/test/component_mcp_session_probe.cc)
+  target_include_directories(component_mcp_session_probe PRIVATE ${MYVECTOR_INCLUDE_DIRS})
+  target_link_libraries(component_mcp_session_probe PRIVATE Threads::Threads)
+  set_target_properties(component_mcp_session_probe PROPERTIES PREFIX "")
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set_property(TARGET component_mcp_session_probe APPEND_STRING PROPERTY LINK_FLAGS
+      " -static-libstdc++ -static-libgcc")
+  endif()
 endif()
 
 # Install: shared library and component manifest
