@@ -316,6 +316,15 @@ expect "MCP_ADMIN unknown after uninstall" "$(sql "GRANT MCP_ADMIN ON *.* TO app
 expect "mcp.* variables gone after uninstall" "$(sql "SHOW VARIABLES LIKE 'mcp.%'")" "^$"
 expect "performance_schema.mcp_tool_calls gone after uninstall" "$(sql "SELECT COUNT(*) FROM performance_schema.mcp_tool_calls")" "ERROR 1146"
 expect "no enforcement after uninstall" "$(mcp "INSERT INTO d1.t VALUES (5); SELECT COUNT(*) FROM d1.t")" "^2$"
+# A session connected before INSTALL COMPONENT is classified at its next statement.
+early_out=$(mktemp)
+docker exec -i "$CNAME" mysql -h127.0.0.1 -umcp -pmcppass1 -N -e "SELECT SLEEP(4); INSERT INTO d1.t VALUES (6)" >"$early_out" 2>&1 &
+early=$!
+sleep 1
+expect "reinstalled while an MCP session is connected" "$(sql "INSTALL COMPONENT 'file://component_mcp_guard'")" "^$"
+wait "$early"
+denied "a session connected before INSTALL is guarded at its next statement" "$(grep -v "Using a password" "$early_out")" "mcp.read_only"
+rm -f "$early_out"
 
 # --- lower_case_table_names = 1: allowed_schemas compares case-insensitively ---------------------
 docker run -d --name "$CNAME_LCTN" -e MYSQL_ROOT_PASSWORD=testpass "mysql:$TAG" --lower-case-table-names=1 >/dev/null
