@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`component_mcp` (RFC 0001 Phase 4 spike, MySQL 26.10).** An MCP Streamable HTTP endpoint inside `mysqld` on MySQL Router's HTTP server (the libraries `component_mysql_rest_service` links), built in the server tree with `MYVECTOR_BUILD_MCP_ENDPOINT=ON ./scripts/build-component-26.10-docker.sh`. It is not for production.
+  - **Endpoint:** loopback, plain HTTP, one bearer token (`mcp_http.token_sha256`) mapped to one account (`mcp_http.account`).
+  - **Tools:** `list_databases` (tool pack) and `run_query` (one statement).
+  - **Sessions:** each call runs in an impersonated `"local"` session, announced with a connection audit event so that `component_mcp_guard` enforces its policy there.
+  - **Phase 4 exit criterion met:** through the endpoint, an `MCP_USER` account's write and `mysql` read are refused, and an account without `MCP_USER` is not restricted.
+  - **Measured:** 95 s build, 3.1 MB, 3 threads (MRS: 265 s, 21 MB).
+  - **Tests:** `scripts/test-mcp-endpoint.sh` (30 checks) and the `mcp-endpoint` CI job. `docs/MCP_COMPONENTS.md` has the details and the Phase 5 facts (locked accounts, `max_user_connections`, Basic-only Router auth).
 - **`component_mcp_guard` tests for views, multi-statement packets and parity** (RFC 0001 §5.2 item 7, Q3). `scripts/test-mcp-guard.sh` now has 102 checks on 8.4.11, 9.7.2 and 26.10.0.
   - **Views:** a view over another schema or over `mysql` is refused, nested views included (the rules see base tables).
   - **Multi-statement packets:** a write or disallowed read in a later statement of one packet is refused, and nothing is written.
