@@ -84,11 +84,11 @@ call run_query "{\"sql\":\"SELECT $nulls FROM d1.big LIMIT 60\"}" >/dev/null
 hwm0=$(hwm_kb)
 null_reply=$(call run_query "{\"sql\":\"SELECT $nulls FROM d1.big a, d1.big b LIMIT 5000\"}")
 expect "8000 NULL columns: the reply is bounded and truncated" "$(printf '%s' "$null_reply" | grep -o 'n8000\\":null' | head -1) $(printf '%s' "$null_reply" | grep -o 'truncated\\":true' | head -1)" 'n8000\\":null truncated'
+expect "8000 NULL columns: NULL cells past the bound are not retained" "$(( ($(hwm_kb) - hwm0) / 1024 )) MiB" "^([0-9]|1[0-5]) MiB$"
 # DOUBLE values are charged their formatted length: 500 rows of 100 short DOUBLEs fit.
 dbls=$(seq -s, -f 'n * 1.5e0 AS d%g' 1 100)
 expect "500 rows of 100 DOUBLE columns are not cut" "$(call run_query "{\"sql\":\"SELECT $dbls FROM d1.big LIMIT 500\"}" | grep -o 'd100\\":' | wc -l | tr -d ' ')" "^500$"
 expect "a fixed-decimal DOUBLE (251 digits) is returned in full" "$(call run_query '{"sql":"SELECT d AS big FROM d1.dbl"}' | grep -o 'big\\":\\"1[0-9]*' | wc -c | tr -d ' ')" "^260$"
-expect "8000 NULL columns: NULL cells past the bound are not retained" "$(( ($(hwm_kb) - hwm0) / 1024 )) MiB" "^([0-9]|1[0-5]) MiB$"
 expect "an error after some rows is reported, not a partial result" "$(call run_query '{"sql":"SELECT n, IF(n = 500, (SELECT 1 UNION SELECT 2), n) AS x FROM d1.big"}')" 'Subquery returns more than 1 row.*"isError":true'
 expect "an error past the row bound is reported" "$(call run_query '{"sql":"SELECT n, IF(n = 1500, (SELECT 1 UNION SELECT 2), n) AS x FROM d1.big a LIMIT 1000000"}')" 'Subquery returns more than 1 row.*"isError":true'
 expect "run_query read as the mapped account" "$(call run_query '{"sql":"SELECT i, CURRENT_USER() AS who FROM d1.t"}')" 'i\\":\\"1\\",\\"who\\":\\"mcp@%'

@@ -249,10 +249,16 @@ size_t double_text_bytes(double v, unsigned int decimals) {
 // so a wide result of NULLs is bounded too), and per row its list node and end pointer.
 constexpr size_t kCellBytes = sizeof(char *), kRowBytes = 4 * sizeof(char *);
 
-// True: the value belongs to a row the DOM consumer should not see.
-bool skip_value(size_t n) {
+// True: the value belongs to a row the DOM consumer should not see. bytes() gives the value's
+// size; it runs only for a value of a passed-on row that is still within the budget.
+template <typename Bytes>
+bool skip_value_sized(Bytes bytes) {
   RowBudget *b = tl_budget;
-  return b != nullptr && (!b->in_row || !take(kCellBytes + n));
+  return b != nullptr && (!b->in_row || b->row_over || !take(kCellBytes + bytes()));
+}
+
+bool skip_value(size_t n) {
+  return skip_value_sized([n] { return n; });
 }
 
 DEFINE_BOOL_METHOD(bounded_start_row, (SRV_CTX_H ctx)) {
@@ -304,8 +310,10 @@ DEFINE_BOOL_METHOD(bounded_get_decimal, (SRV_CTX_H ctx, const DECIMAL_T_H v)) {
 }
 
 DEFINE_BOOL_METHOD(bounded_get_double, (SRV_CTX_H ctx, double v, unsigned int decimals)) {
-  return skip_value(double_text_bytes(v, decimals)) ? false
-                                                    : dom_get_double->get(ctx, v, decimals);
+  // Formatting costs time: dropped rows skip it.
+  return skip_value_sized([&] { return double_text_bytes(v, decimals); })
+             ? false
+             : dom_get_double->get(ctx, v, decimals);
 }
 
 DEFINE_BOOL_METHOD(bounded_get_date, (SRV_CTX_H ctx, const MYSQL_TIME_H v)) {
