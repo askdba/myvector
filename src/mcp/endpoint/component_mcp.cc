@@ -45,11 +45,13 @@
 #include <openssl/evp.h>
 
 #include <atomic>
+#include <cctype>
 #include <cstring>
 #include <memory>
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "http/base/request.h"
 #include "http/base/request_handler.h"
@@ -90,7 +92,9 @@ namespace {
 unsigned long opt_port = 33480;
 char *opt_account = nullptr;       // user@host the token maps to
 char *opt_token_sha256 = nullptr;  // hex SHA-256 of the bearer token
-bool port_registered = false, account_registered = false, token_registered = false;
+char *opt_mask_columns = nullptr;  // comma-separated column name patterns to mask
+bool port_registered = false, account_registered = false, token_registered = false,
+     mask_registered = false;
 
 bool register_sysvars() {
   INTEGRAL_CHECK_ARG(ulong) port_arg;
@@ -126,6 +130,17 @@ bool register_sysvars() {
       return true;
     token_registered = true;
   }
+  {
+    STR_CHECK_ARG(str) mask_arg;
+    mask_arg.def_val = nullptr;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "mask_columns", PLUGIN_VAR_STR | PLUGIN_VAR_MEMALLOC | PLUGIN_VAR_READONLY,
+            "Comma-separated patterns; result columns whose names contain one (case-insensitive) "
+            "have their values replaced by ********",
+            nullptr, nullptr, &mask_arg, &opt_mask_columns))
+      return true;
+    mask_registered = true;
+  }
   return false;
 }
 
@@ -138,6 +153,7 @@ bool unregister_sysvars() {
     else
       registered = false;
   };
+  drop(mask_registered, "mask_columns");
   drop(token_registered, "token_sha256");
   drop(account_registered, "account");
   drop(port_registered, "port");
@@ -252,6 +268,40 @@ size_t serialized_size(const rapidjson::Value &v) {
   return b.GetSize();
 }
 
+// Column masking, as mysql-mcp-server's MYSQL_MCP_MASK_COLUMNS: a result column whose name
+// contains one of the mcp_http.mask_columns patterns (ASCII case-insensitive; empty patterns
+// ignored) has every non-NULL value replaced by "********".
+constexpr char kMasked[] = "********";
+
+std::string ascii_lower(std::string s) {
+  for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return s;
+}
+
+std::vector<std::string> mask_patterns() {
+  std::vector<std::string> out;
+  if (opt_mask_columns == nullptr) return out;
+  const std::string all = opt_mask_columns;
+  size_t b = 0;
+  while (b <= all.size()) {
+    size_t e = all.find(',', b);
+    if (e == std::string::npos) e = all.size();
+    size_t x = b, y = e;
+    while (x < y && std::isspace(static_cast<unsigned char>(all[x]))) ++x;
+    while (y > x && std::isspace(static_cast<unsigned char>(all[y - 1]))) --y;
+    if (y > x) out.push_back(ascii_lower(all.substr(x, y - x)));
+    b = e + 1;
+  }
+  return out;
+}
+
+bool masked_column(const std::string &name, const std::vector<std::string> &patterns) {
+  const std::string lower = ascii_lower(name);
+  for (const auto &p : patterns)
+    if (lower.find(p) != std::string::npos) return true;
+  return false;
+}
+
 MYSQL_THD session_thd(MYSQL_H h) {
   auto *handle = reinterpret_cast<Mysql_handle *>(h);
   return handle == nullptr || handle->mysql == nullptr ? nullptr
@@ -320,6 +370,9 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
                                                             &name);
           names[i] = name != nullptr ? name : "col" + std::to_string(i + 1);
         }
+        const std::vector<std::string> patterns = mask_patterns();
+        std::vector<bool> masked(n);
+        for (unsigned int i = 0; i < n; ++i) masked[i] = masked_column(names[i], patterns);
         auto &a = r.rows.GetAllocator();
         MYSQL_ROW_H row = nullptr;
         ulong *lengths = nullptr;
@@ -333,7 +386,9 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
           rapidjson::Value obj(rapidjson::kObjectType);
           for (unsigned int i = 0; i < n; ++i) {
             rapidjson::Value k(names[i].c_str(), a), v;
-            if (row[i] != nullptr)
+            if (row[i] != nullptr && masked[i])
+              v.SetString(kMasked, sizeof(kMasked) - 1);
+            else if (row[i] != nullptr)
               cell_value(row[i], lengths ? lengths[i] : std::strlen(row[i]), &v, a);
             obj.AddMember(k, v, a);
           }

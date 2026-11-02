@@ -70,7 +70,11 @@ expect "no MCP session left" "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.sessions_conne
 
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).
 sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
-expect "reinstall mapped to app" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX'")" "^$"
+expect "reinstall mapped to app, with masked columns" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.mask_columns = ' secret, PASS ,,'")" "^$"
+# Column masking, as mysql-mcp-server's MYSQL_MCP_MASK_COLUMNS: by column name, substring,
+# case-insensitive; NULL stays NULL.
+expect "masked columns: values replaced, NULL kept, others untouched" "$(call run_query '{"sql":"SELECT \"a\" AS user_password, \"b\" AS SecretKey, NULL AS secret_null, \"c\" AS ok"}')" 'user_password\\":\\"\*\*\*\*\*\*\*\*\\",\\"SecretKey\\":\\"\*\*\*\*\*\*\*\*\\",\\"secret_null\\":null,\\"ok\\":\\"c\\"'
+expect "masked columns: binary values are masked too" "$(call run_query '{"sql":"SELECT X'"'"'FF'"'"' AS pass_hash"}')" 'pass_hash\\":\\"\*\*\*\*\*\*\*\*\\"\}'
 expect "guard: an account without MCP_USER is not restricted" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (7)"}')" '"isError":false'
 expect "the guard cannot be uninstalled while the endpoint is installed" "$(sql "UNINSTALL COMPONENT 'file://component_mcp_guard'")" "ERROR"
 expect "uninstall component_mcp" "$(sql "UNINSTALL COMPONENT 'file://component_mcp'")" "^$"

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`component_mcp` column masking** (RFC 0001 Phase 5, [#256](https://github.com/askdba/myvector/issues/256)). `mcp_http.mask_columns` (new, read-only) applies mysql-mcp-server's `MYSQL_MCP_MASK_COLUMNS` rules: values of result columns whose names contain a pattern (case-insensitive) become `********`, NULL stays NULL. This closes the RFC's masking parity gap, so the endpoint does not need to disable `run_query` when masking is configured. `scripts/test-mcp-endpoint.sh` checks masked, unmasked, NULL and binary values.
 - **`component_mcp` (RFC 0001 Phase 4 spike, MySQL 26.10).** An MCP Streamable HTTP endpoint inside `mysqld` on MySQL Router's HTTP server (the libraries `component_mysql_rest_service` links), built in the server tree with `MYVECTOR_BUILD_MCP_ENDPOINT=ON ./scripts/build-component-26.10-docker.sh`. It is not for production.
   - **Endpoint:** loopback, plain HTTP, one bearer token (`mcp_http.token_sha256`) mapped to one account (`mcp_http.account`).
   - **Tools:** `list_databases` (tool pack) and `run_query` (one statement).

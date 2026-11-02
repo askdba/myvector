@@ -192,7 +192,7 @@ An MCP **Streamable HTTP** endpoint (JSON-RPC 2.0 over `POST /mcp`) inside `mysq
 - **Tools:** `list_databases` (through the `mysql_mcp` tool pack) and `run_query` (one statement).
 - **Results:** `run_query` returns at most 1000 rows and 4 MB of serialized rows (escapes counted), as `{"rows": [{"col": value, ...}], "truncated": true|false}`. A value is a JSON string, `null`, or `{"base64": "..."}` when its bytes are not valid UTF-8 (binary data). The session's `sql_select_limit` stops the server at 1001 rows for statements without their own `LIMIT`.
   - **Known spike limit:** the command service's default consumer collects every row while a statement runs, so a statement with a large explicit `LIMIT` is buffered in full in `mysqld` before the reply is cut. Bounding that needs a custom row consumer (`mysql_command_consumer` services), which is Phase 5 work.
-- **Missing:** the `account_locked` check, a per-account session cap and column masking. All are in Phase 5.
+- **Missing:** the `account_locked` check and a per-account session cap. Both are in Phase 5.
 
 ### Build and install
 
@@ -225,6 +225,7 @@ INSTALL COMPONENT 'file://component_mcp'
 | `mcp_http.port` | TCP port on `127.0.0.1` (read-only, default 33480) |
 | `mcp_http.account` | The account (`user@host`) every request runs as (read-only) |
 | `mcp_http.token_sha256` | Hex SHA-256 of the bearer token (read-only, not persisted, sensitive: readable only with `SENSITIVE_VARIABLES_OBSERVER`). Requests without the matching `Authorization: Bearer <token>` get 401 |
+| `mcp_http.mask_columns` | Comma-separated patterns (read-only, default none). A result column whose name contains one, ASCII case-insensitive, has every non-NULL value replaced by `********`. These are the rules of mysql-mcp-server's `MYSQL_MCP_MASK_COLUMNS`, so the same setting gives the same output. Like there, it matches result column names: an alias (`SELECT password AS p`) is not masked, so use grants or views for data an account must not see |
 
 ### How a tool call runs
 
