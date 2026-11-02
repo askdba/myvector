@@ -72,10 +72,18 @@ long_reply=$(call run_query '{"sql":"SELECT REPEAT(\"x\", 100) AS v FROM d1.big 
 expect "LIMIT 1000000: the reply is bounded" "$(printf '%s' "$long_reply" | grep -o '\\"v\\":' | wc -l) $(printf '%s' "$long_reply" | grep -o 'truncated\\":true' | head -1)" "^1000 truncated"
 expect "LIMIT 1000000: rows past the bound are not retained" "$(( ($(hwm_kb) - hwm0) / 1024 )) MiB" "^([0-9]|[12][0-9]|3[01]) MiB$"
 expect "a NULL-only result is not cut" "$(call run_query '{"sql":"SELECT NULL AS z FROM d1.big LIMIT 3"}')" 'z\\":null\},\{\\"z\\":null\},\{\\"z\\":null\}\],\\"truncated\\":false'
-# NULL cells count against the byte budget too (the DOM consumer keeps a pointer per cell).
-nulls=$(seq -s, -f 'NULL AS n%g' 1 2000)
+# NULL cells count against the byte budget too (the DOM consumer keeps a pointer per cell): 1001
+# rows of 8000 NULLs would hold 64 MB. The reply's own 4 MB cut comes first either way, so the
+# check is on mysqld's peak RSS. Building the reply for 8000 columns takes memory of its own, so
+# the same query with LIMIT 60 (under the budget, so retained the same way either way) runs first:
+# the large LIMIT may then raise the peak only by what the consumer retains past it: under 16 MiB
+# (measured +3 MiB; without the NULL accounting, +37 MiB).
+nulls=$(seq -s, -f 'NULL AS n%g' 1 8000)
+call run_query "{\"sql\":\"SELECT $nulls FROM d1.big LIMIT 60\"}" >/dev/null
+hwm0=$(hwm_kb)
 null_reply=$(call run_query "{\"sql\":\"SELECT $nulls FROM d1.big a, d1.big b LIMIT 5000\"}")
-expect "2000 NULL columns: bounded and truncated" "$(printf '%s' "$null_reply" | grep -o 'n2000\\":null' | wc -l | tr -d ' ') $(printf '%s' "$null_reply" | grep -o 'truncated\\":true' | head -1)" "^[1-9][0-9]{0,2} truncated"
+expect "8000 NULL columns: the reply is bounded and truncated" "$(printf '%s' "$null_reply" | grep -o 'truncated\\":true' | head -1)" "truncated"
+expect "8000 NULL columns: NULL cells past the bound are not retained" "$(( ($(hwm_kb) - hwm0) / 1024 )) MiB" "^([0-9]|1[0-5]) MiB$"
 expect "an error after some rows is reported, not a partial result" "$(call run_query '{"sql":"SELECT n, IF(n = 500, (SELECT 1 UNION SELECT 2), n) AS x FROM d1.big"}')" 'Subquery returns more than 1 row.*"isError":true'
 expect "an error past the row bound is reported" "$(call run_query '{"sql":"SELECT n, IF(n = 1500, (SELECT 1 UNION SELECT 2), n) AS x FROM d1.big a LIMIT 1000000"}')" 'Subquery returns more than 1 row.*"isError":true'
 expect "run_query read as the mapped account" "$(call run_query '{"sql":"SELECT i, CURRENT_USER() AS who FROM d1.t"}')" 'i\\":\\"1\\",\\"who\\":\\"mcp@%'

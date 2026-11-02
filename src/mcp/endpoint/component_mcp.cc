@@ -232,8 +232,10 @@ bool take(size_t n) {
   return true;
 }
 
-// Fixed sizes for the text form of non-string values (DOM ctx stages them as text).
-constexpr size_t kNumberBytes = 24, kDecimalBytes = 88, kTimeBytes = 32;
+// Upper bounds for the text form of non-string values (DOM ctx stages them as text). A DOUBLE
+// with a fixed number of decimals is printed in full (my_fcvt), up to the server's
+// FLOATING_POINT_BUFFER (311 + DECIMAL_NOT_SPECIFIED = 350) bytes.
+constexpr size_t kNumberBytes = 24, kDoubleBytes = 350, kDecimalBytes = 88, kTimeBytes = 32;
 // What the DOM consumer keeps besides the values: a pointer per cell (NULL cells included,
 // so a wide result of NULLs is bounded too), and per row its list node and end pointer.
 constexpr size_t kCellBytes = sizeof(char *), kRowBytes = 4 * sizeof(char *);
@@ -293,7 +295,7 @@ DEFINE_BOOL_METHOD(bounded_get_decimal, (SRV_CTX_H ctx, const DECIMAL_T_H v)) {
 }
 
 DEFINE_BOOL_METHOD(bounded_get_double, (SRV_CTX_H ctx, double v, unsigned int decimals)) {
-  return skip_value(kNumberBytes) ? false : dom_get_double->get(ctx, v, decimals);
+  return skip_value(kDoubleBytes) ? false : dom_get_double->get(ctx, v, decimals);
 }
 
 DEFINE_BOOL_METHOD(bounded_get_date, (SRV_CTX_H ctx, const MYSQL_TIME_H v)) {

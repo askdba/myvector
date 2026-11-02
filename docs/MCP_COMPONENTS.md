@@ -257,7 +257,7 @@ Facts recorded for Phase 5:
 
 - bearer auth, `initialize`, `notifications/initialized`, `tools/list` and the JSON-RPC errors;
 - both tools, and that `run_query` runs as the mapped account;
-- the result bounds: replies cut at 1000 rows or 4 MB, and the bounded consumer (peak RSS for `LIMIT 1000000` and for 1 MB rows, 2000 NULL columns, NULL-only rows, errors raised after some rows or past the bound);
+- the result bounds: replies cut at 1000 rows or 4 MB, and the bounded consumer (peak RSS for `LIMIT 1000000` and for 1 MB rows, 8000 NULL columns, NULL-only rows, errors raised after some rows or past the bound);
 - that through the endpoint an `MCP_USER` account's write and a `mysql` read are refused by the guard, and a multi-statement is a parse error;
 - that nothing is written and no session leaks;
 - that remapped to an account without `MCP_USER`, the same write is not restricted.
