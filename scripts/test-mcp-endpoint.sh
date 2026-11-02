@@ -38,6 +38,7 @@ sql "INSTALL COMPONENT 'file://component_mcp_guard'; GRANT MCP_ADMIN ON *.* TO r
 CREATE DATABASE d1; CREATE TABLE d1.t (i INT); INSERT INTO d1.t VALUES (1);
 CREATE TABLE d1.big (n INT); INSERT INTO d1.big WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 999) SELECT n FROM s;
 INSERT INTO d1.big SELECT n + 1000 FROM d1.big WHERE n <= 500;
+CREATE TABLE d1.dbl (d DOUBLE(255,0)); INSERT INTO d1.dbl VALUES (1e250);
 CREATE USER mcp@'%' IDENTIFIED BY 'p'; GRANT SELECT, INSERT ON d1.* TO mcp@'%'; GRANT SELECT ON mysql.* TO mcp@'%';
 GRANT EXECUTE ON mysql_mcp.* TO mcp@'%'; GRANT MCP_USER ON *.* TO mcp@'%';
 CREATE USER app@'%' IDENTIFIED BY 'p'; GRANT SELECT, INSERT ON d1.* TO app@'%'; GRANT EXECUTE ON mysql_mcp.* TO app@'%';"
@@ -82,7 +83,11 @@ nulls=$(seq -s, -f 'NULL AS n%g' 1 8000)
 call run_query "{\"sql\":\"SELECT $nulls FROM d1.big LIMIT 60\"}" >/dev/null
 hwm0=$(hwm_kb)
 null_reply=$(call run_query "{\"sql\":\"SELECT $nulls FROM d1.big a, d1.big b LIMIT 5000\"}")
-expect "8000 NULL columns: the reply is bounded and truncated" "$(printf '%s' "$null_reply" | grep -o 'truncated\\":true' | head -1)" "truncated"
+expect "8000 NULL columns: the reply is bounded and truncated" "$(printf '%s' "$null_reply" | grep -o 'n8000\\":null' | head -1) $(printf '%s' "$null_reply" | grep -o 'truncated\\":true' | head -1)" 'n8000\\":null truncated'
+# DOUBLE values are charged their formatted length: 500 rows of 100 short DOUBLEs fit.
+dbls=$(seq -s, -f 'n * 1.5e0 AS d%g' 1 100)
+expect "500 rows of 100 DOUBLE columns are not cut" "$(call run_query "{\"sql\":\"SELECT $dbls FROM d1.big LIMIT 500\"}" | grep -o 'd100\\":' | wc -l | tr -d ' ')" "^500$"
+expect "a fixed-decimal DOUBLE (251 digits) is returned in full" "$(call run_query '{"sql":"SELECT d AS big FROM d1.dbl"}' | grep -o 'big\\":\\"1[0-9]*' | wc -c | tr -d ' ')" "^260$"
 expect "8000 NULL columns: NULL cells past the bound are not retained" "$(( ($(hwm_kb) - hwm0) / 1024 )) MiB" "^([0-9]|1[0-5]) MiB$"
 expect "an error after some rows is reported, not a partial result" "$(call run_query '{"sql":"SELECT n, IF(n = 500, (SELECT 1 UNION SELECT 2), n) AS x FROM d1.big"}')" 'Subquery returns more than 1 row.*"isError":true'
 expect "an error past the row bound is reported" "$(call run_query '{"sql":"SELECT n, IF(n = 1500, (SELECT 1 UNION SELECT 2), n) AS x FROM d1.big a LIMIT 1000000"}')" 'Subquery returns more than 1 row.*"isError":true'

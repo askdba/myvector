@@ -41,6 +41,7 @@
 #include <mysql/components/services/mysql_command_services.h>
 #include <mysql/components/services/event_tracking_query_service.h>
 #include <mysqld_error.h>
+#include "mysql/strings/dtoa.h"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -232,10 +233,18 @@ bool take(size_t n) {
   return true;
 }
 
-// Upper bounds for the text form of non-string values (DOM ctx stages them as text). A DOUBLE
-// with a fixed number of decimals is printed in full (my_fcvt), up to the server's
-// FLOATING_POINT_BUFFER (311 + DECIMAL_NOT_SPECIFIED = 350) bytes.
-constexpr size_t kNumberBytes = 24, kDoubleBytes = 350, kDecimalBytes = 88, kTimeBytes = 32;
+// Upper bounds for the text form of non-string values (DOM ctx stages them as text). DOUBLE
+// values are charged their exact length instead (double_text_bytes).
+constexpr size_t kNumberBytes = 24, kDecimalBytes = 88, kTimeBytes = 32;
+
+// The length of a DOUBLE as the DOM consumer formats it: in full with a fixed number of
+// decimals (my_fcvt, up to FLOATING_POINT_BUFFER bytes), otherwise in %g style (my_gcvt).
+size_t double_text_bytes(double v, unsigned int decimals) {
+  char buf[FLOATING_POINT_BUFFER + 1];
+  return decimals < DECIMAL_NOT_SPECIFIED
+             ? my_fcvt(v, static_cast<int>(decimals), buf, nullptr)
+             : my_gcvt(v, MY_GCVT_ARG_FLOAT, FLOATING_POINT_BUFFER, buf, nullptr);
+}
 // What the DOM consumer keeps besides the values: a pointer per cell (NULL cells included,
 // so a wide result of NULLs is bounded too), and per row its list node and end pointer.
 constexpr size_t kCellBytes = sizeof(char *), kRowBytes = 4 * sizeof(char *);
@@ -295,7 +304,8 @@ DEFINE_BOOL_METHOD(bounded_get_decimal, (SRV_CTX_H ctx, const DECIMAL_T_H v)) {
 }
 
 DEFINE_BOOL_METHOD(bounded_get_double, (SRV_CTX_H ctx, double v, unsigned int decimals)) {
-  return skip_value(kDoubleBytes) ? false : dom_get_double->get(ctx, v, decimals);
+  return skip_value(double_text_bytes(v, decimals)) ? false
+                                                    : dom_get_double->get(ctx, v, decimals);
 }
 
 DEFINE_BOOL_METHOD(bounded_get_date, (SRV_CTX_H ctx, const MYSQL_TIME_H v)) {
