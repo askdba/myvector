@@ -201,7 +201,8 @@ constexpr size_t kMaxBytes = 4u << 20;
 //
 // A run_as() session selects these row and value services instead of the default ones. Each
 // passes rows on to the default (DOM) consumer, so store_result() and fetch_row() work as
-// before, until the statement has produced kMaxRows + 1 rows or kMaxBytes of value bytes;
+// before, until the statement has produced kMaxRows + 1 rows or kMaxBytes (values, plus the
+// DOM consumer's per-cell and per-row overhead);
 // later rows are dropped as they arrive. A row that crosses the byte budget is aborted in the
 // DOM consumer, so it is never half stored. The statement runs on the calling thread, which
 // holds its budget in tl_budget; without one, the services pass everything on.
@@ -233,11 +234,14 @@ bool take(size_t n) {
 
 // Fixed sizes for the text form of non-string values (DOM ctx stages them as text).
 constexpr size_t kNumberBytes = 24, kDecimalBytes = 88, kTimeBytes = 32;
+// What the DOM consumer keeps besides the values: a pointer per cell (NULL cells included,
+// so a wide result of NULLs is bounded too), and per row its list node and end pointer.
+constexpr size_t kCellBytes = sizeof(char *), kRowBytes = 4 * sizeof(char *);
 
 // True: the value belongs to a row the DOM consumer should not see.
 bool skip_value(size_t n) {
   RowBudget *b = tl_budget;
-  return b != nullptr && (!b->in_row || !take(n));
+  return b != nullptr && (!b->in_row || !take(kCellBytes + n));
 }
 
 DEFINE_BOOL_METHOD(bounded_start_row, (SRV_CTX_H ctx)) {
@@ -250,6 +254,7 @@ DEFINE_BOOL_METHOD(bounded_start_row, (SRV_CTX_H ctx)) {
     return false;
   }
   b->in_row = true;
+  take(kRowBytes);  // over budget, the row is marked and end_row() aborts it
   return dom_row_factory->start_row(ctx);
 }
 
