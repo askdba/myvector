@@ -37,6 +37,7 @@
 #include <mysql/components/services/audit_api_connection_service.h>
 #include <mysql/components/services/component_sys_var_service.h>
 #include <mysql/components/services/log_builtins.h>
+#include <mysql/components/services/mysql_command_consumer.h>
 #include <mysql/components/services/mysql_command_services.h>
 #include <mysql/components/services/event_tracking_query_service.h>
 #include <mysqld_error.h>
@@ -78,6 +79,15 @@ REQUIRES_SERVICE_PLACEHOLDER(mysql_audit_api_connection);
 // component_mcp_guard's query consumer: requiring it makes the server refuse to install the
 // endpoint without the guard, and to uninstall the guard while the endpoint is installed.
 REQUIRES_SERVICE_PLACEHOLDER_AS(event_tracking_query, mcp_guard_query);
+// The server's default (DOM) text consumer: the bounded consumer below passes rows on to it.
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_row_factory_v1, dom_row_factory);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_null_v1, dom_get_null);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_integer_v1, dom_get_integer);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_longlong_v1, dom_get_longlong);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_decimal_v1, dom_get_decimal);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_double_v1, dom_get_double);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_date_time_v1, dom_get_date_time);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_string_v1, dom_get_string);
 
 // Defined by Router's harness (its component log handler); set at init.
 extern SERVICE_TYPE(log_builtins) *log_bi;
@@ -180,13 +190,144 @@ bool token_ok(const std::string *authorization) {
 
 // Result bounds: the reply keeps at most kMaxRows rows and kMaxBytes of serialized rows (the
 // tool result then escapes them once more inside its text, so the HTTP reply stays well under
-// its 16 MiB limit). The session's
-// sql_select_limit stops the server past kMaxRows + 1 rows for statements without their own
-// LIMIT. The command service's default consumer collects every row while the statement runs
-// (store_result only hands that buffer over), so a statement with a large explicit LIMIT is
-// still held in full by the server: a bounded custom consumer is Phase 5 work.
+// its 16 MiB limit). The session's sql_select_limit stops the server past kMaxRows + 1 rows
+// for statements without their own LIMIT. For the others, the bounded consumer below keeps
+// the server from retaining more than kMaxRows + 1 rows and kMaxBytes of values while the
+// statement runs (the default consumer collects every row; store_result only hands them over).
 constexpr unsigned long long kMaxRows = 1000;
 constexpr size_t kMaxBytes = 4u << 20;
+
+// ----- Bounded text consumer ----------------------------------------------------------------
+//
+// A run_as() session selects these row and value services instead of the default ones. Each
+// passes rows on to the default (DOM) consumer, so store_result() and fetch_row() work as
+// before, until the statement has produced kMaxRows + 1 rows or kMaxBytes of value bytes;
+// later rows are dropped as they arrive. A row that crosses the byte budget is aborted in the
+// DOM consumer, so it is never half stored. The statement runs on the calling thread, which
+// holds its budget in tl_budget; without one, the services pass everything on.
+
+struct RowBudget {
+  unsigned long long max_rows = kMaxRows + 1;
+  size_t max_bytes = kMaxBytes;
+  unsigned long long kept = 0;
+  size_t bytes = 0;
+  bool in_row = false;    // the current row was passed on to the DOM consumer
+  bool row_over = false;  // the current row crossed the byte budget
+  bool full = false;      // later rows are dropped
+  bool dropped = false;   // a row was dropped: the result is truncated
+};
+
+thread_local RowBudget *tl_budget = nullptr;
+
+// Budget for one value of a passed-on row; false drops it (and the rest of the row).
+bool take(size_t n) {
+  RowBudget *b = tl_budget;
+  if (b->row_over) return false;
+  if (n > b->max_bytes - b->bytes) {
+    b->row_over = b->full = b->dropped = true;
+    return false;
+  }
+  b->bytes += n;
+  return true;
+}
+
+// Fixed sizes for the text form of non-string values (DOM ctx stages them as text).
+constexpr size_t kNumberBytes = 24, kDecimalBytes = 88, kTimeBytes = 32;
+
+// True: the value belongs to a row the DOM consumer should not see.
+bool skip_value(size_t n) {
+  RowBudget *b = tl_budget;
+  return b != nullptr && (!b->in_row || !take(n));
+}
+
+DEFINE_BOOL_METHOD(bounded_start_row, (SRV_CTX_H ctx)) {
+  RowBudget *b = tl_budget;
+  if (b == nullptr) return dom_row_factory->start_row(ctx);
+  b->row_over = false;
+  if (b->full) {
+    b->in_row = false;
+    b->dropped = true;
+    return false;
+  }
+  b->in_row = true;
+  return dom_row_factory->start_row(ctx);
+}
+
+DEFINE_BOOL_METHOD(bounded_abort_row, (SRV_CTX_H ctx)) {
+  RowBudget *b = tl_budget;
+  if (b == nullptr) return dom_row_factory->abort_row(ctx);
+  if (!b->in_row) return false;
+  b->in_row = false;
+  return dom_row_factory->abort_row(ctx);
+}
+
+DEFINE_BOOL_METHOD(bounded_end_row, (SRV_CTX_H ctx)) {
+  RowBudget *b = tl_budget;
+  if (b == nullptr) return dom_row_factory->end_row(ctx);
+  if (!b->in_row) return false;
+  b->in_row = false;
+  if (b->row_over) return dom_row_factory->abort_row(ctx);
+  if (++b->kept >= b->max_rows) b->full = true;
+  return dom_row_factory->end_row(ctx);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_null, (SRV_CTX_H ctx)) {
+  return skip_value(0) ? false : dom_get_null->get(ctx);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_integer, (SRV_CTX_H ctx, long long v)) {
+  return skip_value(kNumberBytes) ? false : dom_get_integer->get(ctx, v);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_longlong, (SRV_CTX_H ctx, long long v, unsigned int is_unsigned)) {
+  return skip_value(kNumberBytes) ? false : dom_get_longlong->get(ctx, v, is_unsigned);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_decimal, (SRV_CTX_H ctx, const DECIMAL_T_H v)) {
+  return skip_value(kDecimalBytes) ? false : dom_get_decimal->get(ctx, v);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_double, (SRV_CTX_H ctx, double v, unsigned int decimals)) {
+  return skip_value(kNumberBytes) ? false : dom_get_double->get(ctx, v, decimals);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_date, (SRV_CTX_H ctx, const MYSQL_TIME_H v)) {
+  return skip_value(kTimeBytes) ? false : dom_get_date_time->get_date(ctx, v);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_time, (SRV_CTX_H ctx, const MYSQL_TIME_H v, unsigned int p)) {
+  return skip_value(kTimeBytes) ? false : dom_get_date_time->get_time(ctx, v, p);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_datetime, (SRV_CTX_H ctx, const MYSQL_TIME_H v, unsigned int p)) {
+  return skip_value(kTimeBytes) ? false : dom_get_date_time->get_datatime(ctx, v, p);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_string,
+                   (SRV_CTX_H ctx, const char *const v, size_t n, const char *const coll)) {
+  return skip_value(n) ? false : dom_get_string->get_string(ctx, v, n, coll);
+}
+
+// The option and service name pairs a run_as() session sets.
+constexpr std::pair<int, const char *> kBoundedConsumer[] = {
+    {MYSQL_TEXT_CONSUMER_ROW_FACTORY, "mysql_text_consumer_row_factory_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_GET_NULL, "mysql_text_consumer_get_null_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_GET_INTEGER, "mysql_text_consumer_get_integer_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_GET_LONGLONG, "mysql_text_consumer_get_longlong_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_GET_DECIMAL, "mysql_text_consumer_get_decimal_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_GET_DOUBLE, "mysql_text_consumer_get_double_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_GET_DATE_TIME, "mysql_text_consumer_get_date_time_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_GET_STRING, "mysql_text_consumer_get_string_v1.mcp"},
+};
+
+// Sets tl_budget for the calling thread while a statement runs.
+class BudgetScope {
+ public:
+  explicit BudgetScope(RowBudget *b) { tl_budget = b; }
+  ~BudgetScope() { tl_budget = nullptr; }
+  BudgetScope(const BudgetScope &) = delete;
+  BudgetScope &operator=(const BudgetScope &) = delete;
+};
 
 struct SqlResult {
   bool ok = false;
@@ -266,6 +407,21 @@ void read_error(MYSQL_H h, SqlResult *r) {
   r->error = msg != nullptr ? msg : "";
 }
 
+bool set_bounded_consumer(MYSQL_H h) {
+  for (const auto &[option, service] : kBoundedConsumer)
+    if (mysql_service_mysql_command_options->set(h, option, service)) return false;
+  return true;
+}
+
+// Runs sql under a fresh row budget; *truncated reports whether rows were dropped.
+bool bounded_query(MYSQL_H h, const std::string &sql, bool *truncated) {
+  RowBudget budget;
+  BudgetScope scope(&budget);
+  const bool failed = mysql_service_mysql_command_query->query(h, sql.data(), sql.size());
+  *truncated = budget.dropped;
+  return failed;
+}
+
 // Runs one statement as account (user@host) and returns its first result set.
 SqlResult run_as(const std::string &account, const std::string &sql) {
   SqlResult r;
@@ -288,7 +444,7 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
       mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_CLIENT_FLAGS, &client_flags) ||
       mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_USER_NAME, user.c_str()) ||
       mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_HOST_NAME, host.c_str()) ||
-      mysql_service_mysql_command_factory->connect(h)) {
+      !set_bounded_consumer(h) || mysql_service_mysql_command_factory->connect(h)) {
     read_error(h, &r);
     if (r.error.empty()) r.error = "cannot open a session for " + account;
   } else {
@@ -301,7 +457,7 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
       r.error = "session refused";
     } else if (mysql_service_mysql_command_query->query(h, kLimit.data(), kLimit.size())) {
       read_error(h, &r);
-    } else if (mysql_service_mysql_command_query->query(h, sql.data(), sql.size())) {
+    } else if (bounded_query(h, sql, &r.truncated)) {
       read_error(h, &r);
     } else {
       r.ok = true;
@@ -592,8 +748,32 @@ mysql_service_status_t mcp_deinit() {
 
 }  // namespace
 
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_row_factory_v1)
+bounded_start_row, bounded_abort_row, bounded_end_row END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_null_v1)
+bounded_get_null END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_integer_v1)
+bounded_get_integer END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_longlong_v1)
+bounded_get_longlong END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_decimal_v1)
+bounded_get_decimal END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_double_v1)
+bounded_get_double END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_date_time_v1)
+bounded_get_date, bounded_get_time, bounded_get_datetime END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_string_v1)
+bounded_get_string END_SERVICE_IMPLEMENTATION();
+
 BEGIN_COMPONENT_PROVIDES(mcp)
-END_COMPONENT_PROVIDES();
+PROVIDES_SERVICE(mcp, mysql_text_consumer_row_factory_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_null_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_integer_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_longlong_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_decimal_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_double_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_date_time_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_string_v1), END_COMPONENT_PROVIDES();
 
 BEGIN_COMPONENT_REQUIRES(mcp)
 REQUIRES_SERVICE(log_builtins), REQUIRES_SERVICE(log_builtins_string),
@@ -604,6 +784,22 @@ REQUIRES_SERVICE(log_builtins), REQUIRES_SERVICE(log_builtins_string),
     REQUIRES_SERVICE(mysql_command_field_metadata), REQUIRES_SERVICE(mysql_command_error_info),
     REQUIRES_SERVICE(mysql_command_thread), REQUIRES_SERVICE(mysql_audit_api_connection),
     REQUIRES_SERVICE_IMPLEMENTATION_AS(event_tracking_query, mcp_guard, mcp_guard_query),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_row_factory_v1, mysql_server,
+                                       dom_row_factory),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_null_v1, mysql_server,
+                                       dom_get_null),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_integer_v1, mysql_server,
+                                       dom_get_integer),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_longlong_v1, mysql_server,
+                                       dom_get_longlong),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_decimal_v1, mysql_server,
+                                       dom_get_decimal),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_double_v1, mysql_server,
+                                       dom_get_double),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_date_time_v1, mysql_server,
+                                       dom_get_date_time),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_string_v1, mysql_server,
+                                       dom_get_string),
     END_COMPONENT_REQUIRES();
 
 BEGIN_COMPONENT_METADATA(mcp)
