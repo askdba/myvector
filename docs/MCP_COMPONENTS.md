@@ -192,7 +192,7 @@ An MCP **Streamable HTTP** endpoint (JSON-RPC 2.0 over `POST /mcp`) inside `mysq
 - **Tools:** `list_databases` (through the `mysql_mcp` tool pack) and `run_query` (one statement).
 - **Results:** `run_query` returns at most 1000 rows and 4 MB of serialized rows (escapes counted), as `{"rows": [{"col": value, ...}], "truncated": true|false}`. A value is a JSON string, `null`, or `{"base64": "..."}` when its bytes are not valid UTF-8 (binary data). The session's `sql_select_limit` stops the server at 1001 rows for statements without their own `LIMIT`.
   - **Known spike limit:** the command service's default consumer collects every row while a statement runs, so a statement with a large explicit `LIMIT` is buffered in full in `mysqld` before the reply is cut. Bounding that needs a custom row consumer (`mysql_command_consumer` services), which is Phase 5 work.
-- **Missing:** the `account_locked` check, a per-account session cap and column masking. All are in Phase 5.
+- **Missing:** the `account_locked` check and column masking. Both are in Phase 5.
 
 ### Build and install
 
@@ -223,6 +223,8 @@ INSTALL COMPONENT 'file://component_mcp'
 | Variable | Meaning |
 |---|---|
 | `mcp_http.port` | TCP port on `127.0.0.1` (read-only, default 33480) |
+| `mcp_http.threads` | I/O worker threads (read-only, default 4, 1 to 64). Each serves one call at a time, so this many calls run at once; connections are assigned to the workers in turn |
+| `mcp_http.max_sessions_per_account` | Concurrent endpoint sessions per account (read-only, default 4, 1 to 1024). A call over the cap fails with error 1203. The server's `max_user_connections` does not apply to these sessions |
 | `mcp_http.account` | The account (`user@host`) every request runs as (read-only) |
 | `mcp_http.token_sha256` | Hex SHA-256 of the bearer token (read-only, not persisted, sensitive: readable only with `SENSITIVE_VARIABLES_OBSERVER`). Requests without the matching `Authorization: Bearer <token>` get 401 |
 
@@ -240,7 +242,7 @@ So an account with `MCP_USER` is read-only through the endpoint, and its schema 
 Facts recorded for Phase 5:
 
 - **Locked accounts:** impersonation skips the login checks, so a locked account (`ACCOUNT LOCK`) can be impersonated. The endpoint must check `account_locked` itself (26.10 has the lookup).
-- **Connection limits:** `max_user_connections` is not enforced for these sessions, so the endpoint needs its own per-account cap. They do count against `max_connections`.
+- **Connection limits:** `max_user_connections` is not enforced for these sessions, so the endpoint has its own per-account cap (`mcp_http.max_sessions_per_account`, Phase 5). They count against `max_connections`, and by default the command service lets them exceed it; the endpoint turns that off (`MYSQL_COMMAND_BYPASS_MAX_CONNECTIONS`, 26.10), so a call fails with error 1040 when the server is full.
 - **Auth backends:** Router's `http_auth_realm` / `http_auth_backend` support Basic auth only, so the endpoint checks bearer tokens itself (SHA-256, constant-time compare).
 
 ### Spike measurements (MySQL 26.10.0, arm64, 16 cores)
@@ -249,7 +251,7 @@ Facts recorded for Phase 5:
 |---|---|---|
 | Build of the one target, fresh tree (after a 36 s configure) | 95 s | 265 s |
 | `.so` size | 3.1 MB | 21 MB |
-| Threads added to `mysqld` (one I/O worker) | 3, released on uninstall | — |
+| Threads added to `mysqld` (one I/O worker, the spike) | 3, released on uninstall | — |
 
 ### Tests
 

@@ -25,6 +25,15 @@ sql() { docker exec -i "$C" mysql -h127.0.0.1 -uroot -ptestpass -N -e "$1" 2>&1 
 rpc() { docker run --rm --network "container:$C" "$CURL_IMAGE" -s -m 20 -w '\n%{http_code}' -X POST \
 	http://127.0.0.1:33480/mcp -H 'Content-Type: application/json' ${1:+-H "Authorization: Bearer $1"} -d "$2"; }
 call() { rpc tok-123 "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}"; }
+# par N SQL: N concurrent run_query calls from one sidecar; prints the replies (they can
+# interleave, so count matches with grep -o), then the wall time in seconds as "elapsed=S".
+par() { docker run --rm --network "container:$C" --entrypoint sh "$CURL_IMAGE" -c '
+	n=$0; body=$1; start=$(date +%s); i=0
+	while [ "$i" -lt "$n" ]; do
+		curl -s -m 30 -w "\n" -X POST http://127.0.0.1:33480/mcp -H "Content-Type: application/json" \
+			-H "Authorization: Bearer tok-123" -d "$body" & i=$((i + 1))
+	done; wait; echo "elapsed=$(( $(date +%s) - start ))"' "$1" \
+	"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"run_query\",\"arguments\":{\"sql\":\"$2\"}}}"; }
 alive() { docker ps -q -f "name=$C" | grep -q . && echo up || echo DOWN; }
 
 echo "== $IMAGE"
@@ -67,6 +76,29 @@ expect "server alive" "$(alive)" "^up$"
 expect "nothing written" "$(sql "SELECT GROUP_CONCAT(i) FROM d1.t")" "^1$"
 expect "guard counted the endpoint's statements" "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.statements_denied'")" "mcp.statements_denied	[1-9]"
 expect "no MCP session left" "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'")" "	0$"
+
+# Concurrency: mcp_http.threads (default 4) I/O workers serve calls at once.
+expect "threads and session cap defaults" "$(sql "SELECT @@mcp_http.threads, @@mcp_http.max_sessions_per_account")" "^4	4$"
+four=$(par 4 "SELECT SLEEP(2) AS s")
+expect "4 concurrent calls all succeed" "$(printf '%s\n' "$four" | grep -o '"isError":false' | wc -l | tr -d ' ')" "^4$"
+expect "4 concurrent calls overlap (4 x 2 s in under 4 s)" "$(printf '%s\n' "$four" | grep elapsed=)" "^elapsed=[0-3]$"
+# max_user_connections does not apply to these sessions; mcp_http.max_sessions_per_account does.
+sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
+expect "reinstall with a session cap of 2" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.max_sessions_per_account = 2, GLOBAL mcp_http.account = 'mcp@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX'")" "^$"
+capped=$(par 4 "SELECT SLEEP(2) AS s")
+expect "cap 2: two of four concurrent calls succeed" "$(printf '%s\n' "$capped" | grep -o '"isError":false' | wc -l | tr -d ' ')" "^2$"
+expect "cap 2: the others are refused (1203)" "$(printf '%s\n' "$capped" | grep -o "Error 1203: User mcp already has 2 active endpoint sessions (mcp_http.max_sessions_per_account)" | wc -l | tr -d ' ')" "^2$"
+expect "cap 2: a session slot is free again afterwards" "$(call run_query '{"sql":"SELECT 1 AS one"}')" '"isError":false'
+# The sessions count against max_connections and, unlike the command service's default, are
+# subject to it: one idle client fills max_connections = 1.
+sql "SET GLOBAL max_connections = 1"
+sql "SELECT SLEEP(4)" >/dev/null &
+sleep 1.5
+expect "max_connections applies to endpoint sessions" "$(call run_query '{"sql":"SELECT 1 AS one"}')" 'Error 1040: Too many connections.*"isError":true'
+wait
+sql "SET GLOBAL max_connections = 151"
+expect "a call works again below max_connections" "$(call run_query '{"sql":"SELECT 1 AS one"}')" '"isError":false'
+expect "no MCP session left after concurrent calls" "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'")" "	0$"
 
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).
 sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null

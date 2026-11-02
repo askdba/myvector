@@ -46,7 +46,9 @@
 
 #include <atomic>
 #include <cstring>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -88,9 +90,12 @@ namespace {
 // ----- settings -------------------------------------------------------------------------
 
 unsigned long opt_port = 33480;
+unsigned long opt_threads = 4;                   // I/O workers: calls served at once
+unsigned long opt_max_sessions_per_account = 4;  // concurrent calls per account
 char *opt_account = nullptr;       // user@host the token maps to
 char *opt_token_sha256 = nullptr;  // hex SHA-256 of the bearer token
-bool port_registered = false, account_registered = false, token_registered = false;
+bool port_registered = false, threads_registered = false, max_sessions_registered = false,
+     account_registered = false, token_registered = false;
 
 bool register_sysvars() {
   INTEGRAL_CHECK_ARG(ulong) port_arg;
@@ -103,6 +108,33 @@ bool register_sysvars() {
           "TCP port of the MCP endpoint (loopback only)", nullptr, nullptr, &port_arg, &opt_port))
     return true;
   port_registered = true;
+  {
+    INTEGRAL_CHECK_ARG(ulong) threads_arg;
+    threads_arg.def_val = 4;
+    threads_arg.min_val = 1;
+    threads_arg.max_val = 64;
+    threads_arg.blk_sz = 0;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "threads", PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED | PLUGIN_VAR_READONLY,
+            "I/O worker threads; each serves one call at a time", nullptr, nullptr, &threads_arg,
+            &opt_threads))
+      return true;
+    threads_registered = true;
+  }
+  {
+    INTEGRAL_CHECK_ARG(ulong) max_sessions_arg;
+    max_sessions_arg.def_val = 4;
+    max_sessions_arg.min_val = 1;
+    max_sessions_arg.max_val = 1024;
+    max_sessions_arg.blk_sz = 0;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "max_sessions_per_account",
+            PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED | PLUGIN_VAR_READONLY,
+            "Concurrent endpoint sessions per account (max_user_connections does not apply)",
+            nullptr, nullptr, &max_sessions_arg, &opt_max_sessions_per_account))
+      return true;
+    max_sessions_registered = true;
+  }
   {
     STR_CHECK_ARG(str) account_arg;
     account_arg.def_val = nullptr;
@@ -140,6 +172,8 @@ bool unregister_sysvars() {
   };
   drop(token_registered, "token_sha256");
   drop(account_registered, "account");
+  drop(max_sessions_registered, "max_sessions_per_account");
+  drop(threads_registered, "threads");
   drop(port_registered, "port");
   return failed;
 }
@@ -266,6 +300,34 @@ void read_error(MYSQL_H h, SqlResult *r) {
   r->error = msg != nullptr ? msg : "";
 }
 
+// Per-account count of open endpoint sessions. The server does not apply max_user_connections
+// to command-service sessions, so mcp_http.max_sessions_per_account caps them here.
+class SessionSlot {
+ public:
+  explicit SessionSlot(const std::string &account) : account_(account) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    unsigned long &n = open_[account_];
+    if (n >= opt_max_sessions_per_account) return;
+    ++n;
+    held_ = true;
+  }
+  ~SessionSlot() {
+    if (!held_) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = open_.find(account_);
+    if (--it->second == 0) open_.erase(it);
+  }
+  SessionSlot(const SessionSlot &) = delete;
+  SessionSlot &operator=(const SessionSlot &) = delete;
+  bool held() const { return held_; }
+
+ private:
+  static inline std::mutex mutex_;
+  static inline std::map<std::string, unsigned long> open_;
+  std::string account_;
+  bool held_ = false;
+};
+
 // Runs one statement as account (user@host) and returns its first result set.
 SqlResult run_as(const std::string &account, const std::string &sql) {
   SqlResult r;
@@ -275,6 +337,13 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
     return r;
   }
   const std::string user = account.substr(0, at), host = account.substr(at + 1);
+  SessionSlot slot(account);
+  if (!slot.held()) {
+    r.sql_errno = ER_TOO_MANY_USER_CONNECTIONS;
+    r.error = "User " + user + " already has " + std::to_string(opt_max_sessions_per_account) +
+              " active endpoint sessions (mcp_http.max_sessions_per_account)";
+    return r;
+  }
   MYSQL_H h = nullptr;
   if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) {
     r.error = "cannot create a session";
@@ -284,10 +353,14 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
   // Client protocol capabilities (mysql_com.h, which components cannot include).
   constexpr uint32_t kClientMultiResults = 1UL << 17, kClientPsMultiResults = 1UL << 18;
   const uint32_t client_flags = kClientMultiResults | kClientPsMultiResults;
+  // Unlike the command service's default, the sessions are subject to max_connections.
+  static constexpr bool kBypassMaxConnections = false;
   if (mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_PROTOCOL, "local") ||
       mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_CLIENT_FLAGS, &client_flags) ||
       mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_USER_NAME, user.c_str()) ||
       mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_HOST_NAME, host.c_str()) ||
+      mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_BYPASS_MAX_CONNECTIONS,
+                                                &kBypassMaxConnections) ||
       mysql_service_mysql_command_factory->connect(h)) {
     read_error(h, &r);
     if (r.error.empty()) r.error = "cannot open a session for " + account;
@@ -537,7 +610,7 @@ bool start_server() {
   // HTTP work runs on the io threads, which run SQL through the command services.
   io.set_thread_lifecycle({[](size_t) { mysql_service_mysql_command_thread->init(); },
                            [](size_t) { mysql_service_mysql_command_thread->end(); }});
-  if (!io.init(1, IoBackend::preferred())) return true;
+  if (!io.init(opt_threads, IoBackend::preferred())) return true;
   io_initialized = true;
   try {
     server = std::make_shared<http::HttpServerContext>(

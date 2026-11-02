@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`component_mcp` serves calls concurrently, with session limits** (RFC 0001 Phase 5, [#256](https://github.com/askdba/myvector/issues/256)). `mcp_http.threads` (default 4) I/O workers each serve one call at a time; the spike had one. `mcp_http.max_sessions_per_account` (default 4) caps an account's concurrent endpoint sessions (error 1203), since `max_user_connections` does not apply to them, and the sessions are now subject to `max_connections` (error 1040) instead of bypassing it. `scripts/test-mcp-endpoint.sh` checks overlap of 4 calls, the cap and `max_connections`.
 - **`component_mcp` (RFC 0001 Phase 4 spike, MySQL 26.10).** An MCP Streamable HTTP endpoint inside `mysqld` on MySQL Router's HTTP server (the libraries `component_mysql_rest_service` links), built in the server tree with `MYVECTOR_BUILD_MCP_ENDPOINT=ON ./scripts/build-component-26.10-docker.sh`. It is not for production.
   - **Endpoint:** loopback, plain HTTP, one bearer token (`mcp_http.token_sha256`) mapped to one account (`mcp_http.account`).
   - **Tools:** `list_databases` (tool pack) and `run_query` (one statement).
