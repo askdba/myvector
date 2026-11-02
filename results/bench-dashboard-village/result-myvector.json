@@ -1,0 +1,53 @@
+{
+  "version": "MyVector",
+  "label": "MyVector \u00b7 MySQL 8.4",
+  "dataset": "fashion-mnist-784",
+  "rows_indexed": 60000,
+  "recall_ground_truth": "published",
+  "harness": "vector-dev-bench (recall_bench)",
+  "workload": {
+    "rows": 60000,
+    "dim": 784,
+    "distance": "L2"
+  },
+  "metrics": {
+    "index_build_time_s": 193.86,
+    "ef_search_sweep": [
+      {
+        "ef_search": 10,
+        "recall_at_10": 0.9444,
+        "qps": 489.2
+      },
+      {
+        "ef_search": 20,
+        "recall_at_10": 0.983,
+        "qps": 453.8
+      },
+      {
+        "ef_search": 50,
+        "recall_at_10": 0.9968,
+        "qps": 377.0
+      },
+      {
+        "ef_search": 100,
+        "recall_at_10": 0.9985,
+        "qps": 305.5
+      },
+      {
+        "ef_search": 200,
+        "recall_at_10": 0.9992,
+        "qps": 232.5
+      },
+      {
+        "ef_search": 400,
+        "recall_at_10": 0.9996,
+        "qps": 171.8
+      },
+      {
+        "ef_search": 800,
+        "recall_at_10": 0.9997,
+        "qps": 118.6
+      }
+    ]
+  }
+}

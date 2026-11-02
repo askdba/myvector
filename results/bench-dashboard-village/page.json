@@ -1,0 +1,18 @@
+{
+  "tab_title": "MyVector vs pgvector vs MariaDB",
+  "title": "MyVector vs pgvector vs MariaDB — neutral harness",
+  "subtitle": "fashion-mnist-784 · published ground truth · VillageSQL vector-dev-bench",
+  "nav": "<a href=\"/\">← cross-version</a> · <a href=\"/real/\">real-dataset (MySQL versions)</a>",
+  "order": ["MyVector", "pgvector", "MariaDB"],
+  "col": {"MyVector": "#4f9dff", "pgvector": "#36c98d", "MariaDB": "#a56bd8"},
+  "headline_ef": 200,
+  "description": "A cross-<b>engine</b> comparison run through a neutral third-party harness — VillageSQL's <a href=\"https://github.com/villagesql/vector-dev-bench\">vector-dev-bench</a> (the MyVector profile is <a href=\"https://github.com/villagesql/vector-dev-bench/pull/14\">upstream PR #14</a>). Same real dataset (fashion-mnist-784-euclidean, 60k × 784, L2) and published exact ground truth drive all three engines; this answers \"how does MyVector's HNSW compare to pgvector and MariaDB's native vector indexes on the <i>same</i> workload and harness?\" (The other pages compare MyVector across MySQL versions.)",
+  "caveats": [
+    "<b>Harness:</b> VillageSQL <code>vector-dev-bench</code> <code>recall_bench.py</code> — one PyMySQL/psql path, numpy ground truth. The MyVector engine profile is upstream PR&nbsp;#14. It reports build time + a recall@10/QPS ef_search sweep; insert and exact-KNN columns aren't produced by this harness, so they show &ldquo;&mdash;&rdquo;.",
+    "<b>Dataset &amp; recall:</b> <code>fashion-mnist-784-euclidean</code> (60k train × 784-d, 10k test, L2) with recall@10 scored against the dataset's <b>published</b> exact neighbors (ann-benchmarks methodology).",
+    "<b>Index params:</b> HNSW M=16, ef_construction=200 for MyVector and pgvector. MariaDB's MHNSW fixes ef_construction at 10 internally (not tunable) — documented, not matched.",
+    "<b>Cache fairness:</b> each engine's graph sized to stay in memory above the ~188&nbsp;MB index — MyVector loads its HNSW into its own memory (InnoDB pool 2&nbsp;GB for the build scan); MariaDB <code>mhnsw_max_cache_size</code>=1&nbsp;GiB; pgvector <code>shared_buffers</code>=2&nbsp;GB.",
+    "<b>Headline cards</b> are the warm <b>ef_search=200</b> sweep point, so all three engines are compared at one operating point.",
+    "<b>Hardware:</b> all three on the same A2 host (8&nbsp;vCPU / 24&nbsp;GB), each container pinned to 4&nbsp;vCPU / 16&nbsp;GB."
+  ]
+}

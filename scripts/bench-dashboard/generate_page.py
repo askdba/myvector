@@ -32,7 +32,7 @@ def fmt(x, dp=0):
     return f"{x:,.{dp}f}"
 
 
-def load(results_dir):
+def load(results_dir, order):
     rows = {}
     for p in glob.glob(os.path.join(results_dir, "*.json")):
         try:
@@ -42,7 +42,7 @@ def load(results_dir):
         if "version" in d and "metrics" in d:
             d["_srcfile"] = os.path.basename(p)
             rows[str(d["version"])] = d
-    return [rows[v] for v in ORDER if v in rows]
+    return [rows[v] for v in order if v in rows]
 
 
 def load_page_cfg(results_dir):
@@ -60,11 +60,15 @@ def load_page_cfg(results_dir):
 
 def main():
     results_dir, out_html = sys.argv[1], sys.argv[2]
-    data = load(results_dir)
+    cfg = load_page_cfg(results_dir)
+    # page.json may override the series order/colors (e.g. the village page keys
+    # on engine names instead of MySQL versions). Default = the version series.
+    order = cfg.get("order", ORDER)
+    col = {**COL, **cfg.get("col", {})}
+    data = load(results_dir, order)
     if not data:
         print("no result JSONs found", file=sys.stderr)
         sys.exit(1)
-    cfg = load_page_cfg(results_dir)
 
     # Optional: derive the headline ANN cards/table from a fixed WARM sweep point
     # (page.json "headline_ef") instead of the separate cold first-batch ANN
@@ -98,16 +102,16 @@ def main():
 
     # ---- static (no-JS) content ----
     legend = "".join(
-        f'<span class="lg"><span class="dot" style="background:{COL.get(d["version"],"#888")}"></span>'
+        f'<span class="lg"><span class="dot" style="background:{col.get(d["version"],"#888")}"></span>'
         f'{e(disp(d))} <span class="mut">· {e(d.get("arch",""))} · {e(d.get("host_label",""))}</span></span>'
         for d in data)
 
     cards = "".join(
-        f'<div class="card"><h3 style="color:{COL.get(d["version"],"#888")}">{e(disp(d))}</h3>'
-        f'<div class="row"><span>Index build</span><b>{fmt(d["metrics"]["index_build_time_s"],1)}s</b></div>'
-        f'<div class="row"><span>Insert QPS</span><b>{fmt(d["metrics"]["insert_qps"])}</b></div>'
-        f'<div class="row"><span>ANN QPS</span><b>{fmt(d["metrics"]["knn_ann_qps"])}</b></div>'
-        f'<div class="row"><span>Recall@10</span><b>{fmt(d["metrics"]["recall_at_10"],3)}</b></div></div>'
+        f'<div class="card"><h3 style="color:{col.get(d["version"],"#888")}">{e(disp(d))}</h3>'
+        f'<div class="row"><span>Index build</span><b>{fmt(d["metrics"].get("index_build_time_s"),1)}s</b></div>'
+        f'<div class="row"><span>Insert QPS</span><b>{fmt(d["metrics"].get("insert_qps"))}</b></div>'
+        f'<div class="row"><span>ANN QPS</span><b>{fmt(d["metrics"].get("knn_ann_qps"))}</b></div>'
+        f'<div class="row"><span>Recall@10</span><b>{fmt(d["metrics"].get("recall_at_10"),3)}</b></div></div>'
         for d in data)
 
     rowsdef = [
@@ -121,7 +125,7 @@ def main():
         ("ANN p99 (ms)", "knn_ann_p99_ms", 1),
         ("Recall@10", "recall_at_10", 3),
     ]
-    thead = "".join(f'<th style="color:{COL.get(d["version"],"#888")}">{e(disp(d))}</th>' for d in data)
+    thead = "".join(f'<th style="color:{col.get(d["version"],"#888")}">{e(disp(d))}</th>' for d in data)
     tbody = ""
     for label, key, dp in rowsdef:
         cells = "".join(f"<td>{fmt(d['metrics'].get(key), dp)}</td>" for d in data)
@@ -232,7 +236,7 @@ footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
 (function(){{
   if (typeof Chart === 'undefined') return;   // charts are enhancement only
   var DATA = {payload};
-  var COL = {{"8.4":"#4f9dff","9.7":"#36c98d","26.10":"#f0a93b","MariaDB":"#a56bd8"}};
+  var COL = {json.dumps(col)};
   function disp(d){{return d.label||("MySQL "+d.version);}}
   var css = getComputedStyle(document.documentElement);
   Chart.defaults.color = css.getPropertyValue('--muted').trim();
