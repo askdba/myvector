@@ -190,7 +190,7 @@ An MCP **Streamable HTTP** endpoint (JSON-RPC 2.0 over `POST /mcp`) inside `mysq
 
 - **Network and auth:** loopback only (`127.0.0.1`) and plain HTTP, with no TLS yet. One bearer token, mapped to one account.
 - **Tools:** `list_databases` (through the `mysql_mcp` tool pack) and `run_query` (one statement).
-- **Results:** `run_query` returns at most 1000 rows and 4 MB of values, as `{"rows": [...], "truncated": true|false}`. The session's `sql_select_limit` stops the server at 1001 rows for statements without their own `LIMIT`.
+- **Results:** `run_query` returns at most 1000 rows and 4 MB of serialized rows (escapes counted), as `{"rows": [{"col": value, ...}], "truncated": true|false}`. A value is a JSON string, `null`, or `{"base64": "..."}` when its bytes are not valid UTF-8 (binary data). The session's `sql_select_limit` stops the server at 1001 rows for statements without their own `LIMIT`.
   - **Known spike limit:** the command service's default consumer collects every row while a statement runs, so a statement with a large explicit `LIMIT` is buffered in full in `mysqld` before the reply is cut. Bounding that needs a custom row consumer (`mysql_command_consumer` services), which is Phase 5 work.
 - **Missing:** the `account_locked` check, a per-account session cap and column masking. All are in Phase 5.
 
@@ -217,7 +217,7 @@ INSTALL COMPONENT 'file://component_mcp'
       GLOBAL mcp_http.token_sha256 = '<hex digest from above>';
 ```
 
-`component_mcp` refuses to install without `component_mcp_guard`, and refuses tool calls if the guard is uninstalled later: the guard is what enforces the policy on its sessions.
+`component_mcp` requires the guard's query consumer (`event_tracking_query.mcp_guard`). The server therefore refuses to install it without `component_mcp_guard`, and refuses to uninstall the guard while it is installed. The guard is what enforces the policy on its sessions.
 
 | Variable | Meaning |
 |---|---|
@@ -252,7 +252,7 @@ Facts recorded for Phase 5:
 
 ### Tests
 
-`scripts/test-mcp-endpoint.sh <mysql-image> <artifact-dir>` (25 checks) installs the guard, the tool pack and `component_mcp` on the official image, then checks:
+`scripts/test-mcp-endpoint.sh <mysql-image> <artifact-dir>` (29 checks) installs the guard, the tool pack and `component_mcp` on the official image, then checks:
 
 - bearer auth, `initialize`, `notifications/initialized`, `tools/list` and the JSON-RPC errors;
 - both tools, and that `run_query` runs as the mapped account;

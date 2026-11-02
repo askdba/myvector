@@ -38,7 +38,7 @@
 #include <mysql/components/services/component_sys_var_service.h>
 #include <mysql/components/services/log_builtins.h>
 #include <mysql/components/services/mysql_command_services.h>
-#include <mysql/components/services/mysql_system_variable.h>
+#include <mysql/components/services/event_tracking_query_service.h>
 #include <mysqld_error.h>
 
 #include <openssl/crypto.h>
@@ -75,7 +75,9 @@ REQUIRES_SERVICE_PLACEHOLDER(mysql_command_field_metadata);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_error_info);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_thread);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_audit_api_connection);
-REQUIRES_SERVICE_PLACEHOLDER(mysql_system_variable_reader);
+// component_mcp_guard's query consumer: requiring it makes the server refuse to install the
+// endpoint without the guard, and to uninstall the guard while the endpoint is installed.
+REQUIRES_SERVICE_PLACEHOLDER_AS(event_tracking_query, mcp_guard_query);
 
 // Defined by Router's harness (its component log handler); set at init.
 extern SERVICE_TYPE(log_builtins) *log_bi;
@@ -143,18 +145,6 @@ void log_info(const std::string &msg) {
   LogComponentErr(INFORMATION_LEVEL, ER_LOG_PRINTF_MSG, ("component_mcp: " + msg).c_str());
 }
 
-// component_mcp_guard enforces the policy (read-only, schema rules, time limit) on the
-// sessions the endpoint opens; without it a tool call would run with the account's plain
-// grants. Its presence is checked at install and before every tool call (it can be
-// uninstalled later), by its mcp.enabled variable.
-bool guard_installed() {
-  char buf[16];
-  void *value = buf;
-  size_t length = sizeof(buf) - 1;
-  return !mysql_service_mysql_system_variable_reader->get(nullptr, "GLOBAL", "mcp", "enabled",
-                                                          &value, &length);
-}
-
 // ----- auth -------------------------------------------------------------------------------
 
 std::string sha256_hex(const std::string &s) {
@@ -185,7 +175,9 @@ bool token_ok(const std::string *authorization) {
 
 // ----- SQL in an impersonated local session ----------------------------------------------
 
-// Result bounds: the reply keeps at most kMaxRows rows and kMaxBytes of values. The session's
+// Result bounds: the reply keeps at most kMaxRows rows and kMaxBytes of serialized rows (the
+// tool result then escapes them once more inside its text, so the HTTP reply stays well under
+// its 16 MiB limit). The session's
 // sql_select_limit stops the server past kMaxRows + 1 rows for statements without their own
 // LIMIT. The command service's default consumer collects every row while the statement runs
 // (store_result only hands that buffer over), so a statement with a large explicit LIMIT is
@@ -200,6 +192,62 @@ struct SqlResult {
   rapidjson::Document rows{rapidjson::kArrayType};  // first result set, as objects
   bool truncated = false;
 };
+
+bool valid_utf8(const char *s, size_t n) {
+  const auto *p = reinterpret_cast<const unsigned char *>(s);
+  size_t i = 0;
+  while (i < n) {
+    const unsigned char c = p[i];
+    size_t len;
+    unsigned int cp;
+    if (c < 0x80) {
+      ++i;
+      continue;
+    } else if ((c & 0xE0) == 0xC0) {
+      len = 2, cp = c & 0x1F;
+    } else if ((c & 0xF0) == 0xE0) {
+      len = 3, cp = c & 0x0F;
+    } else if ((c & 0xF8) == 0xF0) {
+      len = 4, cp = c & 0x07;
+    } else {
+      return false;
+    }
+    if (i + len > n) return false;
+    for (size_t k = 1; k < len; ++k) {
+      if ((p[i + k] & 0xC0) != 0x80) return false;
+      cp = (cp << 6) | (p[i + k] & 0x3F);
+    }
+    // No overlong forms, surrogates or code points past U+10FFFF.
+    if ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) || (len == 4 && cp < 0x10000) ||
+        (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF)
+      return false;
+    i += len;
+  }
+  return true;
+}
+
+// A result cell: a JSON string when its bytes are valid UTF-8, otherwise
+// {"base64": "<the bytes>"}, so a binary value never produces invalid JSON.
+void cell_value(const char *s, size_t n, rapidjson::Value *v,
+                rapidjson::Document::AllocatorType &a) {
+  if (valid_utf8(s, n)) {
+    v->SetString(s, n, a);
+    return;
+  }
+  std::string b64(4 * ((n + 2) / 3) + 1, '\0');
+  const int len = EVP_EncodeBlock(reinterpret_cast<unsigned char *>(b64.data()),
+                                  reinterpret_cast<const unsigned char *>(s), static_cast<int>(n));
+  b64.resize(len > 0 ? static_cast<size_t>(len) : 0);
+  v->SetObject();
+  v->AddMember("base64", rapidjson::Value(b64.c_str(), a), a);
+}
+
+size_t serialized_size(const rapidjson::Value &v) {
+  rapidjson::StringBuffer b;
+  rapidjson::Writer<rapidjson::StringBuffer> w(b);
+  v.Accept(w);
+  return b.GetSize();
+}
 
 MYSQL_THD session_thd(MYSQL_H h) {
   auto *handle = reinterpret_cast<Mysql_handle *>(h);
@@ -275,20 +323,25 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
         size_t bytes = 0;
         while (!mysql_service_mysql_command_query_result->fetch_row(res, &row) && row) {
           mysql_service_mysql_command_query_result->fetch_lengths(res, &lengths);
-          size_t row_bytes = 0;
-          for (unsigned int i = 0; i < n; ++i) row_bytes += lengths ? lengths[i] : 0;
-          // Stop before a row that does not fit, so the reply stays within the bounds.
-          if (r.rows.Size() >= kMaxRows || bytes + row_bytes > kMaxBytes) {
+          if (r.rows.Size() >= kMaxRows) {
+            r.truncated = true;
+            break;
+          }
+          rapidjson::Value obj(rapidjson::kObjectType);
+          for (unsigned int i = 0; i < n; ++i) {
+            rapidjson::Value k(names[i].c_str(), a), v;
+            if (row[i] != nullptr)
+              cell_value(row[i], lengths ? lengths[i] : std::strlen(row[i]), &v, a);
+            obj.AddMember(k, v, a);
+          }
+          // The budget counts the row as serialized (escapes included), and a row that does
+          // not fit ends the result, so the reply stays within the bounds.
+          const size_t row_bytes = serialized_size(obj);
+          if (bytes + row_bytes > kMaxBytes) {
             r.truncated = true;
             break;
           }
           bytes += row_bytes;
-          rapidjson::Value obj(rapidjson::kObjectType);
-          for (unsigned int i = 0; i < n; ++i) {
-            rapidjson::Value k(names[i].c_str(), a), v;
-            if (row[i] != nullptr) v.SetString(row[i], lengths ? lengths[i] : std::strlen(row[i]), a);
-            obj.AddMember(k, v, a);
-          }
           r.rows.PushBack(obj, a);
         }
         mysql_service_mysql_command_query_result->free_result(res);
@@ -332,10 +385,6 @@ void tool_result(Json &out, const std::string &text, bool is_error) {
 }
 
 void call_tool(const rapidjson::Value &params, Json &out) {
-  if (!guard_installed()) {
-    tool_result(out, "component_mcp_guard is not installed: tool calls are refused", true);
-    return;
-  }
   const std::string account = opt_account != nullptr ? opt_account : "";
   const std::string name =
       params.HasMember("name") && params["name"].IsString() ? params["name"].GetString() : "";
@@ -521,11 +570,6 @@ void stop_server() {
 mysql_service_status_t mcp_init() {
   log_bi = mysql_service_log_builtins;
   log_bs = mysql_service_log_builtins_string;
-  if (!guard_installed()) {
-    LogComponentErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG,
-                    "component_mcp: component_mcp_guard must be installed first");
-    return 1;
-  }
   if (register_sysvars()) {
     unregister_sysvars();
     return 1;
@@ -556,7 +600,7 @@ REQUIRES_SERVICE(log_builtins), REQUIRES_SERVICE(log_builtins_string),
     REQUIRES_SERVICE(mysql_command_query_result), REQUIRES_SERVICE(mysql_command_field_info),
     REQUIRES_SERVICE(mysql_command_field_metadata), REQUIRES_SERVICE(mysql_command_error_info),
     REQUIRES_SERVICE(mysql_command_thread), REQUIRES_SERVICE(mysql_audit_api_connection),
-    REQUIRES_SERVICE(mysql_system_variable_reader),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(event_tracking_query, mcp_guard, mcp_guard_query),
     END_COMPONENT_REQUIRES();
 
 BEGIN_COMPONENT_METADATA(mcp)

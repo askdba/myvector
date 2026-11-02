@@ -51,7 +51,11 @@ expect "tools/list" "$(rpc tok-123 '{"jsonrpc":"2.0","id":2,"method":"tools/list
 expect "unknown method" "$(rpc tok-123 '{"jsonrpc":"2.0","id":3,"method":"nope"}')" '"code":-32601'
 expect "list_databases via the tool pack" "$(call list_databases '{}')" 'SCHEMA_NAME.*d1.*"isError":false'
 expect "large result truncated at 1000 rows" "$(call run_query '{"sql":"SELECT n FROM d1.big"}' | grep -o '\\"n\\":' | wc -l) $(call run_query '{"sql":"SELECT n FROM d1.big"}' | grep -o 'truncated\\":true' | head -1)" "^1000 truncated"
-expect "explicit LIMIT: the reply is still bounded" "$(call run_query '{"sql":"SELECT n FROM d1.big LIMIT 5000"}' | grep -o 'truncated\\":true' | head -1)" "^truncated"
+explicit_limit_reply=$(call run_query '{"sql":"SELECT n FROM d1.big LIMIT 5000"}')
+expect "explicit LIMIT: the reply is still bounded" "$(printf '%s' "$explicit_limit_reply" | grep -o '\\"n\\":' | wc -l) $(printf '%s' "$explicit_limit_reply" | grep -o 'truncated\\":true' | head -1)" "^1000 truncated"
+expect "escaped values count against the bound (no HTTP 500)" "$(call run_query '{"sql":"SELECT REPEAT(CHAR(1), 3000000) AS v"}' | head -c 300)" 'rows\\":\[\],\\"truncated\\":true'
+expect "bytes that are not UTF-8 are returned as base64" "$(call run_query '{"sql":"SELECT X'"'"'FF'"'"' AS b"}')" 'b\\":\{\\"base64\\":\\"/w==\\"\}'
+expect "valid UTF-8 stays a string" "$(call run_query '{"sql":"SELECT CONVERT(X'"'"'C3A9'"'"' USING utf8mb4) AS s"}')" 's\\":\\"é\\"' 
 expect "a value over the byte bound is not sent" "$(call run_query '{"sql":"SELECT REPEAT(\"x\", 5000000) AS v"}' | head -c 300)" 'rows\\":\[\],\\"truncated\\":true'
 expect "run_query read as the mapped account" "$(call run_query '{"sql":"SELECT i, CURRENT_USER() AS who FROM d1.t"}')" 'i\\":\\"1\\",\\"who\\":\\"mcp@%'
 # Phase 4 exit criterion: the guard's policy reaches run_query in impersonated sessions.
@@ -67,9 +71,9 @@ expect "no MCP session left" "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.sessions_conne
 sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
 expect "reinstall mapped to app" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX'")" "^$"
 expect "guard: an account without MCP_USER is not restricted" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (7)"}')" '"isError":false'
-sql "UNINSTALL COMPONENT 'file://component_mcp_guard'" >/dev/null
-expect "tool calls refused once the guard is uninstalled" "$(call run_query '{"sql":"SELECT 1"}')" 'component_mcp_guard is not installed.*"isError":true'
+expect "the guard cannot be uninstalled while the endpoint is installed" "$(sql "UNINSTALL COMPONENT 'file://component_mcp_guard'")" "ERROR"
 expect "uninstall component_mcp" "$(sql "UNINSTALL COMPONENT 'file://component_mcp'")" "^$"
+expect "then the guard can be uninstalled" "$(sql "UNINSTALL COMPONENT 'file://component_mcp_guard'")" "^$"
 expect "server alive at the end" "$(alive)" "^up$"
 echo "== $IMAGE: $PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

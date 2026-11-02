@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Sessions:** each call runs in an impersonated `"local"` session, announced with a connection audit event so that `component_mcp_guard` enforces its policy there.
   - **Phase 4 exit criterion met:** through the endpoint, an `MCP_USER` account's write and `mysql` read are refused, and an account without `MCP_USER` is not restricted.
   - **Measured:** 95 s build, 3.1 MB, 3 threads (MRS: 265 s, 21 MB).
-  - **Tests:** `scripts/test-mcp-endpoint.sh` (25 checks) and the `mcp-endpoint` CI job. `docs/MCP_COMPONENTS.md` has the details and the Phase 5 facts (locked accounts, `max_user_connections`, Basic-only Router auth).
+  - **Tests:** `scripts/test-mcp-endpoint.sh` (29 checks) and the `mcp-endpoint` CI job. `docs/MCP_COMPONENTS.md` has the details and the Phase 5 facts (locked accounts, `max_user_connections`, Basic-only Router auth).
 - **`component_mcp_guard` tests for views, multi-statement packets and parity** (RFC 0001 §5.2 item 7, Q3). `scripts/test-mcp-guard.sh` now has 102 checks on 8.4.11, 9.7.2 and 26.10.0.
   - **Views:** a view over another schema or over `mysql` is refused, nested views included (the rules see base tables).
   - **Multi-statement packets:** a write or disallowed read in a later statement of one packet is refused, and nothing is written.
