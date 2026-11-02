@@ -203,9 +203,10 @@ MYVECTOR_BUILD_MCP=ON MYVECTOR_BUILD_MCP_ENDPOINT=ON \
   ./scripts/build-component-26.10-docker.sh mysql-26.10.0 dist/mcp-26.10.0
 ```
 
-Hash the token outside MySQL, so the plaintext never appears in statement text (general and slow logs, audit logs, `performance_schema` history):
+Use a random token and hash it outside MySQL, so the plaintext never appears in statement text (general and slow logs, audit logs, `performance_schema` history):
 
 ```sh
+MCP_TOKEN=$(openssl rand -hex 32)
 printf '%s' "$MCP_TOKEN" | sha256sum | cut -d' ' -f1
 ```
 
@@ -223,7 +224,7 @@ INSTALL COMPONENT 'file://component_mcp'
 |---|---|
 | `mcp_http.port` | TCP port on `127.0.0.1` (read-only, default 33480) |
 | `mcp_http.account` | The account (`user@host`) every request runs as (read-only) |
-| `mcp_http.token_sha256` | Hex SHA-256 of the bearer token (read-only, not persisted). Requests without the matching `Authorization: Bearer <token>` get 401 |
+| `mcp_http.token_sha256` | Hex SHA-256 of the bearer token (read-only, not persisted, sensitive: readable only with `SENSITIVE_VARIABLES_OBSERVER`). Requests without the matching `Authorization: Bearer <token>` get 401 |
 
 ### How a tool call runs
 
@@ -252,7 +253,7 @@ Facts recorded for Phase 5:
 
 ### Tests
 
-`scripts/test-mcp-endpoint.sh <mysql-image> <artifact-dir>` (29 checks) installs the guard, the tool pack and `component_mcp` on the official image, then checks:
+`scripts/test-mcp-endpoint.sh <mysql-image> <artifact-dir>` (30 checks) installs the guard, the tool pack and `component_mcp` on the official image, then checks:
 
 - bearer auth, `initialize`, `notifications/initialized`, `tools/list` and the JSON-RPC errors;
 - both tools, and that `run_query` runs as the mapped account;

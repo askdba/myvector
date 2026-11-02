@@ -43,6 +43,7 @@ GRANT EXECUTE ON mysql_mcp.* TO mcp@'%'; GRANT MCP_USER ON *.* TO mcp@'%';
 CREATE USER app@'%' IDENTIFIED BY 'p'; GRANT SELECT, INSERT ON d1.* TO app@'%'; GRANT EXECUTE ON mysql_mcp.* TO app@'%';"
 expect "install component_mcp" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'mcp@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX'")" "^$"
 
+expect "the token hash is not readable by other accounts" "$(docker exec -i "$C" mysql -h127.0.0.1 -umcp -pp -N -e "SELECT @@mcp_http.token_sha256" 2>&1 | grep -v "Using a password")" "ERROR.*SENSITIVE_VARIABLES_OBSERVER"
 expect "no token: 401" "$(rpc '' '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^401$"
 expect "wrong token: 401" "$(rpc nope '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^401$"
 expect "initialize" "$(rpc tok-123 '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}')" '"serverInfo":\{"name":"component_mcp"'

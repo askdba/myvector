@@ -118,7 +118,10 @@ bool register_sysvars() {
     token_arg.def_val = nullptr;
     if (mysql_service_component_sys_variable_register->register_variable(
             "mcp_http", "token_sha256",
-            PLUGIN_VAR_STR | PLUGIN_VAR_MEMALLOC | PLUGIN_VAR_READONLY | PLUGIN_VAR_NOPERSIST,
+            // SENSITIVE: readable only with SENSITIVE_VARIABLES_OBSERVER, so accounts (the MCP
+            // account included) cannot read the hash and guess a weak token offline.
+            PLUGIN_VAR_STR | PLUGIN_VAR_MEMALLOC | PLUGIN_VAR_READONLY | PLUGIN_VAR_NOPERSIST |
+                PLUGIN_VAR_SENSITIVE,
             "Hex SHA-256 of the bearer token", nullptr, nullptr, &token_arg, &opt_token_sha256))
       return true;
     token_registered = true;
