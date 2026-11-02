@@ -189,7 +189,11 @@ The option is `mcp.read_only`, `mcp.deny_system_schemas`, `mcp.allowed_schemas` 
 An MCP **Streamable HTTP** endpoint (JSON-RPC 2.0 over `POST /mcp`) inside `mysqld`. It runs on MySQL Router's HTTP server, the libraries `component_mysql_rest_service` links (RFC 0001 §5.3). This is the Phase 4 build spike and is **not for production**. It is limited to the following:
 
 - **Network and auth:** loopback only (`127.0.0.1`) and plain HTTP, with no TLS yet. One bearer token, mapped to one account.
-- **Tools:** `list_databases` (through the `mysql_mcp` tool pack) and `run_query` (one statement).
+- **Tools:** the six core tools of RFC 0001 §3, with mysql-mcp-server's names and arguments:
+  - `list_databases`, `list_tables` (`database`) and `describe_table` (`database`, `table`) call the `mysql_mcp` tool pack. Arguments are passed as hex literals (`CONVERT(X'...' USING utf8mb4)`), so they are never parsed as SQL and need no escaping under any `sql_mode`.
+  - `run_query` (`sql`) runs one statement.
+  - `ping` runs `SELECT 1` and returns `{"success", "latency_ms", "message"}`; like mysql-mcp-server, a failure is a result with `success: false`, not a tool error.
+  - `server_info` returns one object: `version`, `server_engine`, `version_comment`, `current_user`, `current_database`, `character_set`, `collation`, `max_connections` (as strings). mysql-mcp-server's extra fields (uptime, health, guard settings) are not ported.
 - **Results:** `run_query` returns at most 1000 rows and 4 MB of serialized rows (escapes counted), as `{"rows": [{"col": value, ...}], "truncated": true|false}`. A value is a JSON string, `null`, or `{"base64": "..."}` when its bytes are not valid UTF-8 (binary data). The session's `sql_select_limit` stops the server at 1001 rows for statements without their own `LIMIT`.
   - **Known spike limit:** the command service's default consumer collects every row while a statement runs, so a statement with a large explicit `LIMIT` is buffered in full in `mysqld` before the reply is cut. Bounding that needs a custom row consumer (`mysql_command_consumer` services), which is Phase 5 work.
 - **Missing:** the `account_locked` check, a per-account session cap and column masking. All are in Phase 5.

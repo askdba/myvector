@@ -45,6 +45,7 @@
 #include <openssl/evp.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <optional>
@@ -387,6 +388,26 @@ void tool_result(Json &out, const std::string &text, bool is_error) {
   out.AddMember("result", result, a);
 }
 
+// A SQL expression for a text argument: a hex literal converted to utf8mb4, so the value needs
+// no escaping and means the same under any sql_mode (NO_BACKSLASH_ESCAPES included).
+std::string text_literal(const std::string &s) {
+  static const char kHex[] = "0123456789ABCDEF";
+  std::string out = "CONVERT(X'";
+  for (const unsigned char c : s) {
+    out += kHex[c >> 4];
+    out += kHex[c & 15];
+  }
+  return out + "' USING utf8mb4)";
+}
+
+// The string argument key of a tools/call, or nullopt when it is missing or not a string.
+std::optional<std::string> string_arg(const rapidjson::Value &params, const char *key) {
+  if (!params.HasMember("arguments") || !params["arguments"].IsObject()) return std::nullopt;
+  const rapidjson::Value &args = params["arguments"];
+  if (!args.HasMember(key) || !args[key].IsString()) return std::nullopt;
+  return std::string(args[key].GetString(), args[key].GetStringLength());
+}
+
 void call_tool(const rapidjson::Value &params, Json &out) {
   const std::string account = opt_account != nullptr ? opt_account : "";
   const std::string name =
@@ -394,14 +415,50 @@ void call_tool(const rapidjson::Value &params, Json &out) {
   std::string sql;
   if (name == "list_databases") {
     sql = "CALL mysql_mcp.list_databases()";
+  } else if (name == "list_tables") {
+    const auto database = string_arg(params, "database");
+    if (!database) {
+      tool_result(out, "list_tables needs a string argument database", true);
+      return;
+    }
+    sql = "CALL mysql_mcp.list_tables(" + text_literal(*database) + ")";
+  } else if (name == "describe_table") {
+    const auto database = string_arg(params, "database"), table = string_arg(params, "table");
+    if (!database || !table) {
+      tool_result(out, "describe_table needs string arguments database and table", true);
+      return;
+    }
+    sql = "CALL mysql_mcp.describe_table(" + text_literal(*database) + ", " +
+          text_literal(*table) + ")";
   } else if (name == "run_query") {
-    const rapidjson::Value *args = params.HasMember("arguments") ? &params["arguments"] : nullptr;
-    if (args == nullptr || !args->IsObject() || !args->HasMember("sql") ||
-        !(*args)["sql"].IsString()) {
+    const auto query = string_arg(params, "sql");
+    if (!query) {
       tool_result(out, "run_query needs a string argument sql", true);
       return;
     }
-    sql = (*args)["sql"].GetString();
+    sql = *query;
+  } else if (name == "ping") {
+    // As mysql-mcp-server's ping: a failure is a result (success false), not a tool error.
+    const auto start = std::chrono::steady_clock::now();
+    const SqlResult r = run_as(account, "SELECT 1");
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - start)
+                        .count();
+    Json reply(rapidjson::kObjectType);
+    auto &a = reply.GetAllocator();
+    reply.AddMember("success", r.ok, a);
+    reply.AddMember("latency_ms", static_cast<int64_t>(ms), a);
+    const std::string message =
+        r.ok ? "pong" : "ping failed: Error " + std::to_string(r.sql_errno) + ": " + r.error;
+    reply.AddMember("message", rapidjson::Value(message.c_str(), a), a);
+    tool_result(out, to_string(reply), false);
+    return;
+  } else if (name == "server_info") {
+    sql =
+        "SELECT VERSION() AS version, 'mysql' AS server_engine, "
+        "@@version_comment AS version_comment, CURRENT_USER() AS `current_user`, "
+        "DATABASE() AS current_database, @@character_set_server AS character_set, "
+        "@@collation_server AS collation, @@max_connections AS max_connections";
   } else {
     tool_result(out, "unknown tool: " + name, true);
     return;
@@ -409,6 +466,10 @@ void call_tool(const rapidjson::Value &params, Json &out) {
   SqlResult r = run_as(account, sql);
   if (!r.ok) {
     tool_result(out, "Error " + std::to_string(r.sql_errno) + ": " + r.error, true);
+    return;
+  }
+  if (name == "server_info" && r.rows.Size() == 1) {  // one object, as mysql-mcp-server
+    tool_result(out, to_string(r.rows[0]), false);
     return;
   }
   Json reply(rapidjson::kObjectType);
@@ -422,8 +483,18 @@ void list_tools(Json &out) {
       R"({"tools":[)"
       R"({"name":"list_databases","description":"List databases visible to the mapped account",)"
       R"("inputSchema":{"type":"object","properties":{}}},)"
+      R"({"name":"list_tables","description":"List the tables of a database",)"
+      R"("inputSchema":{"type":"object","properties":{"database":{"type":"string"}},)"
+      R"("required":["database"]}},)"
+      R"({"name":"describe_table","description":"Describe the columns of a table",)"
+      R"("inputSchema":{"type":"object","properties":{"database":{"type":"string"},)"
+      R"("table":{"type":"string"}},"required":["database","table"]}},)"
       R"({"name":"run_query","description":"Run one read-only SQL statement",)"
-      R"("inputSchema":{"type":"object","properties":{"sql":{"type":"string"}},"required":["sql"]}}]})";
+      R"("inputSchema":{"type":"object","properties":{"sql":{"type":"string"}},"required":["sql"]}},)"
+      R"({"name":"ping","description":"Check that the server answers, with the round-trip time",)"
+      R"("inputSchema":{"type":"object","properties":{}}},)"
+      R"({"name":"server_info","description":"Server version, character set and limits",)"
+      R"("inputSchema":{"type":"object","properties":{}}}]})";
   Json tools;
   tools.Parse(kTools);
   out.AddMember("result", rapidjson::Value(tools, out.GetAllocator()), out.GetAllocator());

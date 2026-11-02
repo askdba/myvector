@@ -48,9 +48,16 @@ expect "no token: 401" "$(rpc '' '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^
 expect "wrong token: 401" "$(rpc nope '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^401$"
 expect "initialize" "$(rpc tok-123 '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}')" '"serverInfo":\{"name":"component_mcp"'
 expect "notification: 202" "$(rpc tok-123 '{"jsonrpc":"2.0","method":"notifications/initialized"}')" "^202$"
-expect "tools/list" "$(rpc tok-123 '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')" '"name":"list_databases".*"name":"run_query"'
+expect "tools/list: the six core tools" "$(rpc tok-123 '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | grep -o '"name":"[a-z_]*"' | tr '\n' ' ')" '^"name":"list_databases" "name":"list_tables" "name":"describe_table" "name":"run_query" "name":"ping" "name":"server_info" $'
 expect "unknown method" "$(rpc tok-123 '{"jsonrpc":"2.0","id":3,"method":"nope"}')" '"code":-32601'
 expect "list_databases via the tool pack" "$(call list_databases '{}')" 'SCHEMA_NAME.*d1.*"isError":false'
+expect "list_tables via the tool pack" "$(call list_tables '{"database":"d1"}')" 'TABLE_NAME\\":\\"big\\".*TABLE_NAME\\":\\"t\\".*"isError":false'
+expect "describe_table via the tool pack" "$(call describe_table '{"database":"d1","table":"t"}')" 'COLUMN_NAME\\":\\"i\\",\\"COLUMN_TYPE\\":\\"int\\".*"isError":false'
+expect "arguments are literals, not SQL (quotes, backslashes)" "$(call describe_table '{"database":"d1","table":"t\\\\'"'"'); SELECT 1; -- "}')" 'rows\\":\[\],\\"truncated\\":false.*"isError":false'
+expect "describe_table without table is a tool error" "$(call describe_table '{"database":"d1"}')" 'needs string arguments database and table.*"isError":true'
+expect "list_tables with a non-string database is a tool error" "$(call list_tables '{"database":1}')" 'needs a string argument database.*"isError":true'
+expect "ping" "$(call ping '{}')" 'success\\":true,\\"latency_ms\\":[0-9]+,\\"message\\":\\"pong\\".*"isError":false'
+expect "server_info, as the mapped account" "$(call server_info '{}')" 'version\\":\\"26\.10\.[0-9]+\\",\\"server_engine\\":\\"mysql\\".*current_user\\":\\"mcp@%\\".*max_connections\\":\\"[0-9]+\\".*"isError":false'
 expect "large result truncated at 1000 rows" "$(call run_query '{"sql":"SELECT n FROM d1.big"}' | grep -o '\\"n\\":' | wc -l) $(call run_query '{"sql":"SELECT n FROM d1.big"}' | grep -o 'truncated\\":true' | head -1)" "^1000 truncated"
 explicit_limit_reply=$(call run_query '{"sql":"SELECT n FROM d1.big LIMIT 5000"}')
 expect "explicit LIMIT: the reply is still bounded" "$(printf '%s' "$explicit_limit_reply" | grep -o '\\"n\\":' | wc -l) $(printf '%s' "$explicit_limit_reply" | grep -o 'truncated\\":true' | head -1)" "^1000 truncated"
