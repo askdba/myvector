@@ -192,7 +192,8 @@ An MCP **Streamable HTTP** endpoint (JSON-RPC 2.0 over `POST /mcp`) inside `mysq
 - **Tools:** `list_databases` (through the `mysql_mcp` tool pack) and `run_query` (one statement).
 - **Results:** `run_query` returns at most 1000 rows and 4 MB of serialized rows (escapes counted), as `{"rows": [{"col": value, ...}], "truncated": true|false}`. A value is a JSON string, `null`, or `{"base64": "..."}` when its bytes are not valid UTF-8 (binary data). The session's `sql_select_limit` stops the server at 1001 rows for statements without their own `LIMIT`.
   - **Known spike limit:** the command service's default consumer collects every row while a statement runs, so a statement with a large explicit `LIMIT` is buffered in full in `mysqld` before the reply is cut. Bounding that needs a custom row consumer (`mysql_command_consumer` services), which is Phase 5 work.
-- **Missing:** the `account_locked` check, a per-account session cap and column masking. All are in Phase 5.
+- **Locked accounts:** a call for an account with `ACCOUNT LOCK` fails with error 3118 (`Access denied for user '...'@'...'. Account is locked.`) before any statement runs. Impersonation skips the login checks, so the endpoint reads the lock from the session's security context (`account_locked`, set by the account lookup at connect). It checks on every call, so `ACCOUNT LOCK` takes effect on the next one.
+- **Missing:** a per-account session cap and column masking. Both are in Phase 5.
 
 ### Build and install
 
@@ -239,7 +240,7 @@ So an account with `MCP_USER` is read-only through the endpoint, and its schema 
 
 Facts recorded for Phase 5:
 
-- **Locked accounts:** impersonation skips the login checks, so a locked account (`ACCOUNT LOCK`) can be impersonated. The endpoint must check `account_locked` itself (26.10 has the lookup).
+- **Locked accounts:** impersonation skips the login checks, so a locked account (`ACCOUNT LOCK`) can be impersonated. The endpoint checks `account_locked` itself (done in Phase 5, above).
 - **Connection limits:** `max_user_connections` is not enforced for these sessions, so the endpoint needs its own per-account cap. They do count against `max_connections`.
 - **Auth backends:** Router's `http_auth_realm` / `http_auth_backend` support Basic auth only, so the endpoint checks bearer tokens itself (SHA-256, constant-time compare).
 

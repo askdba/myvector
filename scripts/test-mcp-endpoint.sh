@@ -66,6 +66,12 @@ expect "multi-statement is a parse error" "$(call run_query '{"sql":"SELECT 1; I
 expect "server alive" "$(alive)" "^up$"
 expect "nothing written" "$(sql "SELECT GROUP_CONCAT(i) FROM d1.t")" "^1$"
 expect "guard counted the endpoint's statements" "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.statements_denied'")" "mcp.statements_denied	[1-9]"
+# Impersonation skips the login checks: the endpoint refuses a locked account itself.
+sql "ALTER USER mcp@'%' ACCOUNT LOCK"
+expect "a locked account is refused" "$(call run_query '{"sql":"SELECT 1 AS one"}')" "Error 3118: Access denied for user 'mcp'@'%'. Account is locked.*\"isError\":true"
+expect "a locked account is refused for tool pack calls too" "$(call list_databases '{}')" 'Error 3118: .*"isError":true'
+sql "ALTER USER mcp@'%' ACCOUNT UNLOCK"
+expect "the account works again once unlocked" "$(call run_query '{"sql":"SELECT 1 AS one"}')" 'one\\":\\"1\\".*"isError":false'
 expect "no MCP session left" "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'")" "	0$"
 
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).

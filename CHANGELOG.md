@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`component_mcp` refuses locked accounts** (RFC 0001 Phase 5, [#256](https://github.com/askdba/myvector/issues/256)). Impersonated sessions skip the login checks, so the endpoint reads `account_locked` from the session's security context and fails the call with error 3118 before any statement runs. `scripts/test-mcp-endpoint.sh` checks lock, both tools and unlock.
 - **`component_mcp` (RFC 0001 Phase 4 spike, MySQL 26.10).** An MCP Streamable HTTP endpoint inside `mysqld` on MySQL Router's HTTP server (the libraries `component_mysql_rest_service` links), built in the server tree with `MYVECTOR_BUILD_MCP_ENDPOINT=ON ./scripts/build-component-26.10-docker.sh`. It is not for production.
   - **Endpoint:** loopback, plain HTTP, one bearer token (`mcp_http.token_sha256`) mapped to one account (`mcp_http.account`).
   - **Tools:** `list_databases` (tool pack) and `run_query` (one statement).
