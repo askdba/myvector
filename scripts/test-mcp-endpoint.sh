@@ -38,6 +38,7 @@ sql "INSTALL COMPONENT 'file://component_mcp_guard'; GRANT MCP_ADMIN ON *.* TO r
 CREATE DATABASE d1; CREATE TABLE d1.t (i INT); INSERT INTO d1.t VALUES (1);
 CREATE TABLE d1.big (n INT); INSERT INTO d1.big WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 999) SELECT n FROM s;
 INSERT INTO d1.big SELECT n + 1000 FROM d1.big WHERE n <= 500;
+CREATE TABLE d1.dbl (d DOUBLE(255,0)); INSERT INTO d1.dbl VALUES (1e250);
 CREATE USER mcp@'%' IDENTIFIED BY 'p'; GRANT SELECT, INSERT ON d1.* TO mcp@'%'; GRANT SELECT ON mysql.* TO mcp@'%';
 GRANT EXECUTE ON mysql_mcp.* TO mcp@'%'; GRANT MCP_USER ON *.* TO mcp@'%';
 CREATE USER app@'%' IDENTIFIED BY 'p'; GRANT SELECT, INSERT ON d1.* TO app@'%'; GRANT EXECUTE ON mysql_mcp.* TO app@'%';"
@@ -58,6 +59,38 @@ expect "escaped values count against the bound (no HTTP 500)" "$(call run_query 
 expect "bytes that are not UTF-8 are returned as base64" "$(call run_query '{"sql":"SELECT X'"'"'FF'"'"' AS b"}')" 'b\\":\{\\"base64\\":\\"/w==\\"\}'
 expect "valid UTF-8 stays a string" "$(call run_query '{"sql":"SELECT CONVERT(X'"'"'C3A9'"'"' USING utf8mb4) AS s"}')" 's\\":\\"é\\"' 
 expect "a value over the byte bound is not sent" "$(call run_query '{"sql":"SELECT REPEAT(\"x\", 5000000) AS v"}' | head -c 300)" 'rows\\":\[\],\\"truncated\\":true'
+# The bounded consumer: the server keeps at most 1001 rows and 4 MiB of values while a
+# statement runs, whatever its LIMIT. mysqld is PID 1; its peak RSS (VmHWM) must grow by under
+# 32 MiB, not by the size of the full result (about 100 MB for each; without the bounded
+# consumer it grew by 61 and 144 MiB). The wide case runs first, as the peak only rises.
+hwm_kb() { docker exec "$C" awk '/^VmHWM/ {print $2}' /proc/1/status; }
+hwm0=$(hwm_kb)
+wide_reply=$(call run_query '{"sql":"SELECT REPEAT(\"x\", 1000000) AS v FROM d1.big LIMIT 100"}')
+expect "wide rows: the reply is bounded" "$(printf '%s' "$wide_reply" | grep -o '\\"v\\":' | wc -l) $(printf '%s' "$wide_reply" | grep -o 'truncated\\":true' | head -1)" "^[1-4] truncated"
+expect "wide rows: bytes past the bound are not retained" "$(( ($(hwm_kb) - hwm0) / 1024 )) MiB" "^([0-9]|[12][0-9]|3[01]) MiB$"
+hwm0=$(hwm_kb)
+long_reply=$(call run_query '{"sql":"SELECT REPEAT(\"x\", 100) AS v FROM d1.big a, d1.big b LIMIT 1000000"}')
+expect "LIMIT 1000000: the reply is bounded" "$(printf '%s' "$long_reply" | grep -o '\\"v\\":' | wc -l) $(printf '%s' "$long_reply" | grep -o 'truncated\\":true' | head -1)" "^1000 truncated"
+expect "LIMIT 1000000: rows past the bound are not retained" "$(( ($(hwm_kb) - hwm0) / 1024 )) MiB" "^([0-9]|[12][0-9]|3[01]) MiB$"
+expect "a NULL-only result is not cut" "$(call run_query '{"sql":"SELECT NULL AS z FROM d1.big LIMIT 3"}')" 'z\\":null\},\{\\"z\\":null\},\{\\"z\\":null\}\],\\"truncated\\":false'
+# NULL cells count against the byte budget too (the DOM consumer keeps a pointer per cell): 1001
+# rows of 8000 NULLs would hold 64 MB. The reply's own 4 MB cut comes first either way, so the
+# check is on mysqld's peak RSS. Building the reply for 8000 columns takes memory of its own, so
+# the same query with LIMIT 60 (under the budget, so retained the same way either way) runs first:
+# the large LIMIT may then raise the peak only by what the consumer retains past it: under 16 MiB
+# (measured +3 MiB; without the NULL accounting, +37 MiB).
+nulls=$(seq -s, -f 'NULL AS n%g' 1 8000)
+call run_query "{\"sql\":\"SELECT $nulls FROM d1.big LIMIT 60\"}" >/dev/null
+hwm0=$(hwm_kb)
+null_reply=$(call run_query "{\"sql\":\"SELECT $nulls FROM d1.big a, d1.big b LIMIT 5000\"}")
+expect "8000 NULL columns: the reply is bounded and truncated" "$(printf '%s' "$null_reply" | grep -o 'n8000\\":null' | head -1) $(printf '%s' "$null_reply" | grep -o 'truncated\\":true' | head -1)" 'n8000\\":null truncated'
+expect "8000 NULL columns: NULL cells past the bound are not retained" "$(( ($(hwm_kb) - hwm0) / 1024 )) MiB" "^([0-9]|1[0-5]) MiB$"
+# DOUBLE values are charged their formatted length: 500 rows of 100 short DOUBLEs fit.
+dbls=$(seq -s, -f 'n * 1.5e0 AS d%g' 1 100)
+expect "500 rows of 100 DOUBLE columns are not cut" "$(call run_query "{\"sql\":\"SELECT $dbls FROM d1.big LIMIT 500\"}" | grep -o 'd100\\":' | wc -l | tr -d ' ')" "^500$"
+expect "a fixed-decimal DOUBLE (251 digits) is returned in full" "$(call run_query '{"sql":"SELECT d AS big FROM d1.dbl"}' | grep -o 'big\\":\\"1[0-9]*' | wc -c | tr -d ' ')" "^260$"
+expect "an error after some rows is reported, not a partial result" "$(call run_query '{"sql":"SELECT n, IF(n = 500, (SELECT 1 UNION SELECT 2), n) AS x FROM d1.big"}')" 'Subquery returns more than 1 row.*"isError":true'
+expect "an error past the row bound is reported" "$(call run_query '{"sql":"SELECT n, IF(n = 1500, (SELECT 1 UNION SELECT 2), n) AS x FROM d1.big a LIMIT 1000000"}')" 'Subquery returns more than 1 row.*"isError":true'
 expect "run_query read as the mapped account" "$(call run_query '{"sql":"SELECT i, CURRENT_USER() AS who FROM d1.t"}')" 'i\\":\\"1\\",\\"who\\":\\"mcp@%'
 # Phase 4 exit criterion: the guard's policy reaches run_query in impersonated sessions.
 expect "guard: an MCP account's write is refused" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (2)"}')" 'Error 1290: [^"]*mcp.read_only[^"]*"}],"isError":true'

@@ -191,7 +191,7 @@ An MCP **Streamable HTTP** endpoint (JSON-RPC 2.0 over `POST /mcp`) inside `mysq
 - **Network and auth:** loopback only (`127.0.0.1`) and plain HTTP, with no TLS yet. One bearer token, mapped to one account.
 - **Tools:** `list_databases` (through the `mysql_mcp` tool pack) and `run_query` (one statement).
 - **Results:** `run_query` returns at most 1000 rows and 4 MB of serialized rows (escapes counted), as `{"rows": [{"col": value, ...}], "truncated": true|false}`. A value is a JSON string, `null`, or `{"base64": "..."}` when its bytes are not valid UTF-8 (binary data). The session's `sql_select_limit` stops the server at 1001 rows for statements without their own `LIMIT`.
-  - **Known spike limit:** the command service's default consumer collects every row while a statement runs, so a statement with a large explicit `LIMIT` is buffered in full in `mysqld` before the reply is cut. Bounding that needs a custom row consumer (`mysql_command_consumer` services), which is Phase 5 work.
+  - **Bounded consumer:** for statements with their own `LIMIT`, the server's default command-service consumer would collect every row while the statement runs. `component_mcp` sessions select its own row and value consumer services (`mysql_text_consumer_*_v1.mcp`), which pass rows on to the default consumer until the statement has produced 1001 rows or 4 MiB of values. Later rows are dropped as they arrive, and a row that crosses the byte budget is never half stored. The statement still runs to its end; `mcp.max_execution_time_ms`, when set, bounds its time. The budget also counts what the default consumer keeps per row and per cell (a pointer each, NULL cells included), so wide results of NULLs are bounded too. `SELECT ... LIMIT 1000000` and 100 rows of 1 MB each leave `mysqld`'s peak RSS unchanged (without it: +144 MiB and +61 MiB).
 - **Missing:** the `account_locked` check, a per-account session cap and column masking. All are in Phase 5.
 
 ### Build and install
@@ -253,10 +253,11 @@ Facts recorded for Phase 5:
 
 ### Tests
 
-`scripts/test-mcp-endpoint.sh <mysql-image> <artifact-dir>` (30 checks) installs the guard, the tool pack and `component_mcp` on the official image, then checks:
+`scripts/test-mcp-endpoint.sh <mysql-image> <artifact-dir>` installs the guard, the tool pack and `component_mcp` on the official image, then checks:
 
 - bearer auth, `initialize`, `notifications/initialized`, `tools/list` and the JSON-RPC errors;
 - both tools, and that `run_query` runs as the mapped account;
+- the result bounds: replies cut at 1000 rows or 4 MB, and the bounded consumer (peak RSS for `LIMIT 1000000` and for 1 MB rows, 8000 NULL columns, NULL-only rows, errors raised after some rows or past the bound);
 - that through the endpoint an `MCP_USER` account's write and a `mysql` read are refused by the guard, and a multi-statement is a parse error;
 - that nothing is written and no session leaks;
 - that remapped to an account without `MCP_USER`, the same write is not restricted.
