@@ -225,6 +225,7 @@ INSTALL COMPONENT 'file://component_mcp'
 | `mcp_http.port` | TCP port on `127.0.0.1` (read-only, default 33480) |
 | `mcp_http.account` | The account (`user@host`) every request runs as (read-only) |
 | `mcp_http.token_sha256` | Hex SHA-256 of the bearer token (read-only, not persisted, sensitive: readable only with `SENSITIVE_VARIABLES_OBSERVER`). Requests without the matching `Authorization: Bearer <token>` get 401 |
+| `mcp_http.allowed_origins` | Comma-separated `Origin` values accepted (read-only, default none; exact match, ASCII case-insensitive, spaces around commas ignored). Against DNS rebinding, as the MCP transport spec requires: a request that has an `Origin` header not in the list gets 403, before the token is checked. Requests without `Origin` (non-browser clients) are not affected. Add a browser-based client's origin here, e.g. `http://localhost:6274` for MCP Inspector |
 
 ### How a tool call runs
 

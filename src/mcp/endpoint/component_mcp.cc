@@ -44,7 +44,9 @@
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstring>
 #include <memory>
 #include <optional>
@@ -90,7 +92,9 @@ namespace {
 unsigned long opt_port = 33480;
 char *opt_account = nullptr;       // user@host the token maps to
 char *opt_token_sha256 = nullptr;  // hex SHA-256 of the bearer token
-bool port_registered = false, account_registered = false, token_registered = false;
+char *opt_allowed_origins = nullptr;  // comma-separated Origin values browsers may send
+bool port_registered = false, account_registered = false, token_registered = false,
+     origins_registered = false;
 
 bool register_sysvars() {
   INTEGRAL_CHECK_ARG(ulong) port_arg;
@@ -126,6 +130,18 @@ bool register_sysvars() {
       return true;
     token_registered = true;
   }
+  {
+    STR_CHECK_ARG(str) origins_arg;
+    origins_arg.def_val = nullptr;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "allowed_origins",
+            PLUGIN_VAR_STR | PLUGIN_VAR_MEMALLOC | PLUGIN_VAR_READONLY,
+            "Comma-separated Origin values accepted from browsers (exact match); a request "
+            "with any other Origin gets 403",
+            nullptr, nullptr, &origins_arg, &opt_allowed_origins))
+      return true;
+    origins_registered = true;
+  }
   return false;
 }
 
@@ -138,6 +154,7 @@ bool unregister_sysvars() {
     else
       registered = false;
   };
+  drop(origins_registered, "allowed_origins");
   drop(token_registered, "token_sha256");
   drop(account_registered, "account");
   drop(port_registered, "port");
@@ -174,6 +191,27 @@ bool token_ok(const std::string *authorization) {
   for (char &c : want) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   return got.size() == want.size() && !got.empty() &&
          CRYPTO_memcmp(got.data(), want.data(), got.size()) == 0;
+}
+
+// DNS rebinding: a web page can make a browser send requests to 127.0.0.1, but the browser
+// then sends the page's Origin. Requests without one (non-browser clients) pass; one with an
+// Origin passes only if mcp_http.allowed_origins lists it (ASCII case-insensitive).
+bool origin_ok(const std::string *origin) {
+  if (origin == nullptr) return true;
+  if (opt_allowed_origins == nullptr) return false;
+  const auto same = [&](const char *b, const char *e) {
+    while (b < e && *b == ' ') ++b;
+    while (e > b && e[-1] == ' ') --e;
+    return static_cast<size_t>(e - b) == origin->size() &&
+           std::equal(b, e, origin->begin(), [](char x, char y) {
+             return std::tolower(static_cast<unsigned char>(x)) ==
+                    std::tolower(static_cast<unsigned char>(y));
+           });
+  };
+  const char *p = opt_allowed_origins;
+  for (const char *comma; (comma = std::strchr(p, ',')) != nullptr; p = comma + 1)
+    if (same(p, comma)) return true;
+  return same(p, p + std::strlen(p));
 }
 
 // ----- SQL in an impersonated local session ----------------------------------------------
@@ -460,6 +498,10 @@ class McpHandler : public http::base::RequestHandler {
     if (req.get_method() != HttpMethod::Post) {
       req.get_output_headers().add("Allow", "POST");
       req.send_reply(HttpStatusCode::MethodNotAllowed);
+      return;
+    }
+    if (!origin_ok(req.get_input_headers().find("Origin"))) {
+      req.send_reply(HttpStatusCode::Forbidden);
       return;
     }
     if (!token_ok(req.get_input_headers().find("Authorization"))) {

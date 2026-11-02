@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`component_mcp` validates `Origin`** (RFC 0001 Phase 5, [#256](https://github.com/askdba/myvector/issues/256)). Against DNS rebinding, a request with an `Origin` header that `mcp_http.allowed_origins` (new, read-only, default none) does not list gets 403; requests without `Origin` are not affected. `scripts/test-mcp-endpoint.sh` checks refusal, allowed origins, case and prefix matching.
 - **`component_mcp` (RFC 0001 Phase 4 spike, MySQL 26.10).** An MCP Streamable HTTP endpoint inside `mysqld` on MySQL Router's HTTP server (the libraries `component_mysql_rest_service` links), built in the server tree with `MYVECTOR_BUILD_MCP_ENDPOINT=ON ./scripts/build-component-26.10-docker.sh`. It is not for production.
   - **Endpoint:** loopback, plain HTTP, one bearer token (`mcp_http.token_sha256`) mapped to one account (`mcp_http.account`).
   - **Tools:** `list_databases` (tool pack) and `run_query` (one statement).
