@@ -188,7 +188,7 @@ The option is `mcp.read_only`, `mcp.deny_system_schemas`, `mcp.allowed_schemas` 
 
 An MCP **Streamable HTTP** endpoint (JSON-RPC 2.0 over `POST /mcp`) inside `mysqld`. It runs on MySQL Router's HTTP server, the libraries `component_mysql_rest_service` links (RFC 0001 §5.3). This is the Phase 4 build spike and is **not for production**. It is limited to the following:
 
-- **Network and auth:** loopback only (`127.0.0.1`) and plain HTTP, with no TLS yet. One bearer token, mapped to one account.
+- **Network and auth:** `127.0.0.1` by default. Plain HTTP is allowed only on loopback: with `mcp_http.bind_address` set to any other address the install fails unless `mcp_http.ssl_cert` and `mcp_http.ssl_key` are set, and then the endpoint serves HTTPS (TLS 1.2+, Router's TLS context). One bearer token, mapped to one account.
 - **Tools:** `list_databases` (through the `mysql_mcp` tool pack) and `run_query` (one statement).
 - **Results:** `run_query` returns at most 1000 rows and 4 MB of serialized rows (escapes counted), as `{"rows": [{"col": value, ...}], "truncated": true|false}`. A value is a JSON string, `null`, or `{"base64": "..."}` when its bytes are not valid UTF-8 (binary data). The session's `sql_select_limit` stops the server at 1001 rows for statements without their own `LIMIT`.
   - **Known spike limit:** the command service's default consumer collects every row while a statement runs, so a statement with a large explicit `LIMIT` is buffered in full in `mysqld` before the reply is cut. Bounding that needs a custom row consumer (`mysql_command_consumer` services), which is Phase 5 work.
@@ -222,7 +222,9 @@ INSTALL COMPONENT 'file://component_mcp'
 
 | Variable | Meaning |
 |---|---|
-| `mcp_http.port` | TCP port on `127.0.0.1` (read-only, default 33480) |
+| `mcp_http.port` | TCP port (read-only, default 33480) |
+| `mcp_http.bind_address` | Listen address (read-only, default `127.0.0.1`). Other than a loopback address (`127.0.0.0/8`, `::1`, `localhost`), it requires TLS: the install fails without `mcp_http.ssl_cert` and `mcp_http.ssl_key` |
+| `mcp_http.ssl_cert`, `mcp_http.ssl_key` | PEM certificate and private key files, readable by `mysqld` (read-only). Set both (or neither) to serve HTTPS; the server's own `server-cert.pem` / `server-key.pem` work |
 | `mcp_http.account` | The account (`user@host`) every request runs as (read-only) |
 | `mcp_http.token_sha256` | Hex SHA-256 of the bearer token (read-only, not persisted, sensitive: readable only with `SENSITIVE_VARIABLES_OBSERVER`). Requests without the matching `Authorization: Bearer <token>` get 401 |
 

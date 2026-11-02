@@ -74,6 +74,20 @@ expect "reinstall mapped to app" "$(sql "INSTALL COMPONENT 'file://component_mcp
 expect "guard: an account without MCP_USER is not restricted" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (7)"}')" '"isError":false'
 expect "the guard cannot be uninstalled while the endpoint is installed" "$(sql "UNINSTALL COMPONENT 'file://component_mcp_guard'")" "ERROR"
 expect "uninstall component_mcp" "$(sql "UNINSTALL COMPONENT 'file://component_mcp'")" "^$"
+
+# TLS (RFC 0001 §5.3): plain HTTP only on loopback. The server's auto-generated certificate
+# in the datadir serves as the endpoint's.
+INSTALL_MCP="INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'mcp@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX'"
+expect "a non-loopback address without TLS is refused" "$(sql "$INSTALL_MCP, GLOBAL mcp_http.bind_address = '0.0.0.0'")" "ERROR"
+expect "a certificate without a key is refused" "$(sql "$INSTALL_MCP, GLOBAL mcp_http.ssl_cert = '/var/lib/mysql/server-cert.pem'")" "ERROR"
+expect "install on 0.0.0.0 with TLS" "$(sql "$INSTALL_MCP, GLOBAL mcp_http.bind_address = '0.0.0.0', GLOBAL mcp_http.ssl_cert = '/var/lib/mysql/server-cert.pem', GLOBAL mcp_http.ssl_key = '/var/lib/mysql/server-key.pem'")" "^$"
+https_ping() { docker run --rm ${2:+--network "$2"} "$CURL_IMAGE" -sk -m 20 -w '\n%{http_code}' -X POST "$1" \
+	-H 'Content-Type: application/json' -H 'Authorization: Bearer tok-123' -d '{"jsonrpc":"2.0","id":1,"method":"ping"}'; }
+expect "HTTPS on loopback" "$(https_ping https://127.0.0.1:33480/mcp "container:$C")" '"result":\{\}'
+expect "plain HTTP to the TLS port gets no reply" "$(https_ping http://127.0.0.1:33480/mcp "container:$C" | tail -1)" "^(000|400)$"
+IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$C")
+expect "HTTPS from another host (container $IP)" "$(https_ping "https://$IP:33480/mcp")" '"result":\{\}'
+expect "uninstall the TLS endpoint" "$(sql "UNINSTALL COMPONENT 'file://component_mcp'")" "^$"
 expect "then the guard can be uninstalled" "$(sql "UNINSTALL COMPONENT 'file://component_mcp_guard'")" "^$"
 expect "server alive at the end" "$(alive)" "^up$"
 echo "== $IMAGE: $PASS passed, $FAIL failed"

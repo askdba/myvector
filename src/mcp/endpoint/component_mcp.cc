@@ -41,6 +41,8 @@
 #include <mysql/components/services/event_tracking_query_service.h>
 #include <mysqld_error.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 
@@ -49,6 +51,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 
 #include "http/base/request.h"
@@ -58,6 +61,7 @@
 #include "dim.h"
 #include "mysql/harness/logging/logging.h"
 #include "mysql/harness/logging/registry.h"
+#include "mysql/harness/tls_server_context.h"
 #include "mysqlrouter/io_component.h"
 // In-tree, as component_mysql_rest_service: the session THD behind a command handle.
 #include "sql/server_component/mysql_command_services_imp.h"
@@ -90,7 +94,11 @@ namespace {
 unsigned long opt_port = 33480;
 char *opt_account = nullptr;       // user@host the token maps to
 char *opt_token_sha256 = nullptr;  // hex SHA-256 of the bearer token
-bool port_registered = false, account_registered = false, token_registered = false;
+char *opt_bind_address = nullptr;  // listen address; null means 127.0.0.1
+char *opt_ssl_cert = nullptr;      // PEM certificate file; with opt_ssl_key, serve HTTPS
+char *opt_ssl_key = nullptr;       // PEM private key file
+bool port_registered = false, account_registered = false, token_registered = false,
+     bind_registered = false, cert_registered = false, key_registered = false;
 
 bool register_sysvars() {
   INTEGRAL_CHECK_ARG(ulong) port_arg;
@@ -126,6 +134,36 @@ bool register_sysvars() {
       return true;
     token_registered = true;
   }
+  {
+    STR_CHECK_ARG(str) bind_arg;
+    bind_arg.def_val = const_cast<char *>("127.0.0.1");
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "bind_address", PLUGIN_VAR_STR | PLUGIN_VAR_MEMALLOC | PLUGIN_VAR_READONLY,
+            "Address the endpoint listens on; other than loopback, TLS is required", nullptr,
+            nullptr, &bind_arg, &opt_bind_address))
+      return true;
+    bind_registered = true;
+  }
+  {
+    STR_CHECK_ARG(str) cert_arg;
+    cert_arg.def_val = nullptr;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "ssl_cert", PLUGIN_VAR_STR | PLUGIN_VAR_MEMALLOC | PLUGIN_VAR_READONLY,
+            "PEM certificate file; with mcp_http.ssl_key, the endpoint serves HTTPS", nullptr,
+            nullptr, &cert_arg, &opt_ssl_cert))
+      return true;
+    cert_registered = true;
+  }
+  {
+    STR_CHECK_ARG(str) key_arg;
+    key_arg.def_val = nullptr;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "ssl_key", PLUGIN_VAR_STR | PLUGIN_VAR_MEMALLOC | PLUGIN_VAR_READONLY,
+            "PEM private key file of mcp_http.ssl_cert", nullptr, nullptr, &key_arg,
+            &opt_ssl_key))
+      return true;
+    key_registered = true;
+  }
   return false;
 }
 
@@ -138,6 +176,9 @@ bool unregister_sysvars() {
     else
       registered = false;
   };
+  drop(key_registered, "ssl_key");
+  drop(cert_registered, "ssl_cert");
+  drop(bind_registered, "bind_address");
   drop(token_registered, "token_sha256");
   drop(account_registered, "account");
   drop(port_registered, "port");
@@ -146,6 +187,10 @@ bool unregister_sysvars() {
 
 void log_info(const std::string &msg) {
   LogComponentErr(INFORMATION_LEVEL, ER_LOG_PRINTF_MSG, ("component_mcp: " + msg).c_str());
+}
+
+void log_error(const std::string &msg) {
+  LogComponentErr(ERROR_LEVEL, ER_LOG_PRINTF_MSG, ("component_mcp: " + msg).c_str());
 }
 
 // ----- auth -------------------------------------------------------------------------------
@@ -531,7 +576,42 @@ void init_router_logging() {
   reg.set_ready();
 }
 
+bool nonempty(const char *s) { return s != nullptr && *s != '\0'; }
+
+// Loopback: a literal IPv4 127.0.0.0/8 or IPv6 ::1 address, or "localhost".
+bool loopback(const std::string &address) {
+  if (address == "localhost") return true;
+  in_addr v4{};
+  if (inet_pton(AF_INET, address.c_str(), &v4) == 1) return (ntohl(v4.s_addr) >> 24) == 127;
+  in6_addr v6{};
+  return inet_pton(AF_INET6, address.c_str(), &v6) == 1 && IN6_IS_ADDR_LOOPBACK(&v6);
+}
+
+TlsServerContext make_tls_context() {
+  TlsServerContext tls;
+  if (const auto loaded = tls.load_key_and_cert(opt_ssl_key, opt_ssl_cert); !loaded)
+    throw std::system_error(loaded.error(), std::string("loading mcp_http.ssl_key '") +
+                                                opt_ssl_key + "' or mcp_http.ssl_cert '" +
+                                                opt_ssl_cert + "'");
+  if (const auto dh = tls.init_tmp_dh(""); !dh)
+    throw std::system_error(dh.error(), "setting up TLS DH parameters");
+  return tls;
+}
+
 bool start_server() {
+  const std::string address = nonempty(opt_bind_address) ? opt_bind_address : "127.0.0.1";
+  const bool tls = nonempty(opt_ssl_cert) || nonempty(opt_ssl_key);
+  if (tls && !(nonempty(opt_ssl_cert) && nonempty(opt_ssl_key))) {
+    log_error("mcp_http.ssl_cert and mcp_http.ssl_key must be set together");
+    return true;
+  }
+  // RFC 0001 §5.3: plain HTTP only on loopback, so the bearer token never crosses a network
+  // in the clear.
+  if (!tls && !loopback(address)) {
+    log_error("mcp_http.bind_address '" + address +
+             "' is not loopback: set mcp_http.ssl_cert and mcp_http.ssl_key");
+    return true;
+  }
   init_router_logging();
   auto &io = IoComponent::get_instance();
   // HTTP work runs on the io threads, which run SQL through the command services.
@@ -540,20 +620,28 @@ bool start_server() {
   if (!io.init(1, IoBackend::preferred())) return true;
   io_initialized = true;
   try {
-    server = std::make_shared<http::HttpServerContext>(
-        &io.io_context(), &io.io_threads(), "127.0.0.1", static_cast<uint16_t>(opt_port),
-        /*max_http_connections=*/64, /*max_request_body_size=*/1 << 20,
-        /*max_response_body_size=*/16 << 20);
+    const auto port = static_cast<uint16_t>(opt_port);
+    constexpr uint64_t kMaxConnections = 64, kMaxRequest = 1 << 20, kMaxResponse = 16 << 20;
+    if (tls)
+      server = std::make_shared<http::HttpServerContext>(
+          &io.io_context(), &io.io_threads(), make_tls_context(), address, port, kMaxConnections,
+          kMaxRequest, kMaxResponse);
+    else
+      server = std::make_shared<http::HttpServerContext>(&io.io_context(), &io.io_threads(),
+                                                         address, port, kMaxConnections,
+                                                         kMaxRequest, kMaxResponse);
     server->add_direct_match_route("", http::base::UriPathMatcher{"/mcp", false, false},
                                    std::make_unique<McpHandler>());
     workguard = std::make_unique<IoComponent::Workguard>(io);
     io_thread = std::thread([] { IoComponent::get_instance().run(); });
     server->start();
   } catch (const std::exception &e) {
-    log_info(std::string("cannot start the endpoint: ") + e.what());
+    log_error(std::string("cannot start the endpoint: ") + e.what());
     return true;
   }
-  log_info("MCP endpoint on http://127.0.0.1:" + std::to_string(opt_port) + "/mcp");
+  const bool v6 = address.find(':') != std::string::npos;
+  log_info(std::string("MCP endpoint on ") + (tls ? "https" : "http") + "://" +
+           (v6 ? "[" + address + "]" : address) + ":" + std::to_string(opt_port) + "/mcp");
   return false;
 }
 
