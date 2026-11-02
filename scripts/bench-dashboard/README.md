@@ -1,7 +1,7 @@
 # Benchmark dashboard (bench.myvector.online)
 
 Tooling behind the public cross-version benchmark dashboard: MyVector's native
-HNSW vector search on **MySQL 8.4 / 9.7 / 26.7**, plus **MariaDB 12.3** (current LTS) native
+HNSW vector search on **MySQL 8.4 / 9.7 / 26.10**, plus **MariaDB 12.3** (current LTS) native
 `VECTOR`/HNSW as a cross-engine reference. All four run the **same**
 seed-deterministic synthetic workload (50 000 × 128-d, L2, HNSW M=16) so the
 numbers line up.
@@ -65,7 +65,7 @@ python3 scripts/bench-dashboard/generate_page.py results/bench-dashboard-real si
    ```bash
    scripts/build-component-8.4-docker.sh  mysql-8.4.8  dist/component-8.4
    scripts/build-component-9.7-docker.sh  mysql-9.7.0  dist/component-9.7
-   scripts/build-component-26.7-docker.sh mysql-26.7.0 dist/component-26.7
+   scripts/build-component-26.10-docker.sh mysql-26.10.0 dist/component-26.10
    ```
 
 2. **Deploy the four pinned containers** (identical 4 vCPU / 24 GB slices):
@@ -73,7 +73,7 @@ python3 scripts/bench-dashboard/generate_page.py results/bench-dashboard-real si
    python3 scripts/bench-dashboard/redeploy.py --container bench-mysql97 --version 9.7 \
      --base-image mysql:9.7 --comp-dir dist/component-9.7 \
      --port 3309 --cpuset 0-3 --mem 24g --datadir /data/mysql/bench/97 --root-pw "$PW"
-   # ...likewise 8.4 (port 3306) and 26.7 (port 3310, cpuset 4-7)
+   # ...likewise 8.4 (port 3306) and 26.10 (port 3310, cpuset 4-7)
    docker run -d --name bench-mariadb --cpuset-cpus 8-11 --memory 24g --memory-swap 24g \
      -p 127.0.0.1:3311:3306 -e MARIADB_ROOT_PASSWORD="$PW" -e MARIADB_DATABASE=bench \
      -v /data/mysql/bench/mariadb:/var/lib/mysql mariadb:12.3

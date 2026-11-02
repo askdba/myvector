@@ -12,8 +12,8 @@ import json
 import os
 import sys
 
-ORDER = ["8.4", "9.7", "26.7", "MariaDB"]
-COL = {"8.4": "#4f9dff", "9.7": "#36c98d", "26.7": "#f0a93b", "MariaDB": "#a56bd8"}
+ORDER = ["8.4", "9.7", "26.10", "MariaDB"]
+COL = {"8.4": "#4f9dff", "9.7": "#36c98d", "26.10": "#f0a93b", "MariaDB": "#a56bd8"}
 
 
 def e(s):
@@ -148,7 +148,7 @@ def main():
     nav_html = f'<p class="sub" style="margin-top:-6px">{nav}</p>' if nav else ""
     tab_title = cfg.get("tab_title", "MyVector Benchmark")
     page_h1 = cfg.get("title", "MyVector — cross-version benchmark")
-    page_sub = cfg.get("subtitle", "MySQL 8.4 vs 9.7 vs 26.7 · HNSW vector search")
+    page_sub = cfg.get("subtitle", "MySQL 8.4 vs 9.7 vs 26.10 · HNSW vector search")
     page_desc = cfg.get("description",
         "A comparison of MyVector's native HNSW vector search across three MySQL versions "
         "(plus MariaDB's native vector as a cross-engine reference) — same data and index parameters, each "
@@ -232,7 +232,7 @@ footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
 (function(){{
   if (typeof Chart === 'undefined') return;   // charts are enhancement only
   var DATA = {payload};
-  var COL = {{"8.4":"#4f9dff","9.7":"#36c98d","26.7":"#f0a93b","MariaDB":"#a56bd8"}};
+  var COL = {{"8.4":"#4f9dff","9.7":"#36c98d","26.10":"#f0a93b","MariaDB":"#a56bd8"}};
   function disp(d){{return d.label||("MySQL "+d.version);}}
   var css = getComputedStyle(document.documentElement);
   Chart.defaults.color = css.getPropertyValue('--muted').trim();
