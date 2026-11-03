@@ -165,6 +165,7 @@ expect "masked columns: binary values are masked too" "$(call run_query '{"sql":
 # As Go's strings.ToLower / TrimSpace: Unicode case (ÉMAIL, пароль) and whitespace (a tab, and a
 # no-break space U+00A0 after "token") in the patterns.
 expect "masked columns: Unicode case and whitespace as in Go" "$(call run_query '{"sql":"SELECT \"a\" AS `émail`, \"b\" AS `ПАРОЛЬ`, \"c\" AS api_token, \"d\" AS ok"}')" 'émail\\":\\"\*{8}\\",\\"ПАРОЛЬ\\":\\"\*{8}\\",\\"api_token\\":\\"\*{8}\\",\\"ok\\":\\"d\\"'
+expect "masked columns: lowercase that grows in UTF-8 (U+023E) still matches" "$(call run_query '{"sql":"SELECT \"a\" AS `Ⱦsecret`"}')" 'Ⱦsecret\\":\\"\*{8}\\"'
 expect "an allowed Origin passes" "$(rpc_origin http://localhost:6274 '{"jsonrpc":"2.0","id":1,"method":"ping"}')" '"result":\{\}'
 expect "allowed origins match case-insensitively, spaces trimmed" "$(rpc_origin https://inspector.example '{"jsonrpc":"2.0","id":1,"method":"ping"}')" '"result":\{\}'
 # CORS for an allowed browser origin: the preflight is answered and replies name the origin.

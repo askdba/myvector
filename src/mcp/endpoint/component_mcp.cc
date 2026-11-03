@@ -518,7 +518,9 @@ constexpr char kMasked[] = "********";
 std::string unicode_lower(const std::string &s) {
   const CHARSET_INFO *cs = &my_charset_utf8mb4_0900_ai_ci;
   std::string src = s;  // casedn takes a mutable source
-  std::string out(s.size() * cs->casedn_multiply, '\0');
+  // Lowercase can be longer than the source (U+023E is 2 bytes, its lowercase 3), although the
+  // charset reports casedn_multiply = 1: no character becomes more than 4 bytes.
+  std::string out(4 * s.size(), '\0');
   out.resize(cs->cset->casedn(cs, src.data(), src.size(), out.data(), out.size()));
   return out;
 }
