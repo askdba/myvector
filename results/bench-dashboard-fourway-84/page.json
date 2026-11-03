@@ -1,0 +1,17 @@
+{
+  "tab_title": "8.4 family — vector search",
+  "title": "8.4 family — full-metric cross-engine",
+  "subtitle": "MyVector 8.4 · vsql_vector (VillageSQL 8.4) · pgvector · MariaDB — fashion-mnist-784",
+  "nav": "<a href=\"../9.7/\">9.7 family →</a> · <a href=\"/real/\">real-dataset (MySQL versions)</a> · <a href=\"/village/\">village (recall/QPS)</a> · <a href=\"/\">cross-version</a>",
+  "order": ["MyVector", "vsql_vector", "pgvector", "MariaDB"],
+  "col": {"MyVector": "#4f9dff", "vsql_vector": "#f0a93b", "pgvector": "#36c98d", "MariaDB": "#a56bd8"},
+  "headline_ef": 200,
+  "description": "The <b>MySQL 8.4 family</b> of the full-metric cross-engine comparison, measured through MyVector's own harness (so insert throughput, exact-KNN, and ANN p50/p99 are all here, unlike the <a href=\"/village/\">village</a> recall/QPS view). MyVector and VillageSQL's <code>vsql_vector</code> each have an 8.4 and a 9.7 build; this page is their <b>8.4</b> builds, with pgvector and MariaDB as fixed anchors. The <a href=\"../9.7/\">9.7 family</a> is the companion page.",
+  "caveats": [
+    "<b>Full metrics</b> via MyVector's harness (bench_real / bench_mariadb_real / bench_pgvector_real / bench_vsql_real): index build, insert QPS, exact brute-force KNN (QPS + p50/p99), ANN (QPS + p50/p99), and recall@10 vs the dataset's <b>published</b> ground truth.",
+    "<b>Dataset:</b> <code>fashion-mnist-784-euclidean</code> (60k train × 784-d, 10k test, L2). HNSW M=16, ef_construction=200 for MyVector/vsql_vector/pgvector; MariaDB's MHNSW fixes ef_construction at 10 internally.",
+    "<b>Family = MySQL base:</b> MyVector 8.4 = the component on stock MySQL 8.4; vsql_vector (8.4) = the VillageSQL extension on the VillageSQL 8.4 dev-server. pgvector (Postgres) and MariaDB are engine-fixed and appear in both family pages as anchors.",
+    "<b>Cache parity:</b> each engine's graph sized above the ~188&nbsp;MB index (MyVector in-memory HNSW + 2&nbsp;GB InnoDB pool; vsql 2&nbsp;GB InnoDB pool; pgvector <code>shared_buffers</code> 2&nbsp;GB; MariaDB <code>mhnsw_max_cache_size</code> 1&nbsp;GiB). Headline cards are the warm ef_search=200 point.",
+    "<b>Hardware:</b> all engines on the same Ampere&nbsp;A1 dev host. MyVector 8.4 and MariaDB are reused from the <a href=\"/real/\">real-dataset</a> run (same host/dataset/params)."
+  ]
+}
