@@ -321,11 +321,25 @@ promotion.
 - level-0 or upper links only → its links chunk.
 
 **Copy, then write.** The checkpoint holds the online-update queue paused (as today,
-§3) only while it copies the dirty chunks and the header into a buffer, which is a
-memory copy. Then it lets updates continue and writes from the buffer. Online updates
-pause for the copy, not for the SQL writes. If the dirty chunks don't fit in
-`myvector_checkpoint_buffer_bytes` (default 512 MB), the checkpoint writes with the
-queue still paused, as today, and logs that it did.
+§3) only while it takes a snapshot of the graph's state. While paused, at a
+transaction boundary, it:
+
+1. copies the dirty chunks and the header into a buffer (a memory copy);
+2. records the listener's applied GTID set **at that moment** as this checkpoint's
+   `ckpt_gtids`;
+3. **swaps the dirty sets**: it takes the current sets for this checkpoint and
+   starts empty ones.
+
+Then it lets updates continue and writes from the buffer. Updates that arrive during
+the SQL writes go into the new, empty sets, so the next checkpoint persists them. The
+buffer, the GTID set and the dirty sets it took all describe the same instant, so
+the published `ckpt_gtids` never claims a change that isn't in the published
+chunks. If the checkpoint fails, the sets it took are merged back into the current
+ones, and the next checkpoint retries them.
+
+Online updates pause for the copy, not for the SQL writes. If the dirty chunks don't
+fit in `myvector_checkpoint_buffer_bytes` (default 512 MB), the checkpoint writes
+with the queue still paused, as today, and logs that it did.
 
 **Steps.** A checkpoint with sequence number `s = ckpt_seq + 1`:
 
@@ -378,8 +392,8 @@ doesn't parse GTID events today, so this is new code. It is **not**
 listener. GTID sets with tags (MySQL 8.3 and later) must be handled.
 
 **Concurrency.** A build of the same index in progress makes the timer skip that
-index until the build has published (§4.6). The dirty sets are cleared only after
-step 3 commits.
+index until the build has published (§4.6). The dirty sets a checkpoint took are
+discarded only after step 3 commits (see **Copy, then write**).
 
 ### 4.5 How MyVector runs SQL
 
@@ -483,7 +497,8 @@ the server is ready (#186), then loads online indexes (`OpenAllOnlineVectorIndex
 - Loading a `storage=innodb` index does not depend on the listener's
   `binlog_state.json` or its `server_uuid` check. A server started from a copied
   datadir (new `server_uuid`) still loads its InnoDB-stored indexes; their resume
-  point is `ckpt_gtids`, which is valid on any server.
+  point is `ckpt_gtids`, which is valid on any server. In standalone mode it then
+  rebinds `writer_uuid` to itself (§4.8).
 
 ### 4.8 Standalone mode (Phase 1–2)
 
@@ -496,7 +511,12 @@ In standalone mode, the default, **every write to `myvector.*` runs with
 - Nothing about the index enters the binlog, so a primary's rows never reach a
   replica, and nothing can collide or stop a replication applier.
 - A backup taken on any server includes that server's index.
-- `writer_uuid` is always the local `server_uuid`.
+- `writer_uuid` is always the local `server_uuid`. A server whose rows name
+  another UUID, after a restore, a copied datadir or a clone, rebinds them: when it
+  loads an index in standalone mode and finds `writer_uuid ≠ @@server_uuid`, it sets
+  `writer_uuid = @@server_uuid` (with `sql_log_bin = 0`) and logs it. Otherwise
+  every checkpoint's compare-and-set would fail. Replicated mode never rebinds
+  automatically; that's what takeover is for (§4.10).
 
 The cost: every server does its own build and checkpoints, as today. Replicated mode
 (§4.10) removes that cost and brings its own rules.
@@ -574,6 +594,21 @@ Replication stamps every member's transactions with the group name, but
   `writer_uuid` to this server for every index and switches the server to writer.
   There is no automatic takeover: two servers that both believe they were promoted
   must not both claim.
+
+  **The old primary must be fenced first.** `writer_uuid` is checked against each
+  server's own copy of `index_meta`. If the old primary is still running but
+  unreachable, its copy still names itself, so it would keep checkpointing while the
+  new primary does too. Async replication has no consensus, so no mechanism inside
+  the database can prevent this; the same partition would also let both servers
+  accept user writes. So the rule is the one async failover already needs:
+  **stop or fence the old primary** (`super_read_only = ON`, stop mysqld, or
+  isolate it) **before** running the takeover. The takeover procedure's
+  documentation and its output say so. If an unfenced old primary later rejoins as a
+  replica, the replicated takeover changes its `writer_uuid`, its compare-and-sets
+  then fail and it becomes a follower; its own divergent checkpoints are errant
+  transactions to clean up, like any other writes it took during the partition.
+  Group Replication avoids all of this, because its claims go through certification
+  (above).
 
 **Role changes:**
 
@@ -788,7 +823,8 @@ guards against future layout changes.
    concurrent reads during install. Re-running the install SQL keeps every index.
 3. **Startup:** restart with online `storage=innodb` indexes; they load once the
    server accepts connections, and searches before that return an error. A server
-   started from a copied datadir (new `server_uuid`) loads them too.
+   started from a copied datadir (new `server_uuid`) loads them, rebinds
+   `writer_uuid` and keeps checkpointing.
 4. **Crash consistency:** `kill -9` during each step of a checkpoint (§4.4), a build
    and a full save. On restart the index matches the last committed checkpoint, the
    leftovers are cleaned up, and the listener catches up. Compare KNN results with
@@ -805,7 +841,9 @@ guards against future layout changes.
    mode) triggers no further checkpoint; standalone checkpoints write nothing to the
    binlog.
 9. **Copy buffer:** online-update latency during a checkpoint, with the dirty chunks
-   inside and outside `myvector_checkpoint_buffer_bytes`.
+   inside and outside `myvector_checkpoint_buffer_bytes`. Updates that arrive during
+   the SQL writes are persisted by the next checkpoint: kill after it, restart, and
+   every row is in the index. A failed checkpoint loses no dirty nodes.
 10. **Idle index:** an index with no writes for longer than binlog expiry still
     resumes after a restart.
 11. **Standalone replication:** primary + replica; neither sees the other's index
@@ -833,7 +871,7 @@ guards against future layout changes.
     doesn't stop.
 19. **Group Replication:** only the primary writes; after a primary switch the new
     primary claims and the old one follows; multi-primary mode is refused.
-20. **Async promotion:** stop the primary, promote the replica, run
+20. **Async promotion:** fence the primary, promote the replica, run
     `MYVECTOR_INDEX_TAKEOVER`, insert rows. The new writer applies every change after
     `ckpt_gtids`, none twice, and checkpoints. Repeat with replica binlog file names
     that sort lower than the old primary's.
