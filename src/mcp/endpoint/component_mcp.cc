@@ -35,6 +35,7 @@
 #include <mysql/components/component_implementation.h>
 #include <mysql/components/service_implementation.h>
 #include <mysql/components/services/audit_api_connection_service.h>
+#include <mysql/components/services/component_status_var_service.h>
 #include <mysql/components/services/component_sys_var_service.h>
 #include <mysql/components/services/log_builtins.h>
 #include <mysql/components/services/mysql_command_consumer.h>
@@ -76,6 +77,7 @@ REQUIRES_SERVICE_PLACEHOLDER(log_builtins);
 REQUIRES_SERVICE_PLACEHOLDER(log_builtins_string);
 REQUIRES_SERVICE_PLACEHOLDER(component_sys_variable_register);
 REQUIRES_SERVICE_PLACEHOLDER(component_sys_variable_unregister);
+REQUIRES_SERVICE_PLACEHOLDER(status_variable_registration);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_factory);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_options);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_query);
@@ -303,7 +305,9 @@ struct RowBudget {
   unsigned long long max_rows = kMaxRows + 1;
   size_t max_bytes = kMaxBytes;
   unsigned long long kept = 0;
-  size_t bytes = 0;
+  size_t bytes = 0;       // charged so far, aborted rows included (enforces the budget)
+  size_t row_start = 0;   // bytes when the current row started
+  size_t kept_bytes = 0;  // charged for the rows kept
   bool in_row = false;    // the current row was passed on to the DOM consumer
   bool row_over = false;  // the current row crossed the byte budget
   bool full = false;      // later rows are dropped
@@ -362,6 +366,7 @@ DEFINE_BOOL_METHOD(bounded_start_row, (SRV_CTX_H ctx)) {
     return false;
   }
   b->in_row = true;
+  b->row_start = b->bytes;
   take(kRowBytes);  // over budget, the row is marked and end_row() aborts it
   return dom_row_factory->start_row(ctx);
 }
@@ -380,6 +385,7 @@ DEFINE_BOOL_METHOD(bounded_end_row, (SRV_CTX_H ctx)) {
   if (!b->in_row) return false;
   b->in_row = false;
   if (b->row_over) return dom_row_factory->abort_row(ctx);
+  b->kept_bytes += b->bytes - b->row_start;
   if (++b->kept >= b->max_rows) b->full = true;
   return dom_row_factory->end_row(ctx);
 }
@@ -639,12 +645,50 @@ bool set_bounded_consumer(MYSQL_H h) {
   return true;
 }
 
-// Runs sql under a fresh row budget; *truncated reports whether rows were dropped.
-bool bounded_query(MYSQL_H h, const std::string &sql, bool *truncated) {
+// What the bounded consumer kept for the last statement an endpoint call ran (any tool, any
+// session): rows passed on to the DOM consumer and the bytes charged for them, aborted rows
+// excluded, and, observed independently, the rows the DOM consumer stored for the first result
+// (its MYSQL_RES row count). Status variables, so tests and operators can check the bounds
+// exactly rather than through process memory. One statement's values are published together.
+struct Retained {
+  long long rows = 0, bytes = 0, stored = 0;
+};
+std::mutex retained_mutex;
+Retained last_retained;
+
+void publish_retained(const Retained &r) {
+  std::lock_guard<std::mutex> lock(retained_mutex);
+  last_retained = r;
+}
+
+template <long long Retained::*field>
+int show_retained(MYSQL_THD, SHOW_VAR *var, char *buf) {
+  var->type = SHOW_LONGLONG;
+  var->value = buf;
+  std::lock_guard<std::mutex> lock(retained_mutex);
+  *reinterpret_cast<long long *>(buf) = last_retained.*field;
+  return 0;
+}
+
+SHOW_VAR status_vars[] = {
+    {"mcp_http.last_rows_retained", reinterpret_cast<char *>(&show_retained<&Retained::rows>),
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"mcp_http.last_bytes_retained", reinterpret_cast<char *>(&show_retained<&Retained::bytes>),
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"mcp_http.last_rows_stored", reinterpret_cast<char *>(&show_retained<&Retained::stored>),
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {nullptr, nullptr, SHOW_LONGLONG, SHOW_SCOPE_GLOBAL}};
+bool status_registered = false;
+
+// Runs sql under a fresh row budget; *truncated reports whether rows were dropped, *retained
+// what the budget kept.
+bool bounded_query(MYSQL_H h, const std::string &sql, bool *truncated, Retained *retained) {
   RowBudget budget;
   BudgetScope scope(&budget);
   const bool failed = mysql_service_mysql_command_query->query(h, sql.data(), sql.size());
   *truncated = budget.dropped;
+  retained->rows = static_cast<long long>(budget.kept);
+  retained->bytes = static_cast<long long>(budget.kept_bytes);
   return failed;
 }
 
@@ -705,12 +749,18 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
       r.error = "session refused";
     } else if (mysql_service_mysql_command_query->query(h, kLimit.data(), kLimit.size())) {
       read_error(h, &r);
-    } else if (bounded_query(h, sql, &r.truncated)) {
+    } else if (Retained retained; bounded_query(h, sql, &r.truncated, &retained)) {
+      publish_retained(retained);
       read_error(h, &r);
     } else {
       r.ok = true;
       MYSQL_RES_H res = nullptr;
-      if (!mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr) {
+      const bool stored =
+          !mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr;
+      if (stored) retained.stored = static_cast<long long>(
+                      reinterpret_cast<Mysql_res_handle *>(res)->mysql_res->row_count);
+      publish_retained(retained);
+      if (stored) {
         unsigned int n = 0;
         mysql_service_mysql_command_field_info->num_fields(res, &n);
         // fetch_fields() returns an array of MYSQL_FIELD structs, not of handles: read the
@@ -1073,6 +1123,13 @@ void stop_server() {
   }
 }
 
+bool unregister_status_vars() {
+  if (!status_registered) return false;
+  if (mysql_service_status_variable_registration->unregister_variable(status_vars)) return true;
+  status_registered = false;
+  return false;
+}
+
 mysql_service_status_t mcp_init() {
   log_bi = mysql_service_log_builtins;
   log_bs = mysql_service_log_builtins_string;
@@ -1080,8 +1137,14 @@ mysql_service_status_t mcp_init() {
     unregister_sysvars();
     return 1;
   }
+  if (mysql_service_status_variable_registration->register_variable(status_vars)) {
+    unregister_sysvars();
+    return 1;
+  }
+  status_registered = true;
   if (start_server()) {
     stop_server();
+    unregister_status_vars();
     unregister_sysvars();
     return 1;
   }
@@ -1090,7 +1153,8 @@ mysql_service_status_t mcp_init() {
 
 mysql_service_status_t mcp_deinit() {
   stop_server();
-  return unregister_sysvars() ? 1 : 0;
+  const bool status_failed = unregister_status_vars();
+  return unregister_sysvars() || status_failed ? 1 : 0;
 }
 
 }  // namespace
@@ -1125,7 +1189,8 @@ PROVIDES_SERVICE(mcp, mysql_text_consumer_row_factory_v1),
 BEGIN_COMPONENT_REQUIRES(mcp)
 REQUIRES_SERVICE(log_builtins), REQUIRES_SERVICE(log_builtins_string),
     REQUIRES_SERVICE(component_sys_variable_register),
-    REQUIRES_SERVICE(component_sys_variable_unregister), REQUIRES_SERVICE(mysql_command_factory),
+    REQUIRES_SERVICE(component_sys_variable_unregister),
+    REQUIRES_SERVICE(status_variable_registration), REQUIRES_SERVICE(mysql_command_factory),
     REQUIRES_SERVICE(mysql_command_options), REQUIRES_SERVICE(mysql_command_query),
     REQUIRES_SERVICE(mysql_command_query_result), REQUIRES_SERVICE(mysql_command_field_info),
     REQUIRES_SERVICE(mysql_command_field_metadata), REQUIRES_SERVICE(mysql_command_error_info),
