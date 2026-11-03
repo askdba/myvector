@@ -50,10 +50,11 @@ def main():
 
     train, test, neighbors, metric, ntrain = load_hdf5(
         args.dataset, args.max_rows, args.max_queries)
-    if metric != "L2":
-        # MariaDB 12.x indexes support euclidean + cosine; this harness wires
-        # euclidean only so far. Fail loud rather than silently mismeasure.
-        raise SystemExit(f"bench_mariadb_real currently supports L2 datasets only (got {metric})")
+    MD = {"L2": ("euclidean", "VEC_DISTANCE_EUCLIDEAN"),
+          "Cosine": ("cosine", "VEC_DISTANCE_COSINE")}
+    if metric not in MD:
+        raise SystemExit(f"bench_mariadb_real supports L2/Cosine (got {metric})")
+    dist_kw, distfn = MD[metric]
     dim = len(train[0])
     sweep_points = [int(x) for x in args.ef_search_sweep.split(",") if x.strip()]
     rows = ntrain
@@ -71,7 +72,7 @@ def main():
     c.sql("CREATE DATABASE IF NOT EXISTS bench;")
     c.sql("DROP TABLE IF EXISTS bench.ann; DROP TABLE IF EXISTS bench.exact;")
     c.sql(f"CREATE TABLE bench.ann (id INT PRIMARY KEY, e VECTOR({dim}) NOT NULL, "
-          f"VECTOR INDEX(e) M={args.M} DISTANCE=euclidean);")
+          f"VECTOR INDEX(e) M={args.M} DISTANCE={dist_kw});")
     c.sql(f"CREATE TABLE bench.exact (id INT PRIMARY KEY, e VECTOR({dim}) NOT NULL);")
 
     def insert_all(table):
@@ -92,10 +93,10 @@ def main():
     metrics = {"index_build_time_s": round(build_s, 2), "insert_qps": insert_qps}
 
     def ann_sql(q, k=10):
-        return f"SELECT id FROM bench.ann ORDER BY VEC_DISTANCE_EUCLIDEAN(e,{vlit(q)}) LIMIT {k}"
+        return f"SELECT id FROM bench.ann ORDER BY {distfn}(e,{vlit(q)}) LIMIT {k}"
 
     def exact_sql(q, k=10):
-        return f"SELECT id FROM bench.exact ORDER BY VEC_DISTANCE_EUCLIDEAN(e,{vlit(q)}) LIMIT {k}"
+        return f"SELECT id FROM bench.exact ORDER BY {distfn}(e,{vlit(q)}) LIMIT {k}"
 
     def timed_qps(queries):
         lat = c.sql_batch_timed(queries, "bench")
@@ -144,7 +145,8 @@ def main():
         c.sql(f"SET GLOBAL mhnsw_ef_search={ef};")
         qs = [ann_sql(test[i]) for i in range(sq)]
         rec = _recall(truth_s, c.sql_batch_results(qs, "bench"))
-        qq, pp50, pp99 = timed_qps(qs)
+        timed_qps(qs)            # per-ef warmup pass (discarded) so the timed
+        qq, pp50, pp99 = timed_qps(qs)   # pass isn't cold at this ef
         sweep.append({"ef_search": ef, "recall_at_10": rec, "qps": qq, "p50_ms": pp50, "p99_ms": pp99})
         rs = f"{rec:.3f}" if rec is not None else "N/A"
         print(f"    ef={ef:<4} recall={rs}  qps={qq:.0f}", flush=True)
