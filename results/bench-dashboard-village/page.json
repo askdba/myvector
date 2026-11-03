@@ -1,12 +1,12 @@
 {
-  "tab_title": "MyVector vs pgvector vs MariaDB",
-  "title": "MyVector vs pgvector vs MariaDB — neutral harness",
-  "subtitle": "fashion-mnist-784 · published ground truth · VillageSQL vector-dev-bench",
+  "tab_title": "Cross-engine vector search",
+  "title": "Cross-engine vector search — 4 engines, one harness",
+  "subtitle": "MyVector · vsql_vector · pgvector · MariaDB — fashion-mnist-784, published ground truth",
   "nav": "<a href=\"/\">← cross-version</a> · <a href=\"/real/\">real-dataset (MySQL versions)</a>",
-  "order": ["MyVector", "pgvector", "MariaDB"],
-  "col": {"MyVector": "#4f9dff", "pgvector": "#36c98d", "MariaDB": "#a56bd8"},
+  "order": ["MyVector", "vsql_vector", "pgvector", "MariaDB"],
+  "col": {"MyVector": "#4f9dff", "vsql_vector": "#f0a93b", "pgvector": "#36c98d", "MariaDB": "#a56bd8"},
   "headline_ef": 200,
-  "description": "A cross-<b>engine</b> comparison run through a neutral third-party harness — VillageSQL's <a href=\"https://github.com/villagesql/vector-dev-bench\">vector-dev-bench</a> (the MyVector profile is <a href=\"https://github.com/villagesql/vector-dev-bench/pull/14\">upstream PR #14</a>). Same real dataset (fashion-mnist-784-euclidean, 60k × 784, L2) and published exact ground truth drive all three engines; this answers \"how does MyVector's HNSW compare to pgvector and MariaDB's native vector indexes on the <i>same</i> workload and harness?\" (The other pages compare MyVector across MySQL versions.)",
+  "description": "A cross-<b>engine</b> comparison run through a neutral third-party harness — VillageSQL's <a href=\"https://github.com/villagesql/vector-dev-bench\">vector-dev-bench</a> (the MyVector profile is <a href=\"https://github.com/villagesql/vector-dev-bench/pull/14\">upstream PR #14</a>). Same real dataset (fashion-mnist-784-euclidean, 60k × 784, L2) and published exact ground truth drive all three engines; this answers \"how does MyVector's HNSW compare to VillageSQL's own <code>vsql_vector</code>, pgvector, and MariaDB's native vector indexes on the <i>same</i> workload and harness?\" (The other pages compare MyVector across MySQL versions.)",
   "caveats": [
     "<b>Harness:</b> VillageSQL <code>vector-dev-bench</code> <code>recall_bench.py</code> — one PyMySQL/psql path, numpy ground truth. The MyVector engine profile is upstream PR&nbsp;#14. It reports build time + a recall@10/QPS ef_search sweep; insert and exact-KNN columns aren't produced by this harness, so they show &ldquo;&mdash;&rdquo;.",
     "<b>Dataset &amp; recall:</b> <code>fashion-mnist-784-euclidean</code> (60k train × 784-d, 10k test, L2) with recall@10 scored against the dataset's <b>published</b> exact neighbors (ann-benchmarks methodology).",
