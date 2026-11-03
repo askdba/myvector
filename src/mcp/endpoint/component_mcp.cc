@@ -42,6 +42,7 @@
 #include <mysql/components/services/security_context.h>
 #include <mysql/components/services/event_tracking_query_service.h>
 #include <mysqld_error.h>
+#include "mysql/strings/m_ctype.h"
 #include "mysql/strings/dtoa.h"
 
 #include <openssl/crypto.h>
@@ -57,6 +58,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "http/base/request.h"
 #include "http/base/request_handler.h"
@@ -111,8 +113,10 @@ unsigned long opt_max_sessions_per_account = 4;  // concurrent calls per account
 char *opt_account = nullptr;       // user@host the token maps to
 char *opt_token_sha256 = nullptr;  // hex SHA-256 of the bearer token
 char *opt_allowed_origins = nullptr;  // comma-separated Origin values browsers may send
+char *opt_mask_columns = nullptr;     // comma-separated column name patterns to mask
 bool port_registered = false, threads_registered = false, max_sessions_registered = false,
-     account_registered = false, token_registered = false, origins_registered = false;
+     account_registered = false, token_registered = false, origins_registered = false,
+     mask_registered = false;
 
 bool register_sysvars() {
   INTEGRAL_CHECK_ARG(ulong) port_arg;
@@ -187,6 +191,17 @@ bool register_sysvars() {
       return true;
     origins_registered = true;
   }
+  {
+    STR_CHECK_ARG(str) mask_arg;
+    mask_arg.def_val = nullptr;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "mask_columns", PLUGIN_VAR_STR | PLUGIN_VAR_MEMALLOC | PLUGIN_VAR_READONLY,
+            "Comma-separated patterns; result columns whose names contain one (case-insensitive) "
+            "have their values replaced by ********",
+            nullptr, nullptr, &mask_arg, &opt_mask_columns))
+      return true;
+    mask_registered = true;
+  }
   return false;
 }
 
@@ -199,6 +214,7 @@ bool unregister_sysvars() {
     else
       registered = false;
   };
+  drop(mask_registered, "mask_columns");
   drop(origins_registered, "allowed_origins");
   drop(token_registered, "token_sha256");
   drop(account_registered, "account");
@@ -492,6 +508,76 @@ size_t serialized_size(const rapidjson::Value &v) {
   return b.GetSize();
 }
 
+// Column masking, as mysql-mcp-server's MYSQL_MCP_MASK_COLUMNS: a result column whose name
+// contains one of the mcp_http.mask_columns patterns (Unicode case-insensitive; patterns are
+// trimmed of Unicode whitespace and empty ones ignored, as Go's strings.TrimSpace) has every
+// non-NULL value replaced by "********".
+constexpr char kMasked[] = "********";
+
+// Unicode lowercase of UTF-8 text with the server's utf8mb4 case mapping (Go: strings.ToLower).
+std::string unicode_lower(const std::string &s) {
+  const CHARSET_INFO *cs = &my_charset_utf8mb4_0900_ai_ci;
+  std::string src = s;  // casedn takes a mutable source
+  // Lowercase can be longer than the source (U+023E is 2 bytes, its lowercase 3), although the
+  // charset reports casedn_multiply = 1: no character becomes more than 4 bytes.
+  std::string out(4 * s.size(), '\0');
+  out.resize(cs->cset->casedn(cs, src.data(), src.size(), out.data(), out.size()));
+  return out;
+}
+
+// Whether the UTF-8 sequence p[0, len) is whitespace as Go's unicode.IsSpace: ASCII \t-\r and
+// space, U+0085, U+00A0, U+1680, U+2000-U+200A, U+2028, U+2029, U+202F, U+205F, U+3000.
+bool unicode_space(const unsigned char *p, size_t len) {
+  if (len == 1) return p[0] == ' ' || (p[0] >= '\t' && p[0] <= '\r');
+  if (len == 2) return p[0] == 0xC2 && (p[1] == 0x85 || p[1] == 0xA0);
+  if (len != 3) return false;
+  const unsigned cp = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+  return cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 || cp == 0x2029 ||
+         cp == 0x202F || cp == 0x205F || cp == 0x3000;
+}
+
+// Length of the UTF-8 sequence starting with lead byte c (1 for a stray byte).
+size_t utf8_len(unsigned char c) { return c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1; }
+
+// s[x, y) trimmed of Unicode whitespace at both ends.
+std::string unicode_trim(const std::string &s, size_t x, size_t y) {
+  const auto *p = reinterpret_cast<const unsigned char *>(s.data());
+  while (x < y) {
+    const size_t n = utf8_len(p[x]);
+    if (x + n > y || !unicode_space(p + x, n)) break;
+    x += n;
+  }
+  while (y > x) {
+    size_t start = y - 1;  // back to the lead byte of the last character
+    while (start > x && (p[start] & 0xC0) == 0x80) --start;
+    if (start + utf8_len(p[start]) != y || !unicode_space(p + start, y - start)) break;
+    y = start;
+  }
+  return s.substr(x, y - x);
+}
+
+std::vector<std::string> mask_patterns() {
+  std::vector<std::string> out;
+  if (opt_mask_columns == nullptr) return out;
+  const std::string all = opt_mask_columns;
+  size_t b = 0;
+  while (b <= all.size()) {
+    size_t e = all.find(',', b);
+    if (e == std::string::npos) e = all.size();
+    const std::string pattern = unicode_trim(all, b, e);
+    if (!pattern.empty()) out.push_back(unicode_lower(pattern));
+    b = e + 1;
+  }
+  return out;
+}
+
+bool masked_column(const std::string &name, const std::vector<std::string> &patterns) {
+  const std::string lower = unicode_lower(name);
+  for (const auto &p : patterns)
+    if (lower.find(p) != std::string::npos) return true;
+  return false;
+}
+
 MYSQL_THD session_thd(MYSQL_H h) {
   auto *handle = reinterpret_cast<Mysql_handle *>(h);
   return handle == nullptr || handle->mysql == nullptr ? nullptr
@@ -637,6 +723,9 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
                                                             &name);
           names[i] = name != nullptr ? name : "col" + std::to_string(i + 1);
         }
+        const std::vector<std::string> patterns = mask_patterns();
+        std::vector<bool> masked(n);
+        for (unsigned int i = 0; i < n; ++i) masked[i] = masked_column(names[i], patterns);
         auto &a = r.rows.GetAllocator();
         MYSQL_ROW_H row = nullptr;
         ulong *lengths = nullptr;
@@ -650,7 +739,9 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
           rapidjson::Value obj(rapidjson::kObjectType);
           for (unsigned int i = 0; i < n; ++i) {
             rapidjson::Value k(names[i].c_str(), a), v;
-            if (row[i] != nullptr)
+            if (row[i] != nullptr && masked[i])
+              v.SetString(kMasked, sizeof(kMasked) - 1);
+            else if (row[i] != nullptr)
               cell_value(row[i], lengths ? lengths[i] : std::strlen(row[i]), &v, a);
             obj.AddMember(k, v, a);
           }
