@@ -42,6 +42,7 @@
 #include <mysql/components/services/security_context.h>
 #include <mysql/components/services/event_tracking_query_service.h>
 #include <mysqld_error.h>
+#include "mysql/strings/m_ctype.h"
 #include "mysql/strings/dtoa.h"
 
 #include <openssl/crypto.h>
@@ -508,13 +509,49 @@ size_t serialized_size(const rapidjson::Value &v) {
 }
 
 // Column masking, as mysql-mcp-server's MYSQL_MCP_MASK_COLUMNS: a result column whose name
-// contains one of the mcp_http.mask_columns patterns (ASCII case-insensitive; empty patterns
-// ignored) has every non-NULL value replaced by "********".
+// contains one of the mcp_http.mask_columns patterns (Unicode case-insensitive; patterns are
+// trimmed of Unicode whitespace and empty ones ignored, as Go's strings.TrimSpace) has every
+// non-NULL value replaced by "********".
 constexpr char kMasked[] = "********";
 
-std::string ascii_lower(std::string s) {
-  for (char &c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  return s;
+// Unicode lowercase of UTF-8 text with the server's utf8mb4 case mapping (Go: strings.ToLower).
+std::string unicode_lower(const std::string &s) {
+  const CHARSET_INFO *cs = &my_charset_utf8mb4_0900_ai_ci;
+  std::string src = s;  // casedn takes a mutable source
+  std::string out(s.size() * cs->casedn_multiply, '\0');
+  out.resize(cs->cset->casedn(cs, src.data(), src.size(), out.data(), out.size()));
+  return out;
+}
+
+// Whether the UTF-8 sequence p[0, len) is whitespace as Go's unicode.IsSpace: ASCII \t-\r and
+// space, U+0085, U+00A0, U+1680, U+2000-U+200A, U+2028, U+2029, U+202F, U+205F, U+3000.
+bool unicode_space(const unsigned char *p, size_t len) {
+  if (len == 1) return p[0] == ' ' || (p[0] >= '\t' && p[0] <= '\r');
+  if (len == 2) return p[0] == 0xC2 && (p[1] == 0x85 || p[1] == 0xA0);
+  if (len != 3) return false;
+  const unsigned cp = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+  return cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 || cp == 0x2029 ||
+         cp == 0x202F || cp == 0x205F || cp == 0x3000;
+}
+
+// Length of the UTF-8 sequence starting with lead byte c (1 for a stray byte).
+size_t utf8_len(unsigned char c) { return c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1; }
+
+// s[x, y) trimmed of Unicode whitespace at both ends.
+std::string unicode_trim(const std::string &s, size_t x, size_t y) {
+  const auto *p = reinterpret_cast<const unsigned char *>(s.data());
+  while (x < y) {
+    const size_t n = utf8_len(p[x]);
+    if (x + n > y || !unicode_space(p + x, n)) break;
+    x += n;
+  }
+  while (y > x) {
+    size_t start = y - 1;  // back to the lead byte of the last character
+    while (start > x && (p[start] & 0xC0) == 0x80) --start;
+    if (start + utf8_len(p[start]) != y || !unicode_space(p + start, y - start)) break;
+    y = start;
+  }
+  return s.substr(x, y - x);
 }
 
 std::vector<std::string> mask_patterns() {
@@ -525,17 +562,15 @@ std::vector<std::string> mask_patterns() {
   while (b <= all.size()) {
     size_t e = all.find(',', b);
     if (e == std::string::npos) e = all.size();
-    size_t x = b, y = e;
-    while (x < y && std::isspace(static_cast<unsigned char>(all[x]))) ++x;
-    while (y > x && std::isspace(static_cast<unsigned char>(all[y - 1]))) --y;
-    if (y > x) out.push_back(ascii_lower(all.substr(x, y - x)));
+    const std::string pattern = unicode_trim(all, b, e);
+    if (!pattern.empty()) out.push_back(unicode_lower(pattern));
     b = e + 1;
   }
   return out;
 }
 
 bool masked_column(const std::string &name, const std::vector<std::string> &patterns) {
-  const std::string lower = ascii_lower(name);
+  const std::string lower = unicode_lower(name);
   for (const auto &p : patterns)
     if (lower.find(p) != std::string::npos) return true;
   return false;

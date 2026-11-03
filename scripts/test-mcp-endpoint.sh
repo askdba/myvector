@@ -157,11 +157,14 @@ expect "no MCP session left after concurrent calls" "$(sql "SHOW GLOBAL STATUS L
 
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).
 sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
-expect "reinstall mapped to app, with allowed origins and masked columns" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.allowed_origins = 'http://localhost:6274, https://Inspector.example', GLOBAL mcp_http.mask_columns = ' secret, PASS ,,'")" "^$"
+expect "reinstall mapped to app, with allowed origins and masked columns" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.allowed_origins = 'http://localhost:6274, https://Inspector.example', GLOBAL mcp_http.mask_columns = ' secret, PASS ,, ÉMAIL,	пароль , token '")" "^$"
 # Column masking, as mysql-mcp-server's MYSQL_MCP_MASK_COLUMNS: by column name, substring,
 # case-insensitive; NULL stays NULL.
 expect "masked columns: values replaced, NULL kept, others untouched" "$(call run_query '{"sql":"SELECT \"a\" AS user_password, \"b\" AS SecretKey, NULL AS secret_null, \"c\" AS ok"}')" 'user_password\\":\\"\*\*\*\*\*\*\*\*\\",\\"SecretKey\\":\\"\*\*\*\*\*\*\*\*\\",\\"secret_null\\":null,\\"ok\\":\\"c\\"'
 expect "masked columns: binary values are masked too" "$(call run_query '{"sql":"SELECT X'"'"'FF'"'"' AS pass_hash"}')" 'pass_hash\\":\\"\*\*\*\*\*\*\*\*\\"\}'
+# As Go's strings.ToLower / TrimSpace: Unicode case (ÉMAIL, пароль) and whitespace (a tab, and a
+# no-break space U+00A0 after "token") in the patterns.
+expect "masked columns: Unicode case and whitespace as in Go" "$(call run_query '{"sql":"SELECT \"a\" AS `émail`, \"b\" AS `ПАРОЛЬ`, \"c\" AS api_token, \"d\" AS ok"}')" 'émail\\":\\"\*{8}\\",\\"ПАРОЛЬ\\":\\"\*{8}\\",\\"api_token\\":\\"\*{8}\\",\\"ok\\":\\"d\\"'
 expect "an allowed Origin passes" "$(rpc_origin http://localhost:6274 '{"jsonrpc":"2.0","id":1,"method":"ping"}')" '"result":\{\}'
 expect "allowed origins match case-insensitively, spaces trimmed" "$(rpc_origin https://inspector.example '{"jsonrpc":"2.0","id":1,"method":"ping"}')" '"result":\{\}'
 # CORS for an allowed browser origin: the preflight is answered and replies name the origin.
