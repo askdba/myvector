@@ -166,7 +166,9 @@ expect "preflight from an allowed Origin: 204" "$(printf '%s\n' "$preflight" | h
 expect "preflight allows POST with Authorization" "$(printf '%s\n' "$preflight" | grep -i '^access-control-' | tr 'A-Z' 'a-z' | sort | tr '\n' ' ')" "access-control-allow-headers: authorization, content-type.*access-control-allow-methods: post.*access-control-allow-origin: http://localhost:6274"
 expect "a POST reply names the allowed Origin" "$(curl_i -X POST -H 'Origin: http://localhost:6274' -H 'Authorization: Bearer tok-123' -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"ping"}' | grep -i '^access-control-allow-origin')" "^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin: http://localhost:6274$"
 expect "a 401 for an allowed Origin is readable by the page" "$(curl_i -X POST -H 'Origin: http://localhost:6274' -H 'Content-Type: application/json' -d '{}' | grep -ci '^access-control-allow-origin: http://localhost:6274')" "^1$"
-expect "preflight from another Origin: 403, no CORS headers" "$(curl_i -X OPTIONS -H 'Origin: http://evil.example' -H 'Access-Control-Request-Method: POST' | grep -ciE '^HTTP/1.1 403|^access-control-')" "^1$"
+foreign=$(curl_i -X OPTIONS -H 'Origin: http://evil.example' -H 'Access-Control-Request-Method: POST')
+expect "preflight from another Origin: 403" "$(printf '%s\n' "$foreign" | head -1)" "^HTTP/1.1 403"
+expect "preflight from another Origin: no CORS headers" "$(printf '%s\n' "$foreign" | grep -ci '^access-control-')" "^0$"
 expect "OPTIONS without Origin: 405" "$(curl_i -X OPTIONS | head -1)" "^HTTP/1.1 405"
 expect "a prefix of an allowed Origin is refused" "$(rpc_origin http://localhost:62 '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^403$"
 expect "another Origin is still refused" "$(rpc_origin http://evil.example '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^403$"
