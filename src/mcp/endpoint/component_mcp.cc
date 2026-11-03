@@ -774,13 +774,29 @@ void rpc_error(Json &out, int code, const char *message) {
 class McpHandler : public http::base::RequestHandler {
  public:
   void handle_request(http::base::Request &req) override {
+    const std::string *origin = req.get_input_headers().find("Origin");
+    if (!origin_ok(origin)) {
+      req.send_reply(HttpStatusCode::Forbidden);
+      return;
+    }
+    // CORS for an allowed browser origin: its replies name it, so the page may read them, and
+    // its preflight (OPTIONS, sent without credentials) is answered here.
+    if (origin != nullptr) {
+      req.get_output_headers().add("Access-Control-Allow-Origin", origin->c_str());
+      req.get_output_headers().add("Vary", "Origin");
+    }
+    if (req.get_method() == HttpMethod::Options && origin != nullptr) {
+      req.get_output_headers().add("Access-Control-Allow-Methods", "POST");
+      req.get_output_headers().add("Access-Control-Allow-Headers",
+                                   "Authorization, Content-Type, Mcp-Session-Id, "
+                                   "MCP-Protocol-Version");
+      req.get_output_headers().add("Access-Control-Max-Age", "600");
+      req.send_reply(HttpStatusCode::NoContent);
+      return;
+    }
     if (req.get_method() != HttpMethod::Post) {
       req.get_output_headers().add("Allow", "POST");
       req.send_reply(HttpStatusCode::MethodNotAllowed);
-      return;
-    }
-    if (!origin_ok(req.get_input_headers().find("Origin"))) {
-      req.send_reply(HttpStatusCode::Forbidden);
       return;
     }
     if (!token_ok(req.get_input_headers().find("Authorization"))) {

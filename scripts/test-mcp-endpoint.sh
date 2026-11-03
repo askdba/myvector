@@ -28,6 +28,9 @@ rpc() { docker run --rm --network "container:$C" "$CURL_IMAGE" -s -m 20 -w '\n%{
 rpc_origin() { docker run --rm --network "container:$C" "$CURL_IMAGE" -s -m 20 -w '\n%{http_code}' -X POST \
 	http://127.0.0.1:33480/mcp -H 'Content-Type: application/json' -H 'Authorization: Bearer tok-123' \
 	-H "Origin: $1" -d "$2"; }
+# curl_i ARGS...: a request from a sidecar, printing the status line and headers (CR stripped).
+curl_i() { docker run --rm --network "container:$C" "$CURL_IMAGE" -s -m 20 -o /dev/null -D - "$@" \
+	http://127.0.0.1:33480/mcp | tr -d '\r'; }
 call() { rpc tok-123 "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}"; }
 # par N SQL: N concurrent run_query calls from one sidecar; prints the replies (they can
 # interleave, so count matches with grep -o), then the wall time in seconds as "elapsed=S".
@@ -157,6 +160,14 @@ sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
 expect "reinstall mapped to app, with allowed origins" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.allowed_origins = 'http://localhost:6274, https://Inspector.example'")" "^$"
 expect "an allowed Origin passes" "$(rpc_origin http://localhost:6274 '{"jsonrpc":"2.0","id":1,"method":"ping"}')" '"result":\{\}'
 expect "allowed origins match case-insensitively, spaces trimmed" "$(rpc_origin https://inspector.example '{"jsonrpc":"2.0","id":1,"method":"ping"}')" '"result":\{\}'
+# CORS for an allowed browser origin: the preflight is answered and replies name the origin.
+preflight=$(curl_i -X OPTIONS -H 'Origin: http://localhost:6274' -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: authorization, content-type')
+expect "preflight from an allowed Origin: 204" "$(printf '%s\n' "$preflight" | head -1)" "^HTTP/1.1 204"
+expect "preflight allows POST with Authorization" "$(printf '%s\n' "$preflight" | grep -i '^access-control-' | tr 'A-Z' 'a-z' | sort | tr '\n' ' ')" "access-control-allow-headers: authorization, content-type.*access-control-allow-methods: post.*access-control-allow-origin: http://localhost:6274"
+expect "a POST reply names the allowed Origin" "$(curl_i -X POST -H 'Origin: http://localhost:6274' -H 'Authorization: Bearer tok-123' -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"ping"}' | grep -i '^access-control-allow-origin')" "^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin: http://localhost:6274$"
+expect "a 401 for an allowed Origin is readable by the page" "$(curl_i -X POST -H 'Origin: http://localhost:6274' -H 'Content-Type: application/json' -d '{}' | grep -ci '^access-control-allow-origin: http://localhost:6274')" "^1$"
+expect "preflight from another Origin: 403, no CORS headers" "$(curl_i -X OPTIONS -H 'Origin: http://evil.example' -H 'Access-Control-Request-Method: POST' | grep -ciE '^HTTP/1.1 403|^access-control-')" "^1$"
+expect "OPTIONS without Origin: 405" "$(curl_i -X OPTIONS | head -1)" "^HTTP/1.1 405"
 expect "a prefix of an allowed Origin is refused" "$(rpc_origin http://localhost:62 '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^403$"
 expect "another Origin is still refused" "$(rpc_origin http://evil.example '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^403$"
 expect "guard: an account without MCP_USER is not restricted" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (7)"}')" '"isError":false'
