@@ -35,6 +35,7 @@
 #include <mysql/components/component_implementation.h>
 #include <mysql/components/service_implementation.h>
 #include <mysql/components/services/audit_api_connection_service.h>
+#include <mysql/components/services/component_status_var_service.h>
 #include <mysql/components/services/component_sys_var_service.h>
 #include <mysql/components/services/log_builtins.h>
 #include <mysql/components/services/mysql_command_consumer.h>
@@ -75,6 +76,7 @@ REQUIRES_SERVICE_PLACEHOLDER(log_builtins);
 REQUIRES_SERVICE_PLACEHOLDER(log_builtins_string);
 REQUIRES_SERVICE_PLACEHOLDER(component_sys_variable_register);
 REQUIRES_SERVICE_PLACEHOLDER(component_sys_variable_unregister);
+REQUIRES_SERVICE_PLACEHOLDER(status_variable_registration);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_factory);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_options);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_query);
@@ -638,12 +640,29 @@ bool set_bounded_consumer(MYSQL_H h) {
   return true;
 }
 
+// What the bounded consumer retained for the last run_query statement (any session): rows
+// passed on to the DOM consumer and the bytes charged for them. Status variables, so tests and
+// operators can check the bounds exactly rather than through process memory.
+std::atomic<long long> last_rows_retained{0}, last_bytes_retained{0};
+static_assert(sizeof(std::atomic<long long>) == sizeof(long long),
+              "status variables read the atomics as plain long long");
+
+SHOW_VAR status_vars[] = {
+    {"mcp_http.last_rows_retained", reinterpret_cast<char *>(&last_rows_retained),
+     SHOW_LONGLONG, SHOW_SCOPE_GLOBAL},
+    {"mcp_http.last_bytes_retained", reinterpret_cast<char *>(&last_bytes_retained),
+     SHOW_LONGLONG, SHOW_SCOPE_GLOBAL},
+    {nullptr, nullptr, SHOW_LONGLONG, SHOW_SCOPE_GLOBAL}};
+bool status_registered = false;
+
 // Runs sql under a fresh row budget; *truncated reports whether rows were dropped.
 bool bounded_query(MYSQL_H h, const std::string &sql, bool *truncated) {
   RowBudget budget;
   BudgetScope scope(&budget);
   const bool failed = mysql_service_mysql_command_query->query(h, sql.data(), sql.size());
   *truncated = budget.dropped;
+  last_rows_retained = static_cast<long long>(budget.kept);
+  last_bytes_retained = static_cast<long long>(budget.bytes);
   return failed;
 }
 
@@ -998,6 +1017,13 @@ void stop_server() {
   }
 }
 
+bool unregister_status_vars() {
+  if (!status_registered) return false;
+  if (mysql_service_status_variable_registration->unregister_variable(status_vars)) return true;
+  status_registered = false;
+  return false;
+}
+
 mysql_service_status_t mcp_init() {
   log_bi = mysql_service_log_builtins;
   log_bs = mysql_service_log_builtins_string;
@@ -1005,8 +1031,14 @@ mysql_service_status_t mcp_init() {
     unregister_sysvars();
     return 1;
   }
+  if (mysql_service_status_variable_registration->register_variable(status_vars)) {
+    unregister_sysvars();
+    return 1;
+  }
+  status_registered = true;
   if (start_server()) {
     stop_server();
+    unregister_status_vars();
     unregister_sysvars();
     return 1;
   }
@@ -1015,7 +1047,8 @@ mysql_service_status_t mcp_init() {
 
 mysql_service_status_t mcp_deinit() {
   stop_server();
-  return unregister_sysvars() ? 1 : 0;
+  const bool status_failed = unregister_status_vars();
+  return unregister_sysvars() || status_failed ? 1 : 0;
 }
 
 }  // namespace
@@ -1050,7 +1083,8 @@ PROVIDES_SERVICE(mcp, mysql_text_consumer_row_factory_v1),
 BEGIN_COMPONENT_REQUIRES(mcp)
 REQUIRES_SERVICE(log_builtins), REQUIRES_SERVICE(log_builtins_string),
     REQUIRES_SERVICE(component_sys_variable_register),
-    REQUIRES_SERVICE(component_sys_variable_unregister), REQUIRES_SERVICE(mysql_command_factory),
+    REQUIRES_SERVICE(component_sys_variable_unregister),
+    REQUIRES_SERVICE(status_variable_registration), REQUIRES_SERVICE(mysql_command_factory),
     REQUIRES_SERVICE(mysql_command_options), REQUIRES_SERVICE(mysql_command_query),
     REQUIRES_SERVICE(mysql_command_query_result), REQUIRES_SERVICE(mysql_command_field_info),
     REQUIRES_SERVICE(mysql_command_field_metadata), REQUIRES_SERVICE(mysql_command_error_info),
