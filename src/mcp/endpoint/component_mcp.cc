@@ -304,7 +304,9 @@ struct RowBudget {
   unsigned long long max_rows = kMaxRows + 1;
   size_t max_bytes = kMaxBytes;
   unsigned long long kept = 0;
-  size_t bytes = 0;
+  size_t bytes = 0;       // charged so far, aborted rows included (enforces the budget)
+  size_t row_start = 0;   // bytes when the current row started
+  size_t kept_bytes = 0;  // charged for the rows kept
   bool in_row = false;    // the current row was passed on to the DOM consumer
   bool row_over = false;  // the current row crossed the byte budget
   bool full = false;      // later rows are dropped
@@ -363,6 +365,7 @@ DEFINE_BOOL_METHOD(bounded_start_row, (SRV_CTX_H ctx)) {
     return false;
   }
   b->in_row = true;
+  b->row_start = b->bytes;
   take(kRowBytes);  // over budget, the row is marked and end_row() aborts it
   return dom_row_factory->start_row(ctx);
 }
@@ -381,6 +384,7 @@ DEFINE_BOOL_METHOD(bounded_end_row, (SRV_CTX_H ctx)) {
   if (!b->in_row) return false;
   b->in_row = false;
   if (b->row_over) return dom_row_factory->abort_row(ctx);
+  b->kept_bytes += b->bytes - b->row_start;
   if (++b->kept >= b->max_rows) b->full = true;
   return dom_row_factory->end_row(ctx);
 }
@@ -640,18 +644,26 @@ bool set_bounded_consumer(MYSQL_H h) {
   return true;
 }
 
-// What the bounded consumer retained for the last run_query statement (any session): rows
-// passed on to the DOM consumer and the bytes charged for them. Status variables, so tests and
-// operators can check the bounds exactly rather than through process memory.
+// What the bounded consumer kept for the last statement an endpoint call ran (any tool, any
+// session): rows passed on to the DOM consumer and the bytes charged for them, aborted rows
+// excluded. Status variables, so tests and operators can check the bounds exactly rather than
+// through process memory. The server reads them through SHOW_FUNC, with an atomic load.
 std::atomic<long long> last_rows_retained{0}, last_bytes_retained{0};
-static_assert(sizeof(std::atomic<long long>) == sizeof(long long),
-              "status variables read the atomics as plain long long");
+
+template <std::atomic<long long> *counter>
+int show_counter(MYSQL_THD, SHOW_VAR *var, char *buf) {
+  var->type = SHOW_LONGLONG;
+  var->value = buf;
+  *reinterpret_cast<long long *>(buf) = counter->load();
+  return 0;
+}
 
 SHOW_VAR status_vars[] = {
-    {"mcp_http.last_rows_retained", reinterpret_cast<char *>(&last_rows_retained),
-     SHOW_LONGLONG, SHOW_SCOPE_GLOBAL},
-    {"mcp_http.last_bytes_retained", reinterpret_cast<char *>(&last_bytes_retained),
-     SHOW_LONGLONG, SHOW_SCOPE_GLOBAL},
+    {"mcp_http.last_rows_retained",
+     reinterpret_cast<char *>(&show_counter<&last_rows_retained>), SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"mcp_http.last_bytes_retained",
+     reinterpret_cast<char *>(&show_counter<&last_bytes_retained>), SHOW_FUNC,
+     SHOW_SCOPE_GLOBAL},
     {nullptr, nullptr, SHOW_LONGLONG, SHOW_SCOPE_GLOBAL}};
 bool status_registered = false;
 
@@ -662,7 +674,7 @@ bool bounded_query(MYSQL_H h, const std::string &sql, bool *truncated) {
   const bool failed = mysql_service_mysql_command_query->query(h, sql.data(), sql.size());
   *truncated = budget.dropped;
   last_rows_retained = static_cast<long long>(budget.kept);
-  last_bytes_retained = static_cast<long long>(budget.bytes);
+  last_bytes_retained = static_cast<long long>(budget.kept_bytes);
   return failed;
 }
 
