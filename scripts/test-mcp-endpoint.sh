@@ -24,6 +24,13 @@ sql() { docker exec -i "$C" mysql -h127.0.0.1 -uroot -ptestpass -N -e "$1" 2>&1 
 # rpc TOKEN JSON: POST to the endpoint from a sidecar in the server's network namespace.
 rpc() { docker run --rm --network "container:$C" "$CURL_IMAGE" -s -m 20 -w '\n%{http_code}' -X POST \
 	http://127.0.0.1:33480/mcp -H 'Content-Type: application/json' ${1:+-H "Authorization: Bearer $1"} -d "$2"; }
+# rpc_origin ORIGIN JSON: as rpc with the token, sending an Origin header (as a browser does).
+rpc_origin() { docker run --rm --network "container:$C" "$CURL_IMAGE" -s -m 20 -w '\n%{http_code}' -X POST \
+	http://127.0.0.1:33480/mcp -H 'Content-Type: application/json' -H 'Authorization: Bearer tok-123' \
+	-H "Origin: $1" -d "$2"; }
+# curl_i ARGS...: a request from a sidecar, printing the status line and headers (CR stripped).
+curl_i() { docker run --rm --network "container:$C" "$CURL_IMAGE" -s -m 20 -o /dev/null -D - "$@" \
+	http://127.0.0.1:33480/mcp | tr -d '\r'; }
 call() { rpc tok-123 "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}"; }
 # par N SQL: N concurrent run_query calls from one sidecar; prints the replies (they can
 # interleave, so count matches with grep -o), then the wall time in seconds as "elapsed=S".
@@ -56,6 +63,9 @@ expect "install component_mcp" "$(sql "INSTALL COMPONENT 'file://component_mcp' 
 expect "the token hash is not readable by other accounts" "$(docker exec -i "$C" mysql -h127.0.0.1 -umcp -pp -N -e "SELECT @@mcp_http.token_sha256" 2>&1 | grep -v "Using a password")" "ERROR.*SENSITIVE_VARIABLES_OBSERVER"
 expect "no token: 401" "$(rpc '' '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^401$"
 expect "wrong token: 401" "$(rpc nope '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^401$"
+# DNS rebinding: a browser request carries its page's Origin; none is allowed by default.
+expect "a browser Origin is refused: 403, even with the token" "$(rpc_origin http://evil.example '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^403$"
+expect "a localhost Origin is refused too unless allowed" "$(rpc_origin http://localhost:6274 '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^403$"
 expect "initialize" "$(rpc tok-123 '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}')" '"serverInfo":\{"name":"component_mcp"'
 expect "notification: 202" "$(rpc tok-123 '{"jsonrpc":"2.0","method":"notifications/initialized"}')" "^202$"
 expect "tools/list" "$(rpc tok-123 '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')" '"name":"list_databases".*"name":"run_query"'
@@ -147,7 +157,21 @@ expect "no MCP session left after concurrent calls" "$(sql "SHOW GLOBAL STATUS L
 
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).
 sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
-expect "reinstall mapped to app" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX'")" "^$"
+expect "reinstall mapped to app, with allowed origins" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.allowed_origins = 'http://localhost:6274, https://Inspector.example'")" "^$"
+expect "an allowed Origin passes" "$(rpc_origin http://localhost:6274 '{"jsonrpc":"2.0","id":1,"method":"ping"}')" '"result":\{\}'
+expect "allowed origins match case-insensitively, spaces trimmed" "$(rpc_origin https://inspector.example '{"jsonrpc":"2.0","id":1,"method":"ping"}')" '"result":\{\}'
+# CORS for an allowed browser origin: the preflight is answered and replies name the origin.
+preflight=$(curl_i -X OPTIONS -H 'Origin: http://localhost:6274' -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: authorization, content-type')
+expect "preflight from an allowed Origin: 204" "$(printf '%s\n' "$preflight" | head -1)" "^HTTP/1.1 204"
+expect "preflight allows POST with Authorization" "$(printf '%s\n' "$preflight" | grep -i '^access-control-' | tr 'A-Z' 'a-z' | sort | tr '\n' ' ')" "access-control-allow-headers: authorization, content-type.*access-control-allow-methods: post.*access-control-allow-origin: http://localhost:6274"
+expect "a POST reply names the allowed Origin" "$(curl_i -X POST -H 'Origin: http://localhost:6274' -H 'Authorization: Bearer tok-123' -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"ping"}' | grep -i '^access-control-allow-origin')" "^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin: http://localhost:6274$"
+expect "a 401 for an allowed Origin is readable by the page" "$(curl_i -X POST -H 'Origin: http://localhost:6274' -H 'Content-Type: application/json' -d '{}' | grep -ci '^access-control-allow-origin: http://localhost:6274')" "^1$"
+foreign=$(curl_i -X OPTIONS -H 'Origin: http://evil.example' -H 'Access-Control-Request-Method: POST')
+expect "preflight from another Origin: 403" "$(printf '%s\n' "$foreign" | head -1)" "^HTTP/1.1 403"
+expect "preflight from another Origin: no CORS headers" "$(printf '%s\n' "$foreign" | grep -ci '^access-control-')" "^0$"
+expect "OPTIONS without Origin: 405" "$(curl_i -X OPTIONS | head -1)" "^HTTP/1.1 405"
+expect "a prefix of an allowed Origin is refused" "$(rpc_origin http://localhost:62 '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^403$"
+expect "another Origin is still refused" "$(rpc_origin http://evil.example '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^403$"
 expect "guard: an account without MCP_USER is not restricted" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (7)"}')" '"isError":false'
 expect "the guard cannot be uninstalled while the endpoint is installed" "$(sql "UNINSTALL COMPONENT 'file://component_mcp_guard'")" "ERROR"
 expect "uninstall component_mcp" "$(sql "UNINSTALL COMPONENT 'file://component_mcp'")" "^$"

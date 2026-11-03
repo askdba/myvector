@@ -228,6 +228,7 @@ INSTALL COMPONENT 'file://component_mcp'
 | `mcp_http.max_sessions_per_account` | Concurrent endpoint sessions per account (read-only, default 4, 1 to 1024). A call over the cap fails with error 1203. The server's `max_user_connections` does not apply to these sessions |
 | `mcp_http.account` | The account (`user@host`) every request runs as (read-only) |
 | `mcp_http.token_sha256` | Hex SHA-256 of the bearer token (read-only, not persisted, sensitive: readable only with `SENSITIVE_VARIABLES_OBSERVER`). Requests without the matching `Authorization: Bearer <token>` get 401 |
+| `mcp_http.allowed_origins` | Comma-separated `Origin` values accepted (read-only, default none; exact match, ASCII case-insensitive, spaces around commas ignored). Against DNS rebinding, as the MCP transport spec requires: a request that has an `Origin` header not in the list gets 403, before the token is checked. Requests without `Origin` (non-browser clients) are not affected. Add a browser-based client's origin here, e.g. `http://localhost:6274` for MCP Inspector. For a listed origin the endpoint also handles CORS: it answers the browser's `OPTIONS` preflight (204, allowing `POST` with `Authorization`, `Content-Type`, `Mcp-Session-Id` and `MCP-Protocol-Version`, cached 10 minutes) without the token, and every reply carries `Access-Control-Allow-Origin` for it, so the page can connect directly |
 
 ### How a tool call runs
 
