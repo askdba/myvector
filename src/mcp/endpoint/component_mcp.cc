@@ -887,22 +887,26 @@ void call_tool(const rapidjson::Value &params, Json &out) {
 }
 
 void list_tools(Json &out) {
+  // The catalog and status tools only read (MCP tool annotations). run_query is not marked:
+  // the guard keeps it read-only only while mcp.read_only is on.
+#define MCP_READ_ONLY R"("annotations":{"readOnlyHint":true,"idempotentHint":true},)"
   static const char kTools[] =
       R"({"tools":[)"
-      R"({"name":"list_databases","description":"List databases visible to the mapped account",)"
+      R"({"name":"list_databases","description":"List databases visible to the mapped account",)" MCP_READ_ONLY
       R"("inputSchema":{"type":"object","properties":{}}},)"
-      R"({"name":"list_tables","description":"List the tables of a database",)"
+      R"({"name":"list_tables","description":"List the tables of a database",)" MCP_READ_ONLY
       R"("inputSchema":{"type":"object","properties":{"database":{"type":"string"}},)"
       R"("required":["database"]}},)"
-      R"({"name":"describe_table","description":"Describe the columns of a table",)"
+      R"({"name":"describe_table","description":"Describe the columns of a table",)" MCP_READ_ONLY
       R"("inputSchema":{"type":"object","properties":{"database":{"type":"string"},)"
       R"("table":{"type":"string"}},"required":["database","table"]}},)"
       R"({"name":"run_query","description":"Run one read-only SQL statement",)"
       R"("inputSchema":{"type":"object","properties":{"sql":{"type":"string"}},"required":["sql"]}},)"
-      R"({"name":"ping","description":"Check that the server answers, with the round-trip time",)"
+      R"({"name":"ping","description":"Check that the server answers, with the round-trip time",)" MCP_READ_ONLY
       R"("inputSchema":{"type":"object","properties":{}}},)"
-      R"({"name":"server_info","description":"Server version, character set and limits",)"
+      R"({"name":"server_info","description":"Server version, character set and limits",)" MCP_READ_ONLY
       R"("inputSchema":{"type":"object","properties":{}}}]})";
+#undef MCP_READ_ONLY
   Json tools;
   tools.Parse(kTools);
   out.AddMember("result", rapidjson::Value(tools, out.GetAllocator()), out.GetAllocator());

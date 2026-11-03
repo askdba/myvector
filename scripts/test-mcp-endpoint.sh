@@ -69,6 +69,7 @@ expect "a localhost Origin is refused too unless allowed" "$(rpc_origin http://l
 expect "initialize" "$(rpc tok-123 '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}')" '"serverInfo":\{"name":"component_mcp"'
 expect "notification: 202" "$(rpc tok-123 '{"jsonrpc":"2.0","method":"notifications/initialized"}')" "^202$"
 expect "tools/list: the six core tools" "$(rpc tok-123 '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | grep -o '"name":"[a-z_]*"' | tr '\n' ' ')" '^"name":"list_databases" "name":"list_tables" "name":"describe_table" "name":"run_query" "name":"ping" "name":"server_info" $'
+expect "tools/list: catalog and status tools are annotated read-only, run_query is not" "$(rpc tok-123 '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | grep -oE '"name":"[a-z_]*","description":"[^"]*",("annotations":\{"readOnlyHint":true)?' | sed 's/"description":"[^"]*",//; s/"annotations":{"readOnlyHint":true/ro/' | tr '\n' ' ')" '^"name":"list_databases",ro "name":"list_tables",ro "name":"describe_table",ro "name":"run_query", "name":"ping",ro "name":"server_info",ro $'
 expect "unknown method" "$(rpc tok-123 '{"jsonrpc":"2.0","id":3,"method":"nope"}')" '"code":-32601'
 expect "list_databases via the tool pack" "$(call list_databases '{}')" 'SCHEMA_NAME.*d1.*"isError":false'
 expect "list_tables via the tool pack" "$(call list_tables '{"database":"d1"}')" 'TABLE_NAME\\":\\"big\\".*TABLE_NAME\\":\\"t\\".*"isError":false'
