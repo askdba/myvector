@@ -39,6 +39,7 @@
 #include <mysql/components/services/log_builtins.h>
 #include <mysql/components/services/mysql_command_consumer.h>
 #include <mysql/components/services/mysql_command_services.h>
+#include <mysql/components/services/security_context.h>
 #include <mysql/components/services/event_tracking_query_service.h>
 #include <mysqld_error.h>
 #include "mysql/strings/dtoa.h"
@@ -77,6 +78,8 @@ REQUIRES_SERVICE_PLACEHOLDER(mysql_command_field_metadata);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_error_info);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_thread);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_audit_api_connection);
+REQUIRES_SERVICE_PLACEHOLDER(mysql_thd_security_context);
+REQUIRES_SERVICE_PLACEHOLDER(mysql_security_context_options);
 // component_mcp_guard's query consumer: requiring it makes the server refuse to install the
 // endpoint without the guard, and to uninstall the guard while the endpoint is installed.
 REQUIRES_SERVICE_PLACEHOLDER_AS(event_tracking_query, mcp_guard_query);
@@ -432,6 +435,18 @@ void read_error(MYSQL_H h, SqlResult *r) {
   r->error = msg != nullptr ? msg : "";
 }
 
+// Impersonation skips the login checks, ACCOUNT LOCK included, so the endpoint refuses a
+// locked account itself. The session's security context records the lock (the account lookup
+// at connect sets it). Fails closed: a context that cannot be read counts as locked.
+bool account_locked(MYSQL_THD thd) {
+  Security_context_handle sctx = nullptr;
+  bool locked = true;
+  if (mysql_service_mysql_thd_security_context->get(thd, &sctx) || sctx == nullptr ||
+      mysql_service_mysql_security_context_options->get(sctx, "account_locked", &locked))
+    return true;
+  return locked;
+}
+
 bool set_bounded_consumer(MYSQL_H h) {
   for (const auto &[option, service] : kBoundedConsumer)
     if (mysql_service_mysql_command_options->set(h, option, service)) return false;
@@ -477,8 +492,19 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
     MYSQL_THD thd = session_thd(h);
     static const std::string kLimit =
         "SET SESSION sql_select_limit = " + std::to_string(kMaxRows + 1);
-    if (thd == nullptr || mysql_service_mysql_audit_api_connection->emit(
-                              thd, MYSQL_AUDIT_CONNECTION_CONNECT) != 0) {
+    // DISCONNECT follows CONNECT whatever CONNECT returned, so the guard releases its state.
+    bool announced = false;
+    const auto announce = [&] {
+      announced = true;
+      return mysql_service_mysql_audit_api_connection->emit(thd, MYSQL_AUDIT_CONNECTION_CONNECT) ==
+             0;
+    };
+    if (thd == nullptr) {
+      r.error = "session refused";
+    } else if (account_locked(thd)) {
+      r.sql_errno = ER_ACCOUNT_HAS_BEEN_LOCKED;
+      r.error = "Access denied for user '" + user + "'@'" + host + "'. Account is locked.";
+    } else if (!announce()) {
       r.error = "session refused";
     } else if (mysql_service_mysql_command_query->query(h, kLimit.data(), kLimit.size())) {
       read_error(h, &r);
@@ -538,7 +564,7 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
       }
     }
     MYSQL_THD thd2 = session_thd(h);
-    if (thd2 != nullptr)
+    if (announced && thd2 != nullptr)
       mysql_service_mysql_audit_api_connection->emit(thd2, MYSQL_AUDIT_CONNECTION_DISCONNECT);
   }
   mysql_service_mysql_command_factory->close(h);
@@ -808,6 +834,7 @@ REQUIRES_SERVICE(log_builtins), REQUIRES_SERVICE(log_builtins_string),
     REQUIRES_SERVICE(mysql_command_query_result), REQUIRES_SERVICE(mysql_command_field_info),
     REQUIRES_SERVICE(mysql_command_field_metadata), REQUIRES_SERVICE(mysql_command_error_info),
     REQUIRES_SERVICE(mysql_command_thread), REQUIRES_SERVICE(mysql_audit_api_connection),
+    REQUIRES_SERVICE(mysql_thd_security_context), REQUIRES_SERVICE(mysql_security_context_options),
     REQUIRES_SERVICE_IMPLEMENTATION_AS(event_tracking_query, mcp_guard, mcp_guard_query),
     REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_row_factory_v1, mysql_server,
                                        dom_row_factory),
