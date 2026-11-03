@@ -191,8 +191,9 @@ An MCP **Streamable HTTP** endpoint (JSON-RPC 2.0 over `POST /mcp`) inside `mysq
 - **Network and auth:** loopback only (`127.0.0.1`) and plain HTTP, with no TLS yet. One bearer token, mapped to one account.
 - **Tools:** `list_databases` (through the `mysql_mcp` tool pack) and `run_query` (one statement).
 - **Results:** `run_query` returns at most 1000 rows and 4 MB of serialized rows (escapes counted), as `{"rows": [{"col": value, ...}], "truncated": true|false}`. A value is a JSON string, `null`, or `{"base64": "..."}` when its bytes are not valid UTF-8 (binary data). The session's `sql_select_limit` stops the server at 1001 rows for statements without their own `LIMIT`.
-  - **Known spike limit:** the command service's default consumer collects every row while a statement runs, so a statement with a large explicit `LIMIT` is buffered in full in `mysqld` before the reply is cut. Bounding that needs a custom row consumer (`mysql_command_consumer` services), which is Phase 5 work.
-- **Missing:** the `account_locked` check, a per-account session cap and column masking. All are in Phase 5.
+  - **Bounded consumer:** for statements with their own `LIMIT`, the server's default command-service consumer would collect every row while the statement runs. `component_mcp` sessions select its own row and value consumer services (`mysql_text_consumer_*_v1.mcp`), which pass rows on to the default consumer until the statement has produced 1001 rows or 4 MiB of values. Later rows are dropped as they arrive, and a row that crosses the byte budget is never half stored. The statement still runs to its end; `mcp.max_execution_time_ms`, when set, bounds its time. The budget also counts what the default consumer keeps per row and per cell (a pointer each, NULL cells included), so wide results of NULLs are bounded too. `SELECT ... LIMIT 1000000` and 100 rows of 1 MB each leave `mysqld`'s peak RSS unchanged (without it: +144 MiB and +61 MiB).
+- **Locked accounts:** a call for an account with `ACCOUNT LOCK` fails with error 3118 (`Access denied for user '...'@'...'. Account is locked.`) before any statement runs. Impersonation skips the login checks, so the endpoint reads the lock from the session's security context (`account_locked`, set by the account lookup at connect). It checks on every call, so `ACCOUNT LOCK` takes effect on the next one.
+- **Missing:** column masking (Phase 5).
 
 ### Build and install
 
@@ -223,6 +224,8 @@ INSTALL COMPONENT 'file://component_mcp'
 | Variable | Meaning |
 |---|---|
 | `mcp_http.port` | TCP port on `127.0.0.1` (read-only, default 33480) |
+| `mcp_http.threads` | I/O worker threads (read-only, default 4, 1 to 64). Each serves one call at a time, so this many calls run at once; connections are assigned to the workers in turn |
+| `mcp_http.max_sessions_per_account` | Concurrent endpoint sessions per account (read-only, default 4, 1 to 1024). A call over the cap fails with error 1203. The server's `max_user_connections` does not apply to these sessions |
 | `mcp_http.account` | The account (`user@host`) every request runs as (read-only) |
 | `mcp_http.token_sha256` | Hex SHA-256 of the bearer token (read-only, not persisted, sensitive: readable only with `SENSITIVE_VARIABLES_OBSERVER`). Requests without the matching `Authorization: Bearer <token>` get 401 |
 | `mcp_http.allowed_origins` | Comma-separated `Origin` values accepted (read-only, default none; exact match, ASCII case-insensitive, spaces around commas ignored). Against DNS rebinding, as the MCP transport spec requires: a request that has an `Origin` header not in the list gets 403, before the token is checked. Requests without `Origin` (non-browser clients) are not affected. Add a browser-based client's origin here, e.g. `http://localhost:6274` for MCP Inspector |
@@ -240,8 +243,8 @@ So an account with `MCP_USER` is read-only through the endpoint, and its schema 
 
 Facts recorded for Phase 5:
 
-- **Locked accounts:** impersonation skips the login checks, so a locked account (`ACCOUNT LOCK`) can be impersonated. The endpoint must check `account_locked` itself (26.10 has the lookup).
-- **Connection limits:** `max_user_connections` is not enforced for these sessions, so the endpoint needs its own per-account cap. They do count against `max_connections`.
+- **Locked accounts:** impersonation skips the login checks, so a locked account (`ACCOUNT LOCK`) can be impersonated. The endpoint checks `account_locked` itself (done in Phase 5, above).
+- **Connection limits:** `max_user_connections` is not enforced for these sessions, so the endpoint has its own per-account cap (`mcp_http.max_sessions_per_account`, Phase 5). They count against `max_connections`, and by default the command service lets them exceed it; the endpoint turns that off (`MYSQL_COMMAND_BYPASS_MAX_CONNECTIONS`, 26.10), so a call fails with error 1040 when the server is full.
 - **Auth backends:** Router's `http_auth_realm` / `http_auth_backend` support Basic auth only, so the endpoint checks bearer tokens itself (SHA-256, constant-time compare).
 
 ### Spike measurements (MySQL 26.10.0, arm64, 16 cores)
@@ -250,14 +253,15 @@ Facts recorded for Phase 5:
 |---|---|---|
 | Build of the one target, fresh tree (after a 36 s configure) | 95 s | 265 s |
 | `.so` size | 3.1 MB | 21 MB |
-| Threads added to `mysqld` (one I/O worker) | 3, released on uninstall | — |
+| Threads added to `mysqld` (one I/O worker, the spike) | 3, released on uninstall | — |
 
 ### Tests
 
-`scripts/test-mcp-endpoint.sh <mysql-image> <artifact-dir>` (30 checks) installs the guard, the tool pack and `component_mcp` on the official image, then checks:
+`scripts/test-mcp-endpoint.sh <mysql-image> <artifact-dir>` installs the guard, the tool pack and `component_mcp` on the official image, then checks:
 
 - bearer auth, `initialize`, `notifications/initialized`, `tools/list` and the JSON-RPC errors;
 - both tools, and that `run_query` runs as the mapped account;
+- the result bounds: replies cut at 1000 rows or 4 MB, and the bounded consumer (peak RSS for `LIMIT 1000000` and for 1 MB rows, 8000 NULL columns, NULL-only rows, errors raised after some rows or past the bound);
 - that through the endpoint an `MCP_USER` account's write and a `mysql` read are refused by the guard, and a multi-statement is a parse error;
 - that nothing is written and no session leaks;
 - that remapped to an account without `MCP_USER`, the same write is not restricted.
