@@ -2,7 +2,7 @@
   "tab_title": "MyVector Real-Data Benchmark",
   "title": "MyVector — real-dataset benchmark",
   "subtitle": "MySQL 8.4 / 9.7 / 26.10 + MariaDB 12.3 · fashion-mnist-784 · published ground truth",
-  "nav": "<a href=\"/\">← synthetic 50k×128 benchmark</a>",
+  "nav": "<a href=\"/\">cross-engine</a> · <a href=\"/versions/\">MySQL version comparison</a>",
   "headline_ef": 200,
   "description": "MyVector's native HNSW vector search on a <b>real</b> ann-benchmarks dataset (fashion-mnist-784-euclidean: 60,000 × 784-d image embeddings, L2), scored against the dataset's <b>published exact ground truth</b> — the ann-benchmarks recall methodology, not a brute-force self-check. Queries come from the dataset's held-out test set (never indexed). Same engines and hardware as the <a href=\"/\">synthetic dashboard</a>; this one answers \"what recall/throughput do you actually get on real embeddings?\"",
   "caveats": [

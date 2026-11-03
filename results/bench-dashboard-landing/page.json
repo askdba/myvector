@@ -1,0 +1,17 @@
+{
+  "tab_title": "MyVector — vector search benchmarks",
+  "title": "MyVector — cross-engine vector search",
+  "subtitle": "MyVector · vsql_vector · pgvector · MariaDB — fashion-mnist-784, full metrics",
+  "nav": "<a href=\"/versions/\">MySQL versions (8.4/9.7/26.10)</a> · <a href=\"/real/\">real-dataset by version</a> · <a href=\"/village/\">village (recall/QPS)</a> · <a href=\"/fourway/8.4/\">8.4 family</a> · <a href=\"/fourway/9.7/\">9.7 family</a>",
+  "order": ["MyVector", "vsql_vector", "pgvector", "MariaDB"],
+  "col": {"MyVector": "#4f9dff", "vsql_vector": "#f0a93b", "pgvector": "#36c98d", "MariaDB": "#a56bd8"},
+  "headline_ef": 200,
+  "description": "MyVector's native HNSW vector search for MySQL, head-to-head with <b>VillageSQL's vsql_vector</b>, <b>pgvector</b>, and <b>MariaDB</b>'s native vector index on a real dataset (fashion-mnist-784-euclidean, 60k × 784, L2) with the dataset's <b>published</b> ground truth and full metrics (build, insert, exact-KNN, ANN p50/p99, recall@10). This is the 9.7-base cross-engine view; see the <a href=\"/fourway/8.4/\">8.4</a> / <a href=\"/fourway/9.7/\">9.7</a> family pages for per-base detail, <a href=\"/versions/\">MySQL versions</a> for MyVector across 8.4/9.7/26.10, and <a href=\"/village/\">village</a> for the same four engines through VillageSQL's neutral vector-dev-bench harness.",
+  "caveats": [
+    "<b>Full metrics</b> via MyVector's harness: index build, insert QPS, exact brute-force KNN (QPS + p50/p99), ANN (QPS + p50/p99), and recall@10 vs the dataset's <b>published</b> ground truth. Headline cards are the warm ef_search=200 point.",
+    "<b>Dataset:</b> <code>fashion-mnist-784-euclidean</code> (60k train × 784-d, 10k test, L2). HNSW M=16, ef_construction=200 for MyVector/vsql_vector/pgvector; MariaDB's MHNSW fixes ef_construction at 10 internally.",
+    "<b>Engines here are on the 9.7 base</b> (MyVector on MySQL 9.7, vsql_vector on the VillageSQL 9.7 dev-server) plus pgvector (Postgres 17) and MariaDB 12.3. The <a href=\"/fourway/8.4/\">8.4 family</a> is the 8.4-base companion.",
+    "<b>Cache parity:</b> each engine's graph sized above the ~188&nbsp;MB index. <b>Hardware:</b> all on the same Ampere&nbsp;A1 dev host.",
+    "<b>A bigger cosine dataset (glove-100-angular, 1.2M) is benchmarking separately</b> and will get its own page."
+  ]
+}

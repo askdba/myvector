@@ -2,7 +2,7 @@
   "tab_title": "Cross-engine vector search",
   "title": "Cross-engine vector search — 4 engines, one harness",
   "subtitle": "MyVector · vsql_vector · pgvector · MariaDB — fashion-mnist-784, published ground truth",
-  "nav": "<a href=\"/\">← cross-version</a> · <a href=\"/real/\">real-dataset (MySQL versions)</a>",
+  "nav": "<a href=\"/\">cross-engine (full metrics)</a> · <a href=\"/versions/\">MySQL versions</a> · <a href=\"/real/\">real-dataset by version</a>",
   "order": ["MyVector", "vsql_vector", "pgvector", "MariaDB"],
   "col": {"MyVector": "#4f9dff", "vsql_vector": "#f0a93b", "pgvector": "#36c98d", "MariaDB": "#a56bd8"},
   "headline_ef": 200,
