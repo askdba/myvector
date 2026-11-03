@@ -82,14 +82,16 @@ expect "a value over the byte bound is not sent" "$(call run_query '{"sql":"SELE
 # per-cell overhead) while a statement runs, whatever its LIMIT. mcp_http.last_rows_retained and
 # last_bytes_retained report what it kept for the last statement (exact, unlike process memory):
 # a row is charged its values, 8 bytes per cell and 32 per row.
-retained() { sql "SHOW GLOBAL STATUS LIKE 'mcp_http.last_%_retained'" | awk '{v[$1] = $2} END {print v["mcp_http.last_rows_retained"], v["mcp_http.last_bytes_retained"]}'; }
+# Prints "rows bytes stored": stored is the row count the DOM consumer itself handed over, an
+# independent observation, so a row the budget drops but the DOM consumer keeps shows up there.
+retained() { sql "SHOW GLOBAL STATUS LIKE 'mcp_http.last_%'" | awk '{v[$1] = $2} END {print v["mcp_http.last_rows_retained"], v["mcp_http.last_bytes_retained"], v["mcp_http.last_rows_stored"]}'; }
 wide_reply=$(call run_query '{"sql":"SELECT REPEAT(\"x\", 1000000) AS v FROM d1.big LIMIT 100"}')
 expect "wide rows: the reply is bounded" "$(printf '%s' "$wide_reply" | grep -o '\\"v\\":' | wc -l) $(printf '%s' "$wide_reply" | grep -o 'truncated\\":true' | head -1)" "^[1-4] truncated"
 # 1 MB values are charged 1,000,040 bytes each: the fifth row crosses 4 MiB and is not kept.
-expect "wide rows: 4 rows retained (4 x 1,000,040 bytes)" "$(retained)" "^4 4000160$"
+expect "wide rows: 4 rows retained (4 x 1,000,040 bytes)" "$(retained)" "^4 4000160 4$"
 long_reply=$(call run_query '{"sql":"SELECT REPEAT(\"x\", 100) AS v FROM d1.big a, d1.big b LIMIT 1000000"}')
 expect "LIMIT 1000000: the reply is bounded" "$(printf '%s' "$long_reply" | grep -o '\\"v\\":' | wc -l) $(printf '%s' "$long_reply" | grep -o 'truncated\\":true' | head -1)" "^1000 truncated"
-expect "LIMIT 1000000: 1001 rows retained (x 140 bytes), not 1000000" "$(retained)" "^1001 140140$"
+expect "LIMIT 1000000: 1001 rows retained (x 140 bytes), not 1000000" "$(retained)" "^1001 140140 1001$"
 expect "a NULL-only result is not cut" "$(call run_query '{"sql":"SELECT NULL AS z FROM d1.big LIMIT 3"}')" 'z\\":null\},\{\\"z\\":null\},\{\\"z\\":null\}\],\\"truncated\\":false'
 # NULL cells count against the byte budget too (the DOM consumer keeps a pointer per cell): a row
 # of 8000 NULLs is charged 64,032 bytes, so 65 rows fit in 4 MiB. Without NULL accounting all
@@ -97,7 +99,7 @@ expect "a NULL-only result is not cut" "$(call run_query '{"sql":"SELECT NULL AS
 nulls=$(seq -s, -f 'NULL AS n%g' 1 8000)
 null_reply=$(call run_query "{\"sql\":\"SELECT $nulls FROM d1.big a, d1.big b LIMIT 5000\"}")
 expect "8000 NULL columns: the reply is bounded and truncated" "$(printf '%s' "$null_reply" | grep -o 'n8000\\":null' | head -1) $(printf '%s' "$null_reply" | grep -o 'truncated\\":true' | head -1)" 'n8000\\":null truncated'
-expect "8000 NULL columns: 65 rows retained (x 64,032 bytes)" "$(retained)" "^65 4162080$"
+expect "8000 NULL columns: 65 rows retained (x 64,032 bytes)" "$(retained)" "^65 4162080 65$"
 # DOUBLE values are charged their formatted length: 500 rows of 100 short DOUBLEs fit.
 dbls=$(seq -s, -f 'n * 1.5e0 AS d%g' 1 100)
 expect "500 rows of 100 DOUBLE columns are not cut" "$(call run_query "{\"sql\":\"SELECT $dbls FROM d1.big LIMIT 500\"}" | grep -o 'd100\\":' | wc -l | tr -d ' ')" "^500$"

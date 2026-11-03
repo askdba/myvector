@@ -646,35 +646,48 @@ bool set_bounded_consumer(MYSQL_H h) {
 
 // What the bounded consumer kept for the last statement an endpoint call ran (any tool, any
 // session): rows passed on to the DOM consumer and the bytes charged for them, aborted rows
-// excluded. Status variables, so tests and operators can check the bounds exactly rather than
-// through process memory. The server reads them through SHOW_FUNC, with an atomic load.
-std::atomic<long long> last_rows_retained{0}, last_bytes_retained{0};
+// excluded, and, observed independently, the rows the DOM consumer stored for the first result
+// (its MYSQL_RES row count). Status variables, so tests and operators can check the bounds
+// exactly rather than through process memory. One statement's values are published together.
+struct Retained {
+  long long rows = 0, bytes = 0, stored = 0;
+};
+std::mutex retained_mutex;
+Retained last_retained;
 
-template <std::atomic<long long> *counter>
-int show_counter(MYSQL_THD, SHOW_VAR *var, char *buf) {
+void publish_retained(const Retained &r) {
+  std::lock_guard<std::mutex> lock(retained_mutex);
+  last_retained = r;
+}
+
+template <long long Retained::*field>
+int show_retained(MYSQL_THD, SHOW_VAR *var, char *buf) {
   var->type = SHOW_LONGLONG;
   var->value = buf;
-  *reinterpret_cast<long long *>(buf) = counter->load();
+  std::lock_guard<std::mutex> lock(retained_mutex);
+  *reinterpret_cast<long long *>(buf) = last_retained.*field;
   return 0;
 }
 
 SHOW_VAR status_vars[] = {
-    {"mcp_http.last_rows_retained",
-     reinterpret_cast<char *>(&show_counter<&last_rows_retained>), SHOW_FUNC, SHOW_SCOPE_GLOBAL},
-    {"mcp_http.last_bytes_retained",
-     reinterpret_cast<char *>(&show_counter<&last_bytes_retained>), SHOW_FUNC,
-     SHOW_SCOPE_GLOBAL},
+    {"mcp_http.last_rows_retained", reinterpret_cast<char *>(&show_retained<&Retained::rows>),
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"mcp_http.last_bytes_retained", reinterpret_cast<char *>(&show_retained<&Retained::bytes>),
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"mcp_http.last_rows_stored", reinterpret_cast<char *>(&show_retained<&Retained::stored>),
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
     {nullptr, nullptr, SHOW_LONGLONG, SHOW_SCOPE_GLOBAL}};
 bool status_registered = false;
 
-// Runs sql under a fresh row budget; *truncated reports whether rows were dropped.
-bool bounded_query(MYSQL_H h, const std::string &sql, bool *truncated) {
+// Runs sql under a fresh row budget; *truncated reports whether rows were dropped, *retained
+// what the budget kept.
+bool bounded_query(MYSQL_H h, const std::string &sql, bool *truncated, Retained *retained) {
   RowBudget budget;
   BudgetScope scope(&budget);
   const bool failed = mysql_service_mysql_command_query->query(h, sql.data(), sql.size());
   *truncated = budget.dropped;
-  last_rows_retained = static_cast<long long>(budget.kept);
-  last_bytes_retained = static_cast<long long>(budget.kept_bytes);
+  retained->rows = static_cast<long long>(budget.kept);
+  retained->bytes = static_cast<long long>(budget.kept_bytes);
   return failed;
 }
 
@@ -735,12 +748,18 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
       r.error = "session refused";
     } else if (mysql_service_mysql_command_query->query(h, kLimit.data(), kLimit.size())) {
       read_error(h, &r);
-    } else if (bounded_query(h, sql, &r.truncated)) {
+    } else if (Retained retained; bounded_query(h, sql, &r.truncated, &retained)) {
+      publish_retained(retained);
       read_error(h, &r);
     } else {
       r.ok = true;
       MYSQL_RES_H res = nullptr;
-      if (!mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr) {
+      const bool stored =
+          !mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr;
+      if (stored) retained.stored = static_cast<long long>(
+                      reinterpret_cast<Mysql_res_handle *>(res)->mysql_res->row_count);
+      publish_retained(retained);
+      if (stored) {
         unsigned int n = 0;
         mysql_service_mysql_command_field_info->num_fields(res, &n);
         // fetch_fields() returns an array of MYSQL_FIELD structs, not of handles: read the
