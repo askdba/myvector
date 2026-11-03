@@ -128,7 +128,10 @@ def main():
     thead = "".join(f'<th style="color:{col.get(d["version"],"#888")}">{e(disp(d))}</th>' for d in data)
     tbody = ""
     for label, key, dp in rowsdef:
-        cells = "".join(f"<td>{fmt(d['metrics'].get(key), dp)}</td>" for d in data)
+        vals = [d['metrics'].get(key) for d in data]
+        if all(v is None for v in vals):
+            continue  # drop metric rows no engine on this page reports
+        cells = "".join(f"<td>{fmt(v, dp)}</td>" for v in vals)
         tbody += f"<tr><td>{label}</td>{cells}</tr>"
 
     w = data[0].get("workload", {})

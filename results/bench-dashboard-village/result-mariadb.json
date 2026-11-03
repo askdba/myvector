@@ -1,6 +1,7 @@
 {
   "version": "MariaDB",
   "label": "MariaDB 12.3 \u00b7 MHNSW",
+  "timestamp": "2026-11-03T05:06:18.713635+00:00",
   "dataset": "fashion-mnist-784",
   "rows_indexed": 60000,
   "recall_ground_truth": "published",

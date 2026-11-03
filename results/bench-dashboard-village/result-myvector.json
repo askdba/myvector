@@ -1,6 +1,7 @@
 {
   "version": "MyVector",
   "label": "MyVector \u00b7 MySQL 8.4",
+  "timestamp": "2026-11-03T05:06:18.630048+00:00",
   "dataset": "fashion-mnist-784",
   "rows_indexed": 60000,
   "recall_ground_truth": "published",

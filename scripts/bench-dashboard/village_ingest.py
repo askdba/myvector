@@ -14,6 +14,7 @@ Usage:
 import json
 import re
 import sys
+from datetime import datetime, timezone
 
 
 def parse(log_text):
@@ -52,6 +53,7 @@ def main():
     result = {
         "version": version,
         "label": label,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "dataset": "fashion-mnist-784",
         "rows_indexed": rows,
         "recall_ground_truth": "published",

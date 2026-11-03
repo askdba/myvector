@@ -1,6 +1,7 @@
 {
   "version": "vsql_vector",
   "label": "vsql_vector \u00b7 VillageSQL",
+  "timestamp": "2026-11-03T05:06:18.657483+00:00",
   "dataset": "fashion-mnist-784",
   "rows_indexed": 60000,
   "recall_ground_truth": "published",
