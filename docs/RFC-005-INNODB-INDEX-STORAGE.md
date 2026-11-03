@@ -692,6 +692,9 @@ The real fix is **catch-up in memory** (Phase 2c):
 
 #### Resume and promotion
 
+This applies in standalone mode too (from Phase 1): every `storage=innodb` index
+resumes from its `ckpt_gtids`.
+
 - On any restart, takeover or claim, the listener starts its stream from
   `ckpt_gtids`, using GTID-based `mysql_binlog_open()` (`MYSQL_RPL_GTID` and an
   encoded GTID set; the listener calls `mysql_binlog_open()` at
@@ -761,6 +764,10 @@ myvector_checkpoint_interval = 300      (seconds; storage=innodb only)
 
 The interval bounds how stale a backup's index is (§5), how far a follower lags
 (§4.10) and how much must be replayed after a crash.
+
+**Indexes without online updates** have no listener and no timer checkpoints. They
+are persisted by a build or a full save only, and their `ckpt_gtids` is the
+`@@gtid_executed` captured when the build started (§4.6 step 3).
 
 ---
 
@@ -898,14 +905,16 @@ guards against future layout changes.
    on an index with no graph; failed loads reported as SUCCESS).
 1. **Phase 1 (standalone core):** install SQL (schema, internal account),
    command-service sessions, `storage` option resolved into the comment, GTID
-   requirement, build, full save, load with validation, versioned checkpoints on the
-   timer at transaction boundaries, copy buffer, deferred load at startup,
+   requirement, `ckpt_gtids` tracking and the GTID-based listener start and skip
+   check (§4.10, *Resume and promotion*; standalone resume and restore need them),
+   build, full save, load with validation, versioned checkpoints on the timer at
+   transaction boundaries, copy buffer, deferred load at startup,
    `sql_log_bin = 0` for every write. Component only.
 2. **Phase 2:** `MYVECTOR_INDEX_MIGRATE`, crash-safe migration and drop, sizing docs
    (§4.3.1).
 3. **Phase 2b (replicated mode):** `myvector_index_replication`, `writer_uuid`
-   compare-and-set, GR claim, `MYVECTOR_INDEX_TAKEOVER`, follower polling, GTID-based
-   listener start and skip check. Shipped together.
+   compare-and-set, GR claim, `MYVECTOR_INDEX_TAKEOVER`, follower polling. Shipped
+   together.
 4. **Phase 2c:** catch-up in memory on followers (§4.10).
 5. **Phase 3:** write-volume and performance measurements, chunk-size defaults,
    docs. Decide whether `innodb` becomes the default for new indexes, and whether to
@@ -932,8 +941,17 @@ guards against future layout changes.
 
 ## 10. Open Questions and Known Limitations
 
-No open questions. Phase 3 measurements may reopen D2 (links layout), D5 (chunk
-sizes) and D7 (default interval).
+- **Q1. One stream, two backends.** The listener reads one binlog stream for all
+  online indexes. File-backed indexes resume from a file and position, and
+  `storage=innodb` indexes from a GTID set. The stream must start early enough for
+  both. Proposal for the Phase 1 design: start from the file position when any
+  file-backed index needs it, since positions on the server's own binlog are
+  comparable, and skip events per index (by `isAfter()` for file indexes, by GTID
+  membership for InnoDB ones); otherwise start from the intersection of the InnoDB
+  indexes' `ckpt_gtids`. To be settled, with tests, before Phase 1 code.
+
+Phase 3 measurements may reopen D2 (links layout), D5 (chunk sizes) and D7 (default
+interval).
 
 Known limitations, to be revisited:
 
