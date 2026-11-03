@@ -24,7 +24,23 @@ sql() { docker exec -i "$C" mysql -h127.0.0.1 -uroot -ptestpass -N -e "$1" 2>&1 
 # rpc TOKEN JSON: POST to the endpoint from a sidecar in the server's network namespace.
 rpc() { docker run --rm --network "container:$C" "$CURL_IMAGE" -s -m 20 -w '\n%{http_code}' -X POST \
 	http://127.0.0.1:33480/mcp -H 'Content-Type: application/json' ${1:+-H "Authorization: Bearer $1"} -d "$2"; }
+# rpc_origin ORIGIN JSON: as rpc with the token, sending an Origin header (as a browser does).
+rpc_origin() { docker run --rm --network "container:$C" "$CURL_IMAGE" -s -m 20 -w '\n%{http_code}' -X POST \
+	http://127.0.0.1:33480/mcp -H 'Content-Type: application/json' -H 'Authorization: Bearer tok-123' \
+	-H "Origin: $1" -d "$2"; }
+# curl_i ARGS...: a request from a sidecar, printing the status line and headers (CR stripped).
+curl_i() { docker run --rm --network "container:$C" "$CURL_IMAGE" -s -m 20 -o /dev/null -D - "$@" \
+	http://127.0.0.1:33480/mcp | tr -d '\r'; }
 call() { rpc tok-123 "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}"; }
+# par N SQL: N concurrent run_query calls from one sidecar; prints the replies (they can
+# interleave, so count matches with grep -o), then the wall time in seconds as "elapsed=S".
+par() { docker run --rm --network "container:$C" --entrypoint sh "$CURL_IMAGE" -c '
+	n=$0; body=$1; start=$(date +%s); i=0
+	while [ "$i" -lt "$n" ]; do
+		curl -s -m 30 -w "\n" -X POST http://127.0.0.1:33480/mcp -H "Content-Type: application/json" \
+			-H "Authorization: Bearer tok-123" -d "$body" & i=$((i + 1))
+	done; wait; echo "elapsed=$(( $(date +%s) - start ))"' "$1" \
+	"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"run_query\",\"arguments\":{\"sql\":\"$2\"}}}"; }
 alive() { docker ps -q -f "name=$C" | grep -q . && echo up || echo DOWN; }
 
 echo "== $IMAGE"
@@ -38,6 +54,7 @@ sql "INSTALL COMPONENT 'file://component_mcp_guard'; GRANT MCP_ADMIN ON *.* TO r
 CREATE DATABASE d1; CREATE TABLE d1.t (i INT); INSERT INTO d1.t VALUES (1);
 CREATE TABLE d1.big (n INT); INSERT INTO d1.big WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 999) SELECT n FROM s;
 INSERT INTO d1.big SELECT n + 1000 FROM d1.big WHERE n <= 500;
+CREATE TABLE d1.dbl (d DOUBLE(255,0)); INSERT INTO d1.dbl VALUES (1e250);
 CREATE USER mcp@'%' IDENTIFIED BY 'p'; GRANT SELECT, INSERT ON d1.* TO mcp@'%'; GRANT SELECT ON mysql.* TO mcp@'%';
 GRANT EXECUTE ON mysql_mcp.* TO mcp@'%'; GRANT MCP_USER ON *.* TO mcp@'%';
 CREATE USER app@'%' IDENTIFIED BY 'p'; GRANT SELECT, INSERT ON d1.* TO app@'%'; GRANT EXECUTE ON mysql_mcp.* TO app@'%';"
@@ -46,6 +63,9 @@ expect "install component_mcp" "$(sql "INSTALL COMPONENT 'file://component_mcp' 
 expect "the token hash is not readable by other accounts" "$(docker exec -i "$C" mysql -h127.0.0.1 -umcp -pp -N -e "SELECT @@mcp_http.token_sha256" 2>&1 | grep -v "Using a password")" "ERROR.*SENSITIVE_VARIABLES_OBSERVER"
 expect "no token: 401" "$(rpc '' '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^401$"
 expect "wrong token: 401" "$(rpc nope '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^401$"
+# DNS rebinding: a browser request carries its page's Origin; none is allowed by default.
+expect "a browser Origin is refused: 403, even with the token" "$(rpc_origin http://evil.example '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^403$"
+expect "a localhost Origin is refused too unless allowed" "$(rpc_origin http://localhost:6274 '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^403$"
 expect "initialize" "$(rpc tok-123 '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}')" '"serverInfo":\{"name":"component_mcp"'
 expect "notification: 202" "$(rpc tok-123 '{"jsonrpc":"2.0","method":"notifications/initialized"}')" "^202$"
 expect "tools/list" "$(rpc tok-123 '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')" '"name":"list_databases".*"name":"run_query"'
@@ -58,6 +78,40 @@ expect "escaped values count against the bound (no HTTP 500)" "$(call run_query 
 expect "bytes that are not UTF-8 are returned as base64" "$(call run_query '{"sql":"SELECT X'"'"'FF'"'"' AS b"}')" 'b\\":\{\\"base64\\":\\"/w==\\"\}'
 expect "valid UTF-8 stays a string" "$(call run_query '{"sql":"SELECT CONVERT(X'"'"'C3A9'"'"' USING utf8mb4) AS s"}')" 's\\":\\"é\\"' 
 expect "a value over the byte bound is not sent" "$(call run_query '{"sql":"SELECT REPEAT(\"x\", 5000000) AS v"}' | head -c 300)" 'rows\\":\[\],\\"truncated\\":true'
+# The bounded consumer: the server keeps at most 1001 rows and 4 MiB of values while a
+# statement runs, whatever its LIMIT. mysqld is PID 1; its peak RSS (VmHWM) must grow by under
+# 32 MiB, not by the size of the full result (about 100 MB for each; without the bounded
+# consumer it grew by 61 and 144 MiB). The wide case runs first, as the peak only rises.
+hwm_kb() { docker exec "$C" awk '/^VmHWM/ {print $2}' /proc/1/status; }
+hwm0=$(hwm_kb)
+wide_reply=$(call run_query '{"sql":"SELECT REPEAT(\"x\", 1000000) AS v FROM d1.big LIMIT 100"}')
+expect "wide rows: the reply is bounded" "$(printf '%s' "$wide_reply" | grep -o '\\"v\\":' | wc -l) $(printf '%s' "$wide_reply" | grep -o 'truncated\\":true' | head -1)" "^[1-4] truncated"
+expect "wide rows: bytes past the bound are not retained" "$(( ($(hwm_kb) - hwm0) / 1024 )) MiB" "^([0-9]|[12][0-9]|3[01]) MiB$"
+hwm0=$(hwm_kb)
+long_reply=$(call run_query '{"sql":"SELECT REPEAT(\"x\", 100) AS v FROM d1.big a, d1.big b LIMIT 1000000"}')
+expect "LIMIT 1000000: the reply is bounded" "$(printf '%s' "$long_reply" | grep -o '\\"v\\":' | wc -l) $(printf '%s' "$long_reply" | grep -o 'truncated\\":true' | head -1)" "^1000 truncated"
+expect "LIMIT 1000000: rows past the bound are not retained" "$(( ($(hwm_kb) - hwm0) / 1024 )) MiB" "^([0-9]|[12][0-9]|3[01]) MiB$"
+expect "a NULL-only result is not cut" "$(call run_query '{"sql":"SELECT NULL AS z FROM d1.big LIMIT 3"}')" 'z\\":null\},\{\\"z\\":null\},\{\\"z\\":null\}\],\\"truncated\\":false'
+# NULL cells count against the byte budget too (the DOM consumer keeps a pointer per cell): 1001
+# rows of 8000 NULLs would hold 64 MB. The reply's own 4 MB cut comes first either way, so the
+# check is on mysqld's peak RSS. Building the reply for 8000 columns takes memory of its own, so
+# the same query with LIMIT 60 (under the budget, so retained the same way either way) runs first:
+# the large LIMIT may then raise the peak only by what the consumer retains past it: under 16 MiB
+# (measured +3 MiB; without the NULL accounting, +37 MiB).
+nulls=$(seq -s, -f 'NULL AS n%g' 1 8000)
+# Connections go to the I/O workers in turn and each thread has its own malloc arena, so the
+# warm-up runs once per worker (mcp_http.threads, default 4).
+for _ in 1 2 3 4; do call run_query "{\"sql\":\"SELECT $nulls FROM d1.big LIMIT 60\"}" >/dev/null; done
+hwm0=$(hwm_kb)
+null_reply=$(call run_query "{\"sql\":\"SELECT $nulls FROM d1.big a, d1.big b LIMIT 5000\"}")
+expect "8000 NULL columns: the reply is bounded and truncated" "$(printf '%s' "$null_reply" | grep -o 'n8000\\":null' | head -1) $(printf '%s' "$null_reply" | grep -o 'truncated\\":true' | head -1)" 'n8000\\":null truncated'
+expect "8000 NULL columns: NULL cells past the bound are not retained" "$(( ($(hwm_kb) - hwm0) / 1024 )) MiB" "^([0-9]|1[0-5]) MiB$"
+# DOUBLE values are charged their formatted length: 500 rows of 100 short DOUBLEs fit.
+dbls=$(seq -s, -f 'n * 1.5e0 AS d%g' 1 100)
+expect "500 rows of 100 DOUBLE columns are not cut" "$(call run_query "{\"sql\":\"SELECT $dbls FROM d1.big LIMIT 500\"}" | grep -o 'd100\\":' | wc -l | tr -d ' ')" "^500$"
+expect "a fixed-decimal DOUBLE (251 digits) is returned in full" "$(call run_query '{"sql":"SELECT d AS big FROM d1.dbl"}' | grep -o 'big\\":\\"1[0-9]*' | wc -c | tr -d ' ')" "^260$"
+expect "an error after some rows is reported, not a partial result" "$(call run_query '{"sql":"SELECT n, IF(n = 500, (SELECT 1 UNION SELECT 2), n) AS x FROM d1.big"}')" 'Subquery returns more than 1 row.*"isError":true'
+expect "an error past the row bound is reported" "$(call run_query '{"sql":"SELECT n, IF(n = 1500, (SELECT 1 UNION SELECT 2), n) AS x FROM d1.big a LIMIT 1000000"}')" 'Subquery returns more than 1 row.*"isError":true'
 expect "run_query read as the mapped account" "$(call run_query '{"sql":"SELECT i, CURRENT_USER() AS who FROM d1.t"}')" 'i\\":\\"1\\",\\"who\\":\\"mcp@%'
 # Phase 4 exit criterion: the guard's policy reaches run_query in impersonated sessions.
 expect "guard: an MCP account's write is refused" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (2)"}')" 'Error 1290: [^"]*mcp.read_only[^"]*"}],"isError":true'
@@ -66,15 +120,62 @@ expect "multi-statement is a parse error" "$(call run_query '{"sql":"SELECT 1; I
 expect "server alive" "$(alive)" "^up$"
 expect "nothing written" "$(sql "SELECT GROUP_CONCAT(i) FROM d1.t")" "^1$"
 expect "guard counted the endpoint's statements" "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.statements_denied'")" "mcp.statements_denied	[1-9]"
+# Impersonation skips the login checks: the endpoint refuses a locked account itself.
+# With mcp.read_only off for the check, a write shows whether anything ran before the refusal.
+sql "SET GLOBAL mcp.read_only = OFF"
+sql "ALTER USER mcp@'%' ACCOUNT LOCK"
+expect "a locked account is refused before execution" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (2)"}')" "Error 3118: Access denied for user 'mcp'@'%'. Account is locked.*\"isError\":true"
+expect "a locked account does not write" "$(sql "SELECT GROUP_CONCAT(i ORDER BY i) FROM d1.t")" "^1$"
+expect "a locked account is refused for tool pack calls too" "$(call list_databases '{}')" 'Error 3118: .*"isError":true'
+sql "SET GLOBAL mcp.read_only = ON"
+sql "ALTER USER mcp@'%' ACCOUNT UNLOCK"
+expect "the account works again once unlocked" "$(call run_query '{"sql":"SELECT 1 AS one"}')" 'one\\":\\"1\\".*"isError":false'
 expect "no MCP session left" "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'")" "	0$"
+
+# Concurrency: mcp_http.threads (default 4) I/O workers serve calls at once.
+expect "threads and session cap defaults" "$(sql "SELECT @@mcp_http.threads, @@mcp_http.max_sessions_per_account")" "^4	4$"
+four=$(par 4 "SELECT SLEEP(2) AS s")
+expect "4 concurrent calls all succeed" "$(printf '%s\n' "$four" | grep -o '"isError":false' | wc -l | tr -d ' ')" "^4$"
+expect "4 concurrent calls overlap (4 x 2 s in under 4 s)" "$(printf '%s\n' "$four" | grep elapsed=)" "^elapsed=[0-3]$"
+# max_user_connections does not apply to these sessions; mcp_http.max_sessions_per_account does.
+sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
+expect "reinstall with a session cap of 2" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.max_sessions_per_account = 2, GLOBAL mcp_http.account = 'mcp@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX'")" "^$"
+capped=$(par 4 "SELECT SLEEP(2) AS s")
+expect "cap 2: two of four concurrent calls succeed" "$(printf '%s\n' "$capped" | grep -o '"isError":false' | wc -l | tr -d ' ')" "^2$"
+expect "cap 2: the others are refused (1203)" "$(printf '%s\n' "$capped" | grep -o "Error 1203: User mcp already has 2 active endpoint sessions (mcp_http.max_sessions_per_account)" | wc -l | tr -d ' ')" "^2$"
+expect "cap 2: a session slot is free again afterwards" "$(call run_query '{"sql":"SELECT 1 AS one"}')" '"isError":false'
+# The sessions count against max_connections and, unlike the command service's default, are
+# subject to it: one idle client fills max_connections = 1.
+sql "SET GLOBAL max_connections = 1"
+sql "SELECT SLEEP(4)" >/dev/null &
+sleep 1.5
+expect "max_connections applies to endpoint sessions" "$(call run_query '{"sql":"SELECT 1 AS one"}')" 'Error 1040: Too many connections.*"isError":true'
+wait
+sql "SET GLOBAL max_connections = 151"
+expect "a call works again below max_connections" "$(call run_query '{"sql":"SELECT 1 AS one"}')" '"isError":false'
+expect "no MCP session left after concurrent calls" "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'")" "	0$"
 
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).
 sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
-expect "reinstall mapped to app, with masked columns" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.mask_columns = ' secret, PASS ,,'")" "^$"
+expect "reinstall mapped to app, with allowed origins and masked columns" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.allowed_origins = 'http://localhost:6274, https://Inspector.example', GLOBAL mcp_http.mask_columns = ' secret, PASS ,,'")" "^$"
 # Column masking, as mysql-mcp-server's MYSQL_MCP_MASK_COLUMNS: by column name, substring,
 # case-insensitive; NULL stays NULL.
 expect "masked columns: values replaced, NULL kept, others untouched" "$(call run_query '{"sql":"SELECT \"a\" AS user_password, \"b\" AS SecretKey, NULL AS secret_null, \"c\" AS ok"}')" 'user_password\\":\\"\*\*\*\*\*\*\*\*\\",\\"SecretKey\\":\\"\*\*\*\*\*\*\*\*\\",\\"secret_null\\":null,\\"ok\\":\\"c\\"'
 expect "masked columns: binary values are masked too" "$(call run_query '{"sql":"SELECT X'"'"'FF'"'"' AS pass_hash"}')" 'pass_hash\\":\\"\*\*\*\*\*\*\*\*\\"\}'
+expect "an allowed Origin passes" "$(rpc_origin http://localhost:6274 '{"jsonrpc":"2.0","id":1,"method":"ping"}')" '"result":\{\}'
+expect "allowed origins match case-insensitively, spaces trimmed" "$(rpc_origin https://inspector.example '{"jsonrpc":"2.0","id":1,"method":"ping"}')" '"result":\{\}'
+# CORS for an allowed browser origin: the preflight is answered and replies name the origin.
+preflight=$(curl_i -X OPTIONS -H 'Origin: http://localhost:6274' -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: authorization, content-type')
+expect "preflight from an allowed Origin: 204" "$(printf '%s\n' "$preflight" | head -1)" "^HTTP/1.1 204"
+expect "preflight allows POST with Authorization" "$(printf '%s\n' "$preflight" | grep -i '^access-control-' | tr 'A-Z' 'a-z' | sort | tr '\n' ' ')" "access-control-allow-headers: authorization, content-type.*access-control-allow-methods: post.*access-control-allow-origin: http://localhost:6274"
+expect "a POST reply names the allowed Origin" "$(curl_i -X POST -H 'Origin: http://localhost:6274' -H 'Authorization: Bearer tok-123' -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"ping"}' | grep -i '^access-control-allow-origin')" "^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin: http://localhost:6274$"
+expect "a 401 for an allowed Origin is readable by the page" "$(curl_i -X POST -H 'Origin: http://localhost:6274' -H 'Content-Type: application/json' -d '{}' | grep -ci '^access-control-allow-origin: http://localhost:6274')" "^1$"
+foreign=$(curl_i -X OPTIONS -H 'Origin: http://evil.example' -H 'Access-Control-Request-Method: POST')
+expect "preflight from another Origin: 403" "$(printf '%s\n' "$foreign" | head -1)" "^HTTP/1.1 403"
+expect "preflight from another Origin: no CORS headers" "$(printf '%s\n' "$foreign" | grep -ci '^access-control-')" "^0$"
+expect "OPTIONS without Origin: 405" "$(curl_i -X OPTIONS | head -1)" "^HTTP/1.1 405"
+expect "a prefix of an allowed Origin is refused" "$(rpc_origin http://localhost:62 '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^403$"
+expect "another Origin is still refused" "$(rpc_origin http://evil.example '{"jsonrpc":"2.0","id":1,"method":"ping"}')" "^403$"
 expect "guard: an account without MCP_USER is not restricted" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (7)"}')" '"isError":false'
 expect "the guard cannot be uninstalled while the endpoint is installed" "$(sql "UNINSTALL COMPONENT 'file://component_mcp_guard'")" "ERROR"
 expect "uninstall component_mcp" "$(sql "UNINSTALL COMPONENT 'file://component_mcp'")" "^$"
