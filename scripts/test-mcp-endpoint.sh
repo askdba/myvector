@@ -74,7 +74,12 @@ expect "unknown method" "$(rpc tok-123 '{"jsonrpc":"2.0","id":3,"method":"nope"}
 expect "list_databases via the tool pack" "$(call list_databases '{}')" 'SCHEMA_NAME.*d1.*"isError":false'
 expect "list_tables via the tool pack" "$(call list_tables '{"database":"d1"}')" 'TABLE_NAME\\":\\"big\\".*TABLE_NAME\\":\\"t\\".*"isError":false'
 expect "describe_table via the tool pack" "$(call describe_table '{"database":"d1","table":"t"}')" 'COLUMN_NAME\\":\\"i\\",\\"COLUMN_TYPE\\":\\"int\\".*"isError":false'
-expect "arguments are literals, not SQL (quotes, backslashes)" "$(call describe_table '{"database":"d1","table":"t\\\\'"'"'); SELECT 1; -- "}')" 'rows\\":\[\],\\"truncated\\":false.*"isError":false'
+# A table named with quotes, backslashes and SQL (two backslashes, a quote, "); SELECT 1; -- x"):
+# describe_table must find it and return its columns, so the argument bytes arrive exactly.
+docker exec -i "$C" mysql -h127.0.0.1 -uroot -ptestpass 2>&1 <<'SQL' | grep -v "Using a password"
+CREATE TABLE d1.`t\\'); SELECT 1; -- x` (i INT, j INT);
+SQL
+expect "arguments are literals, kept byte for byte (quotes, backslashes, SQL)" "$(call describe_table '{"database":"d1","table":"t\\\\'"'"'); SELECT 1; -- x"}')" 'COLUMN_NAME\\":\\"i\\".*COLUMN_NAME\\":\\"j\\".*"isError":false'
 expect "describe_table without table is a tool error" "$(call describe_table '{"database":"d1"}')" 'needs string arguments database and table.*"isError":true'
 expect "list_tables with a non-string database is a tool error" "$(call list_tables '{"database":1}')" 'needs a string argument database.*"isError":true'
 expect "ping" "$(call ping '{}')" 'success\\":true,\\"latency_ms\\":[0-9]+,\\"message\\":\\"pong\\".*"isError":false'
