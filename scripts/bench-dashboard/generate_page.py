@@ -266,18 +266,21 @@ footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
         return mt.better==='high' ? (mx?100*v/mx:0) : (v?100*mn/v:0);
       }});
     }});
+    var keptIdx=[]; norm.forEach(function(n,j){{ if(n!=null) keptIdx.push(j); }});
+    if(!keptIdx.length) return;   // nothing to compare
     var datasets = DATA.map(function(d,i){{
       return {{label:disp(d), backgroundColor:COL[d.version]||"#888", borderRadius:5,
-        data:metrics.map(function(_,j){{return norm[j]?Math.round(norm[j][i]):0;}})}};
+        data:keptIdx.map(function(j){{return Math.round(norm[j][i]);}})}};
     }});
     document.getElementById('comparePanel').style.display='';
     new Chart(document.getElementById('c_compare'),{{type:'bar',
-      data:{{labels:metrics.map(function(m){{return m.name;}}),datasets:datasets}},
+      data:{{labels:keptIdx.map(function(j){{return metrics[j].name;}}),datasets:datasets}},
       options:{{plugins:{{tooltip:{{callbacks:{{label:function(c){{return c.dataset.label+': '+c.parsed.y+'% of best';}}}}}}}},
         scales:{{y:{{beginAtZero:true,max:100,ticks:{{callback:function(v){{return v+'%';}}}}}}}}}}}});
   }})();
 
   function bar(title,note,vals,dp){{
+    if(vals.every(function(v){{return v==null;}})) return;  // skip empty charts
     var wrap=document.createElement('div'); wrap.className='panel';
     var cid='ch'+Math.random().toString(36).slice(2);
     wrap.innerHTML='<h2>'+title+'</h2>'+(note?'<div class="note">'+note+'</div>':'')+'<canvas id="'+cid+'"></canvas>';
