@@ -78,7 +78,7 @@ expect "arguments are literals, not SQL (quotes, backslashes)" "$(call describe_
 expect "describe_table without table is a tool error" "$(call describe_table '{"database":"d1"}')" 'needs string arguments database and table.*"isError":true'
 expect "list_tables with a non-string database is a tool error" "$(call list_tables '{"database":1}')" 'needs a string argument database.*"isError":true'
 expect "ping" "$(call ping '{}')" 'success\\":true,\\"latency_ms\\":[0-9]+,\\"message\\":\\"pong\\".*"isError":false'
-expect "server_info, as the mapped account" "$(call server_info '{}')" 'version\\":\\"26\.10\.[0-9]+\\",\\"server_engine\\":\\"mysql\\".*current_user\\":\\"mcp@%\\".*max_connections\\":\\"[0-9]+\\".*"isError":false'
+expect "server_info, as the mapped account" "$(call server_info '{}')" 'version\\":\\"26\.10\.[0-9]+\\",\\"server_engine\\":\\"mysql\\".*current_user\\":\\"mcp@%\\",\\"current_database\\":\\"\\".*max_connections\\":\\"[0-9]+\\".*"isError":false'
 expect "large result truncated at 1000 rows" "$(call run_query '{"sql":"SELECT n FROM d1.big"}' | grep -o '\\"n\\":' | wc -l) $(call run_query '{"sql":"SELECT n FROM d1.big"}' | grep -o 'truncated\\":true' | head -1)" "^1000 truncated"
 explicit_limit_reply=$(call run_query '{"sql":"SELECT n FROM d1.big LIMIT 5000"}')
 expect "explicit LIMIT: the reply is still bounded" "$(printf '%s' "$explicit_limit_reply" | grep -o '\\"n\\":' | wc -l) $(printf '%s' "$explicit_limit_reply" | grep -o 'truncated\\":true' | head -1)" "^1000 truncated"

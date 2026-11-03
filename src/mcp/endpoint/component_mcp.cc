@@ -915,7 +915,8 @@ void call_tool(const rapidjson::Value &params, Json &out) {
     sql =
         "SELECT VERSION() AS version, 'mysql' AS server_engine, "
         "@@version_comment AS version_comment, CURRENT_USER() AS `current_user`, "
-        "DATABASE() AS current_database, @@character_set_server AS character_set, "
+        "IFNULL(DATABASE(), '') AS current_database, "  // "" as mysql-mcp-server: no default db
+        "@@character_set_server AS character_set, "
         "@@collation_server AS collation, @@max_connections AS max_connections";
   } else {
     tool_result(out, "unknown tool: " + name, true);
