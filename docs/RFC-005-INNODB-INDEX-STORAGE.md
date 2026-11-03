@@ -1,9 +1,14 @@
 # RFC-005: Storing HNSW Indexes in InnoDB
 
 **Author:** MyVector Engineering  
-**Status:** Draft  
+**Status:** Draft, revision 2  
 **Target Version:** Component builds (MySQL 8.4, 9.7, 26.10) first; plugin decided in Phase 3  
-**Last Updated:** 2026-10-07  
+**Last Updated:** 2026-11-03  
+
+Revision 2 rewrites the first draft (merged in #218) after a max-effort review found
+design flaws in it: a checkpoint feedback loop, replicas colliding with replicated
+rows, broken promotion and fencing, checkpoints taken in the middle of a
+transaction, and more. §11 lists what changed and why.
 
 ---
 
@@ -14,17 +19,22 @@ Its own code makes those saves crash-safe: a two-pass checkpoint, a status file,
 and a recovery replay. This RFC proposes a second storage backend that keeps the
 index in InnoDB tables instead.
 
-With the new backend, a checkpoint is a single InnoDB transaction. It writes the
-changed parts of the graph and the binlog position they correspond to, so both
-commit together or not at all. The index is then covered by the tools DBAs already
-use (xtrabackup, the clone plugin, `mysqldump`), and nothing needs a separate
-directory on the file system.
+With the new backend, a checkpoint writes new versions of the changed parts of the
+graph and then, in one final transaction, the GTID set they correspond to. The
+graph and its position become visible together, or not at all. The index is then
+covered by the tools DBAs already use (xtrabackup, the clone plugin, `mysqldump`),
+and nothing needs a separate directory on the file system.
 
 Searches don't change: the graph is still loaded into memory and searched there.
 Only persistence moves.
 
-The index rows replicate like any other InnoDB data. Replicas load the primary's
-graph from them instead of building their own (§4.8).
+The work comes in two stages:
+
+- **Standalone (Phase 1–2).** Each server keeps its own index rows, written
+  outside the binlog. Replicas build their own index from table changes, as they
+  do today. Nothing replicates, so nothing can collide.
+- **Replicated (Phase 2b).** Opt-in: index rows replicate, and replicas follow the
+  primary's graph instead of building their own (§4.10).
 
 ### 1.1 Scope
 
@@ -32,6 +42,19 @@ graph from them instead of building their own (§4.8).
   `hnswlib::HierarchicalDiskNSW`), component build.
 - **Out of scope:** brute-force KNN indexes (`KNNIndex`), which have no
   persistence today. The plugin build is a Phase 3 decision (§8).
+
+### 1.2 Requirements
+
+- **GTID mode.** `storage=innodb` requires `gtid_mode = ON` on every server
+  (**D11**). Checkpoints, resume after a restart, restore and promotion all use GTID
+  sets. File names and positions are never compared across servers. An index with
+  `storage=innodb` on a server with GTID mode off fails to build or load, with a
+  clear error.
+- **Prerequisite fix (Phase 0).** Today an index can be registered without a graph,
+  and a search on it dereferences a null pointer, and a failed load reports SUCCESS
+  ([#265](https://github.com/askdba/myvector/issues/265)). This RFC's deferred
+  loads make that window longer, so #265 must be fixed first: a search on an index
+  with no graph returns an error, and a failed load is reported as a failure.
 
 ---
 
@@ -57,38 +80,46 @@ graph from them instead of building their own (§4.8).
 
 | Item | Where it lives today |
 |---|---|
-| Header (M, ef_construction, max level, entry point, counts…) | First 96 bytes of `<index name>.hnsw.index` (`saveIndexHeader`) |
+| Header (M, ef_construction, max level, entry point, counts…) | First 96 bytes of `<index name>.hnsw.index` (`saveIndexHeader`). No metric field. |
 | Vectors + level-0 links + labels | `.hnsw.index`, one fixed-size record per node (`size_data_per_element_`) |
 | Upper-level links (level > 0) | `.hnsw.index.links` (directory: node id, size) + `.hnsw.index.links.data` |
-| Checkpoint id (binlog file:pos or timestamp) | Embedded in the index, read on load |
-| Checkpoint progress | `.hnsw.index.status` (`CKPT_BEGIN_INCR_PASS1` … `CKPT_CONSISTENT`) |
+| Checkpoint id (binlog file:pos or timestamp) | The `ckptid=` field of the 256-byte line in `.hnsw.index.status` (`include/hnswdisk.i:215`) |
+| Checkpoint progress | Same `.status` line (`CKPT_BEGIN_INCR_PASS1` … `CKPT_CONSISTENT`) |
 | In-flight checkpoint | `.hnsw.index.ckpt.state` |
 
-Each node's level-0 record is laid out as
-`[level-0 links | vector | label]`. The links part is small
-(`4 + 4·M0` bytes, e.g. 132 bytes for M=16). The vector is usually most of
-the record (e.g. 3,072 bytes for 768 float dimensions).
+Each node's level-0 record is laid out as `[level-0 links | vector | label]`. The
+links part is small (`4 + 4·M0` bytes, where M0 = 2·M; e.g. 132 bytes for M=16).
+The vector is usually most of the record (e.g. 3,072 bytes for 768 float
+dimensions).
 
-**Full save** (`saveIndex`, action `build`/`save`): one large sequential write of
-all level-0 data, then the upper-level link files.
+**Saves today:**
 
-**Incremental checkpoint** (`doCheckPoint`): the graph tracks three sets of dirty
-internal node ids (`include/hnswdisk.i:88`):
+- **Build** (`build`): a full save, one large sequential write of all level-0 data,
+  then the upper-level link files.
+- **`save` action and checkpoints:** `saveIndex(dir)` with any option other than
+  `build` runs `doCheckPoint()`, which writes only the header and the **dirty** nodes
+  (`src/myvector.cc`, `HNSWMemoryIndex::saveIndex`). Right after a load nothing is
+  dirty, so `save` writes almost nothing. There is no user-facing full save of an
+  existing graph.
+
+**Dirty tracking** (`include/hnswdisk.i:101`): the graph tracks three sets of dirty
+internal node ids:
 
 - **whole node:** a new or updated vector (`addNodeToFlushList`);
 - **level-0 links only:** a node whose neighbor list changed because *another*
   vector was inserted next to it (`addNodeLinksLevel0ToFlushList`);
 - **upper links:** the same for levels > 0.
 
-For a links-only node the file backend writes just the links, not the vector.
-That matters because **each insert changes the links of up to M0 existing
-neighbors, which can be anywhere in the graph** (`include/hnswdisk.h:768`).
+For a links-only node the file backend writes just the links, not the vector. That
+matters because **each insert changes the links of up to M existing neighbors per
+level, and they can be anywhere in the graph** (`include/hnswdisk.h:620`, `:775`).
 
-Checkpoints run at every binlog rotation: `FlushOnlineVectorIndexes()` waits until
-the online-update queue is empty (`gqueue_.wait_until_empty()`), then calls
-`myvector_checkpoint_index()` for each index. No online update runs during a
-checkpoint. Indexes are saved at build and at rotation only; nothing is saved at
-shutdown.
+**When checkpoints run:** at every binlog rotation, `FlushOnlineVectorIndexes()`
+waits until the online-update queue is empty (`gqueue_.wait_until_empty()`), then
+calls `myvector_checkpoint_index()` for each online index. No online update runs
+during a checkpoint. Nothing is saved at shutdown. The listener resumes from the
+oldest checkpoint of any index (#190), comparing binlog file names and positions
+(`isAfter()`, `src/myvector.cc:3182`).
 
 The key point for this RFC: **persistence is already node-granular and driven by
 dirty sets**. The work is to change where those bytes go, not to change the
@@ -107,74 +138,104 @@ Storage is an **option of each index**, in the existing options string
 type=HNSW,dim=768,size=1000000,M=16,ef=100,storage=innodb
 ```
 
-`storage=file` (the default) keeps today's behavior exactly.
+`storage=file` keeps today's behavior exactly.
 
-**Where the choice is stored:** in the options string itself, which already lives
-in the vector column's comment (`MYVECTOR(...)`) and is read back through the
-`mysql.myvector_columns` view, like `type`, `dim` and `M`. That comment is the
-single source of truth used by every checkpoint, save, load and drop of the index.
-`index_meta` holds the stored data for `storage=innodb` indexes; it does not
-decide the backend. Migration (§4.10) changes the comment. A global setting was considered and rejected: changing it while an
-index is in use would leave unclear where its next checkpoint goes.
+**Where the choice is stored:** in the options string, which lives in the vector
+column's comment (`MYVECTOR(...)`) and is read back through the
+`mysql.myvector_columns` view, like `type`, `dim` and `M`. That comment is the only
+source of truth for which backend an index uses. `index_meta` holds the stored data
+for `storage=innodb` indexes; it never decides the backend.
 
-A system variable `myvector_index_storage_default = file | innodb` sets the value
-used when an index's options don't name one.
+**No global switch.** There is no server setting that decides the backend of
+existing indexes. If an index is created without `storage=`, the creation path writes
+`storage=file` into the comment, as it already fills in a default type
+(`MYVECTOR_DEFAULT_INDEX_TYPE`, `src/myvector.cc:1438`). So every index's comment
+names its backend from the start, and changing a server default later can't move
+existing indexes. A server default (`myvector_index_storage_default`) may exist
+only for *new* indexes, and only because it is resolved into the comment at
+creation.
+
+**Downgrade.** A MyVector build older than this RFC doesn't know `storage=innodb`
+and would treat such an index as file-backed, with no files. Before downgrading,
+migrate every `storage=innodb` index back to `file` (§4.11). The release notes say
+so.
 
 ### 4.2 Schema
 
-The schema and tables are created by the install SQL (with the UDFs and
-procedures), never on first use at runtime.
+The install SQL creates the schema, the tables and an internal account (§4.5). It
+uses `CREATE ... IF NOT EXISTS` with `sql_log_bin = 0`. The install SQL runs on
+every server (`INSTALL COMPONENT` isn't replicated), so each server creates its own
+copy, and a re-run of the script neither fails nor wipes indexes.
 
 Vectors and links are stored **separately**, because they change at very different
 rates (§3): a vector changes only when its own row changes, while links change
 whenever a nearby vector is inserted.
 
-Chunks are **versioned**: a checkpoint never overwrites a chunk in place, it adds
-a new version, and `index_meta.ckpt_seq` says which versions are current (§4.4).
+Chunks are **versioned**: a checkpoint never overwrites a chunk in place. It adds a
+new version, and `index_meta.ckpt_seq` says which versions are current (§4.4).
 
 ```sql
-CREATE TABLE myvector.index_meta (
-  index_name      VARCHAR(192)      NOT NULL,   -- db.table.column
+CREATE TABLE IF NOT EXISTS myvector.index_meta (
+  index_id        BIGINT UNSIGNED   NOT NULL AUTO_INCREMENT,
+  index_name      VARBINARY(776)    NOT NULL,   -- db.table.column, exact bytes
+  state           ENUM('active','dropped','migrating_from_file') NOT NULL,
   format_version  SMALLINT UNSIGNED NOT NULL,
-  generation      BIGINT UNSIGNED   NOT NULL,   -- live generation, see 4.6
+  generation      BIGINT UNSIGNED   NOT NULL,   -- never reset, see 4.6
   ckpt_seq        BIGINT UNSIGNED   NOT NULL,   -- last committed checkpoint, see 4.4
+  ckpt_chunks     INT UNSIGNED      NOT NULL,   -- chunk rows written by ckpt_seq, see 4.10
   header          VARBINARY(256)    NOT NULL,   -- saveIndexHeader() bytes
+  header_crc32    INT UNSIGNED      NOT NULL,
+  metric          TINYINT UNSIGNED  NOT NULL,   -- the header has no metric field
+  dim             INT UNSIGNED      NOT NULL,
   vec_chunk_nodes INT UNSIGNED      NOT NULL,   -- nodes per vector chunk
   lnk_chunk_nodes INT UNSIGNED      NOT NULL,   -- nodes per links chunk
-  ckpt_id         VARCHAR(512)      NOT NULL,   -- "Checkpoint:binlog:<file>:<pos>"
-  ckpt_gtids      MEDIUMTEXT        NULL,       -- GTID set at the checkpoint, see 4.8
-  writer_uuid     CHAR(36)          NOT NULL,   -- server_uuid of the checkpoint writer, see 4.8
-  ckpt_time       TIMESTAMP(6)      NOT NULL,
+  ckpt_gtids      MEDIUMTEXT        NOT NULL,   -- GTID set the graph includes, see 4.4
+  writer_uuid     CHAR(36)          NOT NULL,   -- server_uuid allowed to write, see 4.10
+  ckpt_time       DATETIME(6)       NOT NULL,
   node_count      BIGINT UNSIGNED   NOT NULL,
-  PRIMARY KEY (index_name)
-) ENGINE=InnoDB;
+  PRIMARY KEY (index_id),
+  UNIQUE KEY (index_name)
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
 
 -- Vector + label of each node, in large chunks. Rewritten only when one of its
 -- nodes is new or has a new vector.
-CREATE TABLE myvector.index_vectors (
-  index_name   VARCHAR(192)    NOT NULL,
+CREATE TABLE IF NOT EXISTS myvector.index_vectors (
+  index_id     BIGINT UNSIGNED NOT NULL,
   generation   BIGINT UNSIGNED NOT NULL,
   chunk_id     INT UNSIGNED    NOT NULL,
   version      BIGINT UNSIGNED NOT NULL,  -- ckpt_seq of the checkpoint that wrote it
   data         LONGBLOB        NOT NULL,  -- (vector | label) per node
   crc32        INT UNSIGNED    NOT NULL,
-  PRIMARY KEY (index_name, generation, chunk_id, version)
-) ENGINE=InnoDB;
+  PRIMARY KEY (index_id, generation, chunk_id, version)
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
 
 -- Level-0 links of each node, plus upper-level links, in smaller chunks.
-CREATE TABLE myvector.index_links (
-  index_name   VARCHAR(192)    NOT NULL,
+CREATE TABLE IF NOT EXISTS myvector.index_links (
+  index_id     BIGINT UNSIGNED NOT NULL,
   generation   BIGINT UNSIGNED NOT NULL,
   chunk_id     INT UNSIGNED    NOT NULL,
   version      BIGINT UNSIGNED NOT NULL,
-  level0       MEDIUMBLOB      NOT NULL,  -- level-0 links per node
-  upper        MEDIUMBLOB      NULL,      -- (node_id, len, bytes)* for level > 0
+  level0       LONGBLOB        NOT NULL,  -- level-0 links per node
+  upper        LONGBLOB        NULL,      -- (node_id, len, bytes)* for level > 0
   crc32        INT UNSIGNED    NOT NULL,
-  PRIMARY KEY (index_name, generation, chunk_id, version)
-) ENGINE=InnoDB;
+  PRIMARY KEY (index_id, generation, chunk_id, version)
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
 ```
 
-### 4.3 Chunking
+Schema notes:
+
+- **`index_name` is binary.** In memory, index names are compared as exact strings.
+  Under the default case- and accent-insensitive collation, `shop.Items.emb` and
+  `shop.items.emb` would share one row. `VARBINARY` compares bytes, like the
+  in-memory map. 776 bytes covers the longest name: 64 + 1 + 64 + 1 + 64
+  characters at up to 4 bytes each. `ROW_FORMAT=DYNAMIC` allows the key length
+  whatever `innodb_default_row_format` says.
+- **Chunk tables are keyed by `index_id`,** a small integer, not the name.
+- **`DATETIME(6)`, not `TIMESTAMP`,** which fails after 2038-01-19.
+- **Drop leaves a tombstone** (`state = 'dropped'`) instead of deleting the row, so
+  the generation counter is never reset (§4.6, §4.11).
+
+### 4.3 Chunking and write volume
 
 hnswlib internal node ids are dense (`0 … cur_element_count-1`), so a chunk is a
 fixed range of ids: chunk `k` covers `[k·C, (k+1)·C)`. Saving copies the two parts
@@ -196,407 +257,494 @@ Starting defaults, both configurable and tuned by benchmark in Phase 3 (D5):
 | `index_vectors` | `myvector_index_vec_chunk_bytes` = 4 MB | ~1,360 nodes/chunk, ~740 chunks, ~3.1 GB |
 | `index_links` | `myvector_index_lnk_chunk_bytes` = 256 KB | ~2,000 nodes/chunk, ~500 chunks, ~132 MB |
 
-Both are clamped below `max_allowed_packet`.
+Both are clamped to at most `max_allowed_packet / 2`, so a `mysqldump --hex-blob`
+of a chunk (twice its size) still restores.
 
-**Write volume.** In the example above, 1,000 inserts dirty up to 32,000
-neighbors scattered across the graph, so nearly every links chunk is dirty.
+**Write volume per checkpoint**, in the example above:
 
-| Backend | Writes per checkpoint (1,000 inserts) |
-|---|---|
-| `file` (today) | ~3 MB vectors + ≤ ~4 MB links ≈ 7 MB |
-| `innodb`, vectors and links in one chunk (rejected) | ~all chunks ≈ 3.2 GB |
-| `innodb`, split (proposed) | new vector chunks (~4 MB) + ≤ all links (~132 MB) |
+| Workload since the last checkpoint | `file` (today) | `innodb` |
+|---|---|---|
+| 1,000 inserts | ~3 MB vectors + ≤ ~2 MB links ≈ 5 MB | new vector chunks (~4 MB) + nearly all links (~132 MB) |
+| 1,000 random vector updates | ~3 MB vectors + links ≈ 5 MB | ~545 of ~740 vector chunks (~2.2 GB) + links |
+| 10,000 random vector updates | ~32 MB + links | nearly all vector chunks (~3.1 GB) + links |
 
-The worst case for the proposed design is bounded by the size of all links, about
-4% of the index here. It is still larger than the file backend's; Phase 3 measures
-whether that is acceptable or links need finer chunks.
+- **Inserts:** 1,000 inserts dirty up to 16,000 neighbors spread over the graph,
+  so nearly every links chunk is dirty. The cost is bounded by the size of all links,
+  about 4% of the index here.
+- **Vector updates:** an `UPDATE` of a vector rewrites that node's vector in place,
+  which dirties its 4 MB vector chunk. Random updates touch most vector chunks
+  quickly, so the worst case is **the whole index**.
 
-### 4.4 Incremental checkpoint
+**Recommendation:** use `storage=innodb` for indexes that are mostly appended to.
+Keep `storage=file` for indexes with frequent vector updates, or use smaller vector
+chunks for them (Phase 3 measures the trade-off).
 
-Dirty node sets map to dirty chunks:
+#### 4.3.1 Sizing
+
+Operators need these numbers before turning `storage=innodb` on:
+
+- **Redo log.** InnoDB fully redo-logs large blob writes. Splitting a checkpoint
+  into bounded transactions (§4.4) limits the size of each transaction, not the
+  redo volume: every checkpoint byte goes through the redo log. Size
+  `innodb_redo_log_capacity` to several times the largest expected checkpoint (in
+  the update-heavy example, gigabytes; the 8.0 default is 100 MB).
+- **Tablespace growth.** Each checkpoint inserts new chunk versions and deletes old
+  ones. Deleted versions take space until InnoDB purge removes them, and purge
+  waits for the oldest open transaction. A long `mysqldump --single-transaction`
+  therefore lets `myvector` tables grow by about one checkpoint's worth of data per
+  checkpoint interval while it runs. Freed space is reused, but the files don't
+  shrink without `OPTIMIZE TABLE`.
+- **Binlog** (replicated mode only, §4.10): every checkpoint goes through the
+  binlog. At ~136 MB per checkpoint and one checkpoint every 300 s, that's about
+  39 GB per day, about 1.2 TB at the default 30-day `binlog_expire_logs_seconds`,
+  on the primary and again on each follower.
+- **Memory.** The checkpoint copy buffer (§4.4) holds up to one checkpoint's worth of
+  chunks.
+
+### 4.4 Checkpoints
+
+**When:** `storage=innodb` checkpoints run **only on the timer** (§4.12), never at
+binlog rotation. (In replicated mode a checkpoint writes to the binlog; if rotation
+still triggered checkpoints, a large checkpoint would rotate the binlog and trigger
+the next one, forever.) File-backed indexes keep today's rotation trigger.
+
+**At a transaction boundary:** the listener takes a checkpoint only between
+transactions, after a transaction's commit event (XID) has been applied, or while
+idle. `ckpt_gtids` then contains only transactions the graph has applied in full.
+A checkpoint in the middle of a large `INSERT ... SELECT` would record its GTID as
+done while most of its rows were not, and those rows would be lost on restart or
+promotion.
+
+**Dirty node sets map to dirty chunks:**
 
 - whole node → its vector chunk **and** its links chunk;
 - level-0 or upper links only → its links chunk.
 
-A checkpoint with sequence number `s = ckpt_seq + 1` writes every dirty chunk as
-**version `s`**, then commits `index_meta.ckpt_seq = s` last:
+**Copy, then write.** The checkpoint holds the online-update queue paused (as today,
+§3) only while it copies the dirty chunks and the header into a buffer, which is a
+memory copy. Then it lets updates continue and writes from the buffer. Online updates
+pause for the copy, not for the SQL writes. If the dirty chunks don't fit in
+`myvector_checkpoint_buffer_bytes` (default 512 MB), the checkpoint writes with the
+queue still paused, as today, and logs that it did.
 
-1. Delete any rows with `version > ckpt_seq` for this index. Only a crash during
-   an earlier checkpoint leaves these behind.
-2. Insert the dirty chunks as version `s`, **one statement per chunk** (so no
-   statement exceeds `max_allowed_packet`), in transactions of at most
+**Steps.** A checkpoint with sequence number `s = ckpt_seq + 1`:
+
+1. **Clean up.** Delete rows with `version > ckpt_seq` for this index (left only by
+   a crash during an earlier checkpoint), and any old versions an earlier
+   checkpoint didn't finish deleting (step 5).
+2. **Write the chunks** as version `s`, one statement per chunk (so no statement
+   exceeds `max_allowed_packet`), in transactions of at most
    `myvector_checkpoint_txn_bytes` (default 64 MB).
-3. In the last transaction, update `index_meta`:
+3. **Publish**, in the last transaction, with a compare-and-set:
 
 ```sql
-SET SESSION binlog_row_image = 'MINIMAL';   -- see 4.8: deletes log only the key
-START TRANSACTION;
-  -- for each dirty chunk in this batch:
-  INSERT INTO myvector.index_vectors
-         (index_name, generation, chunk_id, version, data, crc32)
-  VALUES (?, ?, ?, ?, ?, ?);
-  INSERT INTO myvector.index_links (...) VALUES (...);
-  -- last transaction only:
-  UPDATE myvector.index_meta
-     SET ckpt_seq = ?, header = ?, ckpt_id = ?, ckpt_gtids = ?,
-         writer_uuid = @@server_uuid, ckpt_time = NOW(6), node_count = ?
-   WHERE index_name = ? AND generation = ?;
-COMMIT;
+UPDATE myvector.index_meta
+   SET ckpt_seq = ?, ckpt_chunks = ?, header = ?, header_crc32 = ?,
+       ckpt_gtids = ?, ckpt_time = NOW(6), node_count = ?
+ WHERE index_id = ? AND generation = ? AND ckpt_seq = ?      -- s - 1
+   AND writer_uuid = @@server_uuid;                          -- see 4.10
 ```
 
-4. After the commit, delete the older versions of the chunks just written
-   (`version < s`), in batches.
+4. **Check** that exactly one row changed. Zero rows means another build,
+   checkpoint or server got there first: roll back, log, and retry at the next
+   interval.
+5. **Delete** the older versions of the chunks just written (`version < s`), in
+   batches. If this is interrupted, step 1 of the next checkpoint finishes it.
 
-**Readers** (load §4.7, followers §4.8) see, for each chunk, the newest version
+**Readers** (load §4.7, followers §4.10) see, for each chunk, the newest version
 `≤ ckpt_seq`, read in the same consistent snapshot as `index_meta`. Rows of an
 unfinished checkpoint have `version > ckpt_seq`, so they are invisible.
 
 Why versions rather than one transaction per checkpoint:
 
-- **Atomic at any size.** A crash partway through leaves only invisible rows. The
-  index is exactly as of the last committed checkpoint. Splitting into several
+- **Atomic at any size.** A crash partway through leaves only invisible rows, and
+  the index is exactly as of the last committed checkpoint. Splitting into several
   transactions *without* versions would leave some chunks new and some old under
   the old `ckpt_seq`: a corrupt graph.
-- **Bounded transactions.** No checkpoint is ever one large transaction, so none
+- **Bounded transactions.** No checkpoint is one large transaction, so none
   exceeds Group Replication's `group_replication_transaction_size_limit` (150 MB by
-  default), and none puts pressure on the redo log or makes replicas lag behind one
-  large event.
-- **One path.** Every checkpoint takes the same path whatever its size; there is no
-  size threshold to tune.
+  default), and replicas never lag behind one huge event.
+- **One path.** Every checkpoint takes the same path whatever its size.
 
-Checkpoints run at binlog rotation and on a timer (§4.11). The new chunk versions
-and `ckpt_id` become visible together, with the commit of `index_meta`. After a
-crash, the index is exactly as of the last committed checkpoint, and the binlog
-listener resumes from its `ckpt_id`. Nothing needs replaying on our side:
-`.ckpt.state`, `.status`, `WriteCheckPointStatus()` and `doRecovery()` are not
-used in this mode.
+The new chunk versions and `ckpt_gtids` become visible together, with the commit of
+step 3. After a crash, the index is exactly as of the last committed checkpoint, and
+the listener resumes after `ckpt_gtids` (§4.7). `.ckpt.state`, `.status`,
+`WriteCheckPointStatus()` and `doRecovery()` are not used in this mode.
 
-**Concurrency.** The checkpoint relies on the existing rule that the online-update
-queue is empty while it runs (§3), so the graph doesn't change under it. The dirty
-sets are cleared only after the `index_meta` commit succeeds. If the commit fails, the binlog
-position is rolled back, as `myvector_checkpoint_index()` already does for a failed
-file save, and the next checkpoint retries. A manual `save` or `refresh` running at
-the same time as a checkpoint is an existing gap with the file backend too, and is
-out of scope here.
+**`ckpt_gtids`** is the set of transactions the graph includes. The listener keeps
+it as its start set plus the GTID of each transaction it has applied in full; it
+doesn't parse GTID events today, so this is new code. It is **not**
+`@@gtid_executed` at checkpoint time, because the server is already ahead of the
+listener. GTID sets with tags (MySQL 8.3 and later) must be handled.
+
+**Concurrency.** A build of the same index in progress makes the timer skip that
+index until the build has published (§4.6). The dirty sets are cleared only after
+step 3 commits.
 
 ### 4.5 How MyVector runs SQL
 
 MyVector code runs inside UDFs and background threads. It cannot run SQL on the
-caller's session. Options:
+caller's session.
 
-| Option | Pros | Cons |
-|---|---|---|
-| **A. Client connection** (`mysql_real_connect`, as the binlog listener does) | Already used and tested; works for plugin and component | Needs credentials (`myvector.cnf`); goes through the network layer |
-| **B. `mysql_command_services`** (component only) | In-process, no network | New code path; needs a session user and security context |
+**Decision (D4, revised):** use the component's in-process command service
+(`mysql_command_factory`), which the MCP endpoint already uses
+(`src/mcp/endpoint/component_mcp.cc:71`). No network connection and no password
+file.
 
-**Decision (D4):** start with A. It reuses the binlog listener's connection settings,
-with a separate connection for storage (the listener's own connection is busy
-streaming the binlog).
+- **Account.** Sessions run as an internal account the install SQL creates, for
+  example `'mysql.myvector'@'localhost'`, with `ACCOUNT LOCK` so nobody can log in
+  as it. It has `SELECT, INSERT, UPDATE, DELETE` on `myvector.*`,
+  `SESSION_VARIABLES_ADMIN` (for `sql_log_bin = 0` in standalone mode and
+  `binlog_row_image` in replicated mode), and `SELECT` on the `performance_schema`
+  tables in §4.10. The `myvector.cnf` credentials get no new privileges.
+- **Short-lived sessions.** A session is opened for one operation (a checkpoint, a
+  load, a build's writes) and closed after it. No storage session stays open, so
+  none blocks `UNINSTALL COMPONENT` or the uninstall checks
+  (`MYVECTOR_PREPARE_UNINSTALL`), which today allow only the listener's
+  `Binlog Dump` sessions. Uninstall waits for in-flight storage operations to finish.
+- **Isolation.** Every session sets `TRANSACTION ISOLATION LEVEL REPEATABLE READ`
+  (§4.7).
 
-**New requirement:** today only online updates need `myvector.cnf`. With
-`storage=innodb`, *every* build, save and load of that index needs it, including
-indexes that never use online updates. A `storage=innodb` index without a working
-connection fails to build, with a clear error.
+### 4.6 Full save, builds and generations
 
-Privileges for the MyVector user: `SELECT, INSERT, UPDATE, DELETE` on
-`myvector.*`, plus `SESSION_VARIABLES_ADMIN` to set `binlog_row_image` for its
-session.
+**Full save.** A new user-facing full save of an existing graph writes every chunk,
+as a checkpoint in which every chunk is dirty: all chunks get version `s` (§4.4).
+Today's `save` action writes only dirty nodes (§3), so the full save is a new action.
+Migration (§4.11) uses it.
 
-### 4.6 Full save and generations
-
-A **full save of an existing graph** (`save`) is a checkpoint in which every chunk
-is dirty: all chunks get version `s` (§4.4). No separate mechanism is needed.
-
-A **build** (`build`) replaces the graph: internal node ids are reassigned, and the
+**Build** (`build`) replaces the graph: internal node ids are reassigned, and the
 chunk count and chunk sizes can change. It writes a **new generation**:
 
-1. `g = live generation + 1`, or `1` if the index has no `index_meta` row yet
-   (a first build, or a migration from `file`).
-2. Delete any rows with `generation ≥ g` for this index. They can only be left by
-   an earlier build that stopped before step 4, including one in the same server
-   process; without this, its rows would collide with the new ones.
-3. Write all vector and links chunks for `g` (version 1) in bounded transactions.
-4. Publish `g` in one transaction, as an upsert so a first build creates the row:
+1. Read the index's `index_meta` row, including a tombstone. `g` = its generation
+   + 1. With no row at all, insert one first with `state = 'dropped'`,
+   `generation = 0` and `writer_uuid = @@server_uuid` (in replicated mode, only a
+   writer may do this, §4.10), and use `g = 1`. The generation counter never goes
+   back: a drop followed by a rebuild gets a new number, so a follower can always
+   tell it apart from the old graph.
+2. Delete rows with `generation ≥ g` for this index (left by an earlier build that
+   stopped before publishing, possibly in the same server process).
+3. Capture the starting point: read `@@gtid_executed` **before** opening the
+   consistent snapshot the build reads the table in. Transactions that commit in
+   between are replayed by the listener afterwards; replaying a change the index
+   already has is harmless (inserts of existing keys update in place, deletes of
+   missing keys do nothing).
+4. Write all vector and links chunks for `g` (version 1) in bounded transactions.
+5. Publish with a compare-and-set:
 
 ```sql
-INSERT INTO myvector.index_meta
-       (index_name, format_version, generation, ckpt_seq, header, ...)
-VALUES (?, ?, ?, 1, ?, ...)
-ON DUPLICATE KEY UPDATE generation = VALUES(generation), ckpt_seq = 1,
-       header = VALUES(header), ...;
+UPDATE myvector.index_meta
+   SET generation = ?, ckpt_seq = 1, state = 'active', header = ?, ...
+ WHERE index_id = ? AND generation = ?                      -- g - 1
+   AND writer_uuid = @@server_uuid;
 ```
 
-   The build checks that the statement affected the row (1 = inserted,
-   2 = updated) and fails otherwise.
-5. Delete generation `g-1` in batches, in the background.
+   Exactly one row must change; otherwise roll back and fail the build.
+6. Delete generation `g-1` in batches, in the background.
 
-Readers only ever see the generation that `index_meta` points to. Checkpoints also
-check that their `index_meta` update (§4.4) affected exactly one row; zero means the
-generation changed under them, and the checkpoint fails and is retried.
+Readers only ever see the generation that `index_meta` points to.
 
 ### 4.7 Load and startup
 
 **Steps:**
 
-1. `START TRANSACTION WITH CONSISTENT SNAPSHOT` at `REPEATABLE READ`. Every read
-   below is in this one snapshot, so a checkpoint or replication applier running at
-   the same time can't give a mix of two checkpoints. The storage connection sets
-   `SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ` when it connects:
-   under `READ COMMITTED`, `WITH CONSISTENT SNAPSHOT` has no effect and each read
-   gets a fresh snapshot, whatever the server's default isolation level is.
-2. Read `index_meta`. Check `format_version` and that the header matches the
-   index definition (dimension, metric, M).
-3. Scan `index_vectors` and `index_links` for `(index_name, generation)` in
+1. `START TRANSACTION WITH CONSISTENT SNAPSHOT`. The session is at
+   `REPEATABLE READ` (§4.5); under `READ COMMITTED`, `WITH CONSISTENT SNAPSHOT` has
+   no effect and each read gets a fresh snapshot. Every read below is in this one
+   snapshot, so a checkpoint or replication applier running at the same time can't
+   give a mix of two checkpoints.
+2. Read `index_meta`. Check `state`, `format_version`, `header_crc32`, and that
+   `dim`, `metric` and the header's M match the index definition.
+3. **Validate the header** with the same structural checks the file loader applies
+   (`include/hnswdisk.i`): counts within `max_elements`, the entry point and max
+   level within range, sizes consistent with `dim` and M. The stored data is
+   untrusted: anyone who can write to `myvector.*` could otherwise point the graph
+   at memory outside it.
+4. Scan `index_vectors` and `index_links` for `(index_id, generation)` in
    `chunk_id` order, taking the newest version `≤ ckpt_seq` of each chunk. Check
-   each chunk's `crc32` and copy the parts into place. Rebuild `linkLists_` and
-   `element_levels_` from `upper`.
-4. Rebuild `label_lookup_` (row key → node) and the deleted-node count, as the file
-   loader does today (`include/hnswdisk.i:967`).
-5. Set the checkpoint coordinates from `ckpt_id` (and `ckpt_gtids`), as
-   `loadIndex()` does today.
+   each chunk's CRC, that no chunk is missing, and that every node id in `upper` is
+   below `node_count`, with sizes matching its level. Copy the parts into place,
+   allocate `linkLists_`, and rebuild `element_levels_`.
+5. Rebuild `label_lookup_` (row key → node) and the deleted-node count
+   (`num_deleted_`), as the file loader does (`include/hnswdisk.i:1098`).
+6. Set the index's resume point to `ckpt_gtids`.
 
-On any check failure (version, header, CRC, missing chunk), the load fails with a
-clear error and the index must be rebuilt. This follows RFC-004's principle that
-indexes are secondary, rebuildable structures.
+On any check failure, the load **fails**: the index is not registered with an empty
+graph, the error is returned, and `myvector_index_status` shows it as not loaded with
+the reason. The index must then be rebuilt, following RFC-004's principle that
+indexes are secondary, rebuildable structures. (This depends on the Phase 0 fix,
+#265.)
 
 **When loading happens:** components are loaded during server start, before the
-server accepts connections, so a load over SQL cannot run in component init. The
-binlog listener already solves this: it retries its connection until the server
-accepts it, then loads online indexes (`OpenAllOnlineVectorIndexes()`, #186). The
-storage connection follows the same pattern:
+server accepts connections. Loading follows the listener's pattern: it retries until
+the server is ready (#186), then loads online indexes (`OpenAllOnlineVectorIndexes()`).
 
-- Online indexes load from the listener thread once it connects, as today.
-- Other indexes load on `MYVECTOR_INDEX_LOAD`, also as today.
-- Until an index has loaded, searches on it fail with the same error as today
-  (`ER_MYVECTOR_INDEX_NOT_FOUND`).
-- If the connection keeps failing, the error log says so on every retry (rate
-  limited), and `myvector_index_status` shows the index as not loaded with the
-  reason.
+- Other indexes load on `MYVECTOR_INDEX_LOAD`, as today.
+- Until an index has loaded, searches on it return an error (#265), never a crash.
+- Loading a `storage=innodb` index does not depend on the listener's
+  `binlog_state.json` or its `server_uuid` check. A server started from a copied
+  datadir (new `server_uuid`) still loads its InnoDB-stored indexes; their resume
+  point is `ckpt_gtids`, which is valid on any server.
 
-### 4.8 Replication
+### 4.8 Standalone mode (Phase 1–2)
 
-**Decision (D1):** index rows replicate. Replicas load the primary's graph from the
-replicated rows; they don't build their own index from table data. This also makes
-read-only servers work: replicas never write index rows, so `read_only` and
-`super_read_only` don't get in the way.
+In standalone mode, the default, **every write to `myvector.*` runs with
+`sql_log_bin = 0`:**
 
-**Roles.** For `storage=innodb` indexes, a server is:
+- Each server, replicas included, keeps its own index rows. A replica builds its own
+  graph from table changes through its listener, exactly as today, and checkpoints
+  it into its own local rows.
+- Nothing about the index enters the binlog, so a primary's rows never reach a
+  replica, and nothing can collide or stop a replication applier.
+- A backup taken on any server includes that server's index.
+- `writer_uuid` is always the local `server_uuid`.
 
-- a **writer**: it applies table row events to the index (as today) and writes
-  checkpoints;
-- a **follower**: it ignores table row events for these indexes and follows the
-  replicated index rows instead.
-
-There must be exactly one writer per topology. Two writers would both write
-checkpoints into rows that also replicate between them, and the graphs would
-collide. `read_only` alone is not a safe signal: a replica with `read_only` left
-off by mistake is common. So the role comes from a setting, and `auto` checks
-two signals:
-
-```text
-myvector_index_role = auto | writer | follower      (default: auto)
-```
-
-- **`auto`:** a **follower** if `read_only = ON`, **or** if any replication
-  applier channel is running (`performance_schema.replication_applier_status`,
-  `SERVICE_STATE = 'ON'`). The Group Replication channels
-  (`group_replication_applier`, `group_replication_recovery`) don't count, because
-  they also run on a GR primary; there the GR role decides, through
-  `super_read_only`. Otherwise a **writer**. If `read_only = OFF` but a channel is
-  running, the server becomes a follower and logs a warning saying the replica
-  should be read-only.
-- **`writer` / `follower`:** forced, for topologies `auto` can't read (for example
-  replication from a source MyVector doesn't know about). A forced `writer` with a
-  running channel still logs a warning.
-
-**When the role is checked:** when the listener starts, on every heartbeat (each
-second, §4.11), and again just before each checkpoint, so a checkpoint never
-starts on a server that has just become a follower.
-
-**Fencing.** `index_meta.writer_uuid` holds the `server_uuid` of the server that
-wrote the last checkpoint. A writer that sees a *replicated* change to `index_meta`
-(its GTID names another server's UUID; GTID mode is required, see Promotion) knows a
-second writer exists. It stops
-writing checkpoints for that index, becomes a follower, and logs an error naming
-both servers. This catches a misconfiguration that the signals above miss.
-
-**Role changes:**
-
-- **follower → writer** (promotion): as described under **Promotion** below. The
-  first checkpoint sets `writer_uuid` to this server.
-- **writer → follower:** drop the in-memory changes made since the last
-  checkpoint (the primary's graph is the authority) and reload from the tables
-  (§4.7), then follow as usual.
-
-**Writer side.**
-
-- Checkpoint and full-save writes are logged normally, so they replicate.
-- The writer's listener must ignore events on the `myvector` schema, or it would
-  read its own checkpoints back.
-- The storage session uses `binlog_row_image = MINIMAL`. Checkpoints insert new
-  chunk versions, which log the new row under any setting. But they also
-  **delete** old versions (§4.4 step 4), leftovers (step 1) and old generations
-  (§4.6), and with the default `FULL` every row-based delete logs the whole deleted
-  row: the old 4 MB or 256 KB blob, again, for every chunk rewritten. `MINIMAL`
-  logs only the primary key. If granting `SESSION_VARIABLES_ADMIN` is not
-  acceptable, setting `binlog_row_image = MINIMAL` globally has the same effect,
-  for all tables.
-
-**Follower side.** The follower's listener already reads the follower's own binlog,
-which contains the replicated transactions (`log_replica_updates`, `ON` by default
-since 8.0). It ignores the chunk transactions and acts only on a change to an
-`index_meta` row, which marks a committed checkpoint:
-
-1. `START TRANSACTION WITH CONSISTENT SNAPSHOT` (at `REPEATABLE READ`, §4.7),
-   then read `index_meta`. The
-   replication applier may already be past the checkpoint that triggered this, so
-   the follower uses whatever checkpoint the snapshot shows; it may skip some.
-2. If `generation` changed (a build, §4.6), reload the whole index (§4.7).
-3. Otherwise read every chunk with `last applied seq < version ≤ ckpt_seq` (newest
-   version per chunk), check the CRCs, and copy them into the in-memory graph
-   under the index's exclusive lock (`lockExclusive()`). Update the header and
-   rebuild the `label_lookup_` entries for the changed chunks. Searches wait during
-   the copy: a memory copy of at most the links plus new vectors (~136 MB in the
-   §4.3 example).
-4. Remember `ckpt_seq` as the last applied seq.
-
-The snapshot matters: without it, a follower reading chunks while its applier is
-applying the next checkpoint (and deleting old versions, §4.4 step 4) could read a
-mix of two checkpoints.
-
-A follower's graph is never a mix of its own changes and the primary's. HNSW
-inserts are not deterministic (random levels, parallel workers), so a graph built
-on the replica would not match the primary's node for node, and copying the
-primary's chunks into it would corrupt it.
-
-**Freshness.** A follower's index is as of the primary's last checkpoint. With the
-timer (§4.11), it lags by up to `myvector_checkpoint_interval` plus replication
-delay. Rows inserted since then are in the table but not yet in the replica's ANN
-results. Today a replica's index follows each row; this is a real change and must
-be in the docs.
-
-**Decision (D7):** keep the 300 s default and document the lag. Lowering it is
-expensive: under steady writes each checkpoint costs about the same whatever its
-interval, because ~1,000 inserts already dirty nearly all links chunks (§4.3). In
-that example 60 s means ~136 MB/min of binlog to every replica, 300 s ~27 MB/min.
-
-The real fix is **catch-up in memory** (Phase 2c), built on the GTID start below:
-
-1. The follower loads a checkpoint, then applies the table changes after its
-   `ckpt_gtids` in memory, as a writer does. Replicas are current again.
-2. At the next checkpoint it reloads the chunks the primary changed **plus the
-   chunks it changed locally**; the existing dirty-node sets track the second group.
-   Its graph then equals the primary's exactly, with no local changes left.
-3. It restarts its binlog stream from the new `ckpt_gtids` and continues.
-
-With catch-up, the interval only affects backup freshness and crash replay.
-
-**Promotion.** When a follower becomes the writer (by the role rules above), its
-graph is the old primary's last checkpoint. It must apply every table change after
-that point, but `ckpt_id` holds the old primary's binlog file and position, which
-mean nothing on the new primary.
-
-**Decision (D8):** follower mode **requires GTID mode**, and promotion support ships
-in the same phase as follower mode (Phase 2b). Replicas exist for failover; an index
-that silently stops updating after a promotion, or needs hours of rebuild then, is
-worse than no follower mode. GTID mode is standard in current topologies, and Group
-Replication and InnoDB Cluster already require it.
-
-- Every `storage=innodb` checkpoint records `ckpt_gtids` when GTID mode is on.
-  This is the set of transactions the listener has applied up to the checkpoint's
-  position, **not** `@@gtid_executed` at that moment (the server is already ahead).
-  The listener builds it from its start set plus each GTID event it reads; it
-  doesn't parse GTID events today, so this is new code.
-- On promotion, and on any restart, the listener starts from `ckpt_gtids`.
-  `mysql_binlog_open()`, which the listener already uses
-  (`myvector_binlog_service.cc:2201`), supports this with the `MYSQL_RPL_GTID`
-  flag and an encoded GTID set, so the stream setup changes but the listener does
-  not.
-- Follower mode refuses to start with GTID mode off, with a clear error.
-- **File backend:** recording GTIDs there too would give one resume path for both
-  backends, but its checkpoint id lives in a 256-byte status line
-  (`include/hnswdisk.i:217`), too small for a GTID set. That needs a file format
-  change and is a follow-up, not part of this RFC.
-
-**Binlog volume.** Every checkpoint now goes through the binlog and over the network
-to every replica: up to ~136 MB per checkpoint in the §4.3 example, and the whole
-index (~3.2 GB) for a full save or build. Every checkpoint is written in
-transactions of at most `myvector_checkpoint_txn_bytes` (§4.4, **D9**), so none
-exceeds Group Replication's transaction size limit.
+The cost: every server does its own build and checkpoints, as today. Replicated mode
+(§4.10) removes that cost and brings its own rules.
 
 ### 4.9 Security
 
-Index rows are copies of the user's vectors, in another schema. Anyone granted
-`SELECT` on `myvector.*` can read every indexed vector, whatever their grants on the
-source tables. Embeddings can reveal information about the text or images they came
-from. Today the files are protected by OS permissions instead, which is a different
+Index rows are copies of the user's vectors, in another schema. Anyone who can read
+`myvector.*` can read every indexed vector, whatever their grants on the source
+tables. Embeddings can reveal information about the text or images they came from.
+Today the files are protected by OS permissions instead, which is a different
 exposure.
 
 Rules:
 
-- Grant `myvector.*` only to the MyVector user. The install SQL grants nothing
-  else, and the docs say why.
+- Grant `myvector.*` only to the internal account (§4.5). The install SQL grants
+  nothing else, and the docs say why.
+- **Global grants include it.** An account with global `SELECT` (`ON *.*`) can read
+  `myvector.*`. With `partial_revokes = ON`, revoke it explicitly
+  (`REVOKE SELECT ON myvector.* FROM ...`); otherwise avoid global `SELECT` grants.
 - `mysqldump` of the whole server includes `myvector`; dumps must be protected like
   the source data.
-- Index rows are now in binlogs and relay logs on every server.
+- In replicated mode, index rows are in binlogs and relay logs on every server.
   `binlog_encryption` covers them if it is on.
-- Anyone who can write to `myvector.*` can corrupt an index. The CRC catches
-  accidental changes; it is not a defense against deliberate ones.
+- Anyone who can write to `myvector.*` can corrupt an index. The CRCs catch
+  accidental changes, and the structural checks (§4.7) stop corrupt data from
+  reaching memory outside the graph. Neither is a defense against a deliberately
+  wrong but well-formed graph.
 
-### 4.10 Migration and drop
-
-- **file → innodb:** load the index from its files, change `storage=innodb` in
-  the column comment, then save it. With no `index_meta` row yet, this save
-  publishes generation 1 as in §4.6. If the server stops between the comment
-  change and the save, the next load finds `storage=innodb` but no `index_meta`
-  row, loads the files instead and saves again. The files are left in place until
-  the user removes them. The internal `save` action exists today but has no user-facing procedure;
-  Phase 2 adds one (`MYVECTOR_INDEX_SAVE`, or a `migrate` option on
-  `MYVECTOR_INDEX_LOAD`).
-- **innodb → file:** the same in reverse.
-- **Drop** (`MYVECTOR_INDEX_DROP`): delete the `index_meta` row in one transaction,
-  so the index is gone at once, then delete its chunks in batches. Drop also
-  removes the index files if any exist, whatever `storage` says, so a drop during a
-  migration leaves nothing behind.
-
-### 4.11 Checkpoint timer
-
-**Decision (D3):** checkpoints also run on a timer, not only at binlog rotation.
+### 4.10 Replicated mode (Phase 2b)
 
 ```text
-myvector_checkpoint_interval = 300      (seconds; 0 = at rotation only)
+myvector_index_replication = OFF | ON      (default: OFF; same on every server)
 ```
 
-The listener's binlog session already asks for a heartbeat every second
-(`@master_heartbeat_period`), so its loop wakes often enough to check the timer even
-when no rows change. When the interval has passed, it runs the same path as a
-rotation (`FlushOnlineVectorIndexes()`): wait for the update queue to empty, take
-the current position, checkpoint every online index. Indexes with no dirty nodes
-are skipped. The timer applies to both backends; with `file` it shortens recovery
-after a crash.
+With `ON`, index writes are logged normally (no `sql_log_bin = 0`), so index rows
+replicate, and replicas follow the primary's graph instead of building their own.
+It applies to all `storage=innodb` indexes on the server. The setting must match
+across the topology; a follower that finds a primary-written index while its own
+setting is `OFF` (or the reverse) logs an error and refuses to use the index.
 
-The interval bounds three things: how stale a backup's index is (§5), how far a
-follower lags (§4.8), and how much binlog must be replayed after a crash.
+#### Who writes: compare-and-set on `writer_uuid` (D10)
+
+`index_meta.writer_uuid` names the one server allowed to write an index's rows.
+**Every** write to an index's rows (checkpoint, build, full save, migration, drop,
+version cleanup) runs in a transaction that first changes `index_meta` with
+`WHERE ... AND writer_uuid = @@server_uuid` (§4.4, §4.6). If that changes zero
+rows, the transaction rolls back and the server writes nothing.
+
+So the role comes from the data, not from guesses about the topology:
+
+- A server is the **writer** for an index if `writer_uuid` is its own `server_uuid`.
+- Otherwise it is a **follower** for that index.
+
+A replica whose `read_only` was left off, whose replication SQL thread stopped, or
+whose settings are wrong still can't write: `writer_uuid` holds the primary's UUID,
+so every compare-and-set fails. This also avoids the GTID-UUID problem: Group
+Replication stamps every member's transactions with the group name, but
+`writer_uuid` compares `@@server_uuid`, which is per member.
+
+**Claiming the writer role:**
+
+- **New index:** the server that runs the first build creates the row with its own
+  UUID (§4.6 step 1). In replicated mode a server refuses to create index rows if it
+  has a replication channel configured (`performance_schema.replication_connection_configuration`,
+  Group Replication channels excluded), or if it is a Group Replication secondary.
+- **Group Replication (single-primary):** the primary claims automatically: when the
+  GR member role (`performance_schema.replication_group_members`) says it is
+  PRIMARY, it sets `writer_uuid = @@server_uuid` for each index. GR certification
+  orders competing claims. The old primary's compare-and-sets then fail, and it
+  becomes a follower.
+- **Multi-primary Group Replication:** not supported in replicated mode. The server
+  refuses to start replicated mode with a clear error. (Standalone mode works.)
+- **Asynchronous replication: explicit takeover.** After promoting a replica, the
+  operator runs `CALL mysql.MYVECTOR_INDEX_TAKEOVER();` on the new primary. It sets
+  `writer_uuid` to this server for every index and switches the server to writer.
+  There is no automatic takeover: two servers that both believe they were promoted
+  must not both claim.
+
+**Role changes:**
+
+- **follower → writer** (claim or takeover): the server's graph is the old
+  primary's last checkpoint. The listener resumes from `ckpt_gtids` (below).
+- **writer → follower** (its claim was overtaken): drop in-memory changes since the
+  last checkpoint (the new writer's graph is the authority) and reload (§4.7).
+
+#### Writer side
+
+- The writer's listener ignores events on the `myvector` schema (its own
+  checkpoints coming back).
+- The storage session sets `binlog_row_image = MINIMAL`. Checkpoints insert new
+  chunk versions, which log the new row under any setting, but they also delete old
+  versions and old generations. Under the default `FULL`, each row delete logs the
+  whole deleted blob again; `MINIMAL` logs only the key.
+- **Never set `binlog_row_image = MINIMAL` globally.** MyVector's own listener
+  needs every column of user-table row events and skips rows events that lack them
+  (`src/component_src/myvector_binlog_service.cc:1083`), so deletes and vector
+  updates would stop reaching every online index, on both backends.
+- **Followers' own binlogs** log the replicated deletes with the follower's own row
+  image, normally `FULL`, so the deleted blobs land in every follower's binlog (and
+  must stay there, given the point above). Size follower binlogs accordingly
+  (§4.3.1).
+
+#### Follower side
+
+A follower ignores user-table row events for indexes it doesn't write, and **polls
+`index_meta` once a second** instead of reading its own binlog. So it needs neither
+`log_replica_updates` nor a binlog event to arrive.
+
+1. Open a consistent snapshot (§4.7) and read `index_meta`. The replication applier
+   may be ahead; the follower uses whatever checkpoint the snapshot shows and may
+   skip some.
+2. If `state` is `dropped`, unload the index. If `generation` changed, reload the
+   whole index (§4.7).
+3. Otherwise, if `ckpt_seq` advanced: count the chunk rows with
+   `version = ckpt_seq`. If the count is less than `ckpt_chunks`, the applier hasn't
+   committed them all yet: wait and retry, and log an error if it stays short for
+   longer than `myvector_follower_wait_timeout`.
+4. Read every chunk with `last applied seq < version ≤ ckpt_seq` (newest version
+   per chunk). Validate the header and the chunks (§4.7 steps 3–4). Copy them into
+   the in-memory graph under the index's exclusive lock (`lockExclusive()`). Update
+   the header, rebuild `label_lookup_` and `num_deleted_`, and allocate `linkLists_`
+   for new upper-level nodes. Searches wait during the copy.
+5. Remember `ckpt_seq` as the last applied seq.
+
+**Requirements a follower checks at start, refusing replicated mode with an error
+if any fails:**
+
+- `replica_preserve_commit_order = ON` when `replica_parallel_workers > 1`.
+  Otherwise the applier could commit the `index_meta` transaction before an earlier
+  chunk transaction, and step 3's count only checks the latest checkpoint. (`ON` is
+  the default since 8.0.27.)
+- No replication filter drops `myvector.*` (`replicate_do_db`,
+  `replicate_ignore_db`, `replicate_wild_*_table`). Otherwise the index would
+  freeze silently.
+
+A follower's graph is never a mix of its own changes and the primary's. HNSW inserts
+are not deterministic (random levels, parallel workers), so a graph built on the
+replica would not match the primary's node for node.
+
+#### Freshness (D7)
+
+A follower's index is as of the primary's last checkpoint: up to
+`myvector_checkpoint_interval` plus replication delay behind. Rows inserted since
+are in the table but not yet in the replica's ANN results. Today a replica's index
+follows each row; this is a real change and must be in the docs. Lowering the
+interval is expensive, because each checkpoint costs about the same whatever its
+interval (§4.3).
+
+The real fix is **catch-up in memory** (Phase 2c):
+
+1. The follower loads a checkpoint, then applies the table changes after its
+   `ckpt_gtids` in memory, as a writer does. Replicas are current again.
+2. At the next checkpoint it reloads the chunks the primary changed **plus the
+   chunks it changed locally** (the dirty sets track them), takes the primary's
+   header, and rebuilds `label_lookup_` in full, which drops the keys of nodes it
+   had inserted locally. Its graph then equals the primary's exactly.
+3. It restarts its stream from the new `ckpt_gtids` and continues.
+
+#### Resume and promotion
+
+- On any restart, takeover or claim, the listener starts its stream from
+  `ckpt_gtids`, using GTID-based `mysql_binlog_open()` (`MYSQL_RPL_GTID` and an
+  encoded GTID set; the listener calls `mysql_binlog_open()` at
+  `src/component_src/myvector_binlog_service.cc:2363` today, with file and
+  position).
+- For `storage=innodb` indexes, whether an event is already in the index is
+  decided by GTID-set membership, not by `isAfter()`. `isAfter()` compares binlog
+  file names as strings, which is meaningless across servers: on a promoted replica
+  it would skip every event, and the index would freeze.
+
+### 4.11 Migration and drop
+
+A new procedure, `CALL mysql.MYVECTOR_INDEX_MIGRATE('db.t.v', 'innodb' | 'file')`,
+does both directions. It runs in the **caller's** session: the `ALTER TABLE` that
+changes the column comment uses the caller's privileges and metadata locks, not the
+internal account's.
+
+**file → innodb:**
+
+1. Load the index from its files (if not loaded).
+2. Full save into InnoDB (§4.6, as a new generation), with
+   `state = 'migrating_from_file'`.
+3. Change the comment to `storage=innodb`.
+4. Set `state = 'active'`.
+
+**innodb → file:**
+
+1. A **real full save** to files (a build-style write of every node, then fsync). Not
+   today's `save` action, which would write only a header (§3).
+2. Change the comment to `storage=file`.
+3. Set the `index_meta` row to `state = 'dropped'` and delete its chunks.
+
+**Rules for loading during or after a crash:**
+
+| Comment says | `index_meta` | Load from |
+|---|---|---|
+| `innodb` | `active` | InnoDB |
+| `innodb` | `migrating_from_file`, or no row at all, and files exist | the files, then finish the migration. Standalone mode only: this server's files are its own. This also covers a replica that received the comment change through replication. |
+| `innodb` | `dropped` | nothing: the index was dropped |
+| `file` | `active` or `migrating_from_file` | the files; then set the row to `dropped` (a migration that stopped part-way) |
+| `file` | none or `dropped` | the files |
+
+A load never falls back to files when the comment says `innodb` and the row is
+`dropped` or `active`. So a dropped index can't come back from stale files left by an
+earlier migration.
+
+**Drop** (`MYVECTOR_INDEX_DROP`): set `state = 'dropped'` first (one transaction, so
+the index is gone at once and the generation counter is kept), then delete its chunks
+in batches, then remove any index files.
+
+### 4.12 Checkpoint timer
+
+```text
+myvector_checkpoint_interval = 300      (seconds; storage=innodb only)
+```
+
+- **Applies only to `storage=innodb`.** File-backed indexes keep today's
+  rotation-triggered checkpoints, so this RFC doesn't change how they behave.
+- **Checked often enough.** The listener's binlog session asks for a heartbeat
+  every second (`@master_heartbeat_period`), but under write load no heartbeats
+  arrive, so the timer is also checked after every applied event. When it fires, the
+  checkpoint waits for the next transaction boundary (§4.4).
+- **Idle indexes still advance.** An index with no dirty nodes writes no chunks, but
+  still updates `ckpt_gtids` and `ckpt_time` in `index_meta` (a one-row
+  compare-and-set). Its resume point keeps up with the listener, so binlog expiry
+  can't leave it pointing at purged transactions.
+
+The interval bounds how stale a backup's index is (§5), how far a follower lags
+(§4.10) and how much must be replayed after a crash.
 
 ---
 
 ## 5. Backup and Restore
 
 A physical backup (xtrabackup, clone) or a consistent `mysqldump`
-(`--single-transaction --hex-blob`) now contains the index with its `ckpt_id`.
-Restoring a dump needs `max_allowed_packet` at least as large as the vector chunk
-size.
+(`--single-transaction --hex-blob`) now contains the index with its `ckpt_gtids`.
+Restoring a dump needs `max_allowed_packet` at least twice the largest chunk; the
+chunk-size clamp (§4.3) guarantees that for the source server's setting.
 
-Backups taken on a replica now include the index too, which is often where backups
-are taken.
+After a restore, the listener resumes from `ckpt_gtids`. The transactions after it
+must still be in the restored server's binlog. **Detect it exactly:** if
+`@@gtid_purged` contains any transaction not in `ckpt_gtids`, changes the index
+needs are gone. Report it clearly and require an incremental `refresh` on a tracking
+column, or a rebuild. (A file-name check would pass for an unrelated binlog with the
+same name.)
 
-**Limitation:** the index is only as fresh as its last checkpoint: at most
-`myvector_checkpoint_interval` old (§4.11), or one binlog file with the timer off. After a restore, the listener catches up from `ckpt_id`, so the
-binlog from that position onward must still exist on the restored server. If it
-doesn't (common after a restore to a new host), the index is missing the changes
-between `ckpt_id` and the backup point. Detect this on start (the checkpoint's
-binlog file is not in `SHOW BINARY LOGS`) and say clearly that an incremental
-`refresh` on a tracking column or a rebuild is needed.
+The index is only as fresh as its last checkpoint: at most
+`myvector_checkpoint_interval` old.
 
 Binary chunks use the native layout. All supported platforms (amd64, arm64) are
 little-endian, so a backup can be restored across architectures. `format_version`
@@ -609,94 +757,121 @@ guards against future layout changes.
 | | `file` (today) | `innodb` (proposed) |
 |---|---|---|
 | Full save speed | Fastest (one sequential write; about 10 s per 10 GB per the code comment) | Slower: SQL, redo log, doublewrite. To be measured |
-| Checkpoint write volume | Smallest (per node) | Larger: dirty chunks, worst case all links (§4.3) |
-| Checkpoint | Custom two-pass WAL | One transaction |
+| Checkpoint write volume | Smallest (per node) | Larger: dirty chunks. All links for inserts; up to the whole index for scattered vector updates (§4.3) |
+| Checkpoint trigger | Binlog rotation | Timer, at a transaction boundary (§4.4, §4.12) |
 | Crash recovery | `doRecovery()` | InnoDB |
 | Backups | Not included | Included |
-| Replicas | Build their own index from the binlog; current per row | Load the primary's graph; current as of its last checkpoint until catch-up (Phase 2c) |
-| Binlog / network | Index never in the binlog | Checkpoints and full saves replicate (§4.8) |
-| Promotion | Works with file and position | Requires GTID mode; listener starts from `ckpt_gtids` (§4.8) |
-| Disk space during full save | ~1× | ~2× until the old generation is deleted |
+| GTID mode | Not required | Required (D11) |
+| Replicas, standalone mode | Build their own index | Build their own index, in their own rows |
+| Replicas, replicated mode | n/a | Follow the primary's graph; current as of its last checkpoint until catch-up (Phase 2c) |
+| Promotion, replicated mode | n/a | GR: automatic. Async: `MYVECTOR_INDEX_TAKEOVER` |
+| Redo and binlog volume | Small | Size them (§4.3.1) |
+| Disk space during a build | ~1× | ~2× until the old generation is deleted |
 | Buffer pool | Not used | Index pages pass through during load and save |
-| Credentials | Only for online updates | For every build, save and load |
-| Who can read vectors | OS users with file access | SQL users granted `myvector.*` |
+| Credentials | `myvector.cnf` for the listener | Unchanged; storage uses an internal locked account |
+| Who can read vectors | OS users with file access | SQL users with read access to `myvector.*` (§4.9) |
 
 ---
 
 ## 7. Test Plan
 
-1. **Phase 3 lifecycle tests** (`scripts/pre-release-test.sh`) with
+**Phase 0**
+
+1. **#265:** restart, `MYVECTOR_INDEX_STATUS`, then an ANN query: an error, no
+   crash. A load from missing or corrupt files reports failure.
+
+**Phase 1–2 (standalone)**
+
+2. **Lifecycle** (`scripts/pre-release-test.sh` Phase 3 tests) with
    `storage=innodb` on 8.4, 9.7 and 26.10: reload persistence,
-   uninstall/reinstall, DROP stability, concurrent reads during install.
-2. **Startup:** restart mysqld with online `storage=innodb` indexes. Check that
-   they load once the server accepts connections, and that searches before that
-   fail with `ER_MYVECTOR_INDEX_NOT_FOUND`. Repeat with wrong credentials: clear log errors,
-   no crash.
-3. **Crash consistency:** kill mysqld with `simulate_vector_crash` and with
-   `kill -9` during a checkpoint and during a full save. On restart the index must
-   match the last committed checkpoint, and the listener must catch up to the
-   table. Compare KNN results with brute force.
-4. **Corruption:** change one byte of a vector chunk and of a links chunk; the load
-   must fail on the CRC and report it.
-5. **Replication:** primary + replica with `super_read_only` on the replica.
-   - After a checkpoint, the replica's ANN results match the primary's for the
-     same query.
-   - The replica writes no index rows and ignores table row events for
-     `storage=innodb` indexes.
-   - A full save (new generation) makes the replica reload.
-   - The primary's listener ignores its own `myvector` writes.
-   - With `binlog_row_image = MINIMAL`, binlog bytes per checkpoint are close to
-     the chunk bytes inserted: the deletes of old versions add only keys.
-6. **Promotion:** stop the primary, promote the replica, insert rows; the new
-   writer applies every change after the last checkpoint's GTID set, and none
-   twice.
-7. **Versioned checkpoints:** kill the primary between two checkpoint
-   transactions; on restart the index is as of the previous checkpoint and the
-   leftover rows are removed. Set `myvector_checkpoint_txn_bytes` small enough to
-   force several transactions per checkpoint, and check the result equals a
-   single-transaction one. On a Group Replication cluster, a checkpoint larger than
-   `group_replication_transaction_size_limit` succeeds.
-8. **Follower snapshot:** have the replica's applier apply checkpoints while the
-   follower is reading (throttle the follower); the follower never loads a mix of
-   two checkpoints (compare with the primary's graph at the same `ckpt_seq`).
-9. **GTID mode off:** follower mode refuses to start, with a clear error.
-10. **Roles:**
-   - A replica with `read_only = OFF` and a running channel becomes a follower and
-     logs the warning; it writes no index rows.
-   - On a Group Replication cluster, only the primary writes; after a primary
-     switch the new primary takes over and the old one follows.
-   - Two servers forced to `writer` with replication between them: the first
-     replicated `index_meta` change makes one stop writing and log the error.
-   - Writer → follower discards uncheckpointed changes and matches the primary's
-     graph.
-11. **Checkpoint timer:** with no binlog rotation, a checkpoint happens every
-   `myvector_checkpoint_interval`; with `0`, only at rotation. Idle indexes are
-   not rewritten.
-12. **Backup:** xtrabackup or clone, restore, start; check that the index loads and
-   catches up, and that the missing-binlog case is reported. Repeat with a backup
-   taken on a replica.
-13. **Write volume:** count bytes written per checkpoint (file vs innodb) for
-   1k, 10k and 100k inserts per rotation, to confirm §4.3.
-14. **Performance:** `myvectorbench.py` and `bench-concurrent-stress.py`, file vs
-   innodb: full build time, checkpoint time under write load, reload time and
-   QPS/recall (QPS and recall should be unchanged). The Movie Finder dataset
-   (~1M vectors) is a realistic size.
+   uninstall/reinstall (with storage operations in flight), DROP stability,
+   concurrent reads during install. Re-running the install SQL keeps every index.
+3. **Startup:** restart with online `storage=innodb` indexes; they load once the
+   server accepts connections, and searches before that return an error. A server
+   started from a copied datadir (new `server_uuid`) loads them too.
+4. **Crash consistency:** `kill -9` during each step of a checkpoint (§4.4), a build
+   and a full save. On restart the index matches the last committed checkpoint, the
+   leftovers are cleaned up, and the listener catches up. Compare KNN results with
+   brute force. (The file backend's `simulate_vector_crash` hook doesn't cover this
+   path, so the tests add their own crash points.)
+5. **Transaction boundary:** fire the timer during a 10,000-row
+   `INSERT ... SELECT`; kill and restart; every row is in the index.
+6. **Corruption and validation:** change one byte of a vector chunk, a links chunk
+   and the header; set the header's entry point and an `upper` node id out of range.
+   Each load fails with a clear error, and nothing reads outside the graph.
+7. **Versioned checkpoints:** with `myvector_checkpoint_txn_bytes` small enough to
+   force several transactions, the result equals a single-transaction checkpoint.
+8. **No feedback loop:** a checkpoint larger than `max_binlog_size` (replicated
+   mode) triggers no further checkpoint; standalone checkpoints write nothing to the
+   binlog.
+9. **Copy buffer:** online-update latency during a checkpoint, with the dirty chunks
+   inside and outside `myvector_checkpoint_buffer_bytes`.
+10. **Idle index:** an index with no writes for longer than binlog expiry still
+    resumes after a restart.
+11. **Standalone replication:** primary + replica; neither sees the other's index
+    rows, and both answer correctly.
+12. **Schema:** two indexes whose names differ only in case stay separate; a
+    194-character name works; `ckpt_time` past 2038 works.
+13. **Migration:** both directions, with a kill after each step; the load follows
+    the table in §4.11 every time. A drop during a migration leaves nothing. A
+    file → innodb → file round trip never loads stale files.
+14. **GTID mode off:** `storage=innodb` refuses to build or load, with a clear
+    error.
+
+**Phase 2b (replicated)**
+
+15. **Followers:** after a checkpoint, a replica's ANN results match the primary's.
+    A build (new generation) and a drop then rebuild (generation keeps rising) make
+    the replica reload, and a drop unloads.
+16. **Commit order:** with parallel workers and `replica_preserve_commit_order = OFF`,
+    replicated mode refuses to start; with `ON`, a throttled follower never loads a
+    mix of two checkpoints.
+17. **Filters:** a replication filter on `myvector.*` makes replicated mode refuse
+    to start.
+18. **Writer protection:** a replica with `read_only = OFF`, with its SQL thread
+    stopped, or running build, drop or migrate, writes no index rows, and replication
+    doesn't stop.
+19. **Group Replication:** only the primary writes; after a primary switch the new
+    primary claims and the old one follows; multi-primary mode is refused.
+20. **Async promotion:** stop the primary, promote the replica, run
+    `MYVECTOR_INDEX_TAKEOVER`, insert rows. The new writer applies every change after
+    `ckpt_gtids`, none twice, and checkpoints. Repeat with replica binlog file names
+    that sort lower than the old primary's.
+21. **Binlog volume:** with `MINIMAL` on the storage session, the primary's binlog
+    bytes per checkpoint are close to the chunk bytes inserted. Measure the
+    followers' binlogs too.
+
+**Phase 3 (measurement)**
+
+22. **Restore:** xtrabackup or clone, restore, start; the index loads and catches up,
+    and the purged-GTID case is reported. Repeat with a backup from a replica.
+23. **Write volume:** bytes written per checkpoint (file vs innodb) for 1k, 10k and
+    100k inserts and for random vector updates, to confirm §4.3.
+24. **Performance:** `myvectorbench.py` and `bench-concurrent-stress.py`, file vs
+    innodb: build time, checkpoint time and update stalls under write load, reload
+    time, QPS and recall (which should be unchanged). The Movie Finder dataset
+    (~1M vectors) is a realistic size.
 
 ---
 
 ## 8. Rollout
 
-1. **Phase 1:** install SQL schema, full save and load, per-index `storage`
-   option, deferred load at startup. No incremental checkpoints yet: a checkpoint
-   does a full save. Component only.
-2. **Phase 2:** versioned incremental checkpoints (§4.4), generations for builds
-   (§4.6), checkpoint timer (§4.11), migration.
-3. **Phase 2b:** replication (§4.8): follower mode with snapshot reads,
-   `ckpt_gtids`, GTID-based listener start, promotion. Shipped together.
-4. **Phase 2c:** catch-up in memory on followers (§4.8, D7).
+0. **Phase 0:** fix [#265](https://github.com/askdba/myvector/issues/265) (search
+   on an index with no graph; failed loads reported as SUCCESS).
+1. **Phase 1 (standalone core):** install SQL (schema, internal account),
+   command-service sessions, `storage` option resolved into the comment, GTID
+   requirement, build, full save, load with validation, versioned checkpoints on the
+   timer at transaction boundaries, copy buffer, deferred load at startup,
+   `sql_log_bin = 0` for every write. Component only.
+2. **Phase 2:** `MYVECTOR_INDEX_MIGRATE`, crash-safe migration and drop, sizing docs
+   (§4.3.1).
+3. **Phase 2b (replicated mode):** `myvector_index_replication`, `writer_uuid`
+   compare-and-set, GR claim, `MYVECTOR_INDEX_TAKEOVER`, follower polling, GTID-based
+   listener start and skip check. Shipped together.
+4. **Phase 2c:** catch-up in memory on followers (§4.10).
 5. **Phase 3:** write-volume and performance measurements, chunk-size defaults,
-   docs. Decide whether `innodb` becomes the default and whether to port it to the
-   plugin build.
+   docs. Decide whether `innodb` becomes the default for new indexes, and whether to
+   port it to the plugin build.
 
 ---
 
@@ -704,18 +879,57 @@ guards against future layout changes.
 
 | # | Question | Decision |
 |---|---|---|
-| D1 | Replicas and read-only servers | Replicate the index rows; replicas follow the primary's graph (§4.8) |
+| D1 | Replicas | Standalone by default: each server keeps its own rows, outside the binlog (§4.8). Replicating index rows is opt-in, in Phase 2b (§4.10) |
 | D2 | Links write volume | Keep 256 KB links chunks; choose finer chunks or per-node rows only if Phase 3 measurements call for it |
-| D3 | Backup freshness | Configurable checkpoint timer, `myvector_checkpoint_interval`, default 300 s (§4.11) |
-| D4 | SQL path | Client connection first; `mysql_command_services` may come later |
-| D5 | Chunk sizes | Start at 4 MB (vectors) and 256 KB (links); tune in Phase 3 |
+| D3 | Checkpoint trigger | `storage=innodb`: timer only, default 300 s, at transaction boundaries; idle indexes still advance. File backend unchanged (§4.4, §4.12) |
+| D4 | SQL path | In-process command service with an internal locked account, short-lived sessions (§4.5). *Revised: was a client connection* |
+| D5 | Chunk sizes | Start at 4 MB (vectors) and 256 KB (links), clamped to `max_allowed_packet / 2`; tune in Phase 3 |
 | D6 | Schema name | Fixed: `myvector` |
-| D7 | Replica freshness | Keep 300 s and document the lag; catch-up in memory follows in Phase 2c (§4.8) |
-| D8 | Promotion | Follower mode requires GTID mode; promotion ships with follower mode; GTID for the file backend is a follow-up (§4.8) |
-| D9 | Large checkpoints | Versioned chunks, transactions ≤ 64 MB, `index_meta` committed last, snapshot reads (§4.4) |
-| D10 | Writer role | `myvector_index_role = auto`: follower if `read_only` or a non-GR replication channel is running; `writer_uuid` fencing catches a second writer (§4.8) |
+| D7 | Replica freshness | Keep 300 s and document the lag; catch-up in memory follows in Phase 2c (§4.10) |
+| D8 | Promotion | GTID-based resume and skip check; ships with replicated mode (§4.10) |
+| D9 | Large checkpoints | Versioned chunks, transactions ≤ 64 MB, compare-and-set publish of `index_meta` last, snapshot reads (§4.4) |
+| D10 | Writer role | `writer_uuid` compare-and-set on every write. GR primary claims automatically; async promotion uses `MYVECTOR_INDEX_TAKEOVER`; multi-primary GR unsupported in replicated mode (§4.10). *Revised: was read_only and channel heuristics* |
+| D11 | GTID mode | Required for every `storage=innodb` index (§1.2) |
+| D12 | Online-update stalls | Copy dirty chunks to a buffer under the pause, write after it (§4.4) |
 
-## 10. Open Questions
+## 10. Open Questions and Known Limitations
 
-None at this stage. Phase 3 measurements may reopen D2 (links layout), D5 (chunk
+No open questions. Phase 3 measurements may reopen D2 (links layout), D5 (chunk
 sizes) and D7 (default interval).
+
+Known limitations, to be revisited:
+
+- Update-heavy indexes write far more with `innodb` than with `file` (§4.3).
+- Replicated mode doesn't support multi-primary Group Replication.
+- GTIDs for the file backend would need a file format change (its checkpoint id
+  lives in a 256-byte status line); not part of this RFC.
+
+---
+
+## 11. Revision History
+
+**Revision 1** (2026-10-08, #218): first draft.
+
+**Revision 2** (2026-11-03): rewritten after a max-effort review of revision 1 that
+found 15 verified issues. Main changes:
+
+| Problem in revision 1 | Revision 2 |
+|---|---|
+| Checkpoints at binlog rotation, writing to the binlog: a large checkpoint rotated the binlog and triggered the next one, forever | Timer-only checkpoints for `storage=innodb`; standalone writes are outside the binlog (§4.4, §4.8) |
+| Index rows replicated from Phase 1, but roles came in Phase 2b: replicas' own checkpoints collided with the primary's rows and stopped replication | Standalone Phase 1; replication is opt-in in Phase 2b (§4.8, §4.10) |
+| Promotion compared binlog file names across servers, so a promoted replica skipped every event | GTID sets for resume and skip (§4.10), GTID mode required (§1.2) |
+| Fencing by GTID UUID fenced Group Replication primaries and missed real second writers; the role came from `read_only` guesses | `writer_uuid` compare-and-set on every write; explicit takeover (§4.10) |
+| Timer checkpoints could fall inside a transaction; idle indexes stopped advancing | Transaction-boundary rule; idle indexes update `ckpt_gtids` (§4.4, §4.12) |
+| Followers read their binlog and could mix checkpoints under parallel replication, wait forever for an event, or freeze under filters | Polling, chunk-count check, required commit order, filter check (§4.10) |
+| Generation reset to 1 after a drop | Tombstones; generations never reset (§4.2, §4.6) |
+| Header and links data reached memory unchecked; followers missed `num_deleted_` | Shared structural validation; header CRC; full derived-state rebuild (§4.7, §4.10) |
+| Suggested global `binlog_row_image = MINIMAL`, which breaks online updates | Session-only, and a warning against global (§4.10) |
+| `myvector_index_storage_default` acted as a global backend switch | Resolved into the comment at creation (§4.1) |
+| Migration relied on `save`, which writes only dirty nodes; unclear crash rules | `MYVECTOR_INDEX_MIGRATE`, real full save, state column, load table (§4.11) |
+| Long-lived storage connection blocked uninstall; plain `CREATE TABLE` broke re-runs and replicas | Short-lived command-service sessions; `IF NOT EXISTS` under `sql_log_bin = 0` (§4.2, §4.5) |
+| Write volume ignored vector updates; redo, binlog and purge not sized | Corrected table and a sizing section (§4.3) |
+| `VARCHAR(192)` names with an insensitive collation; `TIMESTAMP` | Binary 776-byte names, surrogate key, `DATETIME(6)` (§4.2) |
+| Search on an unloaded index crashes; failed load reports SUCCESS | Phase 0 prerequisite, [#265](https://github.com/askdba/myvector/issues/265) |
+
+Also corrected: M vs M0 in neighbor counts, the checkpoint id's location (§3), the
+stale code citations, and the claim that only online updates need `myvector.cnf`.
