@@ -38,6 +38,7 @@
 #include <mysql/components/services/audit_api_connection_service.h>
 #include <mysql/components/services/component_status_var_service.h>
 #include <mysql/components/services/component_sys_var_service.h>
+#include <mysql/components/services/dynamic_privilege.h>
 #include <mysql/components/services/log_builtins.h>
 #include <mysql/components/services/mysql_command_consumer.h>
 #include <mysql/components/services/mysql_command_services.h>
@@ -94,6 +95,7 @@ REQUIRES_SERVICE_PLACEHOLDER(mysql_command_thread);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_audit_api_connection);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_thd_security_context);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_security_context_options);
+REQUIRES_SERVICE_PLACEHOLDER(global_grants_check);
 // component_mcp_guard's query consumer: requiring it makes the server refuse to install the
 // endpoint without the guard, and to uninstall the guard while the endpoint is installed.
 REQUIRES_SERVICE_PLACEHOLDER_AS(event_tracking_query, mcp_guard_query);
@@ -739,6 +741,23 @@ bool account_locked(MYSQL_THD thd) {
   return locked;
 }
 
+// RFC 0001 §7.4: impersonation makes the endpoint fully trusted, so a token must never run as
+// an account that could undo the guard or administer the server. The privilege the session's
+// account holds, out of SUPER, SYSTEM_USER and MCP_ADMIN, or "" for none. Checked on every
+// call, whichever token source mapped it. Fails closed: a context that cannot be read counts.
+std::string forbidden_privilege(MYSQL_THD thd) {
+  Security_context_handle sctx = nullptr;
+  if (mysql_service_mysql_thd_security_context->get(thd, &sctx) || sctx == nullptr)
+    return "(unreadable security context)";
+  bool super = true;
+  if (mysql_service_mysql_security_context_options->get(sctx, "privilege_super", &super) || super)
+    return "SUPER";
+  for (const char *priv : {"SYSTEM_USER", "MCP_ADMIN"})
+    if (mysql_service_global_grants_check->has_global_grant(sctx, priv, std::strlen(priv)))
+      return priv;
+  return "";
+}
+
 bool set_bounded_consumer(MYSQL_H h) {
   for (const auto &[option, service] : kBoundedConsumer)
     if (mysql_service_mysql_command_options->set(h, option, service)) return false;
@@ -845,6 +864,11 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
     } else if (account_locked(thd)) {
       r.sql_errno = ER_ACCOUNT_HAS_BEEN_LOCKED;
       r.error = "Access denied for user '" + user + "'@'" + host + "'. Account is locked.";
+    } else if (const std::string priv = forbidden_privilege(thd); !priv.empty()) {
+      r.sql_errno = ER_SPECIFIC_ACCESS_DENIED_ERROR;
+      r.error = "Access denied for user '" + user + "'@'" + host +
+                "': the MCP endpoint does not run as an account with SUPER, SYSTEM_USER or "
+                "MCP_ADMIN (it has " + priv + ")";
     } else if (!announce()) {
       r.error = "session refused";
     } else if (mysql_service_mysql_command_query->query(h, kLimit.data(), kLimit.size())) {
@@ -1344,6 +1368,7 @@ REQUIRES_SERVICE(log_builtins), REQUIRES_SERVICE(log_builtins_string),
     REQUIRES_SERVICE(mysql_command_field_metadata), REQUIRES_SERVICE(mysql_command_error_info),
     REQUIRES_SERVICE(mysql_command_thread), REQUIRES_SERVICE(mysql_audit_api_connection),
     REQUIRES_SERVICE(mysql_thd_security_context), REQUIRES_SERVICE(mysql_security_context_options),
+    REQUIRES_SERVICE(global_grants_check),
     REQUIRES_SERVICE_IMPLEMENTATION_AS(event_tracking_query, mcp_guard, mcp_guard_query),
     REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_row_factory_v1, mysql_server,
                                        dom_row_factory),
