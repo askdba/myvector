@@ -204,7 +204,7 @@ sql "CREATE USER sysu@'%'; GRANT SELECT, INSERT ON d1.* TO sysu@'%'; GRANT SYSTE
 CREATE USER adm@'%'; GRANT SELECT, INSERT ON d1.* TO adm@'%'; GRANT MCP_ADMIN ON *.* TO adm@'%';
 INSERT INTO mysql.mcp_tokens (token_sha256, account) VALUES
   ('$(h tbl-root)', 'root@%'), ('$(h tbl-sysu)', 'sysu@%'), ('$(h tbl-adm)', 'adm@%')"
-expect "a token mapped to root is refused" "$(callas tbl-root run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*does not run as an account with SUPER, SYSTEM_USER or MCP_ADMIN.*"isError":true'
+expect "a token mapped to root is refused (SUPER)" "$(callas tbl-root run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*does not run as an account with SUPER, SYSTEM_USER or MCP_ADMIN \(it has SUPER\).*"isError":true'
 expect "a token mapped to a SYSTEM_USER account is refused" "$(callas tbl-sysu run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*\(it has SYSTEM_USER\).*"isError":true'
 expect "a token mapped to an MCP_ADMIN account is refused" "$(callas tbl-adm run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*\(it has MCP_ADMIN\).*"isError":true'
 expect "nothing written by table tokens" "$(sql "SELECT GROUP_CONCAT(i) FROM d1.t")" "^1$"
