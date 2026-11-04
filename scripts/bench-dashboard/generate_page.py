@@ -32,6 +32,24 @@ def fmt(x, dp=0):
     return f"{x:,.{dp}f}"
 
 
+def interp_qps(sweep, rtar):
+    """Linear-interpolate an engine's QPS at a target recall from its ef sweep
+    (the Pareto-frontier reading of the tradeoff). None if out of range."""
+    pts = sorted((p.get("recall_at_10"), p.get("qps")) for p in sweep
+                 if p.get("recall_at_10") is not None and p.get("qps") is not None)
+    if len(pts) < 2:
+        return None
+    rs = [r for r, _ in pts]
+    qs = [q for _, q in pts]
+    if rtar < rs[0] or rtar > rs[-1]:
+        return None
+    for i in range(1, len(rs)):
+        if rtar <= rs[i]:
+            r0, r1, q0, q1 = rs[i - 1], rs[i], qs[i - 1], qs[i]
+            return q1 if r1 == r0 else q0 + (q1 - q0) * (rtar - r0) / (r1 - r0)
+    return qs[-1]
+
+
 def load(results_dir, order):
     rows = {}
     for p in glob.glob(os.path.join(results_dir, "*.json")):
@@ -151,6 +169,40 @@ def main():
     caveats = cfg.get("caveats", caveats)
     caveats_html = "".join(f"<li>{c}</li>" for c in caveats)
 
+    # Matched-recall frontier: the QPS each engine delivers at a given recall@10.
+    # This is the honest read of the ef_search tradeoff -- per-ef points mislead
+    # because an engine tuned for throughput reaches a recall at a lower ef, so
+    # its dots sit lower-and-righter even when its frontier dominates.
+    sweeps = [(disp(d), d.get("version"), d["metrics"].get("ef_search_sweep") or [])
+              for d in data]
+    sweeps = [(lab, v, sw) for lab, v, sw in sweeps if len(sw) >= 2]
+    frontier_html = ""
+    if len(sweeps) >= 2:
+        recs = [[p["recall_at_10"] for p in sw if p.get("recall_at_10") is not None]
+                for _, _, sw in sweeps]
+        lo = max(min(r) for r in recs)
+        hi = min(max(r) for r in recs)
+        if hi - lo > 0.02:
+            step = (hi - lo) / 4
+            targets = sorted({round(lo + step * (i + 0.5), 2) for i in range(4)})
+            head = "".join(f'<th style="color:{col.get(v,"#888")}">{e(lab)}</th>'
+                           for lab, v, _ in sweeps)
+            body = ""
+            for t in targets:
+                qs = [interp_qps(sw, t) for _, _, sw in sweeps]
+                valid = [q for q in qs if q is not None]
+                best = max(valid) if valid else None
+                cells = ""
+                for q in qs:
+                    bold = ' style="font-weight:700"' if (q is not None and q == best) else ""
+                    cells += f"<td{bold}>{fmt(q)}</td>"
+                body += f"<tr><td>recall {t:.2f}</td>{cells}</tr>"
+            frontier_html = (
+                '<div class="panel"><h2>QPS at matched recall@10</h2>'
+                '<div class="note">the honest read of the sweep: at a target recall, who serves the most queries/sec? (interpolated from each engine\'s curve; <b>bold = fastest</b>, higher is better)</div>'
+                f'<table><thead><tr><th>Recall@10</th>{head}</tr></thead>'
+                f'<tbody>{body}</tbody></table></div>')
+
     nav = cfg.get("nav", "")
     nav_html = f'<p class="sub" style="margin-top:-6px">{nav}</p>' if nav else ""
     tab_title = cfg.get("tab_title", "MyVector Benchmark")
@@ -226,6 +278,7 @@ footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
     <div class="note">each point is an ef_search value; up-and-right is better</div>
     <canvas id="c_sweep" style="max-height:340px"></canvas>
   </div>
+  {frontier_html}
 
   <div class="panel" style="margin-top:18px">
     <h2>Notes &amp; caveats</h2>
