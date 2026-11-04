@@ -189,6 +189,8 @@ The option is `mcp.read_only`, `mcp.deny_system_schemas`, `mcp.allowed_schemas` 
 An MCP **Streamable HTTP** endpoint (JSON-RPC 2.0 over `POST /mcp`) inside `mysqld`. It runs on MySQL Router's HTTP server, the libraries `component_mysql_rest_service` links (RFC 0001 §5.3). This is the Phase 4 build spike and is **not for production**. It is limited to the following:
 
 - **Network and auth:** `127.0.0.1` by default. Plain HTTP is allowed only on loopback: with `mcp_http.bind_address` set to any other address the install fails unless `mcp_http.ssl_cert` and `mcp_http.ssl_key` are set, and then the endpoint serves HTTPS (TLS 1.2+, Router's TLS context). One bearer token, mapped to one account.
+  - **Known limit off loopback:** Router's HTTP server has no handshake or idle timeout, and it counts connections before authentication. A client that opens 64 connections and sends nothing (not even a TLS handshake) blocks others until they close. Off loopback, allow only trusted clients to reach the port (firewall), or put a proxy that enforces timeouts in front. Tracked in [#269](https://github.com/askdba/myvector/issues/269).
+  - `localhost` binds `127.0.0.1`, so a resolver mapping the name elsewhere cannot expose plain HTTP.
 - **Tools:** the six core tools of RFC 0001 §3, with mysql-mcp-server's names and arguments:
   - `list_databases`, `list_tables` (`database`) and `describe_table` (`database`, `table`) call the `mysql_mcp` tool pack. Arguments are passed as hex literals (`CONVERT(X'...' USING utf8mb4)`), so they are never parsed as SQL and need no escaping under any `sql_mode`.
   - `run_query` (`sql`) runs one statement.
@@ -228,7 +230,7 @@ INSTALL COMPONENT 'file://component_mcp'
 |---|---|
 | `mcp_http.port` | TCP port (read-only, default 33480) |
 | `mcp_http.bind_address` | Listen address (read-only, default `127.0.0.1`). Other than a loopback address (`127.0.0.0/8`, `::1`, `localhost`), it requires TLS: the install fails without `mcp_http.ssl_cert` and `mcp_http.ssl_key` |
-| `mcp_http.ssl_cert`, `mcp_http.ssl_key` | PEM certificate and private key files, readable by `mysqld` (read-only). Set both (or neither) to serve HTTPS; the server's own `server-cert.pem` / `server-key.pem` work |
+| `mcp_http.ssl_cert`, `mcp_http.ssl_key` | PEM certificate and private key files, readable by `mysqld` (read-only). Set both to serve HTTPS. With neither, the endpoint serves plain HTTP, which is allowed only on loopback; the server's own `server-cert.pem` / `server-key.pem` work |
 | `mcp_http.threads` | I/O worker threads (read-only, default 4, 1 to 64). Each serves one call at a time, so this many calls run at once; connections are assigned to the workers in turn |
 | `mcp_http.max_sessions_per_account` | Concurrent endpoint sessions per account (read-only, default 4, 1 to 1024). A call over the cap fails with error 1203. The server's `max_user_connections` does not apply to these sessions |
 | `mcp_http.account` | The account (`user@host`) every request runs as (read-only) |

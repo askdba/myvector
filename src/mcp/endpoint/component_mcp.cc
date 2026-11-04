@@ -1153,7 +1153,10 @@ TlsServerContext make_tls_context() {
 }
 
 bool start_server() {
-  const std::string address = nonempty(opt_bind_address) ? opt_bind_address : "127.0.0.1";
+  // "localhost" binds 127.0.0.1: Router would resolve the name again, and a resolver mapping it
+  // to another interface would get plain HTTP off loopback.
+  const std::string configured = nonempty(opt_bind_address) ? opt_bind_address : "127.0.0.1";
+  const std::string address = configured == "localhost" ? "127.0.0.1" : configured;
   const bool tls = nonempty(opt_ssl_cert) || nonempty(opt_ssl_key);
   if (tls && !(nonempty(opt_ssl_cert) && nonempty(opt_ssl_key))) {
     log_error("mcp_http.ssl_cert and mcp_http.ssl_key must be set together");

@@ -197,6 +197,9 @@ expect "uninstall component_mcp" "$(sql "UNINSTALL COMPONENT 'file://component_m
 INSTALL_MCP="INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'mcp@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX'"
 expect "a non-loopback address without TLS is refused" "$(sql "$INSTALL_MCP, GLOBAL mcp_http.bind_address = '0.0.0.0'")" "ERROR"
 expect "a certificate without a key is refused" "$(sql "$INSTALL_MCP, GLOBAL mcp_http.ssl_cert = '/var/lib/mysql/server-cert.pem'")" "ERROR"
+expect "localhost is loopback: installs without TLS" "$(sql "$INSTALL_MCP, GLOBAL mcp_http.bind_address = 'localhost'")" "^$"
+expect "localhost binds 127.0.0.1" "$(rpc tok-123 '{"jsonrpc":"2.0","id":1,"method":"ping"}')" '"result":\{\}'
+sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
 expect "install on 0.0.0.0 with TLS" "$(sql "$INSTALL_MCP, GLOBAL mcp_http.bind_address = '0.0.0.0', GLOBAL mcp_http.ssl_cert = '/var/lib/mysql/server-cert.pem', GLOBAL mcp_http.ssl_key = '/var/lib/mysql/server-key.pem'")" "^$"
 https_ping() { docker run --rm ${2:+--network "$2"} "$CURL_IMAGE" -sk -m 20 -w '\n%{http_code}' -X POST "$1" \
 	-H 'Content-Type: application/json' -H 'Authorization: Bearer tok-123' -d '{"jsonrpc":"2.0","id":1,"method":"ping"}'; }
