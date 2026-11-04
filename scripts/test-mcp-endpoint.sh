@@ -198,6 +198,15 @@ expect "MCP sessions cannot read the token table" "$(callas tbl-mcp run_query '{
 expect "nobody can log in as the reader account, not even with its old password" "$(docker exec "$C" mysql -umysql.mcp -pguess -N -e 'SELECT 1' 2>&1 | grep -v 'Using a password')" "ERROR (1045|3118)"
 sql "DELETE FROM mysql.mcp_tokens WHERE token_sha256 = '$(h tbl-mcp)'"
 expect "a deleted token gets 401 on the next request" "$(callas tbl-mcp run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
+# RFC 0001 §7.4: a token never runs as an account with SUPER, SYSTEM_USER or MCP_ADMIN, whatever
+# maps it (checked on every call; these accounts would not be restricted by the guard).
+sql "CREATE USER sysu@'%'; GRANT SELECT, INSERT ON d1.* TO sysu@'%'; GRANT SYSTEM_USER ON *.* TO sysu@'%';
+CREATE USER adm@'%'; GRANT SELECT, INSERT ON d1.* TO adm@'%'; GRANT MCP_ADMIN ON *.* TO adm@'%';
+INSERT INTO mysql.mcp_tokens (token_sha256, account) VALUES
+  ('$(h tbl-root)', 'root@%'), ('$(h tbl-sysu)', 'sysu@%'), ('$(h tbl-adm)', 'adm@%')"
+expect "a token mapped to root is refused" "$(callas tbl-root run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*does not run as an account with SUPER, SYSTEM_USER or MCP_ADMIN.*"isError":true'
+expect "a token mapped to a SYSTEM_USER account is refused" "$(callas tbl-sysu run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*\(it has SYSTEM_USER\).*"isError":true'
+expect "a token mapped to an MCP_ADMIN account is refused" "$(callas tbl-adm run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*\(it has MCP_ADMIN\).*"isError":true'
 expect "nothing written by table tokens" "$(sql "SELECT GROUP_CONCAT(i) FROM d1.t")" "^1$"
 
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).
