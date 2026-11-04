@@ -86,8 +86,10 @@ def main():
     args = ap.parse_args()
 
     train, test, neighbors, metric, ntrain = load_hdf5(args.dataset, args.max_rows, args.max_queries)
-    if metric != "L2":
-        raise SystemExit(f"bench_vsql_real supports L2 datasets only (got {metric})")
+    VIDX = {"L2": ("hnsw_l2", "L2_DISTANCE"), "Cosine": ("hnsw_cosine", "COSINE_DISTANCE")}
+    if metric not in VIDX:
+        raise SystemExit(f"bench_vsql_real supports L2/Cosine (got {metric})")
+    idxmod, distfn = VIDX[metric]
     dim = len(train[0])
     sweep_points = [int(x) for x in args.ef_search_sweep.split(",") if x.strip()]
     c = VsqlServer(args.mysql_bin, args.socket)
@@ -113,7 +115,7 @@ def main():
     print(f"  [insert] {insert_s:.1f}s  insert_qps={insert_qps:.0f}", flush=True)
 
     t0 = time.time()
-    c.sql(f"CREATE INDEX idx_v ON bench.t (v hnsw_l2) USING EXTENDED(hnsw) "
+    c.sql(f"CREATE INDEX idx_v ON bench.t (v {idxmod}) USING EXTENDED(hnsw) "
           f"WITH (M = {args.M}, ef_construction = {args.ef_construction});", "bench")
     index_s = time.time() - t0
     print(f"  [index build] {index_s:.1f}s", flush=True)
@@ -122,10 +124,10 @@ def main():
     metrics = {"index_build_time_s": round(index_s, 2), "insert_qps": insert_qps}
 
     def ann_sql(q, k=10):
-        return f"SELECT id FROM bench.t ORDER BY L2_DISTANCE(v, {vlit(q)}) LIMIT {k}"
+        return f"SELECT id FROM bench.t ORDER BY {distfn}(v, {vlit(q)}) LIMIT {k}"
 
     def exact_sql(q, k=10):
-        return f"SELECT id FROM bench.exact ORDER BY L2_DISTANCE(v, {vlit(q)}) LIMIT {k}"
+        return f"SELECT id FROM bench.exact ORDER BY {distfn}(v, {vlit(q)}) LIMIT {k}"
 
     # exact KNN baseline (brute force on the unindexed table)
     c.init_cmd = ""

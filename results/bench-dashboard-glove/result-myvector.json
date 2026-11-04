@@ -1,0 +1,84 @@
+{
+  "version": "MyVector",
+  "container": "vdb-myvector",
+  "host_label": "",
+  "arch": "aarch64",
+  "timestamp": "2026-11-04T05:30:16.239365+00:00",
+  "dataset": "glove-100-angular.hdf5",
+  "rows_indexed": 1183514,
+  "query_set": "held-out test set (published)",
+  "recall_ground_truth": "published",
+  "workload": {
+    "rows": 1183514,
+    "dim": 100,
+    "M": 16,
+    "ef_construction": 200,
+    "distance": "Cosine",
+    "holdout_queries": 1000
+  },
+  "wall_seconds": 3827.8,
+  "metrics": {
+    "index_build_time_s": 2766.6783900260925,
+    "insert_qps": 3180.4330017635343,
+    "knn_qps": 0.07209884477643239,
+    "knn_p50_ms": 13886.7315,
+    "knn_p99_ms": 14098.998,
+    "knn_ann_qps": 220.27232267252003,
+    "knn_ann_p50_ms": 4.484999999999999,
+    "knn_ann_p99_ms": 6.543,
+    "ann_rewrite_active": true,
+    "recall_at_10": 0.8689,
+    "ef_search_sweep": [
+      {
+        "ef_search": 10,
+        "recall_at_10": 0.4644,
+        "qps": 761.3594834937263,
+        "p50_ms": 1.2785,
+        "p99_ms": 1.807
+      },
+      {
+        "ef_search": 20,
+        "recall_at_10": 0.5873999999999999,
+        "qps": 604.2142737163166,
+        "p50_ms": 1.6260000000000001,
+        "p99_ms": 2.265
+      },
+      {
+        "ef_search": 50,
+        "recall_at_10": 0.731,
+        "qps": 422.5792547392263,
+        "p50_ms": 2.3070000000000004,
+        "p99_ms": 3.8
+      },
+      {
+        "ef_search": 100,
+        "recall_at_10": 0.8102,
+        "qps": 334.27085164859045,
+        "p50_ms": 2.9320000000000004,
+        "p99_ms": 4.542
+      },
+      {
+        "ef_search": 200,
+        "recall_at_10": 0.8652000000000001,
+        "qps": 229.06190902027475,
+        "p50_ms": 4.4065,
+        "p99_ms": 6.297
+      },
+      {
+        "ef_search": 400,
+        "recall_at_10": 0.9116000000000001,
+        "qps": 134.8556195280647,
+        "p50_ms": 7.592499999999999,
+        "p99_ms": 10.534999999999998
+      },
+      {
+        "ef_search": 800,
+        "recall_at_10": 0.948,
+        "qps": 80.917212790422,
+        "p50_ms": 12.701,
+        "p99_ms": 17.232999999999997
+      }
+    ]
+  },
+  "label": "MyVector \u00b7 MySQL 8.4"
+}

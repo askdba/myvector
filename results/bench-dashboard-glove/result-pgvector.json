@@ -1,0 +1,84 @@
+{
+  "version": "pgvector",
+  "label": "pgvector \u00b7 Postgres 17",
+  "engine": "pgvector HNSW",
+  "container": "vdb-pgvector",
+  "host_label": "myvector-dev (A1 16/96)",
+  "arch": "aarch64",
+  "timestamp": "2026-11-04T06:12:21.259490+00:00",
+  "dataset": "glove-100-angular.hdf5",
+  "rows_indexed": 1183514,
+  "recall_ground_truth": "published",
+  "harness": "myvector bench_pgvector_real",
+  "workload": {
+    "rows": 1183514,
+    "dim": 100,
+    "M": 16,
+    "ef_construction": 200,
+    "distance": "Cosine",
+    "holdout_queries": 1000
+  },
+  "metrics": {
+    "index_build_time_s": 1978.3,
+    "insert_qps": 3377.67918853457,
+    "knn_qps": 5.299914194389192,
+    "knn_p50_ms": 188.25150000000002,
+    "knn_p99_ms": 197.077,
+    "knn_ann_qps": 94.94111040274494,
+    "knn_ann_p50_ms": 10.48,
+    "knn_ann_p99_ms": 21.948,
+    "ann_rewrite_active": true,
+    "recall_at_10": 0.8833,
+    "ef_search_sweep": [
+      {
+        "ef_search": 10,
+        "recall_at_10": 0.5222,
+        "qps": 647.3455595331344,
+        "p50_ms": 1.4064999999999999,
+        "p99_ms": 3.84
+      },
+      {
+        "ef_search": 20,
+        "recall_at_10": 0.6396000000000001,
+        "qps": 466.73356514433726,
+        "p50_ms": 1.9625,
+        "p99_ms": 5.253
+      },
+      {
+        "ef_search": 50,
+        "recall_at_10": 0.765,
+        "qps": 280.79413072876184,
+        "p50_ms": 3.3735,
+        "p99_ms": 7.902
+      },
+      {
+        "ef_search": 100,
+        "recall_at_10": 0.8364,
+        "qps": 165.43160941464674,
+        "p50_ms": 5.9510000000000005,
+        "p99_ms": 11.204
+      },
+      {
+        "ef_search": 200,
+        "recall_at_10": 0.882,
+        "qps": 99.8425483013288,
+        "p50_ms": 10.158999999999999,
+        "p99_ms": 16.014
+      },
+      {
+        "ef_search": 400,
+        "recall_at_10": 0.9218,
+        "qps": 53.39415425848815,
+        "p50_ms": 19.088,
+        "p99_ms": 27.527
+      },
+      {
+        "ef_search": 800,
+        "recall_at_10": 0.954,
+        "qps": 28.983418760027902,
+        "p50_ms": 34.8445,
+        "p99_ms": 48.994
+      }
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "tab_title": "glove-100-angular — big cosine dataset",
+  "title": "Big dataset — glove-100-angular (cosine, 1.2M)",
+  "subtitle": "MyVector · vsql_vector · pgvector — 1.18M × 100-d word embeddings, cosine, published ground truth",
+  "nav": "<a href=\"/\">← cross-engine (fashion-mnist)</a> · <a href=\"/versions/\">MySQL versions</a> · <a href=\"/real/\">real-dataset</a> · <a href=\"/village/\">village</a>",
+  "order": ["MyVector", "vsql_vector", "pgvector"],
+  "col": {"MyVector": "#4f9dff", "vsql_vector": "#f0a93b", "pgvector": "#36c98d"},
+  "headline_ef": 200,
+  "description": "The big-dataset round: <b>glove-100-angular</b> — 1.18 million 100-d GloVe word embeddings with a <b>cosine</b> metric (vs the 60k×784 L2 fashion-mnist on the other pages). Recall@10 is scored against the dataset's <b>published</b> exact neighbors. GloVe is a genuinely hard ANN benchmark, so recall sits well below the ~0.99 of fashion-mnist — the interesting comparison is the recall/throughput <i>tradeoff</i> each engine strikes at this scale. Full metrics via MyVector's harness.",
+  "caveats": [
+    "<b>Dataset:</b> <code>glove-100-angular</code> (ann-benchmarks) — 1.18M train × 100-d GloVe word vectors, 10k test, <b>cosine</b>. HNSW M=16, ef_construction=200. Recall is intrinsically lower than on fashion-mnist — GloVe is a hard, high-overlap embedding space.",
+    "<b>Engine-isolated:</b> each engine was benchmarked with the <b>other engines stopped</b>, so its 1.2M index build had the full A2 host (24 GB) to itself — building four 1.2M HNSW indexes with all servers resident OOMs the box. pgvector also needed <code>--shm-size=4g</code> for its parallel build.",
+    "<b>Full metrics</b> via MyVector's harness: build, insert QPS, exact brute-force KNN (QPS + p50/p99), ANN (QPS + p50/p99), recall@10 vs published ground truth. Headline cards are the warm ef_search=200 point.",
+    "<b>MariaDB is excluded here</b> — its online MHNSW build at 1.2M rows ran for many hours without completing, so it isn't a practical participant at this scale (it's on the fashion-mnist pages).",
+    "<b>Hardware:</b> Ampere A2 host (8 vCPU / 24 GB), one engine resident at a time."
+  ]
+}

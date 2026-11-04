@@ -114,8 +114,10 @@ def main():
     args = ap.parse_args()
 
     train, test, neighbors, metric, ntrain = load_hdf5(args.dataset, args.max_rows, args.max_queries)
-    if metric != "L2":
-        raise SystemExit(f"bench_pgvector_real supports L2 datasets only (got {metric})")
+    OPS = {"L2": ("vector_l2_ops", "<->"), "Cosine": ("vector_cosine_ops", "<=>")}
+    if metric not in OPS:
+        raise SystemExit(f"bench_pgvector_real supports L2/Cosine (got {metric})")
+    opclass, op = OPS[metric]
     dim = len(train[0])
     sweep_points = [int(x) for x in args.ef_search_sweep.split(",") if x.strip()]
     c = PgContainer(args.container)
@@ -137,7 +139,7 @@ def main():
     print(f"  [insert] {insert_s:.1f}s  insert_qps={insert_qps:.0f}", flush=True)
 
     t0 = time.time()
-    c.exec(f"SET maintenance_work_mem='1GB'; CREATE INDEX ON ann USING hnsw (e vector_l2_ops) "
+    c.exec(f"SET maintenance_work_mem='1GB'; CREATE INDEX ON ann USING hnsw (e {opclass}) "
            f"WITH (m={args.M}, ef_construction={args.ef_construction});")
     index_s = time.time() - t0
     print(f"  [index build] {index_s:.1f}s", flush=True)
@@ -145,7 +147,7 @@ def main():
     metrics = {"index_build_time_s": round(index_s, 2), "insert_qps": insert_qps}
 
     def ann_sql(q, k=10):
-        return f"SELECT id FROM ann ORDER BY e <-> {vlit(q)} LIMIT {k}"
+        return f"SELECT id FROM ann ORDER BY e {op} {vlit(q)} LIMIT {k}"
 
     # exact KNN baseline: force a seq scan (index off) for brute force, in-session.
     nk = min(args.knn_queries, len(test))
