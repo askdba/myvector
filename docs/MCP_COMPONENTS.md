@@ -249,7 +249,7 @@ INSTALL COMPONENT 'file://component_mcp'
 `src/mcp/endpoint/mcp_tokens.sql`, run once by an administrator, creates:
 
 - `mysql.mcp_tokens`: `token_sha256` (lowercase hex SHA-256 of the token, the primary key), `account` (`user@host`), `expires_at` (server time, `NULL` for no expiry), `comment`, `created_at`;
-- `'mysql.mcp'@'localhost'`: a locked account whose only grant is `SELECT` on that table. The endpoint impersonates it to look tokens up, as MRS does for its metadata. Nobody can log in as it.
+- `'mysql.mcp'@'localhost'`: a locked account whose only grant is `SELECT` on that table. The endpoint impersonates it to look tokens up, as MRS does for its metadata. Nobody can log in as it. The name is reserved: the script drops and recreates the account, removing any grants, role grants and proxy grants a pre-existing account of that name had. `DROP USER` does not end open sessions, so if such an account was ever used to log in, `KILL` its sessions first. The script is safe to run again (the table is kept).
 
 A request's token is hashed and checked against `mcp_http.token_sha256` first (to `mcp_http.account`), then looked up in the table. A missing or expired row gets 401. Each request reads the table, so `INSERT` issues a token and `DELETE` (or a past `expires_at`) revokes it from the next request. The mapped account then runs the call as usual: the guard's policy for `MCP_USER` accounts, the `ACCOUNT LOCK` check, the per-account session cap.
 
@@ -258,6 +258,8 @@ INSERT INTO mysql.mcp_tokens (token_sha256, account, expires_at, comment)
 VALUES ('<hex SHA-256 of the token>', 'mcp@%', NOW() + INTERVAL 90 DAY, 'claude desktop');
 DELETE FROM mysql.mcp_tokens WHERE token_sha256 = '<hex SHA-256 of the token>';  -- revoke
 ```
+
+A token whose hash is also set as `mcp_http.token_sha256` is accepted through that setting first, so deleting its row does not revoke it: use different tokens for the two, or reinstall the component without that setting.
 
 Hash the token outside MySQL (`printf %s "$TOKEN" | sha256sum`): `SHA2('<token>', 256)` works too but puts the token in the statement text. The table is in the `mysql` schema, which `component_mcp_guard` denies to MCP sessions (`mcp.deny_system_schemas`), and ordinary accounts have no grants there; it holds only hashes. Each request that is not the `mcp_http.token_sha256` token, including a wrong token, costs one primary-key lookup in a short session (bounded by `mcp_http.threads` and `max_connections`).
 

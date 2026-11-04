@@ -20,10 +20,13 @@
 --   INSERT INTO mysql.mcp_tokens (token_sha256, account, expires_at, comment)
 --   VALUES ('<hex>', 'mcp@%', NOW() + INTERVAL 90 DAY, 'claude desktop');
 --
--- Revoke with DELETE ... WHERE token_sha256 = '<hex>'; changes apply to the next request.
+-- Revoke with DELETE ... WHERE token_sha256 = '<hex>'; changes apply to the next request. (A token
+-- that is also mcp_http.token_sha256 stays valid until that setting is removed too.)
 --
--- Safe to run again. If 'mysql.mcp'@'localhost' already exists, it is locked and stripped of
--- every privilege before the one grant, so a pre-existing login cannot read the hashes.
+-- The account name 'mysql.mcp'@'localhost' is reserved for the endpoint: the script drops and
+-- recreates it, which removes any grants, role grants and proxy grants a pre-existing account of
+-- that name had. DROP USER does not end open sessions, so if such an account was ever used to
+-- log in, KILL its sessions first. Safe to run again (the table is kept).
 
 CREATE TABLE IF NOT EXISTS mysql.mcp_tokens (
   token_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY
@@ -35,10 +38,6 @@ CREATE TABLE IF NOT EXISTS mysql.mcp_tokens (
   CONSTRAINT mcp_tokens_hex CHECK (token_sha256 REGEXP '^[0-9a-f]{64}$')
 ) ENGINE=InnoDB COMMENT='component_mcp: bearer token hashes mapped to accounts';
 
-CREATE USER IF NOT EXISTS 'mysql.mcp'@'localhost' ACCOUNT LOCK;
--- An existing account keeps its state with IF NOT EXISTS: lock it, remove its privileges and
--- roles' defaults, then grant the one SELECT.
-ALTER USER 'mysql.mcp'@'localhost' ACCOUNT LOCK;
-REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'mysql.mcp'@'localhost';
-SET DEFAULT ROLE NONE TO 'mysql.mcp'@'localhost';
+DROP USER IF EXISTS 'mysql.mcp'@'localhost';
+CREATE USER 'mysql.mcp'@'localhost' ACCOUNT LOCK;
 GRANT SELECT ON mysql.mcp_tokens TO 'mysql.mcp'@'localhost';
