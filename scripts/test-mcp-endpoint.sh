@@ -163,6 +163,43 @@ sql "SET GLOBAL max_connections = 151"
 expect "a call works again below max_connections" "$(call run_query '{"sql":"SELECT 1 AS one"}')" '"isError":false'
 expect "no MCP session left after concurrent calls" "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'")" "	0$"
 
+# Token table (mcp_tokens.sql): bearer token hashes mapped to accounts, read through the locked
+# account mysql.mcp@localhost. mcp_http.token_sha256 (tok-123 -> mcp@%) keeps working.
+callas() { rpc "$1" "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$3}}"; }
+h() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+expect "no token table yet: an unknown token gets 401" "$(callas tbl-mcp run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
+# A pre-existing, unlocked reader account with a password and other grants, granted as a role and
+# as a proxy to another account: setup drops and recreates it, so none of that survives (run
+# twice: the script is safe to run again; each run must succeed).
+sql "CREATE USER 'mysql.mcp'@'localhost' IDENTIFIED BY 'guess'; GRANT SELECT ON d1.* TO 'mysql.mcp'@'localhost';
+CREATE USER heir@'%'; GRANT 'mysql.mcp'@'localhost' TO heir@'%'"
+# Only root@localhost holds PROXY ... WITH GRANT OPTION, so this grant goes over the socket.
+docker exec "$C" mysql -uroot -ptestpass -e "GRANT PROXY ON 'mysql.mcp'@'localhost' TO heir@'%'" 2>&1 | grep -v "Using a password"
+expect "fixture: the old reader is granted as a role" "$(sql "SELECT COUNT(*) FROM mysql.role_edges WHERE FROM_USER = 'mysql.mcp' AND TO_USER = 'heir'")" "^1$"
+expect "fixture: and as a proxy" "$(sql "SELECT COUNT(*) FROM mysql.proxies_priv WHERE Proxied_user = 'mysql.mcp' AND User = 'heir'")" "^1$"
+for run in 1 2; do
+	setup_out=$(docker exec -i "$C" mysql -h127.0.0.1 -uroot -ptestpass <"$REPO/src/mcp/endpoint/mcp_tokens.sql" 2>&1)
+	expect "token setup run $run succeeds" "$? $(printf '%s' "$setup_out" | grep -v 'Using a password')" "^0 ?$"
+done
+expect "setup locks the reader account" "$(sql "SELECT account_locked FROM mysql.user WHERE user = 'mysql.mcp'")" "^Y$"
+expect "setup leaves the reader only SELECT on the table" "$(sql "SHOW GRANTS FOR 'mysql.mcp'@'localhost'" | tr -d '`' | tr '\n' ';')" "^GRANT USAGE ON [*][.][*] TO mysql.mcp@localhost;GRANT SELECT ON mysql.mcp_tokens TO mysql.mcp@localhost;$"
+expect "no account inherits the reader as a role" "$(sql "SELECT COUNT(*) FROM mysql.role_edges WHERE FROM_USER = 'mysql.mcp'")" "^0$"
+expect "no account can proxy as the reader (DROP USER leaves proxy grants)" "$(sql "SELECT COUNT(*) FROM mysql.proxies_priv WHERE Proxied_user = 'mysql.mcp'")" "^0$"
+sql "INSERT INTO mysql.mcp_tokens (token_sha256, account, expires_at, comment) VALUES
+  ('$(h tbl-mcp)', 'mcp@%', NULL, 'test'), ('$(h tbl-app)', 'app@%', NOW() + INTERVAL 1 DAY, 'test'),
+  ('$(h tbl-old)', 'mcp@%', NOW() - INTERVAL 1 SECOND, 'expired')"
+expect "a table token runs as its account" "$(callas tbl-mcp run_query '{"sql":"SELECT CURRENT_USER() AS who"}')" 'who\\":\\"mcp@%\\".*"isError":false'
+expect "another table token, another account" "$(callas tbl-app run_query '{"sql":"SELECT CURRENT_USER() AS who"}')" 'who\\":\\"app@%\\".*"isError":false'
+expect "the mapped account's policy applies (guard, MCP_USER)" "$(callas tbl-mcp run_query '{"sql":"INSERT INTO d1.t VALUES (5)"}')" 'Error 1290: [^"]*mcp.read_only.*"isError":true'
+expect "an expired token gets 401" "$(callas tbl-old run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
+expect "an unknown token gets 401" "$(callas tbl-none run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
+expect "the single token still maps to mcp_http.account" "$(call run_query '{"sql":"SELECT CURRENT_USER() AS who"}')" 'who\\":\\"mcp@%\\"'
+expect "MCP sessions cannot read the token table" "$(callas tbl-mcp run_query '{"sql":"SELECT COUNT(*) FROM mysql.mcp_tokens"}')" 'Error 1290: [^"]*mcp.deny_system_schemas.*"isError":true'
+expect "nobody can log in as the reader account, not even with its old password" "$(docker exec "$C" mysql -umysql.mcp -pguess -N -e 'SELECT 1' 2>&1 | grep -v 'Using a password')" "ERROR (1045|3118)"
+sql "DELETE FROM mysql.mcp_tokens WHERE token_sha256 = '$(h tbl-mcp)'"
+expect "a deleted token gets 401 on the next request" "$(callas tbl-mcp run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
+expect "nothing written by table tokens" "$(sql "SELECT GROUP_CONCAT(i) FROM d1.t")" "^1$"
+
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).
 sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
 expect "reinstall mapped to app, with allowed origins and masked columns" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.allowed_origins = 'http://localhost:6274, https://Inspector.example', GLOBAL mcp_http.mask_columns = ' secret, PASS ,, ÉMAIL,	пароль , token '")" "^$"

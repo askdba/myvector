@@ -9,14 +9,15 @@
    GNU General Public License, version 2.0, for more details.
 */
 
-// component_mcp: Phase 4 spike of RFC 0001 (askdba/mysql-mcp-server). An MCP Streamable
-// HTTP endpoint (JSON-RPC 2.0 over POST /mcp) inside mysqld, on MySQL Router's HTTP server
-// (the libraries component_mysql_rest_service links). Spike scope:
+// component_mcp: RFC 0001 (askdba/mysql-mcp-server). An MCP Streamable HTTP endpoint
+// (JSON-RPC 2.0 over POST /mcp) inside mysqld, on MySQL Router's HTTP server (the libraries
+// component_mysql_rest_service links):
 //
-//   - loopback only, plain HTTP (TLS comes with Phase 5);
-//   - Authorization: Bearer <token>, checked against mcp_http.token_sha256 (hex SHA-256)
-//     and mapped to the one account in mcp_http.account (user@host);
-//   - tools: list_databases (CALL mysql_mcp.list_databases()) and run_query (one statement);
+//   - 127.0.0.1 by default; TLS (mcp_http.ssl_cert / ssl_key) required off loopback;
+//   - Authorization: Bearer <token>, mapped to an account (user@host): mcp_http.token_sha256 to
+//     mcp_http.account, or the token table mysql.mcp_tokens (mcp_tokens.sql);
+//   - the core tools (list_databases, list_tables, describe_table, run_query, ping,
+//     server_info);
 //   - each tool call runs in a "local" command-service session that impersonates the
 //     account, announced with connection audit events so that component_mcp_guard (and
 //     audit log plugins) see it: such sessions start unaudited.
@@ -292,15 +293,21 @@ std::string sha256_hex(const std::string &s) {
 }
 
 // The bearer token's hash matches mcp_http.token_sha256 (compared in constant time).
-bool token_ok(const std::string *authorization) {
-  if (authorization == nullptr || opt_token_sha256 == nullptr || opt_token_sha256[0] == '\0')
-    return false;
+// The bearer token's hex SHA-256, or "" when the header is not "Bearer <token>".
+std::string bearer_sha256(const std::string *authorization) {
   static const std::string kBearer = "Bearer ";
-  if (authorization->compare(0, kBearer.size(), kBearer) != 0) return false;
-  const std::string got = sha256_hex(authorization->substr(kBearer.size()));
+  if (authorization == nullptr || authorization->compare(0, kBearer.size(), kBearer) != 0 ||
+      authorization->size() == kBearer.size())
+    return "";
+  return sha256_hex(authorization->substr(kBearer.size()));
+}
+
+// Whether the token hash matches mcp_http.token_sha256 (constant-time compare).
+bool single_token_ok(const std::string &got) {
+  if (got.empty() || opt_token_sha256 == nullptr || opt_token_sha256[0] == '\0') return false;
   std::string want(opt_token_sha256);
   for (char &c : want) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  return got.size() == want.size() && !got.empty() &&
+  return got.size() == want.size() &&
          CRYPTO_memcmp(got.data(), want.data(), got.size()) == 0;
 }
 
@@ -644,6 +651,54 @@ void read_error(MYSQL_H h, SqlResult *r) {
   r->error = msg != nullptr ? msg : "";
 }
 
+// The token table, mysql.mcp_tokens (src/mcp/endpoint/mcp_tokens.sql): token hashes mapped to
+// accounts, optionally expiring. The endpoint reads it in a session impersonating the locked
+// account mysql.mcp@localhost, whose only grant is SELECT on that table; MCP sessions cannot read
+// it (the guard denies the mysql schema to them).
+constexpr char kTokenReaderUser[] = "mysql.mcp", kTokenReaderHost[] = "localhost";
+
+// The account (user@host) a token hash maps to in mysql.mcp_tokens, if any and not expired.
+// hash is the endpoint's own hex SHA-256, so it is safe in the statement text.
+std::optional<std::string> table_token_account(const std::string &hash) {
+  MYSQL_H h = nullptr;
+  if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) return std::nullopt;
+  static constexpr bool kBypassMaxConnections = false;
+  std::optional<std::string> account;
+  if (!mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_PROTOCOL, "local") &&
+      !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_USER_NAME, kTokenReaderUser) &&
+      !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_HOST_NAME, kTokenReaderHost) &&
+      !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_BYPASS_MAX_CONNECTIONS,
+                                                &kBypassMaxConnections) &&
+      !mysql_service_mysql_command_factory->connect(h)) {
+    const std::string sql =
+        "SELECT account FROM mysql.mcp_tokens WHERE token_sha256 = '" + hash +
+        "' AND (expires_at IS NULL OR expires_at > NOW())";
+    MYSQL_RES_H res = nullptr;
+    MYSQL_ROW_H row = nullptr;
+    ulong *lengths = nullptr;
+    if (!mysql_service_mysql_command_query->query(h, sql.data(), sql.size()) &&
+        !mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr) {
+      if (!mysql_service_mysql_command_query_result->fetch_row(res, &row) && row != nullptr &&
+          row[0] != nullptr &&
+          !mysql_service_mysql_command_query_result->fetch_lengths(res, &lengths) && lengths)
+        account.emplace(row[0], lengths[0]);
+      mysql_service_mysql_command_query_result->free_result(res);
+    }
+  }
+  mysql_service_mysql_command_factory->close(h);
+  return account;
+}
+
+// The account the request's bearer token maps to: mcp_http.token_sha256 (to mcp_http.account)
+// first, then the token table. nullopt: 401.
+std::optional<std::string> token_account(const std::string *authorization) {
+  const std::string hash = bearer_sha256(authorization);
+  if (hash.empty()) return std::nullopt;
+  if (single_token_ok(hash) && opt_account != nullptr && opt_account[0] != '\0')
+    return std::string(opt_account);
+  return table_token_account(hash);
+}
+
 // Per-account count of open endpoint sessions. The server does not apply max_user_connections
 // to command-service sessions, so mcp_http.max_sessions_per_account caps them here.
 class SessionSlot {
@@ -911,8 +966,7 @@ std::optional<std::string> string_arg(const rapidjson::Value &params, const char
   return std::string(args[key].GetString(), args[key].GetStringLength());
 }
 
-void call_tool(const rapidjson::Value &params, Json &out) {
-  const std::string account = opt_account != nullptr ? opt_account : "";
+void call_tool(const rapidjson::Value &params, Json &out, const std::string &account) {
   const std::string name =
       params.HasMember("name") && params["name"].IsString() ? params["name"].GetString() : "";
   std::string sql;
@@ -1061,7 +1115,9 @@ class McpHandler : public http::base::RequestHandler {
       req.send_reply(HttpStatusCode::MethodNotAllowed);
       return;
     }
-    if (!token_ok(req.get_input_headers().find("Authorization"))) {
+    const std::optional<std::string> account =
+        token_account(req.get_input_headers().find("Authorization"));
+    if (!account) {
       req.get_output_headers().add("WWW-Authenticate", "Bearer");
       req.send_reply(HttpStatusCode::Unauthorized);
       return;
@@ -1086,7 +1142,7 @@ class McpHandler : public http::base::RequestHandler {
       else if (method == "tools/list")
         list_tools(out);
       else if (method == "tools/call" && params.IsObject())
-        call_tool(params, out);
+        call_tool(params, out, *account);
       else if (method == "ping")
         out.AddMember("result", rapidjson::Value(rapidjson::kObjectType), out.GetAllocator());
       else
