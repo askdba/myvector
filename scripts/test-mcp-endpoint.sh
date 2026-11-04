@@ -163,6 +163,27 @@ sql "SET GLOBAL max_connections = 151"
 expect "a call works again below max_connections" "$(call run_query '{"sql":"SELECT 1 AS one"}')" '"isError":false'
 expect "no MCP session left after concurrent calls" "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'")" "	0$"
 
+# Token table (mcp_tokens.sql): bearer token hashes mapped to accounts, read through the locked
+# account mysql.mcp@localhost. mcp_http.token_sha256 (tok-123 -> mcp@%) keeps working.
+callas() { rpc "$1" "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$3}}"; }
+h() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+expect "no token table yet: an unknown token gets 401" "$(callas tbl-mcp run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
+docker exec -i "$C" mysql -h127.0.0.1 -uroot -ptestpass <"$REPO/src/mcp/endpoint/mcp_tokens.sql" 2>&1 | grep -v "Using a password"
+sql "INSERT INTO mysql.mcp_tokens (token_sha256, account, expires_at, comment) VALUES
+  ('$(h tbl-mcp)', 'mcp@%', NULL, 'test'), ('$(h tbl-app)', 'app@%', NOW() + INTERVAL 1 DAY, 'test'),
+  ('$(h tbl-old)', 'mcp@%', NOW() - INTERVAL 1 SECOND, 'expired')"
+expect "a table token runs as its account" "$(callas tbl-mcp run_query '{"sql":"SELECT CURRENT_USER() AS who"}')" 'who\\":\\"mcp@%\\".*"isError":false'
+expect "another table token, another account" "$(callas tbl-app run_query '{"sql":"SELECT CURRENT_USER() AS who"}')" 'who\\":\\"app@%\\".*"isError":false'
+expect "the mapped account's policy applies (guard, MCP_USER)" "$(callas tbl-mcp run_query '{"sql":"INSERT INTO d1.t VALUES (5)"}')" 'Error 1290: [^"]*mcp.read_only.*"isError":true'
+expect "an expired token gets 401" "$(callas tbl-old run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
+expect "an unknown token gets 401" "$(callas tbl-none run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
+expect "the single token still maps to mcp_http.account" "$(call run_query '{"sql":"SELECT CURRENT_USER() AS who"}')" 'who\\":\\"mcp@%\\"'
+expect "MCP sessions cannot read the token table" "$(callas tbl-mcp run_query '{"sql":"SELECT COUNT(*) FROM mysql.mcp_tokens"}')" 'Error 1290: [^"]*mcp.deny_system_schemas.*"isError":true'
+expect "nobody can log in as the reader account" "$(docker exec "$C" mysql -h127.0.0.1 -umysql.mcp -N -e 'SELECT 1' 2>&1)" "ERROR"
+sql "DELETE FROM mysql.mcp_tokens WHERE token_sha256 = '$(h tbl-mcp)'"
+expect "a deleted token gets 401 on the next request" "$(callas tbl-mcp run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
+expect "nothing written by table tokens" "$(sql "SELECT GROUP_CONCAT(i) FROM d1.t")" "^1$"
+
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).
 sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
 expect "reinstall mapped to app, with allowed origins and masked columns" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.allowed_origins = 'http://localhost:6274, https://Inspector.example', GLOBAL mcp_http.mask_columns = ' secret, PASS ,, ÉMAIL,	пароль , token '")" "^$"
