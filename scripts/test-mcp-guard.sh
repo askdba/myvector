@@ -259,6 +259,21 @@ sql "SET GLOBAL mcp.max_execution_time_ms = 1500" >/dev/null
 wait "$live"
 expect "mcp: an existing session gets a tightened limit" "$(tr '\n' ' ' <"/tmp/$CNAME-live")" "^0 1500 $"
 rm -f "/tmp/$CNAME-live"
+# COM_RESET_CONNECTION resets session variables and raises no connection event: the limit
+# must be back at the next statement (9.0+: the guard reads the session value; 8.4: command
+# events). The mysql client cannot send it in batch mode, so Python's connector does.
+reset_check=$(docker run --rm --network "container:$CNAME" python:3.12-slim sh -c "pip install -q --disable-pip-version-check --root-user-action=ignore mysql-connector-python==26.7.0 >/dev/null 2>&1 && python -c \"
+import mysql.connector
+c = mysql.connector.connect(host='127.0.0.1', user='mcp', password='mcppass1')
+def get():
+    cur = c.cursor(); cur.execute('SELECT @@max_execution_time'); v = cur.fetchone()[0]; cur.close(); return v
+out = [get()]
+c.cmd_reset_connection(); out.append(get())
+cur = c.cursor(); cur.execute('SET SESSION max_execution_time = 500'); cur.close(); out.append(get())
+c.cmd_reset_connection(); out.append(get())
+print(*out)
+\"" 2>&1 | tail -1)
+expect "mcp: COM_RESET_CONNECTION does not lift the limit (lowered values kept until reset)" "$reset_check" "^1500 1500 500 1500$"
 sql "SET GLOBAL mcp.max_execution_time_ms = 0" >/dev/null
 
 # --- mcp.log_denials -----------------------------------------------------------------------------
