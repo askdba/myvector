@@ -83,7 +83,7 @@ expect "arguments are literals, kept byte for byte (quotes, backslashes, SQL)" "
 expect "describe_table without table is a tool error" "$(call describe_table '{"database":"d1"}')" 'needs string arguments database and table.*"isError":true'
 expect "list_tables with a non-string database is a tool error" "$(call list_tables '{"database":1}')" 'needs a string argument database.*"isError":true'
 expect "ping" "$(call ping '{}')" 'success\\":true,\\"latency_ms\\":[0-9]+,\\"message\\":\\"pong\\".*"isError":false'
-expect "server_info, as the mapped account" "$(call server_info '{}')" 'version\\":\\"26\.10\.[0-9]+\\",\\"server_engine\\":\\"mysql\\".*current_user\\":\\"mcp@%\\",\\"current_database\\":\\"\\".*max_connections\\":\\"[0-9]+\\".*"isError":false'
+expect "server_info, as the mapped account (one object, not rows)" "$(call server_info '{}')" '"text":"\{\\"version\\":\\"26\.10\.[0-9]+\\",\\"server_engine\\":\\"mysql\\".*current_user\\":\\"mcp@%\\",\\"current_database\\":\\"\\".*max_connections\\":\\"[0-9]+\\".*"isError":false'
 expect "large result truncated at 1000 rows" "$(call run_query '{"sql":"SELECT n FROM d1.big"}' | grep -o '\\"n\\":' | wc -l) $(call run_query '{"sql":"SELECT n FROM d1.big"}' | grep -o 'truncated\\":true' | head -1)" "^1000 truncated"
 explicit_limit_reply=$(call run_query '{"sql":"SELECT n FROM d1.big LIMIT 5000"}')
 expect "explicit LIMIT: the reply is still bounded" "$(printf '%s' "$explicit_limit_reply" | grep -o '\\"n\\":' | wc -l) $(printf '%s' "$explicit_limit_reply" | grep -o 'truncated\\":true' | head -1)" "^1000 truncated"
@@ -134,6 +134,7 @@ sql "ALTER USER mcp@'%' ACCOUNT LOCK"
 expect "a locked account is refused before execution" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (2)"}')" "Error 3118: Access denied for user 'mcp'@'%'. Account is locked.*\"isError\":true"
 expect "a locked account does not write" "$(sql "SELECT GROUP_CONCAT(i ORDER BY i) FROM d1.t")" "^1$"
 expect "a locked account is refused for tool pack calls too" "$(call list_databases '{}')" 'Error 3118: .*"isError":true'
+expect "a failed ping is a result (success false), not a tool error" "$(call ping '{}')" 'success\\":false,.*Error 3118.*"isError":false'
 sql "SET GLOBAL mcp.read_only = ON"
 sql "ALTER USER mcp@'%' ACCOUNT UNLOCK"
 expect "the account works again once unlocked" "$(call run_query '{"sql":"SELECT 1 AS one"}')" 'one\\":\\"1\\".*"isError":false'

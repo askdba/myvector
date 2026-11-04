@@ -236,7 +236,7 @@ INSTALL COMPONENT 'file://component_mcp'
 
 ### How a tool call runs
 
-Each `tools/call` opens a `"local"` command-service session that **impersonates** `mcp_http.account`, with no password, on one of the endpoint's I/O threads. It runs one statement, `CALL mysql_mcp.list_databases()` or the `run_query` SQL, then closes the session. Neither `CLIENT_MULTI_STATEMENTS` nor anything similar is set, so `a; b` is a parse error.
+Each `tools/call` opens a `"local"` command-service session that **impersonates** `mcp_http.account`, with no password, on one of the endpoint's I/O threads. It runs one statement for the tool: `CALL mysql_mcp.list_databases()`, `CALL mysql_mcp.list_tables(...)`, `CALL mysql_mcp.describe_table(...)`, the `run_query` SQL, `SELECT 1` for `ping`, or the server information `SELECT` for `server_info`, then closes the session. Neither `CLIENT_MULTI_STATEMENTS` nor anything similar is set, so `a; b` is a parse error.
 
 The guard enforces its policy on these sessions only because of two things, both checked by `scripts/test-mcp-endpoint.sh`:
 
