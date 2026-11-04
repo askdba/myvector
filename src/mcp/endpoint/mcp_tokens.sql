@@ -11,10 +11,12 @@
 --   'mysql.mcp'@'localhost' locked account the endpoint impersonates to read the table; its
 --                           only grant is SELECT on it. Nobody can log in as it.
 --
--- The table is in the mysql schema: component_mcp_guard denies it to MCP sessions while
--- mcp.deny_system_schemas is on (the default) and mysql is not in mcp.allowed_schemas. There is
--- no rule specific to this table, so do not allow the mysql schema to MCP accounts or grant them
--- privileges on it. Ordinary accounts have no grants there. Store only the
+-- The table is in the mysql schema. component_mcp_guard denies it to MCP
+-- sessions while mcp.deny_system_schemas is on (the default), whatever
+-- mcp.allowed_schemas lists; with it off, nothing in the guard denies it.
+-- There is no rule specific to this table: keep mcp.deny_system_schemas on
+-- and grant MCP accounts no privileges on the mysql schema. Ordinary accounts
+-- have no grants there. Store only the
 -- SHA-256 of a token, never the token. Hash it outside MySQL, so the token is not in any
 -- statement text (or the logs that record statements):
 --
