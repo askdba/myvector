@@ -224,7 +224,7 @@ INSTALL COMPONENT 'file://component_mcp'
       GLOBAL mcp_http.token_sha256 = '<hex digest from above>';
 ```
 
-**Across restarts.** The settings are read-only and `SET GLOBAL` values last only until the server restarts. The component itself is reloaded at startup, but with default settings: loopback, plain HTTP, no account and no token, so every request gets 401. That fails closed, but the endpoint is then unusable until reinstalled. To keep a configuration (verified on 26.10.0):
+**Across restarts.** The settings are read-only and `SET GLOBAL` values last only until the server restarts. The component itself is reloaded at startup, but with default settings: loopback, plain HTTP, no `mcp_http.account` and no `mcp_http.token_sha256`. The single token then gets 401, but tokens in `mysql.mcp_tokens` keep working: a restart is not a way to cut access, `DELETE` the rows (or let them expire) for that. To keep a configuration (verified on 26.10.0):
 
 - Install with `SET PERSIST` for every setting except the token: `INSTALL COMPONENT 'file://component_mcp' SET PERSIST mcp_http.port = 33480, PERSIST mcp_http.account = 'mcp@%', PERSIST mcp_http.bind_address = '0.0.0.0', PERSIST mcp_http.ssl_cert = '...', PERSIST mcp_http.ssl_key = '...', GLOBAL mcp_http.token_sha256 = '...'`. The persisted values are in `mysqld-auto.cnf`, see `performance_schema.persisted_variables`.
 - `mcp_http.token_sha256` cannot be persisted (`NOPERSIST`, error 1238 with `SET PERSIST`), so the hash is not written next to the other settings. Put it in an option file read by `mysqld`, readable only by the `mysqld` user: `[mysqld]` `loose-mcp_http.token_sha256 = <hex digest>`. In the official images that is a file in `/etc/mysql/conf.d/`.
@@ -240,7 +240,7 @@ INSTALL COMPONENT 'file://component_mcp'
 | `mcp_http.threads` | I/O worker threads (read-only, default 4, 1 to 64). Each serves one call at a time, so this many calls run at once; connections are assigned to the workers in turn |
 | `mcp_http.max_sessions_per_account` | Concurrent endpoint sessions per account (read-only, default 4, 1 to 1024). A call over the cap fails with error 1203. The server's `max_user_connections` does not apply to these sessions |
 | `mcp_http.account` | The account (`user@host`) the `mcp_http.token_sha256` token maps to (read-only). Tokens in `mysql.mcp_tokens` carry their own account |
-| `mcp_http.token_sha256` | Hex SHA-256 of the bearer token (read-only, not persisted, sensitive: readable only with `SENSITIVE_VARIABLES_OBSERVER`). Requests without the matching `Authorization: Bearer <token>` get 401 |
+| `mcp_http.token_sha256` | Hex SHA-256 of the bearer token (read-only, not persisted, sensitive: readable only with `SENSITIVE_VARIABLES_OBSERVER`). A request whose token matches neither it nor a valid row of `mysql.mcp_tokens` gets 401 |
 | `mcp_http.allowed_origins` | Comma-separated `Origin` values accepted (read-only, default none; exact match, ASCII case-insensitive, spaces around commas ignored). Against DNS rebinding, as the MCP transport spec requires: a request that has an `Origin` header not in the list gets 403, before the token is checked. Requests without `Origin` (non-browser clients) are not affected. Add a browser-based client's origin here, e.g. `http://localhost:6274` for MCP Inspector. For a listed origin the endpoint also handles CORS: it answers the browser's `OPTIONS` preflight (204, allowing `POST` with `Authorization`, `Content-Type`, `Mcp-Session-Id` and `MCP-Protocol-Version`, cached 10 minutes) without the token, and every reply carries `Access-Control-Allow-Origin` for it, so the page can connect directly |
 | `mcp_http.mask_columns` | Comma-separated patterns (read-only, default none; trimmed of Unicode whitespace). A result column whose name contains one, case-insensitive for any Unicode text, has every non-NULL value replaced by `********`. These are the rules of mysql-mcp-server's `MYSQL_MCP_MASK_COLUMNS`, so the same setting gives the same output. Like there, it matches result column names: an alias (`SELECT password AS p`) is not masked, so use grants or views for data an account must not see |
 
@@ -256,7 +256,7 @@ A request's token is hashed and checked against `mcp_http.token_sha256` first (t
 ```sql
 INSERT INTO mysql.mcp_tokens (token_sha256, account, expires_at, comment)
 VALUES ('<hex SHA-256 of the token>', 'mcp@%', NOW() + INTERVAL 90 DAY, 'claude desktop');
-DELETE FROM mysql.mcp_tokens WHERE comment = 'claude desktop';  -- revoke
+DELETE FROM mysql.mcp_tokens WHERE token_sha256 = '<hex SHA-256 of the token>';  -- revoke
 ```
 
 Hash the token outside MySQL (`printf %s "$TOKEN" | sha256sum`): `SHA2('<token>', 256)` works too but puts the token in the statement text. The table is in the `mysql` schema, which `component_mcp_guard` denies to MCP sessions (`mcp.deny_system_schemas`), and ordinary accounts have no grants there; it holds only hashes. Each request that is not the `mcp_http.token_sha256` token, including a wrong token, costs one primary-key lookup in a short session (bounded by `mcp_http.threads` and `max_connections`).

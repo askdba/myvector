@@ -168,7 +168,12 @@ expect "no MCP session left after concurrent calls" "$(sql "SHOW GLOBAL STATUS L
 callas() { rpc "$1" "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"$2\",\"arguments\":$3}}"; }
 h() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
 expect "no token table yet: an unknown token gets 401" "$(callas tbl-mcp run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
-docker exec -i "$C" mysql -h127.0.0.1 -uroot -ptestpass <"$REPO/src/mcp/endpoint/mcp_tokens.sql" 2>&1 | grep -v "Using a password"
+# A pre-existing, unlocked reader account with a password and other grants: the setup locks it
+# and leaves it only SELECT on the table (twice: the script is safe to run again).
+sql "CREATE USER 'mysql.mcp'@'localhost' IDENTIFIED BY 'guess'; GRANT SELECT ON d1.* TO 'mysql.mcp'@'localhost'"
+for _ in 1 2; do docker exec -i "$C" mysql -h127.0.0.1 -uroot -ptestpass <"$REPO/src/mcp/endpoint/mcp_tokens.sql" 2>&1 | grep -v "Using a password"; done
+expect "setup locks an existing reader account" "$(sql "SELECT account_locked FROM mysql.user WHERE user = 'mysql.mcp'")" "^Y$"
+expect "setup leaves the reader only SELECT on the table" "$(sql "SHOW GRANTS FOR 'mysql.mcp'@'localhost'" | tr -d '`' | tr '\n' ';')" "^GRANT USAGE ON [*][.][*] TO mysql.mcp@localhost;GRANT SELECT ON mysql.mcp_tokens TO mysql.mcp@localhost;$"
 sql "INSERT INTO mysql.mcp_tokens (token_sha256, account, expires_at, comment) VALUES
   ('$(h tbl-mcp)', 'mcp@%', NULL, 'test'), ('$(h tbl-app)', 'app@%', NOW() + INTERVAL 1 DAY, 'test'),
   ('$(h tbl-old)', 'mcp@%', NOW() - INTERVAL 1 SECOND, 'expired')"
@@ -179,7 +184,7 @@ expect "an expired token gets 401" "$(callas tbl-old run_query '{"sql":"SELECT 1
 expect "an unknown token gets 401" "$(callas tbl-none run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
 expect "the single token still maps to mcp_http.account" "$(call run_query '{"sql":"SELECT CURRENT_USER() AS who"}')" 'who\\":\\"mcp@%\\"'
 expect "MCP sessions cannot read the token table" "$(callas tbl-mcp run_query '{"sql":"SELECT COUNT(*) FROM mysql.mcp_tokens"}')" 'Error 1290: [^"]*mcp.deny_system_schemas.*"isError":true'
-expect "nobody can log in as the reader account" "$(docker exec "$C" mysql -h127.0.0.1 -umysql.mcp -N -e 'SELECT 1' 2>&1)" "ERROR"
+expect "nobody can log in as the reader account, even with its old password" "$(docker exec "$C" mysql -umysql.mcp -pguess -N -e 'SELECT 1' 2>&1 | grep -v 'Using a password')" "ERROR 3118"
 sql "DELETE FROM mysql.mcp_tokens WHERE token_sha256 = '$(h tbl-mcp)'"
 expect "a deleted token gets 401 on the next request" "$(callas tbl-mcp run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
 expect "nothing written by table tokens" "$(sql "SELECT GROUP_CONCAT(i) FROM d1.t")" "^1$"

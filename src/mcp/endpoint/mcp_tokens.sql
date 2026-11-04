@@ -13,13 +13,17 @@
 --
 -- The table is in the mysql schema: component_mcp_guard denies it to MCP sessions
 -- (mcp.deny_system_schemas), and ordinary accounts have no grants there. Store only the
--- SHA-256 of a token, never the token, e.g.
+-- SHA-256 of a token, never the token. Hash it outside MySQL, so the token is not in any
+-- statement text (or the logs that record statements):
 --
+--   printf %s "$TOKEN" | sha256sum        # -> <hex>
 --   INSERT INTO mysql.mcp_tokens (token_sha256, account, expires_at, comment)
---   VALUES (SHA2('<token>', 256), 'mcp@%', NOW() + INTERVAL 90 DAY, 'claude desktop');
+--   VALUES ('<hex>', 'mcp@%', NOW() + INTERVAL 90 DAY, 'claude desktop');
 --
--- (SHA2() puts the token in the statement text, and so in logs that record statements;
--- hashing it outside MySQL avoids that.) Revoke with DELETE; changes apply to the next request.
+-- Revoke with DELETE ... WHERE token_sha256 = '<hex>'; changes apply to the next request.
+--
+-- Safe to run again. If 'mysql.mcp'@'localhost' already exists, it is locked and stripped of
+-- every privilege before the one grant, so a pre-existing login cannot read the hashes.
 
 CREATE TABLE IF NOT EXISTS mysql.mcp_tokens (
   token_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY
@@ -32,4 +36,9 @@ CREATE TABLE IF NOT EXISTS mysql.mcp_tokens (
 ) ENGINE=InnoDB COMMENT='component_mcp: bearer token hashes mapped to accounts';
 
 CREATE USER IF NOT EXISTS 'mysql.mcp'@'localhost' ACCOUNT LOCK;
+-- An existing account keeps its state with IF NOT EXISTS: lock it, remove its privileges and
+-- roles' defaults, then grant the one SELECT.
+ALTER USER 'mysql.mcp'@'localhost' ACCOUNT LOCK;
+REVOKE ALL PRIVILEGES, GRANT OPTION FROM 'mysql.mcp'@'localhost';
+SET DEFAULT ROLE NONE TO 'mysql.mcp'@'localhost';
 GRANT SELECT ON mysql.mcp_tokens TO 'mysql.mcp'@'localhost';
