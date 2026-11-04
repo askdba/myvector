@@ -19,6 +19,7 @@ from mcp import ClientSession
 
 URL, TOKEN = sys.argv[1], sys.argv[2]
 exchanges = []  # (method, session id sent, protocol version sent, status, session id received)
+get_answered = None  # asyncio.Event: the SDK's background GET got its response
 failed = 0
 
 
@@ -36,6 +37,8 @@ async def record(response):
     exchanges.append((request.method, request.headers.get("Mcp-Session-Id"),
                       request.headers.get("MCP-Protocol-Version"), response.status_code,
                       response.headers.get("Mcp-Session-Id")))
+    if request.method == "GET" and get_answered is not None:
+        get_answered.set()
 
 
 def text(result):
@@ -43,6 +46,8 @@ def text(result):
 
 
 async def main():
+    global get_answered
+    get_answered = asyncio.Event()
     http = httpx2.AsyncClient(headers={"Authorization": f"Bearer {TOKEN}"},
                               event_hooks={"response": [record]}, timeout=30)
     async with http:
@@ -75,6 +80,12 @@ async def main():
                       text(r))
                 await session.send_ping()
                 check("ping", True)
+                # The SDK sends its GET from a background task; wait (bounded) for the response, so
+                # closing the session cannot cancel it before it is recorded.
+                try:
+                    await asyncio.wait_for(get_answered.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass  # the check below reports the missing GET
 
     posts = [e for e in exchanges if e[0] == "POST"]
     sid = posts[0][4] if posts else None
