@@ -35,24 +35,35 @@
 #include <mysql/components/component_implementation.h>
 #include <mysql/components/service_implementation.h>
 #include <mysql/components/services/audit_api_connection_service.h>
+#include <mysql/components/services/component_status_var_service.h>
 #include <mysql/components/services/component_sys_var_service.h>
 #include <mysql/components/services/log_builtins.h>
+#include <mysql/components/services/mysql_command_consumer.h>
 #include <mysql/components/services/mysql_command_services.h>
+#include <mysql/components/services/security_context.h>
 #include <mysql/components/services/event_tracking_query_service.h>
 #include <mysqld_error.h>
+#include "mysql/strings/m_ctype.h"
+#include "mysql/strings/dtoa.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
+#include <chrono>
 #include <cstring>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <system_error>
 #include <thread>
+#include <vector>
 
 #include "http/base/request.h"
 #include "http/base/request_handler.h"
@@ -70,6 +81,7 @@ REQUIRES_SERVICE_PLACEHOLDER(log_builtins);
 REQUIRES_SERVICE_PLACEHOLDER(log_builtins_string);
 REQUIRES_SERVICE_PLACEHOLDER(component_sys_variable_register);
 REQUIRES_SERVICE_PLACEHOLDER(component_sys_variable_unregister);
+REQUIRES_SERVICE_PLACEHOLDER(status_variable_registration);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_factory);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_options);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_query);
@@ -79,9 +91,20 @@ REQUIRES_SERVICE_PLACEHOLDER(mysql_command_field_metadata);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_error_info);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_command_thread);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_audit_api_connection);
+REQUIRES_SERVICE_PLACEHOLDER(mysql_thd_security_context);
+REQUIRES_SERVICE_PLACEHOLDER(mysql_security_context_options);
 // component_mcp_guard's query consumer: requiring it makes the server refuse to install the
 // endpoint without the guard, and to uninstall the guard while the endpoint is installed.
 REQUIRES_SERVICE_PLACEHOLDER_AS(event_tracking_query, mcp_guard_query);
+// The server's default (DOM) text consumer: the bounded consumer below passes rows on to it.
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_row_factory_v1, dom_row_factory);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_null_v1, dom_get_null);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_integer_v1, dom_get_integer);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_longlong_v1, dom_get_longlong);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_decimal_v1, dom_get_decimal);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_double_v1, dom_get_double);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_date_time_v1, dom_get_date_time);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_string_v1, dom_get_string);
 
 // Defined by Router's harness (its component log handler); set at init.
 extern SERVICE_TYPE(log_builtins) *log_bi;
@@ -92,13 +115,19 @@ namespace {
 // ----- settings -------------------------------------------------------------------------
 
 unsigned long opt_port = 33480;
+unsigned long opt_threads = 4;                   // I/O workers: calls served at once
+unsigned long opt_max_sessions_per_account = 4;  // concurrent calls per account
 char *opt_account = nullptr;       // user@host the token maps to
 char *opt_token_sha256 = nullptr;  // hex SHA-256 of the bearer token
-char *opt_bind_address = nullptr;  // listen address; null means 127.0.0.1
-char *opt_ssl_cert = nullptr;      // PEM certificate file; with opt_ssl_key, serve HTTPS
-char *opt_ssl_key = nullptr;       // PEM private key file
-bool port_registered = false, account_registered = false, token_registered = false,
-     bind_registered = false, cert_registered = false, key_registered = false;
+char *opt_allowed_origins = nullptr;  // comma-separated Origin values browsers may send
+char *opt_mask_columns = nullptr;     // comma-separated column name patterns to mask
+char *opt_bind_address = nullptr;     // listen address; null means 127.0.0.1
+char *opt_ssl_cert = nullptr;         // PEM certificate file; with opt_ssl_key, serve HTTPS
+char *opt_ssl_key = nullptr;          // PEM private key file
+bool port_registered = false, threads_registered = false, max_sessions_registered = false,
+     account_registered = false, token_registered = false, origins_registered = false,
+     mask_registered = false, bind_registered = false, cert_registered = false,
+     key_registered = false;
 
 bool register_sysvars() {
   INTEGRAL_CHECK_ARG(ulong) port_arg;
@@ -111,6 +140,33 @@ bool register_sysvars() {
           "TCP port of the MCP endpoint (loopback only)", nullptr, nullptr, &port_arg, &opt_port))
     return true;
   port_registered = true;
+  {
+    INTEGRAL_CHECK_ARG(ulong) threads_arg;
+    threads_arg.def_val = 4;
+    threads_arg.min_val = 1;
+    threads_arg.max_val = 64;
+    threads_arg.blk_sz = 0;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "threads", PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED | PLUGIN_VAR_READONLY,
+            "I/O worker threads; each serves one call at a time", nullptr, nullptr, &threads_arg,
+            &opt_threads))
+      return true;
+    threads_registered = true;
+  }
+  {
+    INTEGRAL_CHECK_ARG(ulong) max_sessions_arg;
+    max_sessions_arg.def_val = 4;
+    max_sessions_arg.min_val = 1;
+    max_sessions_arg.max_val = 1024;
+    max_sessions_arg.blk_sz = 0;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "max_sessions_per_account",
+            PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED | PLUGIN_VAR_READONLY,
+            "Concurrent endpoint sessions per account (max_user_connections does not apply)",
+            nullptr, nullptr, &max_sessions_arg, &opt_max_sessions_per_account))
+      return true;
+    max_sessions_registered = true;
+  }
   {
     STR_CHECK_ARG(str) account_arg;
     account_arg.def_val = nullptr;
@@ -133,6 +189,29 @@ bool register_sysvars() {
             "Hex SHA-256 of the bearer token", nullptr, nullptr, &token_arg, &opt_token_sha256))
       return true;
     token_registered = true;
+  }
+  {
+    STR_CHECK_ARG(str) origins_arg;
+    origins_arg.def_val = nullptr;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "allowed_origins",
+            PLUGIN_VAR_STR | PLUGIN_VAR_MEMALLOC | PLUGIN_VAR_READONLY,
+            "Comma-separated Origin values accepted from browsers (exact match); a request "
+            "with any other Origin gets 403",
+            nullptr, nullptr, &origins_arg, &opt_allowed_origins))
+      return true;
+    origins_registered = true;
+  }
+  {
+    STR_CHECK_ARG(str) mask_arg;
+    mask_arg.def_val = nullptr;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "mask_columns", PLUGIN_VAR_STR | PLUGIN_VAR_MEMALLOC | PLUGIN_VAR_READONLY,
+            "Comma-separated patterns; result columns whose names contain one (case-insensitive) "
+            "have their values replaced by ********",
+            nullptr, nullptr, &mask_arg, &opt_mask_columns))
+      return true;
+    mask_registered = true;
   }
   {
     STR_CHECK_ARG(str) bind_arg;
@@ -179,8 +258,12 @@ bool unregister_sysvars() {
   drop(key_registered, "ssl_key");
   drop(cert_registered, "ssl_cert");
   drop(bind_registered, "bind_address");
+  drop(mask_registered, "mask_columns");
+  drop(origins_registered, "allowed_origins");
   drop(token_registered, "token_sha256");
   drop(account_registered, "account");
+  drop(max_sessions_registered, "max_sessions_per_account");
+  drop(threads_registered, "threads");
   drop(port_registered, "port");
   return failed;
 }
@@ -221,17 +304,197 @@ bool token_ok(const std::string *authorization) {
          CRYPTO_memcmp(got.data(), want.data(), got.size()) == 0;
 }
 
+// DNS rebinding: a web page can make a browser send requests to 127.0.0.1, but the browser
+// then sends the page's Origin. Requests without one (non-browser clients) pass; one with an
+// Origin passes only if mcp_http.allowed_origins lists it (ASCII case-insensitive).
+bool origin_ok(const std::string *origin) {
+  if (origin == nullptr) return true;
+  if (opt_allowed_origins == nullptr) return false;
+  const auto same = [&](const char *b, const char *e) {
+    while (b < e && *b == ' ') ++b;
+    while (e > b && e[-1] == ' ') --e;
+    return static_cast<size_t>(e - b) == origin->size() &&
+           std::equal(b, e, origin->begin(), [](char x, char y) {
+             return std::tolower(static_cast<unsigned char>(x)) ==
+                    std::tolower(static_cast<unsigned char>(y));
+           });
+  };
+  const char *p = opt_allowed_origins;
+  for (const char *comma; (comma = std::strchr(p, ',')) != nullptr; p = comma + 1)
+    if (same(p, comma)) return true;
+  return same(p, p + std::strlen(p));
+}
+
 // ----- SQL in an impersonated local session ----------------------------------------------
 
 // Result bounds: the reply keeps at most kMaxRows rows and kMaxBytes of serialized rows (the
 // tool result then escapes them once more inside its text, so the HTTP reply stays well under
-// its 16 MiB limit). The session's
-// sql_select_limit stops the server past kMaxRows + 1 rows for statements without their own
-// LIMIT. The command service's default consumer collects every row while the statement runs
-// (store_result only hands that buffer over), so a statement with a large explicit LIMIT is
-// still held in full by the server: a bounded custom consumer is Phase 5 work.
+// its 16 MiB limit). The session's sql_select_limit stops the server past kMaxRows + 1 rows
+// for statements without their own LIMIT. For the others, the bounded consumer below keeps
+// the server from retaining more than kMaxRows + 1 rows and kMaxBytes of values while the
+// statement runs (the default consumer collects every row; store_result only hands them over).
 constexpr unsigned long long kMaxRows = 1000;
 constexpr size_t kMaxBytes = 4u << 20;
+
+// ----- Bounded text consumer ----------------------------------------------------------------
+//
+// A run_as() session selects these row and value services instead of the default ones. Each
+// passes rows on to the default (DOM) consumer, so store_result() and fetch_row() work as
+// before, until the statement has produced kMaxRows + 1 rows or kMaxBytes (values, plus the
+// DOM consumer's per-cell and per-row overhead);
+// later rows are dropped as they arrive. A row that crosses the byte budget is aborted in the
+// DOM consumer, so it is never half stored. The statement runs on the calling thread, which
+// holds its budget in tl_budget; without one, the services pass everything on.
+
+struct RowBudget {
+  unsigned long long max_rows = kMaxRows + 1;
+  size_t max_bytes = kMaxBytes;
+  unsigned long long kept = 0;
+  size_t bytes = 0;       // charged so far, aborted rows included (enforces the budget)
+  size_t row_start = 0;   // bytes when the current row started
+  size_t kept_bytes = 0;  // charged for the rows kept
+  bool in_row = false;    // the current row was passed on to the DOM consumer
+  bool row_over = false;  // the current row crossed the byte budget
+  bool full = false;      // later rows are dropped
+  bool dropped = false;   // a row was dropped: the result is truncated
+};
+
+thread_local RowBudget *tl_budget = nullptr;
+
+// Budget for one value of a passed-on row; false drops it (and the rest of the row).
+bool take(size_t n) {
+  RowBudget *b = tl_budget;
+  if (b->row_over) return false;
+  if (n > b->max_bytes - b->bytes) {
+    b->row_over = b->full = b->dropped = true;
+    return false;
+  }
+  b->bytes += n;
+  return true;
+}
+
+// Upper bounds for the text form of non-string values (DOM ctx stages them as text). DOUBLE
+// values are charged their exact length instead (double_text_bytes).
+constexpr size_t kNumberBytes = 24, kDecimalBytes = 88, kTimeBytes = 32;
+
+// The length of a DOUBLE as the DOM consumer formats it: in full with a fixed number of
+// decimals (my_fcvt, up to FLOATING_POINT_BUFFER bytes), otherwise in %g style (my_gcvt).
+size_t double_text_bytes(double v, unsigned int decimals) {
+  char buf[FLOATING_POINT_BUFFER + 1];
+  return decimals < DECIMAL_NOT_SPECIFIED
+             ? my_fcvt(v, static_cast<int>(decimals), buf, nullptr)
+             : my_gcvt(v, MY_GCVT_ARG_FLOAT, FLOATING_POINT_BUFFER, buf, nullptr);
+}
+// What the DOM consumer keeps besides the values: a pointer per cell (NULL cells included,
+// so a wide result of NULLs is bounded too), and per row its list node and end pointer.
+constexpr size_t kCellBytes = sizeof(char *), kRowBytes = 4 * sizeof(char *);
+
+// True: the value belongs to a row the DOM consumer should not see. bytes() gives the value's
+// size; it runs only for a value of a passed-on row that is still within the budget.
+template <typename Bytes>
+bool skip_value_sized(Bytes bytes) {
+  RowBudget *b = tl_budget;
+  return b != nullptr && (!b->in_row || b->row_over || !take(kCellBytes + bytes()));
+}
+
+bool skip_value(size_t n) {
+  return skip_value_sized([n] { return n; });
+}
+
+DEFINE_BOOL_METHOD(bounded_start_row, (SRV_CTX_H ctx)) {
+  RowBudget *b = tl_budget;
+  if (b == nullptr) return dom_row_factory->start_row(ctx);
+  b->row_over = false;
+  if (b->full) {
+    b->in_row = false;
+    b->dropped = true;
+    return false;
+  }
+  b->in_row = true;
+  b->row_start = b->bytes;
+  take(kRowBytes);  // over budget, the row is marked and end_row() aborts it
+  return dom_row_factory->start_row(ctx);
+}
+
+DEFINE_BOOL_METHOD(bounded_abort_row, (SRV_CTX_H ctx)) {
+  RowBudget *b = tl_budget;
+  if (b == nullptr) return dom_row_factory->abort_row(ctx);
+  if (!b->in_row) return false;
+  b->in_row = false;
+  return dom_row_factory->abort_row(ctx);
+}
+
+DEFINE_BOOL_METHOD(bounded_end_row, (SRV_CTX_H ctx)) {
+  RowBudget *b = tl_budget;
+  if (b == nullptr) return dom_row_factory->end_row(ctx);
+  if (!b->in_row) return false;
+  b->in_row = false;
+  if (b->row_over) return dom_row_factory->abort_row(ctx);
+  b->kept_bytes += b->bytes - b->row_start;
+  if (++b->kept >= b->max_rows) b->full = true;
+  return dom_row_factory->end_row(ctx);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_null, (SRV_CTX_H ctx)) {
+  return skip_value(0) ? false : dom_get_null->get(ctx);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_integer, (SRV_CTX_H ctx, long long v)) {
+  return skip_value(kNumberBytes) ? false : dom_get_integer->get(ctx, v);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_longlong, (SRV_CTX_H ctx, long long v, unsigned int is_unsigned)) {
+  return skip_value(kNumberBytes) ? false : dom_get_longlong->get(ctx, v, is_unsigned);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_decimal, (SRV_CTX_H ctx, const DECIMAL_T_H v)) {
+  return skip_value(kDecimalBytes) ? false : dom_get_decimal->get(ctx, v);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_double, (SRV_CTX_H ctx, double v, unsigned int decimals)) {
+  // Formatting costs time: dropped rows skip it.
+  return skip_value_sized([&] { return double_text_bytes(v, decimals); })
+             ? false
+             : dom_get_double->get(ctx, v, decimals);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_date, (SRV_CTX_H ctx, const MYSQL_TIME_H v)) {
+  return skip_value(kTimeBytes) ? false : dom_get_date_time->get_date(ctx, v);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_time, (SRV_CTX_H ctx, const MYSQL_TIME_H v, unsigned int p)) {
+  return skip_value(kTimeBytes) ? false : dom_get_date_time->get_time(ctx, v, p);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_datetime, (SRV_CTX_H ctx, const MYSQL_TIME_H v, unsigned int p)) {
+  return skip_value(kTimeBytes) ? false : dom_get_date_time->get_datatime(ctx, v, p);
+}
+
+DEFINE_BOOL_METHOD(bounded_get_string,
+                   (SRV_CTX_H ctx, const char *const v, size_t n, const char *const coll)) {
+  return skip_value(n) ? false : dom_get_string->get_string(ctx, v, n, coll);
+}
+
+// The option and service name pairs a run_as() session sets.
+constexpr std::pair<int, const char *> kBoundedConsumer[] = {
+    {MYSQL_TEXT_CONSUMER_ROW_FACTORY, "mysql_text_consumer_row_factory_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_GET_NULL, "mysql_text_consumer_get_null_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_GET_INTEGER, "mysql_text_consumer_get_integer_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_GET_LONGLONG, "mysql_text_consumer_get_longlong_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_GET_DECIMAL, "mysql_text_consumer_get_decimal_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_GET_DOUBLE, "mysql_text_consumer_get_double_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_GET_DATE_TIME, "mysql_text_consumer_get_date_time_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_GET_STRING, "mysql_text_consumer_get_string_v1.mcp"},
+};
+
+// Sets tl_budget for the calling thread while a statement runs.
+class BudgetScope {
+ public:
+  explicit BudgetScope(RowBudget *b) { tl_budget = b; }
+  ~BudgetScope() { tl_budget = nullptr; }
+  BudgetScope(const BudgetScope &) = delete;
+  BudgetScope &operator=(const BudgetScope &) = delete;
+};
 
 struct SqlResult {
   bool ok = false;
@@ -297,6 +560,76 @@ size_t serialized_size(const rapidjson::Value &v) {
   return b.GetSize();
 }
 
+// Column masking, as mysql-mcp-server's MYSQL_MCP_MASK_COLUMNS: a result column whose name
+// contains one of the mcp_http.mask_columns patterns (Unicode case-insensitive; patterns are
+// trimmed of Unicode whitespace and empty ones ignored, as Go's strings.TrimSpace) has every
+// non-NULL value replaced by "********".
+constexpr char kMasked[] = "********";
+
+// Unicode lowercase of UTF-8 text with the server's utf8mb4 case mapping (Go: strings.ToLower).
+std::string unicode_lower(const std::string &s) {
+  const CHARSET_INFO *cs = &my_charset_utf8mb4_0900_ai_ci;
+  std::string src = s;  // casedn takes a mutable source
+  // Lowercase can be longer than the source (U+023E is 2 bytes, its lowercase 3), although the
+  // charset reports casedn_multiply = 1: no character becomes more than 4 bytes.
+  std::string out(4 * s.size(), '\0');
+  out.resize(cs->cset->casedn(cs, src.data(), src.size(), out.data(), out.size()));
+  return out;
+}
+
+// Whether the UTF-8 sequence p[0, len) is whitespace as Go's unicode.IsSpace: ASCII \t-\r and
+// space, U+0085, U+00A0, U+1680, U+2000-U+200A, U+2028, U+2029, U+202F, U+205F, U+3000.
+bool unicode_space(const unsigned char *p, size_t len) {
+  if (len == 1) return p[0] == ' ' || (p[0] >= '\t' && p[0] <= '\r');
+  if (len == 2) return p[0] == 0xC2 && (p[1] == 0x85 || p[1] == 0xA0);
+  if (len != 3) return false;
+  const unsigned cp = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+  return cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 || cp == 0x2029 ||
+         cp == 0x202F || cp == 0x205F || cp == 0x3000;
+}
+
+// Length of the UTF-8 sequence starting with lead byte c (1 for a stray byte).
+size_t utf8_len(unsigned char c) { return c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1; }
+
+// s[x, y) trimmed of Unicode whitespace at both ends.
+std::string unicode_trim(const std::string &s, size_t x, size_t y) {
+  const auto *p = reinterpret_cast<const unsigned char *>(s.data());
+  while (x < y) {
+    const size_t n = utf8_len(p[x]);
+    if (x + n > y || !unicode_space(p + x, n)) break;
+    x += n;
+  }
+  while (y > x) {
+    size_t start = y - 1;  // back to the lead byte of the last character
+    while (start > x && (p[start] & 0xC0) == 0x80) --start;
+    if (start + utf8_len(p[start]) != y || !unicode_space(p + start, y - start)) break;
+    y = start;
+  }
+  return s.substr(x, y - x);
+}
+
+std::vector<std::string> mask_patterns() {
+  std::vector<std::string> out;
+  if (opt_mask_columns == nullptr) return out;
+  const std::string all = opt_mask_columns;
+  size_t b = 0;
+  while (b <= all.size()) {
+    size_t e = all.find(',', b);
+    if (e == std::string::npos) e = all.size();
+    const std::string pattern = unicode_trim(all, b, e);
+    if (!pattern.empty()) out.push_back(unicode_lower(pattern));
+    b = e + 1;
+  }
+  return out;
+}
+
+bool masked_column(const std::string &name, const std::vector<std::string> &patterns) {
+  const std::string lower = unicode_lower(name);
+  for (const auto &p : patterns)
+    if (lower.find(p) != std::string::npos) return true;
+  return false;
+}
+
 MYSQL_THD session_thd(MYSQL_H h) {
   auto *handle = reinterpret_cast<Mysql_handle *>(h);
   return handle == nullptr || handle->mysql == nullptr ? nullptr
@@ -311,6 +644,99 @@ void read_error(MYSQL_H h, SqlResult *r) {
   r->error = msg != nullptr ? msg : "";
 }
 
+// Per-account count of open endpoint sessions. The server does not apply max_user_connections
+// to command-service sessions, so mcp_http.max_sessions_per_account caps them here.
+class SessionSlot {
+ public:
+  explicit SessionSlot(const std::string &account) : account_(account) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    unsigned long &n = open_[account_];
+    if (n >= opt_max_sessions_per_account) return;
+    ++n;
+    held_ = true;
+  }
+  ~SessionSlot() {
+    if (!held_) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = open_.find(account_);
+    if (--it->second == 0) open_.erase(it);
+  }
+  SessionSlot(const SessionSlot &) = delete;
+  SessionSlot &operator=(const SessionSlot &) = delete;
+  bool held() const { return held_; }
+
+ private:
+  static inline std::mutex mutex_;
+  static inline std::map<std::string, unsigned long> open_;
+  std::string account_;
+  bool held_ = false;
+};
+
+// Impersonation skips the login checks, ACCOUNT LOCK included, so the endpoint refuses a
+// locked account itself. The session's security context records the lock (the account lookup
+// at connect sets it). Fails closed: a context that cannot be read counts as locked.
+bool account_locked(MYSQL_THD thd) {
+  Security_context_handle sctx = nullptr;
+  bool locked = true;
+  if (mysql_service_mysql_thd_security_context->get(thd, &sctx) || sctx == nullptr ||
+      mysql_service_mysql_security_context_options->get(sctx, "account_locked", &locked))
+    return true;
+  return locked;
+}
+
+bool set_bounded_consumer(MYSQL_H h) {
+  for (const auto &[option, service] : kBoundedConsumer)
+    if (mysql_service_mysql_command_options->set(h, option, service)) return false;
+  return true;
+}
+
+// What the bounded consumer kept for the last statement an endpoint call ran (any tool, any
+// session): rows passed on to the DOM consumer and the bytes charged for them, aborted rows
+// excluded, and, observed independently, the rows the DOM consumer stored for the first result
+// (its MYSQL_RES row count). Status variables, so tests and operators can check the bounds
+// exactly rather than through process memory. One statement's values are published together.
+struct Retained {
+  long long rows = 0, bytes = 0, stored = 0;
+};
+std::mutex retained_mutex;
+Retained last_retained;
+
+void publish_retained(const Retained &r) {
+  std::lock_guard<std::mutex> lock(retained_mutex);
+  last_retained = r;
+}
+
+template <long long Retained::*field>
+int show_retained(MYSQL_THD, SHOW_VAR *var, char *buf) {
+  var->type = SHOW_LONGLONG;
+  var->value = buf;
+  std::lock_guard<std::mutex> lock(retained_mutex);
+  *reinterpret_cast<long long *>(buf) = last_retained.*field;
+  return 0;
+}
+
+SHOW_VAR status_vars[] = {
+    {"mcp_http.last_rows_retained", reinterpret_cast<char *>(&show_retained<&Retained::rows>),
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"mcp_http.last_bytes_retained", reinterpret_cast<char *>(&show_retained<&Retained::bytes>),
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {"mcp_http.last_rows_stored", reinterpret_cast<char *>(&show_retained<&Retained::stored>),
+     SHOW_FUNC, SHOW_SCOPE_GLOBAL},
+    {nullptr, nullptr, SHOW_LONGLONG, SHOW_SCOPE_GLOBAL}};
+bool status_registered = false;
+
+// Runs sql under a fresh row budget; *truncated reports whether rows were dropped, *retained
+// what the budget kept.
+bool bounded_query(MYSQL_H h, const std::string &sql, bool *truncated, Retained *retained) {
+  RowBudget budget;
+  BudgetScope scope(&budget);
+  const bool failed = mysql_service_mysql_command_query->query(h, sql.data(), sql.size());
+  *truncated = budget.dropped;
+  retained->rows = static_cast<long long>(budget.kept);
+  retained->bytes = static_cast<long long>(budget.kept_bytes);
+  return failed;
+}
+
 // Runs one statement as account (user@host) and returns its first result set.
 SqlResult run_as(const std::string &account, const std::string &sql) {
   SqlResult r;
@@ -320,6 +746,13 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
     return r;
   }
   const std::string user = account.substr(0, at), host = account.substr(at + 1);
+  SessionSlot slot(account);
+  if (!slot.held()) {
+    r.sql_errno = ER_TOO_MANY_USER_CONNECTIONS;
+    r.error = "User " + user + " already has " + std::to_string(opt_max_sessions_per_account) +
+              " active endpoint sessions (mcp_http.max_sessions_per_account)";
+    return r;
+  }
   MYSQL_H h = nullptr;
   if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) {
     r.error = "cannot create a session";
@@ -329,11 +762,15 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
   // Client protocol capabilities (mysql_com.h, which components cannot include).
   constexpr uint32_t kClientMultiResults = 1UL << 17, kClientPsMultiResults = 1UL << 18;
   const uint32_t client_flags = kClientMultiResults | kClientPsMultiResults;
+  // Unlike the command service's default, the sessions are subject to max_connections.
+  static constexpr bool kBypassMaxConnections = false;
   if (mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_PROTOCOL, "local") ||
       mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_CLIENT_FLAGS, &client_flags) ||
       mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_USER_NAME, user.c_str()) ||
       mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_HOST_NAME, host.c_str()) ||
-      mysql_service_mysql_command_factory->connect(h)) {
+      mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_BYPASS_MAX_CONNECTIONS,
+                                                &kBypassMaxConnections) ||
+      !set_bounded_consumer(h) || mysql_service_mysql_command_factory->connect(h)) {
     read_error(h, &r);
     if (r.error.empty()) r.error = "cannot open a session for " + account;
   } else {
@@ -341,17 +778,34 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
     MYSQL_THD thd = session_thd(h);
     static const std::string kLimit =
         "SET SESSION sql_select_limit = " + std::to_string(kMaxRows + 1);
-    if (thd == nullptr || mysql_service_mysql_audit_api_connection->emit(
-                              thd, MYSQL_AUDIT_CONNECTION_CONNECT) != 0) {
+    // DISCONNECT follows CONNECT whatever CONNECT returned, so the guard releases its state.
+    bool announced = false;
+    const auto announce = [&] {
+      announced = true;
+      return mysql_service_mysql_audit_api_connection->emit(thd, MYSQL_AUDIT_CONNECTION_CONNECT) ==
+             0;
+    };
+    if (thd == nullptr) {
+      r.error = "session refused";
+    } else if (account_locked(thd)) {
+      r.sql_errno = ER_ACCOUNT_HAS_BEEN_LOCKED;
+      r.error = "Access denied for user '" + user + "'@'" + host + "'. Account is locked.";
+    } else if (!announce()) {
       r.error = "session refused";
     } else if (mysql_service_mysql_command_query->query(h, kLimit.data(), kLimit.size())) {
       read_error(h, &r);
-    } else if (mysql_service_mysql_command_query->query(h, sql.data(), sql.size())) {
+    } else if (Retained retained; bounded_query(h, sql, &r.truncated, &retained)) {
+      publish_retained(retained);
       read_error(h, &r);
     } else {
       r.ok = true;
       MYSQL_RES_H res = nullptr;
-      if (!mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr) {
+      const bool stored =
+          !mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr;
+      if (stored) retained.stored = static_cast<long long>(
+                      reinterpret_cast<Mysql_res_handle *>(res)->mysql_res->row_count);
+      publish_retained(retained);
+      if (stored) {
         unsigned int n = 0;
         mysql_service_mysql_command_field_info->num_fields(res, &n);
         // fetch_fields() returns an array of MYSQL_FIELD structs, not of handles: read the
@@ -365,6 +819,9 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
                                                             &name);
           names[i] = name != nullptr ? name : "col" + std::to_string(i + 1);
         }
+        const std::vector<std::string> patterns = mask_patterns();
+        std::vector<bool> masked(n);
+        for (unsigned int i = 0; i < n; ++i) masked[i] = masked_column(names[i], patterns);
         auto &a = r.rows.GetAllocator();
         MYSQL_ROW_H row = nullptr;
         ulong *lengths = nullptr;
@@ -378,7 +835,9 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
           rapidjson::Value obj(rapidjson::kObjectType);
           for (unsigned int i = 0; i < n; ++i) {
             rapidjson::Value k(names[i].c_str(), a), v;
-            if (row[i] != nullptr)
+            if (row[i] != nullptr && masked[i])
+              v.SetString(kMasked, sizeof(kMasked) - 1);
+            else if (row[i] != nullptr)
               cell_value(row[i], lengths ? lengths[i] : std::strlen(row[i]), &v, a);
             obj.AddMember(k, v, a);
           }
@@ -402,7 +861,7 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
       }
     }
     MYSQL_THD thd2 = session_thd(h);
-    if (thd2 != nullptr)
+    if (announced && thd2 != nullptr)
       mysql_service_mysql_audit_api_connection->emit(thd2, MYSQL_AUDIT_CONNECTION_DISCONNECT);
   }
   mysql_service_mysql_command_factory->close(h);
@@ -432,6 +891,26 @@ void tool_result(Json &out, const std::string &text, bool is_error) {
   out.AddMember("result", result, a);
 }
 
+// A SQL expression for a text argument: a hex literal converted to utf8mb4, so the value needs
+// no escaping and means the same under any sql_mode (NO_BACKSLASH_ESCAPES included).
+std::string text_literal(const std::string &s) {
+  static const char kHex[] = "0123456789ABCDEF";
+  std::string out = "CONVERT(X'";
+  for (const unsigned char c : s) {
+    out += kHex[c >> 4];
+    out += kHex[c & 15];
+  }
+  return out + "' USING utf8mb4)";
+}
+
+// The string argument key of a tools/call, or nullopt when it is missing or not a string.
+std::optional<std::string> string_arg(const rapidjson::Value &params, const char *key) {
+  if (!params.HasMember("arguments") || !params["arguments"].IsObject()) return std::nullopt;
+  const rapidjson::Value &args = params["arguments"];
+  if (!args.HasMember(key) || !args[key].IsString()) return std::nullopt;
+  return std::string(args[key].GetString(), args[key].GetStringLength());
+}
+
 void call_tool(const rapidjson::Value &params, Json &out) {
   const std::string account = opt_account != nullptr ? opt_account : "";
   const std::string name =
@@ -439,14 +918,51 @@ void call_tool(const rapidjson::Value &params, Json &out) {
   std::string sql;
   if (name == "list_databases") {
     sql = "CALL mysql_mcp.list_databases()";
+  } else if (name == "list_tables") {
+    const auto database = string_arg(params, "database");
+    if (!database) {
+      tool_result(out, "list_tables needs a string argument database", true);
+      return;
+    }
+    sql = "CALL mysql_mcp.list_tables(" + text_literal(*database) + ")";
+  } else if (name == "describe_table") {
+    const auto database = string_arg(params, "database"), table = string_arg(params, "table");
+    if (!database || !table) {
+      tool_result(out, "describe_table needs string arguments database and table", true);
+      return;
+    }
+    sql = "CALL mysql_mcp.describe_table(" + text_literal(*database) + ", " +
+          text_literal(*table) + ")";
   } else if (name == "run_query") {
-    const rapidjson::Value *args = params.HasMember("arguments") ? &params["arguments"] : nullptr;
-    if (args == nullptr || !args->IsObject() || !args->HasMember("sql") ||
-        !(*args)["sql"].IsString()) {
+    const auto query = string_arg(params, "sql");
+    if (!query) {
       tool_result(out, "run_query needs a string argument sql", true);
       return;
     }
-    sql = (*args)["sql"].GetString();
+    sql = *query;
+  } else if (name == "ping") {
+    // As mysql-mcp-server's ping: a failure is a result (success false), not a tool error.
+    const auto start = std::chrono::steady_clock::now();
+    const SqlResult r = run_as(account, "SELECT 1");
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - start)
+                        .count();
+    Json reply(rapidjson::kObjectType);
+    auto &a = reply.GetAllocator();
+    reply.AddMember("success", r.ok, a);
+    reply.AddMember("latency_ms", static_cast<int64_t>(ms), a);
+    const std::string message =
+        r.ok ? "pong" : "ping failed: Error " + std::to_string(r.sql_errno) + ": " + r.error;
+    reply.AddMember("message", rapidjson::Value(message.c_str(), a), a);
+    tool_result(out, to_string(reply), false);
+    return;
+  } else if (name == "server_info") {
+    sql =
+        "SELECT VERSION() AS version, 'mysql' AS server_engine, "
+        "@@version_comment AS version_comment, CURRENT_USER() AS `current_user`, "
+        "IFNULL(DATABASE(), '') AS current_database, "  // "" as mysql-mcp-server: no default db
+        "@@character_set_server AS character_set, "
+        "@@collation_server AS collation, @@max_connections AS max_connections";
   } else {
     tool_result(out, "unknown tool: " + name, true);
     return;
@@ -456,6 +972,10 @@ void call_tool(const rapidjson::Value &params, Json &out) {
     tool_result(out, "Error " + std::to_string(r.sql_errno) + ": " + r.error, true);
     return;
   }
+  if (name == "server_info" && r.rows.Size() == 1) {  // one object, as mysql-mcp-server
+    tool_result(out, to_string(r.rows[0]), false);
+    return;
+  }
   Json reply(rapidjson::kObjectType);
   reply.AddMember("rows", rapidjson::Value(r.rows, reply.GetAllocator()), reply.GetAllocator());
   reply.AddMember("truncated", r.truncated, reply.GetAllocator());
@@ -463,12 +983,26 @@ void call_tool(const rapidjson::Value &params, Json &out) {
 }
 
 void list_tools(Json &out) {
+  // The catalog and status tools only read (MCP tool annotations). run_query is not marked:
+  // the guard keeps it read-only only while mcp.read_only is on.
+#define MCP_READ_ONLY R"("annotations":{"readOnlyHint":true,"idempotentHint":true},)"
   static const char kTools[] =
       R"({"tools":[)"
-      R"({"name":"list_databases","description":"List databases visible to the mapped account",)"
+      R"({"name":"list_databases","description":"List databases visible to the mapped account",)" MCP_READ_ONLY
       R"("inputSchema":{"type":"object","properties":{}}},)"
+      R"({"name":"list_tables","description":"List the tables of a database",)" MCP_READ_ONLY
+      R"("inputSchema":{"type":"object","properties":{"database":{"type":"string"}},)"
+      R"("required":["database"]}},)"
+      R"({"name":"describe_table","description":"Describe the columns of a table",)" MCP_READ_ONLY
+      R"("inputSchema":{"type":"object","properties":{"database":{"type":"string"},)"
+      R"("table":{"type":"string"}},"required":["database","table"]}},)"
       R"({"name":"run_query","description":"Run one read-only SQL statement",)"
-      R"("inputSchema":{"type":"object","properties":{"sql":{"type":"string"}},"required":["sql"]}}]})";
+      R"("inputSchema":{"type":"object","properties":{"sql":{"type":"string"}},"required":["sql"]}},)"
+      R"({"name":"ping","description":"Check that the server answers, with the round-trip time",)" MCP_READ_ONLY
+      R"("inputSchema":{"type":"object","properties":{}}},)"
+      R"({"name":"server_info","description":"Server version, character set and limits",)" MCP_READ_ONLY
+      R"("inputSchema":{"type":"object","properties":{}}}]})";
+#undef MCP_READ_ONLY
   Json tools;
   tools.Parse(kTools);
   out.AddMember("result", rapidjson::Value(tools, out.GetAllocator()), out.GetAllocator());
@@ -502,6 +1036,26 @@ void rpc_error(Json &out, int code, const char *message) {
 class McpHandler : public http::base::RequestHandler {
  public:
   void handle_request(http::base::Request &req) override {
+    const std::string *origin = req.get_input_headers().find("Origin");
+    if (!origin_ok(origin)) {
+      req.send_reply(HttpStatusCode::Forbidden);
+      return;
+    }
+    // CORS for an allowed browser origin: its replies name it, so the page may read them, and
+    // its preflight (OPTIONS, sent without credentials) is answered here.
+    if (origin != nullptr) {
+      req.get_output_headers().add("Access-Control-Allow-Origin", origin->c_str());
+      req.get_output_headers().add("Vary", "Origin");
+    }
+    if (req.get_method() == HttpMethod::Options && origin != nullptr) {
+      req.get_output_headers().add("Access-Control-Allow-Methods", "POST");
+      req.get_output_headers().add("Access-Control-Allow-Headers",
+                                   "Authorization, Content-Type, Mcp-Session-Id, "
+                                   "MCP-Protocol-Version");
+      req.get_output_headers().add("Access-Control-Max-Age", "600");
+      req.send_reply(HttpStatusCode::NoContent);
+      return;
+    }
     if (req.get_method() != HttpMethod::Post) {
       req.get_output_headers().add("Allow", "POST");
       req.send_reply(HttpStatusCode::MethodNotAllowed);
@@ -617,7 +1171,7 @@ bool start_server() {
   // HTTP work runs on the io threads, which run SQL through the command services.
   io.set_thread_lifecycle({[](size_t) { mysql_service_mysql_command_thread->init(); },
                            [](size_t) { mysql_service_mysql_command_thread->end(); }});
-  if (!io.init(1, IoBackend::preferred())) return true;
+  if (!io.init(opt_threads, IoBackend::preferred())) return true;
   io_initialized = true;
   try {
     const auto port = static_cast<uint16_t>(opt_port);
@@ -658,6 +1212,13 @@ void stop_server() {
   }
 }
 
+bool unregister_status_vars() {
+  if (!status_registered) return false;
+  if (mysql_service_status_variable_registration->unregister_variable(status_vars)) return true;
+  status_registered = false;
+  return false;
+}
+
 mysql_service_status_t mcp_init() {
   log_bi = mysql_service_log_builtins;
   log_bs = mysql_service_log_builtins_string;
@@ -665,8 +1226,14 @@ mysql_service_status_t mcp_init() {
     unregister_sysvars();
     return 1;
   }
+  if (mysql_service_status_variable_registration->register_variable(status_vars)) {
+    unregister_sysvars();
+    return 1;
+  }
+  status_registered = true;
   if (start_server()) {
     stop_server();
+    unregister_status_vars();
     unregister_sysvars();
     return 1;
   }
@@ -675,23 +1242,66 @@ mysql_service_status_t mcp_init() {
 
 mysql_service_status_t mcp_deinit() {
   stop_server();
-  return unregister_sysvars() ? 1 : 0;
+  const bool status_failed = unregister_status_vars();
+  return unregister_sysvars() || status_failed ? 1 : 0;
 }
 
 }  // namespace
 
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_row_factory_v1)
+bounded_start_row, bounded_abort_row, bounded_end_row END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_null_v1)
+bounded_get_null END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_integer_v1)
+bounded_get_integer END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_longlong_v1)
+bounded_get_longlong END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_decimal_v1)
+bounded_get_decimal END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_double_v1)
+bounded_get_double END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_date_time_v1)
+bounded_get_date, bounded_get_time, bounded_get_datetime END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_string_v1)
+bounded_get_string END_SERVICE_IMPLEMENTATION();
+
 BEGIN_COMPONENT_PROVIDES(mcp)
-END_COMPONENT_PROVIDES();
+PROVIDES_SERVICE(mcp, mysql_text_consumer_row_factory_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_null_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_integer_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_longlong_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_decimal_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_double_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_date_time_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_string_v1), END_COMPONENT_PROVIDES();
 
 BEGIN_COMPONENT_REQUIRES(mcp)
 REQUIRES_SERVICE(log_builtins), REQUIRES_SERVICE(log_builtins_string),
     REQUIRES_SERVICE(component_sys_variable_register),
-    REQUIRES_SERVICE(component_sys_variable_unregister), REQUIRES_SERVICE(mysql_command_factory),
+    REQUIRES_SERVICE(component_sys_variable_unregister),
+    REQUIRES_SERVICE(status_variable_registration), REQUIRES_SERVICE(mysql_command_factory),
     REQUIRES_SERVICE(mysql_command_options), REQUIRES_SERVICE(mysql_command_query),
     REQUIRES_SERVICE(mysql_command_query_result), REQUIRES_SERVICE(mysql_command_field_info),
     REQUIRES_SERVICE(mysql_command_field_metadata), REQUIRES_SERVICE(mysql_command_error_info),
     REQUIRES_SERVICE(mysql_command_thread), REQUIRES_SERVICE(mysql_audit_api_connection),
+    REQUIRES_SERVICE(mysql_thd_security_context), REQUIRES_SERVICE(mysql_security_context_options),
     REQUIRES_SERVICE_IMPLEMENTATION_AS(event_tracking_query, mcp_guard, mcp_guard_query),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_row_factory_v1, mysql_server,
+                                       dom_row_factory),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_null_v1, mysql_server,
+                                       dom_get_null),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_integer_v1, mysql_server,
+                                       dom_get_integer),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_longlong_v1, mysql_server,
+                                       dom_get_longlong),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_decimal_v1, mysql_server,
+                                       dom_get_decimal),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_double_v1, mysql_server,
+                                       dom_get_double),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_date_time_v1, mysql_server,
+                                       dom_get_date_time),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_string_v1, mysql_server,
+                                       dom_get_string),
     END_COMPONENT_REQUIRES();
 
 BEGIN_COMPONENT_METADATA(mcp)
