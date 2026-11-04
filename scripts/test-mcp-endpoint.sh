@@ -209,6 +209,38 @@ expect "a token mapped to a SYSTEM_USER account is refused" "$(callas tbl-sysu r
 expect "a token mapped to an MCP_ADMIN account is refused" "$(callas tbl-adm run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*\(it has MCP_ADMIN\).*"isError":true'
 expect "nothing written by table tokens" "$(sql "SELECT GROUP_CONCAT(i) FROM d1.t")" "^1$"
 
+# Streamable HTTP (MCP transport spec): protocol version negotiation and header, Mcp-Session-Id
+# sessions bound to the token's account, DELETE, and the request header checks.
+# req TOKEN METHOD [curl args...]: status line, headers and body of one request.
+req() { t=$1; m=$2; shift 2; docker run --rm --network "container:$C" "$CURL_IMAGE" -s -m 20 -i -X "$m" \
+	http://127.0.0.1:33480/mcp -H "Authorization: Bearer $t" "$@" | tr -d '\r'; }
+INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}'
+CALL='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_query","arguments":{"sql":"SELECT 1 AS one"}}}'
+J=(-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream')
+init=$(req tok-123 POST "${J[@]}" -d "$INIT")
+SID=$(printf '%s\n' "$init" | awk -F': ' 'tolower($1) == "mcp-session-id" {print $2}')
+expect "initialize issues an Mcp-Session-Id" "$SID" "^[0-9a-f]{32}$"
+expect "initialize keeps a supported version (2025-11-25)" "$init" '"protocolVersion":"2025-11-25"'
+expect "initialize answers an unsupported version with the newest supported" "$(req tok-123 POST "${J[@]}" -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}')" '"protocolVersion":"2025-11-25"'
+expect "initialize keeps 2024-11-05" "$(req tok-123 POST "${J[@]}" -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}')" '"protocolVersion":"2024-11-05"'
+expect "a call in the session" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $SID" -H 'MCP-Protocol-Version: 2025-11-25' -d "$CALL")" 'one\\":\\"1\\".*"isError":false'
+badver=$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $SID" -H 'MCP-Protocol-Version: 2026-07-28' -d "$CALL")
+expect "an unsupported MCP-Protocol-Version: 400" "$(printf '%s\n' "$badver" | head -1)" "^HTTP/1.1 400"
+expect "the 400 lists the supported versions" "$(printf '%s\n' "$badver" | tail -1)" '^Bad Request: Unsupported protocol version \(supported versions: 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05\)$'
+expect "an unknown session: 404" "$(req tok-123 POST "${J[@]}" -H 'Mcp-Session-Id: 00000000000000000000000000000000' -d "$CALL" | head -1)" "^HTTP/1.1 404"
+expect "another account's token on the session: 403" "$(req tbl-app POST "${J[@]}" -H "Mcp-Session-Id: $SID" -d "$CALL" | head -1)" "^HTTP/1.1 403"
+expect "a request without a session id is still served" "$(req tok-123 POST "${J[@]}" -d "$CALL")" '"isError":false'
+expect "DELETE without a session id: 400" "$(req tok-123 DELETE | head -1)" "^HTTP/1.1 400"
+expect "DELETE by another account: 403" "$(req tbl-app DELETE -H "Mcp-Session-Id: $SID" | head -1)" "^HTTP/1.1 403"
+expect "DELETE ends the session: 204" "$(req tok-123 DELETE -H "Mcp-Session-Id: $SID" | head -1)" "^HTTP/1.1 204"
+expect "the ended session: 404" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $SID" -d "$CALL" | head -1)" "^HTTP/1.1 404"
+expect "DELETE needs the token: 401" "$(req nope DELETE -H "Mcp-Session-Id: $SID" | head -1)" "^HTTP/1.1 401"
+expect "a non-JSON Content-Type: 415" "$(req tok-123 POST -H 'Content-Type: text/plain' -H 'Accept: */*' -d "$CALL" | head -1)" "^HTTP/1.1 415"
+expect "Accept without text/event-stream: 400" "$(req tok-123 POST -H 'Content-Type: application/json' -H 'Accept: application/json' -d "$CALL" | head -1)" "^HTTP/1.1 400"
+expect "Accept wildcards are accepted" "$(req tok-123 POST -H 'Content-Type: application/json; charset=utf-8' -H 'Accept: application/*;q=0.9, text/*' -d "$CALL")" '"isError":false'
+expect "GET (no SSE stream): 405, Allow: POST, DELETE" "$(req tok-123 GET -H 'Accept: text/event-stream' | grep -iE '^HTTP|^allow' | tr '\n' ' ')" "^HTTP/1.1 405.*[Aa]llow: POST, DELETE"
+expect "session timeout default" "$(sql "SELECT @@mcp_http.session_timeout_minutes")" "^30$"
+
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).
 sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
 expect "reinstall mapped to app, with allowed origins and masked columns" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.allowed_origins = 'http://localhost:6274, https://Inspector.example', GLOBAL mcp_http.mask_columns = ' secret, PASS ,, ÉMAIL,	пароль , token '")" "^$"
@@ -225,8 +257,9 @@ expect "allowed origins match case-insensitively, spaces trimmed" "$(rpc_origin 
 # CORS for an allowed browser origin: the preflight is answered and replies name the origin.
 preflight=$(curl_i -X OPTIONS -H 'Origin: http://localhost:6274' -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: authorization, content-type')
 expect "preflight from an allowed Origin: 204" "$(printf '%s\n' "$preflight" | head -1)" "^HTTP/1.1 204"
-expect "preflight allows POST with Authorization" "$(printf '%s\n' "$preflight" | grep -i '^access-control-' | tr 'A-Z' 'a-z' | sort | tr '\n' ' ')" "access-control-allow-headers: authorization, content-type.*access-control-allow-methods: post.*access-control-allow-origin: http://localhost:6274"
+expect "preflight allows POST with Authorization" "$(printf '%s\n' "$preflight" | grep -i '^access-control-' | tr 'A-Z' 'a-z' | sort | tr '\n' ' ')" "access-control-allow-headers: authorization, content-type.*access-control-allow-methods: post, delete.*access-control-allow-origin: http://localhost:6274"
 expect "a POST reply names the allowed Origin" "$(curl_i -X POST -H 'Origin: http://localhost:6274' -H 'Authorization: Bearer tok-123' -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"ping"}' | grep -i '^access-control-allow-origin')" "^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin: http://localhost:6274$"
+expect "replies to an allowed Origin expose Mcp-Session-Id" "$(curl_i -X POST -H 'Origin: http://localhost:6274' -H 'Authorization: Bearer tok-123' -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | grep -i '^access-control-expose-headers')" "^[Aa]ccess-[Cc]ontrol-[Ee]xpose-[Hh]eaders: Mcp-Session-Id$"
 expect "a 401 for an allowed Origin is readable by the page" "$(curl_i -X POST -H 'Origin: http://localhost:6274' -H 'Content-Type: application/json' -d '{}' | grep -ci '^access-control-allow-origin: http://localhost:6274')" "^1$"
 foreign=$(curl_i -X OPTIONS -H 'Origin: http://evil.example' -H 'Access-Control-Request-Method: POST')
 expect "preflight from another Origin: 403" "$(printf '%s\n' "$foreign" | head -1)" "^HTTP/1.1 403"
