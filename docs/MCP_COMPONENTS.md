@@ -310,4 +310,11 @@ Facts recorded for Phase 5:
 - that nothing is written and no session leaks;
 - that remapped to an account without `MCP_USER`, the same write is not restricted.
 
+`scripts/test-mcp-conformance.sh <mysql-image> <artifact-dir>` is the conformance check of RFC 0001 §10 ("against at least two clients"). It drives the endpoint with two independent MCP clients over Streamable HTTP, each pinned and run in its own container:
+
+- **MCP Inspector's CLI** (`@modelcontextprotocol/inspector`): `tools/list`, `tools/call` (`run_query`, `describe_table`), a refused statement as a tool error, a wrong token failing to connect;
+- **the official Python SDK client** (`mcp`, `scripts/mcp-conformance/sdk_client.py`): a full session (initialize at 2025-11-25, `tools/list` with annotations, tool calls, a guard refusal, ping, close), and the transport as the SDK uses it. It records every HTTP exchange and checks that later requests carry `Mcp-Session-Id` and `MCP-Protocol-Version`, that closing ends the session with `DELETE` (204), and that the SDK's optional `GET` stream request gets 405.
+
+Both run in the `mcp-endpoint` CI job after the endpoint test.
+
 CI (`integration-scripts.yml`, job `mcp-endpoint`) builds and runs it on 26.10.0.
