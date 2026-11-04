@@ -88,8 +88,11 @@ async def main():
           len(deletes) == 1 and deletes[0][1] == sid and deletes[0][2] == "2025-11-25"
           and deletes[0][3] == 204, deletes)
     gets = [e for e in exchanges if e[0] == "GET"]
-    check("no server-to-client stream: any GET (with the session id and version) gets 405",
-          all(e[1] == sid and e[2] == "2025-11-25" and e[3] == 405 for e in gets), gets)
+    # The pinned SDK opens the optional server-to-client stream after initialize; it must have
+    # been tried, with the headers, and refused.
+    check("no server-to-client stream: the SDK's GET (with the session id and version) gets 405",
+          len(gets) >= 1 and all(e[1] == sid and e[2] == "2025-11-25" and e[3] == 405 for e in gets),
+          gets)
 
 
 asyncio.run(main())
