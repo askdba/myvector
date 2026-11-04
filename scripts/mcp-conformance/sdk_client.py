@@ -84,10 +84,12 @@ async def main():
           posts[1:])
     check("all POSTs answered 200 or 202", all(e[3] in (200, 202) for e in posts), posts)
     deletes = [e for e in exchanges if e[0] == "DELETE"]
-    check("closing ends the session with DELETE (204)",
-          len(deletes) == 1 and deletes[0][1] == sid and deletes[0][3] == 204, deletes)
+    check("closing ends the session with DELETE (204), with the session id and version",
+          len(deletes) == 1 and deletes[0][1] == sid and deletes[0][2] == "2025-11-25"
+          and deletes[0][3] == 204, deletes)
     gets = [e for e in exchanges if e[0] == "GET"]
-    check("no server-to-client stream: any GET is answered 405", all(e[3] == 405 for e in gets), gets)
+    check("no server-to-client stream: any GET (with the session id and version) gets 405",
+          all(e[1] == sid and e[2] == "2025-11-25" and e[3] == 405 for e in gets), gets)
 
 
 asyncio.run(main())
