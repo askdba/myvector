@@ -52,6 +52,7 @@
 #include <netinet/in.h>
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 
 #include <algorithm>
 #include <atomic>
@@ -120,6 +121,7 @@ namespace {
 unsigned long opt_port = 33480;
 unsigned long opt_threads = 4;                   // I/O workers: calls served at once
 unsigned long opt_max_sessions_per_account = 4;  // concurrent calls per account
+unsigned long opt_session_timeout_minutes = 30;  // idle Mcp-Session-Id lifetime
 char *opt_account = nullptr;       // user@host the token maps to
 char *opt_token_sha256 = nullptr;  // hex SHA-256 of the bearer token
 char *opt_allowed_origins = nullptr;  // comma-separated Origin values browsers may send
@@ -127,6 +129,7 @@ char *opt_mask_columns = nullptr;     // comma-separated column name patterns to
 char *opt_bind_address = nullptr;     // listen address; null means 127.0.0.1
 char *opt_ssl_cert = nullptr;         // PEM certificate file; with opt_ssl_key, serve HTTPS
 char *opt_ssl_key = nullptr;          // PEM private key file
+bool session_timeout_registered = false;
 bool port_registered = false, threads_registered = false, max_sessions_registered = false,
      account_registered = false, token_registered = false, origins_registered = false,
      mask_registered = false, bind_registered = false, cert_registered = false,
@@ -143,6 +146,20 @@ bool register_sysvars() {
           "TCP port of the MCP endpoint (loopback only)", nullptr, nullptr, &port_arg, &opt_port))
     return true;
   port_registered = true;
+  {
+    INTEGRAL_CHECK_ARG(ulong) timeout_arg;
+    timeout_arg.def_val = 30;
+    timeout_arg.min_val = 1;
+    timeout_arg.max_val = 1440;
+    timeout_arg.blk_sz = 0;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "session_timeout_minutes",
+            PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED | PLUGIN_VAR_READONLY,
+            "Idle minutes after which an Mcp-Session-Id expires (404)", nullptr, nullptr,
+            &timeout_arg, &opt_session_timeout_minutes))
+      return true;
+    session_timeout_registered = true;
+  }
   {
     INTEGRAL_CHECK_ARG(ulong) threads_arg;
     threads_arg.def_val = 4;
@@ -267,6 +284,7 @@ bool unregister_sysvars() {
   drop(account_registered, "account");
   drop(max_sessions_registered, "max_sessions_per_account");
   drop(threads_registered, "threads");
+  drop(session_timeout_registered, "session_timeout_minutes");
   drop(port_registered, "port");
   return failed;
 }
@@ -1086,19 +1104,132 @@ void list_tools(Json &out) {
   out.AddMember("result", rapidjson::Value(tools, out.GetAllocator()), out.GetAllocator());
 }
 
+// ----- Streamable HTTP: protocol versions and sessions --------------------------------------
+
+// The session-based protocol revisions (newest first), as mysql-mcp-server's default stateful
+// transport. 2026-07-28 (SEP-2575) is stateless and not served yet.
+constexpr const char *kProtocolVersions[] = {"2025-11-25", "2025-06-18", "2025-03-26",
+                                             "2024-11-05"};
+
+bool supported_version(const std::string &v) {
+  for (const char *s : kProtocolVersions)
+    if (v == s) return true;
+  return false;
+}
+
+std::string supported_versions() {
+  std::string out;
+  for (const char *s : kProtocolVersions) out += (out.empty() ? "" : ", ") + std::string(s);
+  return out;
+}
+
+// Mcp-Session-Id sessions: issued by initialize, bound to the token's account, expired after
+// mcp_http.session_timeout_minutes idle. A session id is not a credential: every request still
+// needs its bearer token. At most kMaxSessions are kept (the least recently used is dropped).
+class Sessions {
+ public:
+  enum class Lookup { kOk, kUnknown, kOtherAccount };
+
+  std::string create(const std::string &account) {
+    unsigned char raw[16];
+    if (RAND_bytes(raw, sizeof(raw)) != 1) return "";
+    static const char kHex[] = "0123456789abcdef";
+    std::string id;
+    for (const unsigned char c : raw) {
+      id += kHex[c >> 4];
+      id += kHex[c & 15];
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    expire_locked();
+    if (sessions_.size() >= kMaxSessions) {
+      auto oldest = sessions_.begin();
+      for (auto it = sessions_.begin(); it != sessions_.end(); ++it)
+        if (it->second.last_used < oldest->second.last_used) oldest = it;
+      sessions_.erase(oldest);
+    }
+    sessions_[id] = {account, Clock::now()};
+    return id;
+  }
+
+  // Marks the session used (POST) or ends it (DELETE).
+  Lookup use(const std::string &id, const std::string &account, bool end) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    expire_locked();
+    auto it = sessions_.find(id);
+    if (it == sessions_.end()) return Lookup::kUnknown;
+    if (it->second.account != account) return Lookup::kOtherAccount;
+    if (end)
+      sessions_.erase(it);
+    else
+      it->second.last_used = Clock::now();
+    return Lookup::kOk;
+  }
+
+ private:
+  using Clock = std::chrono::steady_clock;
+  struct Session {
+    std::string account;
+    Clock::time_point last_used;
+  };
+  static constexpr size_t kMaxSessions = 4096;
+
+  void expire_locked() {
+    const auto deadline = Clock::now() - std::chrono::minutes(opt_session_timeout_minutes);
+    for (auto it = sessions_.begin(); it != sessions_.end();)
+      it = it->second.last_used < deadline ? sessions_.erase(it) : std::next(it);
+  }
+
+  std::mutex mutex_;
+  std::map<std::string, Session> sessions_;
+};
+
+Sessions sessions;
+
+// Accept lists application/json and text/event-stream (or their wildcards), as the Go SDK.
+bool accepts_json_and_stream(const std::string *accept) {
+  if (accept == nullptr) return false;
+  bool json = false, stream = false;
+  size_t b = 0;
+  while (b <= accept->size()) {
+    size_t e = accept->find(',', b);
+    if (e == std::string::npos) e = accept->size();
+    std::string t = accept->substr(b, e - b);
+    t = t.substr(0, t.find(';'));
+    const size_t x = t.find_first_not_of(" \t"), y = t.find_last_not_of(" \t");
+    t = x == std::string::npos ? "" : t.substr(x, y - x + 1);
+    for (char &c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (t == "application/json" || t == "application/*") json = true;
+    if (t == "text/event-stream" || t == "text/*") stream = true;
+    if (t == "*/*") json = stream = true;
+    b = e + 1;
+  }
+  return json && stream;
+}
+
+bool json_content_type(const std::string *type) {
+  if (type == nullptr) return false;
+  std::string t = type->substr(0, type->find(';'));
+  const size_t x = t.find_first_not_of(" \t"), y = t.find_last_not_of(" \t");
+  t = x == std::string::npos ? "" : t.substr(x, y - x + 1);
+  for (char &c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  return t == "application/json";
+}
+
 void initialize(const rapidjson::Value &params, Json &out) {
   auto &a = out.GetAllocator();
   rapidjson::Value result(rapidjson::kObjectType), caps(rapidjson::kObjectType),
       tools(rapidjson::kObjectType), info(rapidjson::kObjectType);
-  const char *version = params.IsObject() && params.HasMember("protocolVersion") &&
-                                params["protocolVersion"].IsString()
-                            ? params["protocolVersion"].GetString()
-                            : "2025-06-18";
-  result.AddMember("protocolVersion", rapidjson::Value(version, a), a);
+  // Version negotiation: the client's version when supported, else the newest supported.
+  const std::string asked = params.IsObject() && params.HasMember("protocolVersion") &&
+                                    params["protocolVersion"].IsString()
+                                ? params["protocolVersion"].GetString()
+                                : "";
+  const std::string version = supported_version(asked) ? asked : kProtocolVersions[0];
+  result.AddMember("protocolVersion", rapidjson::Value(version.c_str(), a), a);
   caps.AddMember("tools", tools, a);
   result.AddMember("capabilities", caps, a);
   info.AddMember("name", "component_mcp", a);
-  info.AddMember("version", "0.0.1-spike", a);
+  info.AddMember("version", "0.1.0", a);
   result.AddMember("serverInfo", info, a);
   out.AddMember("result", result, a);
 }
@@ -1123,10 +1254,11 @@ class McpHandler : public http::base::RequestHandler {
     // its preflight (OPTIONS, sent without credentials) is answered here.
     if (origin != nullptr) {
       req.get_output_headers().add("Access-Control-Allow-Origin", origin->c_str());
+      req.get_output_headers().add("Access-Control-Expose-Headers", "Mcp-Session-Id");
       req.get_output_headers().add("Vary", "Origin");
     }
     if (req.get_method() == HttpMethod::Options && origin != nullptr) {
-      req.get_output_headers().add("Access-Control-Allow-Methods", "POST");
+      req.get_output_headers().add("Access-Control-Allow-Methods", "POST, DELETE");
       req.get_output_headers().add("Access-Control-Allow-Headers",
                                    "Authorization, Content-Type, Mcp-Session-Id, "
                                    "MCP-Protocol-Version");
@@ -1134,8 +1266,11 @@ class McpHandler : public http::base::RequestHandler {
       req.send_reply(HttpStatusCode::NoContent);
       return;
     }
-    if (req.get_method() != HttpMethod::Post) {
-      req.get_output_headers().add("Allow", "POST");
+    // POST carries JSON-RPC, DELETE ends a session. GET (a server-to-client SSE stream) is not
+    // offered: the endpoint never sends requests or notifications of its own.
+    const bool is_delete = req.get_method() == HttpMethod::Delete;
+    if (req.get_method() != HttpMethod::Post && !is_delete) {
+      req.get_output_headers().add("Allow", "POST, DELETE");
       req.send_reply(HttpStatusCode::MethodNotAllowed);
       return;
     }
@@ -1144,6 +1279,46 @@ class McpHandler : public http::base::RequestHandler {
     if (!account) {
       req.get_output_headers().add("WWW-Authenticate", "Bearer");
       req.send_reply(HttpStatusCode::Unauthorized);
+      return;
+    }
+    // MCP-Protocol-Version, sent after initialize: must be a version this server negotiates.
+    if (const std::string *v = req.get_input_headers().find("MCP-Protocol-Version");
+        v != nullptr && !supported_version(*v)) {
+      plain(req, HttpStatusCode::BadRequest,
+            "Bad Request: Unsupported protocol version (supported versions: " +
+                supported_versions() + ")");
+      return;
+    }
+    const std::string *session_id = req.get_input_headers().find("Mcp-Session-Id");
+    if (is_delete && session_id == nullptr) {
+      plain(req, HttpStatusCode::BadRequest, "Bad Request: DELETE requires an Mcp-Session-Id header");
+      return;
+    }
+    // A request without a session id is served on its own; one with an id must name a live
+    // session of the same account.
+    if (session_id != nullptr) {
+      switch (sessions.use(*session_id, *account, is_delete)) {
+        case Sessions::Lookup::kUnknown:
+          plain(req, HttpStatusCode::NotFound, "session not found");
+          return;
+        case Sessions::Lookup::kOtherAccount:
+          plain(req, HttpStatusCode::Forbidden, "session user mismatch");
+          return;
+        case Sessions::Lookup::kOk:
+          break;
+      }
+    }
+    if (is_delete) {
+      req.send_reply(HttpStatusCode::NoContent);
+      return;
+    }
+    if (!json_content_type(req.get_input_headers().find("Content-Type"))) {
+      plain(req, HttpStatusCode::UnsupportedMediaType, "Content-Type must be 'application/json'");
+      return;
+    }
+    if (!accepts_json_and_stream(req.get_input_headers().find("Accept"))) {
+      plain(req, HttpStatusCode::BadRequest,
+            "Accept must contain both 'application/json' and 'text/event-stream'");
       return;
     }
     Json in;
@@ -1160,6 +1335,10 @@ class McpHandler : public http::base::RequestHandler {
     }
     static const rapidjson::Value kNoParams(rapidjson::kObjectType);
     const rapidjson::Value &params = in.HasMember("params") ? in["params"] : kNoParams;
+    if (method == "initialize" && session_id == nullptr) {
+      const std::string id = sessions.create(*account);
+      if (!id.empty()) req.get_output_headers().add("Mcp-Session-Id", id.c_str());
+    }
     reply(req, &in["id"], [&](Json &out) {
       if (method == "initialize")
         initialize(params, out);
@@ -1175,6 +1354,11 @@ class McpHandler : public http::base::RequestHandler {
   }
 
  private:
+  static void plain(http::base::Request &req, int status, const std::string &text) {
+    req.get_output_headers().add("Content-Type", "text/plain; charset=utf-8");
+    req.send_reply(status, HttpStatusCode::get_default_status_text(status), text);
+  }
+
   template <typename F>
   static void reply(http::base::Request &req, const rapidjson::Value *id, F fill) {
     Json out(rapidjson::kObjectType);
