@@ -184,6 +184,24 @@ The option is `mcp.read_only`, `mcp.deny_system_schemas`, `mcp.allowed_schemas` 
 
 **Parity with mysql-mcp-server** (RFC 0001 §5.2 item 7): [`sql/mcp/guard-parity.tsv`](https://github.com/askdba/myvector/blob/main/sql/mcp/guard-parity.tsv) lists statements a `run_query` call might send, with the verdict of mysql-mcp-server's validator (`go`) and of the guard under the default settings (`guard`). Every row where they differ says why. The test checks the guard column, sending each statement as one packet. mysql-mcp-server vendors the file and checks the go column. Both reject every write and locking read. The guard allows a few things the validator does not (session `SET`, `information_schema`, `CALL mysql_mcp.*`) and catches what text checks cannot (a write inside a function called from `SELECT`).
 
+### Overhead on non-MCP traffic
+
+RFC 0001 §10 asks for "guard overhead under 1% p99 on non-MCP traffic". `scripts/bench-mcp-guard.sh <mysql-image> <artifact-dir> [pairs] [rounds] [seconds] [threads]` measures it with sysbench, run as an account without `MCP_USER`:
+
+- **Fresh server pairs.** Each pair is two servers from the official image with the same data: one never has the guard, the other has it installed before the data is loaded. Runs alternate between them in ABBA order (the idle one paused), and the result is the median, over pairs, of each pair's overhead. A server instance's speed varies from start to start by more than 1%. Installing and then uninstalling the guard on one server does not work either, because the server does not return to its pre-install cost.
+- **Per run:** TPS, average latency, p99 (from sysbench's histogram, since the printed percentile is too coarse below a millisecond), server CPU per transaction (cgroup), and, when `sudo -n perf` works, **instructions retired by mysqld per transaction**. Instruction counts are almost independent of cache, clock and neighbour load, so they show small per-statement costs that timing hides on a shared host.
+
+Measured on MySQL 26.10.0, aarch64 (16 cores, a shared host), `oltp_point_select` (the cheapest statement, so the worst case for a per-statement cost):
+
+| Component | Instructions per transaction |
+|---|---|
+| no-op component, same five event subscriptions as the guard | +2.6% |
+| guard before [#276](https://github.com/askdba/myvector/pull/276) | +3.2% |
+| guard with [#276](https://github.com/askdba/myvector/pull/276) (no command events on 9.0+) | +2.3% |
+| no-op, query events only / command events only / table-access events only | +1.05% / +1.03% / +0.43% |
+
+Most of the cost is MySQL's event-tracking dispatch for the event classes the guard needs (query, table access), not guard code, which adds about 0.6%. With `oltp_read_write` (many statements per transaction) the guard costs about 2.6% CPU per transaction and under 1% TPS. **Status of the criterion:** p99 medians are within noise on this host (single pairs vary by ±5–15%), so p99 cannot be resolved to 1% here, and the point-select CPU cost (about 2.3%) is above 1%. The run that decides the criterion is due on a dedicated amd64 host ([#256](https://github.com/askdba/myvector/issues/256)).
+
 ## component_mcp (Phase 4 spike)
 
 An MCP **Streamable HTTP** endpoint (JSON-RPC 2.0 over `POST /mcp`) inside `mysqld`. It runs on MySQL Router's HTTP server, the libraries `component_mysql_rest_service` links (RFC 0001 §5.3). This is the Phase 4 build spike and is **not for production**. It is limited to the following:
