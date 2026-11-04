@@ -224,6 +224,12 @@ INSTALL COMPONENT 'file://component_mcp'
       GLOBAL mcp_http.token_sha256 = '<hex digest from above>';
 ```
 
+**Across restarts.** The settings are read-only and `SET GLOBAL` values last only until the server restarts. The component itself is reloaded at startup, but with default settings: loopback, plain HTTP, no account and no token, so every request gets 401. That fails closed, but the endpoint is then unusable until reinstalled. To keep a configuration (verified on 26.10.0):
+
+- Install with `SET PERSIST` for every setting except the token: `INSTALL COMPONENT 'file://component_mcp' SET PERSIST mcp_http.port = 33480, PERSIST mcp_http.account = 'mcp@%', PERSIST mcp_http.bind_address = '0.0.0.0', PERSIST mcp_http.ssl_cert = '...', PERSIST mcp_http.ssl_key = '...', GLOBAL mcp_http.token_sha256 = '...'`. The persisted values are in `mysqld-auto.cnf`, see `performance_schema.persisted_variables`.
+- `mcp_http.token_sha256` cannot be persisted (`NOPERSIST`, error 1238 with `SET PERSIST`), so the hash is not written next to the other settings. Put it in an option file read by `mysqld`, readable only by the `mysqld` user: `[mysqld]` `loose-mcp_http.token_sha256 = <hex digest>`. In the official images that is a file in `/etc/mysql/conf.d/`.
+- A non-loopback HTTPS setup persisted without `ssl_cert` / `ssl_key` cannot come back as plain HTTP off loopback: without TLS files the component refuses a non-loopback address, and without a persisted `bind_address` it listens on `127.0.0.1`.
+
 `component_mcp` requires the guard's query consumer (`event_tracking_query.mcp_guard`). The server therefore refuses to install it without `component_mcp_guard`, and refuses to uninstall the guard while it is installed. The guard is what enforces the policy on its sessions.
 
 | Variable | Meaning |
