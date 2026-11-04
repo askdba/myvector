@@ -24,8 +24,8 @@
 -- that is also mcp_http.token_sha256 stays valid until that setting is removed too.)
 --
 -- The account name 'mysql.mcp'@'localhost' is reserved for the endpoint: the script drops and
--- recreates it, which removes any grants, role grants and proxy grants a pre-existing account of
--- that name had. DROP USER does not end open sessions, so if such an account was ever used to
+-- recreates it, removing any grants, role grants and proxy grants a pre-existing account of that
+-- name had (proxy grants by deleting their rows, which DROP USER leaves). DROP USER does not end open sessions, so if such an account was ever used to
 -- log in, KILL its sessions first. Safe to run again (the table is kept).
 
 CREATE TABLE IF NOT EXISTS mysql.mcp_tokens (
@@ -39,5 +39,9 @@ CREATE TABLE IF NOT EXISTS mysql.mcp_tokens (
 ) ENGINE=InnoDB COMMENT='component_mcp: bearer token hashes mapped to accounts';
 
 DROP USER IF EXISTS 'mysql.mcp'@'localhost';
+-- DROP USER removes the account's grants and role grants, but not proxy grants that name it as
+-- the proxied account; without them another account could proxy as the recreated reader.
+DELETE FROM mysql.proxies_priv WHERE Proxied_user = 'mysql.mcp' AND Proxied_host = 'localhost';
+FLUSH PRIVILEGES;
 CREATE USER 'mysql.mcp'@'localhost' ACCOUNT LOCK;
 GRANT SELECT ON mysql.mcp_tokens TO 'mysql.mcp'@'localhost';

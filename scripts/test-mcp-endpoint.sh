@@ -172,14 +172,19 @@ expect "no token table yet: an unknown token gets 401" "$(callas tbl-mcp run_que
 # as a proxy to another account: setup drops and recreates it, so none of that survives (run
 # twice: the script is safe to run again; each run must succeed).
 sql "CREATE USER 'mysql.mcp'@'localhost' IDENTIFIED BY 'guess'; GRANT SELECT ON d1.* TO 'mysql.mcp'@'localhost';
-CREATE USER heir@'%'; GRANT 'mysql.mcp'@'localhost' TO heir@'%'; GRANT PROXY ON 'mysql.mcp'@'localhost' TO heir@'%'"
+CREATE USER heir@'%'; GRANT 'mysql.mcp'@'localhost' TO heir@'%'"
+# Only root@localhost holds PROXY ... WITH GRANT OPTION, so this grant goes over the socket.
+docker exec "$C" mysql -uroot -ptestpass -e "GRANT PROXY ON 'mysql.mcp'@'localhost' TO heir@'%'" 2>&1 | grep -v "Using a password"
+expect "fixture: the old reader is granted as a role" "$(sql "SELECT COUNT(*) FROM mysql.role_edges WHERE FROM_USER = 'mysql.mcp' AND TO_USER = 'heir'")" "^1$"
+expect "fixture: and as a proxy" "$(sql "SELECT COUNT(*) FROM mysql.proxies_priv WHERE Proxied_user = 'mysql.mcp' AND User = 'heir'")" "^1$"
 for run in 1 2; do
 	setup_out=$(docker exec -i "$C" mysql -h127.0.0.1 -uroot -ptestpass <"$REPO/src/mcp/endpoint/mcp_tokens.sql" 2>&1)
 	expect "token setup run $run succeeds" "$? $(printf '%s' "$setup_out" | grep -v 'Using a password')" "^0 ?$"
 done
 expect "setup locks the reader account" "$(sql "SELECT account_locked FROM mysql.user WHERE user = 'mysql.mcp'")" "^Y$"
 expect "setup leaves the reader only SELECT on the table" "$(sql "SHOW GRANTS FOR 'mysql.mcp'@'localhost'" | tr -d '`' | tr '\n' ';')" "^GRANT USAGE ON [*][.][*] TO mysql.mcp@localhost;GRANT SELECT ON mysql.mcp_tokens TO mysql.mcp@localhost;$"
-expect "no account inherits the reader as a role or proxy" "$(sql "SELECT (SELECT COUNT(*) FROM mysql.role_edges WHERE FROM_USER = 'mysql.mcp') + (SELECT COUNT(*) FROM mysql.proxies_priv WHERE Proxied_user = 'mysql.mcp')")" "^0$"
+expect "no account inherits the reader as a role" "$(sql "SELECT COUNT(*) FROM mysql.role_edges WHERE FROM_USER = 'mysql.mcp'")" "^0$"
+expect "no account can proxy as the reader (DROP USER leaves proxy grants)" "$(sql "SELECT COUNT(*) FROM mysql.proxies_priv WHERE Proxied_user = 'mysql.mcp'")" "^0$"
 sql "INSERT INTO mysql.mcp_tokens (token_sha256, account, expires_at, comment) VALUES
   ('$(h tbl-mcp)', 'mcp@%', NULL, 'test'), ('$(h tbl-app)', 'app@%', NOW() + INTERVAL 1 DAY, 'test'),
   ('$(h tbl-old)', 'mcp@%', NOW() - INTERVAL 1 SECOND, 'expired')"

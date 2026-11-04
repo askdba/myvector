@@ -249,7 +249,7 @@ INSTALL COMPONENT 'file://component_mcp'
 `src/mcp/endpoint/mcp_tokens.sql`, run once by an administrator, creates:
 
 - `mysql.mcp_tokens`: `token_sha256` (lowercase hex SHA-256 of the token, the primary key), `account` (`user@host`), `expires_at` (server time, `NULL` for no expiry), `comment`, `created_at`;
-- `'mysql.mcp'@'localhost'`: a locked account whose only grant is `SELECT` on that table. The endpoint impersonates it to look tokens up, as MRS does for its metadata. Nobody can log in as it. The name is reserved: the script drops and recreates the account, removing any grants, role grants and proxy grants a pre-existing account of that name had. `DROP USER` does not end open sessions, so if such an account was ever used to log in, `KILL` its sessions first. The script is safe to run again (the table is kept).
+- `'mysql.mcp'@'localhost'`: a locked account whose only grant is `SELECT` on that table. The endpoint impersonates it to look tokens up, as MRS does for its metadata. Nobody can log in as it. The name is reserved: the script drops and recreates the account, removing any grants, role grants and proxy grants a pre-existing account of that name had (`DROP USER` leaves proxy grants that name the account as proxied, so the script deletes those rows from `mysql.proxies_priv`). `DROP USER` does not end open sessions, so if such an account was ever used to log in, `KILL` its sessions first. The script is safe to run again (the table is kept).
 
 A request's token is hashed and checked against `mcp_http.token_sha256` first (to `mcp_http.account`), then looked up in the table. A missing or expired row gets 401. Each request reads the table, so `INSERT` issues a token and `DELETE` (or a past `expires_at`) revokes it from the next request. The mapped account then runs the call as usual: the guard's policy for `MCP_USER` accounts, the `ACCOUNT LOCK` check, the per-account session cap.
 
@@ -265,7 +265,7 @@ Hash the token outside MySQL (`printf %s "$TOKEN" | sha256sum`): `SHA2('<token>'
 
 ### How a tool call runs
 
-Each `tools/call` opens a `"local"` command-service session that **impersonates** `mcp_http.account`, with no password, on one of the endpoint's I/O threads. It runs one statement for the tool: `CALL mysql_mcp.list_databases()`, `CALL mysql_mcp.list_tables(...)`, `CALL mysql_mcp.describe_table(...)`, the `run_query` SQL, `SELECT 1` for `ping`, or the server information `SELECT` for `server_info`, then closes the session. Neither `CLIENT_MULTI_STATEMENTS` nor anything similar is set, so `a; b` is a parse error.
+Each `tools/call` opens a `"local"` command-service session that **impersonates** the account the bearer token maps to (`mcp_http.account` for the `mcp_http.token_sha256` token, the row's `account` for a table token), with no password, on one of the endpoint's I/O threads. It runs one statement for the tool: `CALL mysql_mcp.list_databases()`, `CALL mysql_mcp.list_tables(...)`, `CALL mysql_mcp.describe_table(...)`, the `run_query` SQL, `SELECT 1` for `ping`, or the server information `SELECT` for `server_info`, then closes the session. Neither `CLIENT_MULTI_STATEMENTS` nor anything similar is set, so `a; b` is a parse error.
 
 The guard enforces its policy on these sessions only because of two things, both checked by `scripts/test-mcp-endpoint.sh`:
 
