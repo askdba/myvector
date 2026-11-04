@@ -262,7 +262,7 @@ DELETE FROM mysql.mcp_tokens WHERE token_sha256 = '<hex SHA-256 of the token>'; 
 
 A token whose hash is also set as `mcp_http.token_sha256` is accepted through that setting first, so deleting its row does not revoke it: use different tokens for the two, or reinstall the component without that setting.
 
-Hash the token outside MySQL (`printf %s "$TOKEN" | sha256sum`): `SHA2('<token>', 256)` works too but puts the token in the statement text. The table is in the `mysql` schema, which `component_mcp_guard` denies to MCP sessions (`mcp.deny_system_schemas`), and ordinary accounts have no grants there; it holds only hashes. Each request that is not the `mcp_http.token_sha256` token, including a wrong token, costs one primary-key lookup in a short session (bounded by `mcp_http.threads` and `max_connections`).
+Hash the token outside MySQL (`printf %s "$TOKEN" | sha256sum`): `SHA2('<token>', 256)` works too but puts the token in the statement text. The table is in the `mysql` schema and holds only hashes. MCP sessions cannot read it while the guard denies them that schema: with `mcp.deny_system_schemas` on (the default) and `mysql` not in `mcp.allowed_schemas`. There is no rule specific to the token table, so do not allow the `mysql` schema to MCP accounts or grant them privileges on it. Ordinary accounts have no grants there. Each request that is not the `mcp_http.token_sha256` token, including a wrong token, costs one primary-key lookup in a short session (bounded by `mcp_http.threads` and `max_connections`).
 
 ### How a tool call runs
 
