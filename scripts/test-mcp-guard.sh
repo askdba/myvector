@@ -264,16 +264,30 @@ rm -f "/tmp/$CNAME-live"
 # events). The mysql client cannot send it in batch mode, so Python's connector does.
 reset_check=$(docker run --rm --network "container:$CNAME" python:3.12-slim sh -c "pip install -q --disable-pip-version-check --root-user-action=ignore mysql-connector-python==26.7.0 >/dev/null 2>&1 && python -c \"
 import mysql.connector
-c = mysql.connector.connect(host='127.0.0.1', user='mcp', password='mcppass1')
+from mysql.connector.constants import ServerCmd
+c = mysql.connector.connect(host='127.0.0.1', user='mcp', password='mcppass1', use_pure=True)
 def get():
     cur = c.cursor(); cur.execute('SELECT @@max_execution_time'); v = cur.fetchone()[0]; cur.close(); return v
+def reset():
+    # The raw COM_RESET_CONNECTION: cmd_reset_connection() also sends SET NAMES, which would
+    # let the guard restore the limit before the statement under test.
+    c._handle_ok(c._send_cmd(ServerCmd.RESET_CONNECTION))
 out = [get()]
-c.cmd_reset_connection(); out.append(get())
+reset(); out.append(get())
 cur = c.cursor(); cur.execute('SET SESSION max_execution_time = 500'); cur.close(); out.append(get())
-c.cmd_reset_connection(); out.append(get())
+reset(); out.append(get())
 print(*out)
 \"" 2>&1 | tail -1)
 expect "mcp: COM_RESET_CONNECTION does not lift the limit (lowered values kept until reset)" "$reset_check" "^1500 1500 500 1500$"
+# A raised floor reaches a session still on the guard's value at its next statement.
+mcp "SELECT @@max_execution_time; DO SLEEP(3); SELECT @@max_execution_time" >"/tmp/$CNAME-raise" 2>&1 &
+raise=$!
+sleep 1
+sql "SET GLOBAL mcp.max_execution_time_ms = 3000" >/dev/null
+wait "$raise"
+expect "mcp: an existing session gets a raised limit" "$(tr '\n' ' ' <"/tmp/$CNAME-raise")" "^1500 3000 $"
+rm -f "/tmp/$CNAME-raise"
+sql "SET GLOBAL mcp.max_execution_time_ms = 1500" >/dev/null
 sql "SET GLOBAL mcp.max_execution_time_ms = 0" >/dev/null
 
 # --- mcp.log_denials -----------------------------------------------------------------------------

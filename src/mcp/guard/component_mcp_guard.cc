@@ -776,8 +776,9 @@ my_h_string max_execution_time_name = nullptr;
 void apply_time_limit(MYSQL_THD thd, SessionState *state) {
   const unsigned long limit = opt_max_execution_time_ms;
 #ifdef MCP_GUARD_READS_SESSION_VARIABLES
-  // Read the session's value: a limit the session lowered itself stays; 0 (never set, or reset
-  // by COM_RESET_CONNECTION) or a value above the floor is replaced by the floor.
+  // Read the session's value. The guard's own last value (applied_time_limit) follows a changed
+  // floor, up or down; a value the session lowered itself below it stays; 0 (never set, or
+  // reset by COM_RESET_CONNECTION) or a value above the floor is replaced by the floor.
   if (state == nullptr || limit == 0 || max_execution_time_name == nullptr) return;
   char buf[32];
   char *val = buf;
@@ -786,8 +787,10 @@ void apply_time_limit(MYSQL_THD thd, SessionState *state) {
                                                        "max_execution_time",
                                                        reinterpret_cast<void **>(&val), &len)) {
     const unsigned long current = std::strtoul(std::string(val, len).c_str(), nullptr, 10);
-    if (current != 0 && current <= limit) return;
+    const bool guard_value = current == state->applied_time_limit;
+    if (current != 0 && current <= limit && !(guard_value && current != limit)) return;
   }
+  state->applied_time_limit = limit;
   mysql_service_mysql_system_variable_update_integer->set_unsigned(
       thd, "SESSION", nullptr, max_execution_time_name, limit);
 #else
