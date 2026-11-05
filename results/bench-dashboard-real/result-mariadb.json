@@ -36,7 +36,7 @@
         "qps": 197.59253258300862,
         "p50_ms": 5.1955,
         "p99_ms": 9.543,
-        "reason": "Below MariaDB's enforced mhnsw_ef_search floor (~2*M=32); not a valid operating point. Measured value retained here for transparency but omitted from the plotted sweep. Other engines do not floor ef_search, so their ef=10 points are kept."
+        "reason": "ef_search=10 is below MariaDB's enforced mhnsw_ef_search floor (~2*M=32). At this sub-floor request MariaDB hits a cold edge path that measures QPS lower than its ef_search=20 point despite doing less search work (a physical inversion), so it is not a valid operating point. Retained here for transparency, omitted from the plotted sweep and the matched-recall table. Other engines apply no ef_search floor, so their ef=10 points are kept."
       }
     ],
     "ef_search_sweep": [

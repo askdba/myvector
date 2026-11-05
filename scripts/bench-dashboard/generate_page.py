@@ -169,22 +169,43 @@ def main():
     caveats = cfg.get("caveats", caveats)
     caveats_html = "".join(f"<li>{c}</li>" for c in caveats)
 
-    # Matched-recall frontier: the QPS each engine delivers at a given recall@10.
-    # This is the honest read of the ef_search tradeoff -- per-ef points mislead
-    # because an engine tuned for throughput reaches a recall at a lower ef, so
-    # its dots sit lower-and-righter even when its frontier dominates.
+    # Matched-recall frontier: the QPS each engine delivers at a target recall@10
+    # -- the honest read of the ef_search tradeoff, since per-ef points mislead
+    # (an engine tuned for throughput reaches a recall at a lower ef, so its dots
+    # sit lower-and-righter even when its frontier dominates). Industry-standard
+    # ANN reporting picks recall thresholds and reads QPS off each engine's own
+    # curve; an engine whose index can't be tuned to a given recall (e.g. a
+    # saturated graph that only operates near 1.0) simply shows "—" there. A row
+    # is kept when >=2 engines reach it, so the table survives engines that live
+    # in different recall regimes instead of collapsing to their (often empty)
+    # intersection -- the earlier intersection-only rule silently dropped the
+    # whole table whenever one engine saturated recall near 1.0.
     sweeps = [(disp(d), d.get("version"), d["metrics"].get("ef_search_sweep") or [])
               for d in data]
-    sweeps = [(lab, v, sw) for lab, v, sw in sweeps if len(sw) >= 2]
+    sweeps = [(lab, v, sw) for lab, v, sw in sweeps
+              if len([p for p in sw if p.get("recall_at_10") is not None
+                      and p.get("qps") is not None]) >= 2]
     frontier_html = ""
     if len(sweeps) >= 2:
         recs = [[p["recall_at_10"] for p in sw if p.get("recall_at_10") is not None]
                 for _, _, sw in sweeps]
-        lo = max(min(r) for r in recs)
-        hi = min(max(r) for r in recs)
-        if hi - lo > 0.02:
-            step = (hi - lo) / 4
-            targets = sorted({round(lo + step * (i + 0.5), 2) for i in range(4)})
+        glo = min(min(r) for r in recs)
+        ghi = max(max(r) for r in recs)
+        EPS = 1e-9
+        # a fixed, industry-standard recall ladder; keep thresholds inside the
+        # data's overall range that at least two engines actually reach.
+        ladder = [0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95,
+                  0.97, 0.98, 0.99, 0.995, 0.999]
+        targets = []
+        for t in ladder:
+            if t < glo - EPS or t > ghi + EPS:
+                continue
+            if sum(1 for _, _, sw in sweeps if interp_qps(sw, t) is not None) >= 2:
+                targets.append(t)
+        if len(targets) > 6:  # keep it compact: evenly sample 6 rows
+            targets = sorted({targets[round(i * (len(targets) - 1) / 5)]
+                              for i in range(6)})
+        if targets:
             head = "".join(f'<th style="color:{col.get(v,"#888")}">{e(lab)}</th>'
                            for lab, v, _ in sweeps)
             body = ""
@@ -196,10 +217,10 @@ def main():
                 for q in qs:
                     bold = ' style="font-weight:700"' if (q is not None and q == best) else ""
                     cells += f"<td{bold}>{fmt(q)}</td>"
-                body += f"<tr><td>recall {t:.2f}</td>{cells}</tr>"
+                body += f"<tr><td>recall {t:g}</td>{cells}</tr>"
             frontier_html = (
                 '<div class="panel"><h2>QPS at matched recall@10</h2>'
-                '<div class="note">the honest read of the sweep: at a target recall, who serves the most queries/sec? (interpolated from each engine\'s curve; <b>bold = fastest</b>, higher is better)</div>'
+                '<div class="note">the honest read of the sweep: at a target recall, who serves the most queries/sec? interpolated from each engine\'s own curve; <b>bold = fastest</b> at that recall, higher is better. <b>&mdash;</b> = that engine\'s index can\'t be tuned to this recall (e.g. a graph that saturates near 1.0 can\'t operate lower).</div>'
                 f'<table><thead><tr><th>Recall@10</th>{head}</tr></thead>'
                 f'<tbody>{body}</tbody></table></div>')
 

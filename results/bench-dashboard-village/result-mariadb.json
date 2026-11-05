@@ -13,12 +13,15 @@
   },
   "metrics": {
     "index_build_time_s": 165.72,
-    "ef_search_sweep": [
+    "ef_search_excluded": [
       {
         "ef_search": 10,
         "recall_at_10": 0.9983,
-        "qps": 653.3
-      },
+        "qps": 653.3,
+        "reason": "ef_search=10 is below MariaDB's enforced mhnsw_ef_search floor (~2*M=32). At this sub-floor request MariaDB hits a cold edge path that measures QPS lower than its ef_search=20 point despite doing less search work (a physical inversion), so it is not a valid operating point. Retained here for transparency, omitted from the plotted sweep and the matched-recall table. Other engines apply no ef_search floor, so their ef=10 points are kept."
+      }
+    ],
+    "ef_search_sweep": [
       {
         "ef_search": 20,
         "recall_at_10": 0.9996,
