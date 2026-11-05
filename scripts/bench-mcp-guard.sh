@@ -48,13 +48,31 @@ sb() { local m=$1; shift; docker run --rm "${SB_CPUS[@]}" -v "$P-$m-sock:/var/ru
 	--mysql-db=sbtest --tables=8 --table-size=100000 "$@"; }
 # Only the server under test runs: the other is paused, so it takes no CPU.
 active() { docker unpause "$P-$1" >/dev/null 2>&1; docker pause "$P-$([ "$1" = on ] && echo off || echo on)" >/dev/null 2>&1; }
-# perf runs as "sudo timeout --signal=INT N perf stat", so it always ends (with its counts) even
-# when it cannot be stopped early; the probe checks exactly that combination.
-if sudo -n timeout --signal=INT 1 perf stat -x, -e instructions -- sleep 5 2>&1 | grep -q ',instructions'; then
-	PERF=1
-else
-	PERF=0
-fi
+# perf runs as "sudo timeout --signal=INT N perf stat", so it always ends even when it cannot be
+# stopped; a run whose early stop fails is rejected (its count would run past the workload). The
+# probe checks the whole mechanism: start, early stop with pkill within 5 s, a numeric count.
+perf_probe() {
+	# The same mode as the runs: attach to a process (-p), so SIGINT ends perf at once.
+	local out target job start ok=1
+	out=$(mktemp)
+	sh -c 'i=0; while [ "$i" -lt 100000000 ]; do i=$((i + 1)); done' &  # busy, so it retires instructions
+	target=$!
+	sudo -n timeout --signal=INT 20 perf stat -x, -e instructions -p "$target" 2>"$out" &
+	job=$!
+	start=$(date +%s)
+	sleep 1
+	if sudo -n pkill -INT -f "(^|/)perf stat -x, -e instructions -p $target\$" 2>/dev/null; then
+		wait "$job" 2>/dev/null
+		[ $(($(date +%s) - start)) -le 5 ] &&
+			awk -F, '$3 ~ /^instructions/ && $1 ~ /^[0-9]+$/ && $1 > 0 { f = 1 } END { exit !f }' "$out" && ok=0
+	else
+		wait "$job" 2>/dev/null
+	fi
+	kill "$target" 2>/dev/null; wait "$target" 2>/dev/null
+	rm -f "$out"
+	return "$ok"
+}
+if perf_probe; then PERF=1; else PERF=0; fi
 server_cpu_usec() { docker exec "$P-$1" awk '/^usage_usec/ { print $2 }' /sys/fs/cgroup/cpu.stat; }
 
 # start_pair: two fresh servers with the same data, the guard installed on "on".
@@ -104,9 +122,16 @@ run() {
 		      printf "%s %s %s\n", tps, avg, p }')
 	cpu1=$(server_cpu_usec "$m")
 	if [ "$PERF" = 1 ]; then
-		# Stop it now if we may; otherwise its timeout ends it at most 30 s after the run.
-		sudo -n pkill -INT -f "^perf stat -x, -e instructions -p $(docker inspect -f '{{.State.Pid}}' "$P-$m")\$" 2>/dev/null
+		# Stop it at the workload's end. If that fails, its timeout still ends it (no hang), but
+		# the count then runs past the workload, so the run is rejected.
+		local stopped=1
+		sudo -n pkill -INT -f "(^|/)perf stat -x, -e instructions -p $(docker inspect -f '{{.State.Pid}}' "$P-$m")\$" 2>/dev/null && stopped=0
 		wait "$perf_job" 2>/dev/null
+		if [ "$stopped" != 0 ]; then
+			echo "perf could not be stopped at the end of $w on $m: count rejected" >&2
+			rm -f "$perf_out"
+			return 1
+		fi
 		instr=$(awk -F, '$3 ~ /^instructions/ && $1 ~ /^[0-9]+$/ { print $1 }' "$perf_out")
 		if ! [ "${instr:-0}" -gt 0 ] 2>/dev/null; then
 			echo "perf gave no instruction count for $w on $m: $(head -c 300 "$perf_out")" >&2
