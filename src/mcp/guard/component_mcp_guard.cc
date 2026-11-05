@@ -779,7 +779,14 @@ void apply_time_limit(MYSQL_THD thd, SessionState *state) {
   // Read the session's value. The guard's own last value (applied_time_limit) follows a changed
   // floor, up or down; a value the session lowered itself below it stays; 0 (never set, or
   // reset by COM_RESET_CONNECTION) or a value above the floor is replaced by the floor.
-  if (state == nullptr || limit == 0 || max_execution_time_name == nullptr) return;
+  if (state == nullptr) return;
+  if (limit == 0) {
+    // No floor: the session's value is its own from now on (the guard's is forgotten, so a
+    // later explicit value equal to it is not taken for the guard's when a floor returns).
+    state->applied_time_limit = kTimeLimitNotApplied;
+    return;
+  }
+  if (max_execution_time_name == nullptr) return;
   char buf[32];
   char *val = buf;
   size_t len = sizeof(buf) - 1;

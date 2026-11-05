@@ -255,10 +255,10 @@ expect "mcp: no limit once the floor is 0" "$(mcp "SELECT @@max_execution_time")
 # wait_in_sleep: until a background MCP session runs its DO SLEEP(3), so its first statement is
 # done before the floor changes (10 s at most; the client may buffer its output, so the server
 # is asked).
-wait_in_sleep() {
-	local i
+wait_in_sleep() { # [N]: wait for DO SLEEP(N), default 3
+	local i n=${1:-3}
 	for i in $(seq 1 50); do
-		[ "$(sql "SELECT COUNT(*) FROM performance_schema.processlist WHERE USER = 'mcp' AND INFO LIKE 'DO SLEEP(3)%'")" -ge 1 ] 2>/dev/null && return 0
+		[ "$(sql "SELECT COUNT(*) FROM performance_schema.processlist WHERE USER = 'mcp' AND INFO LIKE 'DO SLEEP($n)%'")" -ge 1 ] 2>/dev/null && return 0
 		sleep 0.2
 	done
 	return 1
@@ -311,6 +311,18 @@ wait "$raise"
 # The session then sets 1500 itself (the guard's old value): it is kept, not taken for the guard's.
 if [ "$(sql "SELECT SUBSTRING_INDEX(VERSION(), '.', 1) >= 9")" = 1 ]; then lowered_after_raise="500 500 1500"; else lowered_after_raise="500 3000 1500"; fi
 expect "mcp: a session's own lower limit across a raised floor (9.0+: kept; 8.4: replaced)" "$(tr '\n' ' ' <"$raise_out")" "^$lowered_after_raise $"
+# A floor set to 0 and back: a value the session chose meanwhile (1500, the guard's old value)
+# stays its own when the floor returns as 3000 (9.0+; 8.4 replaces it, as above).
+sql "SET GLOBAL mcp.max_execution_time_ms = 1500" >/dev/null
+mcp "SELECT @@max_execution_time; DO SLEEP(3); SET SESSION max_execution_time = 500; SET SESSION max_execution_time = 1500; DO SLEEP(4); SELECT @@max_execution_time" >"$raise_out" 2>&1 &
+raise=$!
+wait_in_sleep 3 || bad "background session reached its DO SLEEP(3)" "not seen in 10 s"
+sql "SET GLOBAL mcp.max_execution_time_ms = 0" >/dev/null
+wait_in_sleep 4 || bad "background session reached its DO SLEEP(4)" "not seen in 10 s"
+sql "SET GLOBAL mcp.max_execution_time_ms = 3000" >/dev/null
+wait "$raise"
+if [ "$(sql "SELECT SUBSTRING_INDEX(VERSION(), '.', 1) >= 9")" = 1 ]; then via_zero="1500 1500"; else via_zero="1500 3000"; fi
+expect "mcp: a value the session chose while the floor was 0 stays its own (9.0+)" "$(tr '\n' ' ' <"$raise_out")" "^$via_zero $"
 rm -f "$raise_out"
 sql "SET GLOBAL mcp.max_execution_time_ms = 1500" >/dev/null
 sql "SET GLOBAL mcp.max_execution_time_ms = 0" >/dev/null
