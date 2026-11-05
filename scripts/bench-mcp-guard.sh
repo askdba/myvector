@@ -48,7 +48,13 @@ sb() { local m=$1; shift; docker run --rm "${SB_CPUS[@]}" -v "$P-$m-sock:/var/ru
 	--mysql-db=sbtest --tables=8 --table-size=100000 "$@"; }
 # Only the server under test runs: the other is paused, so it takes no CPU.
 active() { docker unpause "$P-$1" >/dev/null 2>&1; docker pause "$P-$([ "$1" = on ] && echo off || echo on)" >/dev/null 2>&1; }
-if sudo -n perf stat -e instructions -- true >/dev/null 2>&1; then PERF=1; else PERF=0; fi
+# perf runs as "sudo timeout --signal=INT N perf stat", so it always ends (with its counts) even
+# when it cannot be stopped early; the probe checks exactly that combination.
+if sudo -n timeout --signal=INT 1 perf stat -x, -e instructions -- sleep 5 2>&1 | grep -q ',instructions'; then
+	PERF=1
+else
+	PERF=0
+fi
 server_cpu_usec() { docker exec "$P-$1" awk '/^usage_usec/ { print $2 }' /sys/fs/cgroup/cpu.stat; }
 
 # start_pair: two fresh servers with the same data, the guard installed on "on".
@@ -82,10 +88,11 @@ run() {
 	perf_out=$(mktemp)
 	cpu0=$(server_cpu_usec "$m")
 	if [ "$PERF" = 1 ]; then
-		# Counts from just before sysbench starts until it exits (then SIGINT): the window
+		# Counts from just before sysbench starts until it exits (then SIGINT, or the timeout): the window
 		# covers the whole measured run; the extra is sysbench's start and connect, the same in
 		# both modes, while mysqld is idle.
-		sudo -n perf stat -x, -e instructions -p "$(docker inspect -f '{{.State.Pid}}' "$P-$m")" 2>"$perf_out" &
+		sudo -n timeout --signal=INT $((SECS + 30)) perf stat -x, -e instructions \
+			-p "$(docker inspect -f '{{.State.Pid}}' "$P-$m")" 2>"$perf_out" &
 		perf_job=$!
 		sleep 0.5
 	fi
@@ -97,7 +104,8 @@ run() {
 		      printf "%s %s %s\n", tps, avg, p }')
 	cpu1=$(server_cpu_usec "$m")
 	if [ "$PERF" = 1 ]; then
-		sudo -n pkill -INT -P "$perf_job" perf 2>/dev/null || sudo -n kill -INT "$perf_job" 2>/dev/null
+		# Stop it now if we may; otherwise its timeout ends it at most 30 s after the run.
+		sudo -n pkill -INT -f "^perf stat -x, -e instructions -p $(docker inspect -f '{{.State.Pid}}' "$P-$m")\$" 2>/dev/null
 		wait "$perf_job" 2>/dev/null
 		instr=$(awk -F, '$3 ~ /^instructions/ && $1 ~ /^[0-9]+$/ { print $1 }' "$perf_out")
 		if ! [ "${instr:-0}" -gt 0 ] 2>/dev/null; then
