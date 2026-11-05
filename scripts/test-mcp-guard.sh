@@ -252,13 +252,14 @@ expect "app (no MCP_USER) keeps max_execution_time 0" "$(as app apppass1 "SELECT
 sql "SET GLOBAL mcp.max_execution_time_ms = 0" >/dev/null
 expect "mcp: no limit once the floor is 0" "$(mcp "SELECT @@max_execution_time")" "^0$"
 # A session already connected gets a new limit at its next statement.
-mcp "SELECT @@max_execution_time; DO SLEEP(3); SELECT @@max_execution_time" >"/tmp/$CNAME-live" 2>&1 &
+live_out=$(mktemp)
+mcp "SELECT @@max_execution_time; DO SLEEP(3); SELECT @@max_execution_time" >"$live_out" 2>&1 &
 live=$!
 sleep 1
 sql "SET GLOBAL mcp.max_execution_time_ms = 1500" >/dev/null
 wait "$live"
-expect "mcp: an existing session gets a tightened limit" "$(tr '\n' ' ' <"/tmp/$CNAME-live")" "^0 1500 $"
-rm -f "/tmp/$CNAME-live"
+expect "mcp: an existing session gets a tightened limit" "$(tr '\n' ' ' <"$live_out")" "^0 1500 $"
+rm -f "$live_out"
 # COM_RESET_CONNECTION resets session variables and raises no connection event: the limit
 # must be back at the next statement (9.0+: the guard reads the session value; 8.4: command
 # events). The mysql client cannot send it in batch mode, so Python's connector does.
@@ -280,13 +281,25 @@ print(*out)
 \"" 2>&1 | tail -1)
 expect "mcp: COM_RESET_CONNECTION does not lift the limit (lowered values kept until reset)" "$reset_check" "^1500 1500 500 1500$"
 # A raised floor reaches a session still on the guard's value at its next statement.
-mcp "SELECT @@max_execution_time; DO SLEEP(3); SELECT @@max_execution_time" >"/tmp/$CNAME-raise" 2>&1 &
+raise_out=$(mktemp)
+mcp "SELECT @@max_execution_time; DO SLEEP(3); SELECT @@max_execution_time" >"$raise_out" 2>&1 &
 raise=$!
 sleep 1
 sql "SET GLOBAL mcp.max_execution_time_ms = 3000" >/dev/null
 wait "$raise"
-expect "mcp: an existing session gets a raised limit" "$(tr '\n' ' ' <"/tmp/$CNAME-raise")" "^1500 3000 $"
-rm -f "/tmp/$CNAME-raise"
+expect "mcp: an existing session gets a raised limit" "$(tr '\n' ' ' <"$raise_out")" "^1500 3000 $"
+sql "SET GLOBAL mcp.max_execution_time_ms = 1500" >/dev/null
+# ...but a session that lowered its own limit keeps it when the floor is raised.
+mcp "SET SESSION max_execution_time = 500; SELECT @@max_execution_time; DO SLEEP(3); SELECT @@max_execution_time" >"$raise_out" 2>&1 &
+raise=$!
+sleep 1
+sql "SET GLOBAL mcp.max_execution_time_ms = 3000" >/dev/null
+wait "$raise"
+# 8.4 cannot read the session's value (no mysql_system_variable_reader), so a changed floor
+# replaces it there, as the guard always did before 9.0 support.
+if [ "$(sql "SELECT SUBSTRING_INDEX(VERSION(), '.', 1) >= 9")" = 1 ]; then lowered_after_raise="500 500"; else lowered_after_raise="500 3000"; fi
+expect "mcp: a session's own lower limit across a raised floor (9.0+: kept; 8.4: replaced)" "$(tr '\n' ' ' <"$raise_out")" "^$lowered_after_raise $"
+rm -f "$raise_out"
 sql "SET GLOBAL mcp.max_execution_time_ms = 1500" >/dev/null
 sql "SET GLOBAL mcp.max_execution_time_ms = 0" >/dev/null
 
