@@ -252,10 +252,21 @@ expect "app (no MCP_USER) keeps max_execution_time 0" "$(as app apppass1 "SELECT
 sql "SET GLOBAL mcp.max_execution_time_ms = 0" >/dev/null
 expect "mcp: no limit once the floor is 0" "$(mcp "SELECT @@max_execution_time")" "^0$"
 # A session already connected gets a new limit at its next statement.
+# wait_in_sleep: until a background MCP session runs its DO SLEEP(3), so its first statement is
+# done before the floor changes (10 s at most; the client may buffer its output, so the server
+# is asked).
+wait_in_sleep() {
+	local i
+	for i in $(seq 1 50); do
+		[ "$(sql "SELECT COUNT(*) FROM performance_schema.processlist WHERE USER = 'mcp' AND INFO LIKE 'DO SLEEP(3)%'")" -ge 1 ] 2>/dev/null && return 0
+		sleep 0.2
+	done
+	return 1
+}
 live_out=$(mktemp)
 mcp "SELECT @@max_execution_time; DO SLEEP(3); SELECT @@max_execution_time" >"$live_out" 2>&1 &
 live=$!
-sleep 1
+wait_in_sleep || bad "background session reached its DO SLEEP" "not seen in 10 s"
 sql "SET GLOBAL mcp.max_execution_time_ms = 1500" >/dev/null
 wait "$live"
 expect "mcp: an existing session gets a tightened limit" "$(tr '\n' ' ' <"$live_out")" "^0 1500 $"
@@ -284,7 +295,7 @@ expect "mcp: COM_RESET_CONNECTION does not lift the limit (lowered values kept u
 raise_out=$(mktemp)
 mcp "SELECT @@max_execution_time; DO SLEEP(3); SELECT @@max_execution_time" >"$raise_out" 2>&1 &
 raise=$!
-sleep 1
+wait_in_sleep || bad "background session reached its DO SLEEP" "not seen in 10 s"
 sql "SET GLOBAL mcp.max_execution_time_ms = 3000" >/dev/null
 wait "$raise"
 expect "mcp: an existing session gets a raised limit" "$(tr '\n' ' ' <"$raise_out")" "^1500 3000 $"
@@ -292,7 +303,7 @@ sql "SET GLOBAL mcp.max_execution_time_ms = 1500" >/dev/null
 # ...but a session that lowered its own limit keeps it when the floor is raised.
 mcp "SET SESSION max_execution_time = 500; SELECT @@max_execution_time; DO SLEEP(3); SELECT @@max_execution_time" >"$raise_out" 2>&1 &
 raise=$!
-sleep 1
+wait_in_sleep || bad "background session reached its DO SLEEP" "not seen in 10 s"
 sql "SET GLOBAL mcp.max_execution_time_ms = 3000" >/dev/null
 wait "$raise"
 # 8.4 cannot read the session's value (no mysql_system_variable_reader), so a changed floor
