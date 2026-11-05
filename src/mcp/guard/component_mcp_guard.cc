@@ -46,7 +46,16 @@
 #include <mysql/components/services/mysql_thd_store_service.h>
 #include <mysql/components/services/pfs_plugin_table_service.h>
 #include <mysql/components/services/security_context.h>
+#include "mysql_version.h"
+// From 9.0 the session's max_execution_time can be read (mysql_system_variable_reader), so a
+// COM_RESET_CONNECTION that clears it is caught at the next statement of the MCP session; the
+// guard then needs no command events, which every client's commands would otherwise pay for
+// (about 1% of a point select's instructions). 8.4 lacks the reader and keeps them.
+#if MYSQL_VERSION_ID >= 90000
+#define MCP_GUARD_READS_SESSION_VARIABLES 1
+#else
 #include <mysql/components/util/event_tracking/event_tracking_command_consumer_helper.h>
+#endif
 #include <mysql/components/util/event_tracking/event_tracking_connection_consumer_helper.h>
 #include <mysql/components/util/event_tracking/event_tracking_global_variable_consumer_helper.h>
 #include <mysql/components/util/event_tracking/event_tracking_query_consumer_helper.h>
@@ -55,6 +64,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <new>
@@ -74,6 +84,9 @@ REQUIRES_SERVICE_PLACEHOLDER(component_sys_variable_unregister);
 REQUIRES_SERVICE_PLACEHOLDER(status_variable_registration);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_runtime_error);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_system_variable_update_integer);
+#ifdef MCP_GUARD_READS_SESSION_VARIABLES
+REQUIRES_SERVICE_PLACEHOLDER(mysql_system_variable_reader);
+#endif
 REQUIRES_SERVICE_PLACEHOLDER(mysql_string_factory);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_string_converter);
 REQUIRES_SERVICE_PLACEHOLDER(log_builtins);
@@ -762,11 +775,43 @@ my_h_string max_execution_time_name = nullptr;
 
 void apply_time_limit(MYSQL_THD thd, SessionState *state) {
   const unsigned long limit = opt_max_execution_time_ms;
+#ifdef MCP_GUARD_READS_SESSION_VARIABLES
+  // Read the session's value. The guard's own last value (applied_time_limit) follows a changed
+  // floor, up or down; a value the session lowered itself below it stays; 0 (never set, or
+  // reset by COM_RESET_CONNECTION) or a value above the floor is replaced by the floor.
+  if (state == nullptr) return;
+  if (limit == 0) {
+    // No floor: the session's value is its own from now on (the guard's is forgotten, so a
+    // later explicit value equal to it is not taken for the guard's when a floor returns).
+    state->applied_time_limit = kTimeLimitNotApplied;
+    return;
+  }
+  if (max_execution_time_name == nullptr) return;
+  char buf[32];
+  char *val = buf;
+  size_t len = sizeof(buf) - 1;
+  if (!mysql_service_mysql_system_variable_reader->get(thd, "SESSION", "mysql_server",
+                                                       "max_execution_time",
+                                                       reinterpret_cast<void **>(&val), &len)) {
+    const unsigned long current = std::strtoul(std::string(val, len).c_str(), nullptr, 10);
+    const bool guard_value = current == state->applied_time_limit;
+    if (current != 0 && current <= limit && !(guard_value && current != limit)) {
+      // The session's own value: forget the guard's, so a later explicit value equal to it is
+      // not taken for the guard's.
+      if (!guard_value) state->applied_time_limit = kTimeLimitNotApplied;
+      return;
+    }
+  }
+  state->applied_time_limit = limit;
+  mysql_service_mysql_system_variable_update_integer->set_unsigned(
+      thd, "SESSION", nullptr, max_execution_time_name, limit);
+#else
   if (state == nullptr || limit == state->applied_time_limit) return;
   state->applied_time_limit = limit;
   if (limit == 0 || max_execution_time_name == nullptr) return;
   mysql_service_mysql_system_variable_update_integer->set_unsigned(
       thd, "SESSION", nullptr, max_execution_time_name, limit);
+#endif
 }
 
 // The MCP session state of thd, classifying a session that has not been classified yet
@@ -840,6 +885,7 @@ bool Event_tracking_connection_implementation::callback(
   }
 }
 
+#ifndef MCP_GUARD_READS_SESSION_VARIABLES
 // Command events: COM_RESET_CONNECTION resets session variables (raising no connection
 // event), so the time limit is applied again at the next statement.
 mysql_event_tracking_command_subclass_t Event_tracking_command_implementation::filtered_sub_events =
@@ -856,6 +902,7 @@ bool Event_tracking_command_implementation::callback(
   if (state != nullptr) state->applied_time_limit = kTimeLimitNotApplied;
   return false;
 }
+#endif
 
 // Global variable events: SET GLOBAL / SET PERSIST of mcp.* needs MCP_ADMIN, on top of
 // the SYSTEM_VARIABLES_ADMIN the server requires. Only a client's SET statement
@@ -1029,14 +1076,18 @@ mysql_service_status_t mcp_guard_init() {
 
 }  // namespace
 
+#ifndef MCP_GUARD_READS_SESSION_VARIABLES
 IMPLEMENTS_SERVICE_EVENT_TRACKING_COMMAND(mcp_guard);
+#endif
 IMPLEMENTS_SERVICE_EVENT_TRACKING_CONNECTION(mcp_guard);
 IMPLEMENTS_SERVICE_EVENT_TRACKING_GLOBAL_VARIABLE(mcp_guard);
 IMPLEMENTS_SERVICE_EVENT_TRACKING_QUERY(mcp_guard);
 IMPLEMENTS_SERVICE_EVENT_TRACKING_TABLE_ACCESS(mcp_guard);
 
 BEGIN_COMPONENT_PROVIDES(mcp_guard)
+#ifndef MCP_GUARD_READS_SESSION_VARIABLES
 PROVIDES_SERVICE_EVENT_TRACKING_COMMAND(mcp_guard),
+#endif
     PROVIDES_SERVICE_EVENT_TRACKING_CONNECTION(mcp_guard),
     PROVIDES_SERVICE_EVENT_TRACKING_GLOBAL_VARIABLE(mcp_guard),
     PROVIDES_SERVICE_EVENT_TRACKING_QUERY(mcp_guard),
@@ -1049,6 +1100,9 @@ REQUIRES_SERVICE(dynamic_privilege_register), REQUIRES_SERVICE(global_grants_che
     REQUIRES_SERVICE(component_sys_variable_unregister),
     REQUIRES_SERVICE(status_variable_registration), REQUIRES_SERVICE(mysql_runtime_error),
     REQUIRES_SERVICE(mysql_system_variable_update_integer),
+#ifdef MCP_GUARD_READS_SESSION_VARIABLES
+    REQUIRES_SERVICE(mysql_system_variable_reader),
+#endif
     REQUIRES_SERVICE(mysql_string_factory), REQUIRES_SERVICE(mysql_string_converter),
     REQUIRES_SERVICE(log_builtins), REQUIRES_SERVICE(log_builtins_string),
     REQUIRES_SERVICE(mysql_security_context_options), REQUIRES_SERVICE(mysql_audit_api_message),

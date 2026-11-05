@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`component_mcp_guard` no longer subscribes to command events on 9.0+** ([#256](https://github.com/askdba/myvector/issues/256), RFC 0001 §10 guard overhead). They were used only to notice `COM_RESET_CONNECTION` in MCP sessions, but every client's commands paid for the dispatch: about 1% of the instructions of a point select. On 9.0 and later the guard reads the MCP session's `max_execution_time` at each of its statements instead (`mysql_system_variable_reader`) and restores the limit when it is 0 or above it; 8.4, which has no such reader, keeps command events. `scripts/test-mcp-guard.sh` now resets an MCP session with `COM_RESET_CONNECTION` (Python connector) and checks that the limit comes back, on 8.4, 9.7 and 26.10.
+
 ### Added
 - **`scripts/bench-mcp-guard.sh`: guard overhead on non-MCP traffic** (RFC 0001 §10, [#256](https://github.com/askdba/myvector/issues/256)). sysbench as a non-MCP account against fresh server pairs (one with the guard), ABBA runs, reporting TPS, average and p99 latency, server CPU per transaction and, with `perf`, instructions per transaction. Results and their limits are in `docs/MCP_COMPONENTS.md` (Overhead on non-MCP traffic): the guard costs about 2.3% of a point select's instructions (with #276), mostly MySQL's event dispatch; p99 is within noise on a shared host.
 - **`component_mcp` MCP conformance against two clients** (RFC 0001 §10 go/no-go, [#256](https://github.com/askdba/myvector/issues/256)). `scripts/test-mcp-conformance.sh` drives the endpoint with MCP Inspector's CLI (2.12.0) and the official Python SDK client (`mcp` 2.3.0, `scripts/mcp-conformance/sdk_client.py`): tools, a guard refusal, auth, and the Streamable HTTP session as the SDK uses it (session id and version headers, `DELETE` on close). 21 checks; runs in the `mcp-endpoint` CI job.
