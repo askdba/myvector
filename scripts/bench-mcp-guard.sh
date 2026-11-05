@@ -23,11 +23,16 @@
 # clock and neighbour load, so it shows small per-statement costs that timing hides on a
 # shared host). p99 comes from sysbench's latency histogram: its printed
 # percentile has two decimals, too coarse for sub-millisecond latencies, and histogram buckets
-# are about 1.8% apart, so one run's p99 moves in steps of that size.
+# are about 1.8% apart, so one run's p99 moves in steps of that size. A p99 change below that is
+# reported as not resolvable: this script cannot decide the 1% criterion, only show whether p99
+# moved by a bucket or more (exit 1) or not (exit 0).
 set -u
 IMAGE=${1:?mysql image}; ART=${2:?artifact dir}
 PAIRS=${3:-5}; ROUNDS=${4:-2}; SECS=${5:-30}; THREADS=${6:-8}
 WORKLOADS=${WORKLOADS:-"oltp_point_select oltp_read_write"}
+for n in "$PAIRS" "$ROUNDS" "$SECS" "$THREADS"; do
+	case $n in '' | *[!0-9]* | 0*) echo "pairs, rounds, seconds and threads must be positive integers" >&2; exit 1 ;; esac
+done
 P=mcp-guard-bench-$$
 SB_IMAGE=mcp-guard-bench-sysbench
 cleanup() { for m in off on; do docker rm -f -v "$P-$m" >/dev/null 2>&1; docker volume rm -f "$P-$m-sock" >/dev/null 2>&1; done; }
@@ -73,11 +78,16 @@ start_pair() {
 run() {
 	local m=$1 w=$2 out cpu0 cpu1
 	sb "$m" --threads="$THREADS" --time=10 "$w" run >/dev/null 2>&1
-	local perf_out instr=0
+	local perf_out instr=0 perf_job=""
 	perf_out=$(mktemp)
 	cpu0=$(server_cpu_usec "$m")
 	if [ "$PERF" = 1 ]; then
-		sudo -n perf stat -x, -e instructions -p "$(docker inspect -f '{{.State.Pid}}' "$P-$m")" -- sleep "$SECS" 2>"$perf_out" &
+		# Counts from just before sysbench starts until it exits (then SIGINT): the window
+		# covers the whole measured run; the extra is sysbench's start and connect, the same in
+		# both modes, while mysqld is idle.
+		sudo -n perf stat -x, -e instructions -p "$(docker inspect -f '{{.State.Pid}}' "$P-$m")" 2>"$perf_out" &
+		perf_job=$!
+		sleep 0.5
 	fi
 	out=$(sb "$m" --threads="$THREADS" --time="$SECS" --histogram=on --percentile=99 "$w" run 2>&1 | awk '
 		/transactions:/ { gsub(/[(]/, "", $3); tps = $3 }
@@ -86,7 +96,16 @@ run() {
 		END { want = 0.99 * total; for (i = 0; i < n; i++) { s += c[i]; if (s >= want) { p = v[i]; break } }
 		      printf "%s %s %s\n", tps, avg, p }')
 	cpu1=$(server_cpu_usec "$m")
-	if [ "$PERF" = 1 ]; then wait; instr=$(awk -F, '$3 == "instructions" || $3 ~ /^instructions/ { print $1 }' "$perf_out"); fi
+	if [ "$PERF" = 1 ]; then
+		sudo -n pkill -INT -P "$perf_job" perf 2>/dev/null || sudo -n kill -INT "$perf_job" 2>/dev/null
+		wait "$perf_job" 2>/dev/null
+		instr=$(awk -F, '$3 ~ /^instructions/ && $1 ~ /^[0-9]+$/ { print $1 }' "$perf_out")
+		if ! [ "${instr:-0}" -gt 0 ] 2>/dev/null; then
+			echo "perf gave no instruction count for $w on $m: $(head -c 300 "$perf_out")" >&2
+			rm -f "$perf_out"
+			return 1
+		fi
+	fi
 	rm -f "$perf_out"
 	awk -v o="$out" -v d=$((cpu1 - cpu0)) -v t="$SECS" -v i="${instr:-0}" 'BEGIN { split(o, f, " ");
 		if (!(f[1] > 0 && f[2] > 0 && f[3] > 0 && d > 0)) exit 1
@@ -120,7 +139,8 @@ for pair in $(seq 1 "$PAIRS"); do
 	done
 done
 echo "== guard overhead per pair (median of its runs), then the median over pairs"
-fail=0
+P99_RESOLUTION=1.8
+above=0
 for w in $WORKLOADS; do
 	cols="4 5 6 7"; [ "$PERF" = 1 ] && cols="$cols 8"
 	for col in $cols; do
@@ -128,8 +148,12 @@ for w in $WORKLOADS; do
 		per=""; for pair in $(seq 1 "$PAIRS"); do per="$per $(overhead "$pair" "$w" "$col")"; done
 		med=$(printf '%s\n' $per | median)
 		printf '  %-18s %-12s pairs:%s  median %+.2f%%\n' "$w" "$name" "$(printf ' %s%%' $per)" "$med"
-		if [ "$col" = 6 ] && awk -v p="$med" 'BEGIN { exit !(p >= 1.0) }'; then fail=1; fi
+		if [ "$col" = 6 ] && awk -v p="$med" -v r="$P99_RESOLUTION" 'BEGIN { exit !(p >= r) }'; then above=1; fi
 	done
 done
-[ "$fail" = 0 ] && echo "== median p99 overhead under 1% on every workload" || echo "== median p99 overhead reached 1% on a workload"
-exit "$fail"
+# sysbench 1.0's histogram buckets are about 1.8% apart: a p99 change smaller than a bucket is
+# not resolved (both modes can fall in the same bucket), so the 1% criterion is never "passed"
+# here; it needs a client that records exact per-query latencies.
+if [ "$above" = 1 ]; then echo "== median p99 overhead at or above the ${P99_RESOLUTION}% histogram resolution on a workload"; exit 1; fi
+echo "== median p99 overhead below the ${P99_RESOLUTION}% histogram resolution: not resolvable to the 1% criterion with sysbench"
+exit 0
