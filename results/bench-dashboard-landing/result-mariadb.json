@@ -29,14 +29,17 @@
     "knn_ann_p99_ms": 1256.0420000000001,
     "ann_rewrite_active": true,
     "recall_at_10": 0.9997999999999999,
-    "ef_search_sweep": [
+    "ef_search_excluded": [
       {
         "ef_search": 10,
         "recall_at_10": 0.9976,
         "qps": 197.59253258300862,
         "p50_ms": 5.1955,
-        "p99_ms": 9.543
-      },
+        "p99_ms": 9.543,
+        "reason": "Below MariaDB's enforced mhnsw_ef_search floor (~2*M=32); not a valid operating point. Measured value retained here for transparency but omitted from the plotted sweep. Other engines do not floor ef_search, so their ef=10 points are kept."
+      }
+    ],
+    "ef_search_sweep": [
       {
         "ef_search": 20,
         "recall_at_10": 0.999,
