@@ -301,14 +301,15 @@ wait "$raise"
 expect "mcp: an existing session gets a raised limit" "$(tr '\n' ' ' <"$raise_out")" "^1500 3000 $"
 sql "SET GLOBAL mcp.max_execution_time_ms = 1500" >/dev/null
 # ...but a session that lowered its own limit keeps it when the floor is raised.
-mcp "SET SESSION max_execution_time = 500; SELECT @@max_execution_time; DO SLEEP(3); SELECT @@max_execution_time" >"$raise_out" 2>&1 &
+mcp "SET SESSION max_execution_time = 500; SELECT @@max_execution_time; DO SLEEP(3); SELECT @@max_execution_time; SET SESSION max_execution_time = 1500; SELECT @@max_execution_time" >"$raise_out" 2>&1 &
 raise=$!
 wait_in_sleep || bad "background session reached its DO SLEEP" "not seen in 10 s"
 sql "SET GLOBAL mcp.max_execution_time_ms = 3000" >/dev/null
 wait "$raise"
 # 8.4 cannot read the session's value (no mysql_system_variable_reader), so a changed floor
 # replaces it there, as the guard always did before 9.0 support.
-if [ "$(sql "SELECT SUBSTRING_INDEX(VERSION(), '.', 1) >= 9")" = 1 ]; then lowered_after_raise="500 500"; else lowered_after_raise="500 3000"; fi
+# The session then sets 1500 itself (the guard's old value): it is kept, not taken for the guard's.
+if [ "$(sql "SELECT SUBSTRING_INDEX(VERSION(), '.', 1) >= 9")" = 1 ]; then lowered_after_raise="500 500 1500"; else lowered_after_raise="500 3000 1500"; fi
 expect "mcp: a session's own lower limit across a raised floor (9.0+: kept; 8.4: replaced)" "$(tr '\n' ' ' <"$raise_out")" "^$lowered_after_raise $"
 rm -f "$raise_out"
 sql "SET GLOBAL mcp.max_execution_time_ms = 1500" >/dev/null

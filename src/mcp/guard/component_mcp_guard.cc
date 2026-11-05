@@ -788,7 +788,12 @@ void apply_time_limit(MYSQL_THD thd, SessionState *state) {
                                                        reinterpret_cast<void **>(&val), &len)) {
     const unsigned long current = std::strtoul(std::string(val, len).c_str(), nullptr, 10);
     const bool guard_value = current == state->applied_time_limit;
-    if (current != 0 && current <= limit && !(guard_value && current != limit)) return;
+    if (current != 0 && current <= limit && !(guard_value && current != limit)) {
+      // The session's own value: forget the guard's, so a later explicit value equal to it is
+      // not taken for the guard's.
+      if (!guard_value) state->applied_time_limit = kTimeLimitNotApplied;
+      return;
+    }
   }
   state->applied_time_limit = limit;
   mysql_service_mysql_system_variable_update_integer->set_unsigned(
