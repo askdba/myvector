@@ -1,7 +1,7 @@
 {
   "version": "MyVector",
-  "label": "MyVector \u00b7 MySQL 8.4",
-  "timestamp": "2026-11-03T05:06:18.630048+00:00",
+  "label": "MyVector \u00b7 MySQL 8.4 (PR #278: NEON+keepPruned)",
+  "timestamp": "2026-11-06T19:09:18.324883+00:00",
   "dataset": "fashion-mnist-784",
   "rows_indexed": 60000,
   "recall_ground_truth": "published",
@@ -12,42 +12,42 @@
     "distance": "L2"
   },
   "metrics": {
-    "index_build_time_s": 193.86,
+    "index_build_time_s": 155.8,
     "ef_search_sweep": [
       {
         "ef_search": 10,
-        "recall_at_10": 0.9444,
-        "qps": 489.2
+        "recall_at_10": 0.9705,
+        "qps": 485.7
       },
       {
         "ef_search": 20,
-        "recall_at_10": 0.983,
-        "qps": 453.8
+        "recall_at_10": 0.9913,
+        "qps": 482.7
       },
       {
         "ef_search": 50,
-        "recall_at_10": 0.9968,
-        "qps": 377.0
+        "recall_at_10": 0.9985,
+        "qps": 421.4
       },
       {
         "ef_search": 100,
-        "recall_at_10": 0.9985,
-        "qps": 305.5
+        "recall_at_10": 0.9994,
+        "qps": 360.8
       },
       {
         "ef_search": 200,
-        "recall_at_10": 0.9992,
-        "qps": 232.5
+        "recall_at_10": 0.9998,
+        "qps": 296.5
       },
       {
         "ef_search": 400,
-        "recall_at_10": 0.9996,
-        "qps": 171.8
+        "recall_at_10": 0.9999,
+        "qps": 222.9
       },
       {
         "ef_search": 800,
-        "recall_at_10": 0.9997,
-        "qps": 118.6
+        "recall_at_10": 0.9999,
+        "qps": 162.7
       }
     ]
   }
