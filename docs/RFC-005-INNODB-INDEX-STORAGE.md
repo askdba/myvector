@@ -45,6 +45,10 @@ The work comes in two stages:
 
 ### 1.2 Requirements
 
+- **Writable servers in standalone mode.** Until replicated mode (Phase 2b), a
+  server with `read_only` or `super_read_only` on can't hold a `storage=innodb`
+  index (§4.8). Topologies with read-only replicas should keep `storage=file` until
+  Phase 2b (**D13**).
 - **GTID mode.** `storage=innodb` requires `gtid_mode = ON` on every server
   (**D11**). Checkpoints, resume after a restart, restore and promotion all use GTID
   sets. File names and positions are never compared across servers. An index with
@@ -549,6 +553,27 @@ In standalone mode, the default, **every write to `myvector.*` runs with
 The cost: every server does its own build and checkpoints, as today. Replicated mode
 (§4.10) removes that cost and brings its own rules.
 
+**Read-only servers are not supported in standalone mode (D13).** Standalone mode
+writes on every server, but replicas usually run with `super_read_only = ON`, which
+blocks writes from every session, and plain `read_only = ON` blocks the internal
+account too (it has no `CONNECTION_ADMIN`). The column comment replicates, so a
+replica can't pick another backend for itself. So:
+
+- A server with `read_only` or `super_read_only` on **refuses** to build, load or
+  checkpoint a `storage=innodb` index in standalone mode. The error names the
+  setting and says to use `storage=file` until replicated mode.
+- The same check runs when the setting changes at runtime: if a server becomes
+  read-only, its `storage=innodb` indexes stop checkpointing and report it in
+  `myvector_index_status`; they keep serving searches from memory until restart.
+- Creating or migrating an index to `storage=innodb` warns if any replication
+  channel is configured on this server, because its replicas will refuse the index.
+- Replicated mode (Phase 2b) is the supported path for read-only replicas:
+  followers never write.
+
+Making read-only replicas work in standalone mode (for example with a per-server
+file fallback) was considered and rejected for now, to keep one storage path per
+index.
+
 ### 4.9 Security
 
 Index rows are copies of the user's vectors, in another schema. Anyone who can read
@@ -919,7 +944,10 @@ guards against future layout changes.
 10. **Idle index:** an index with no writes for longer than binlog expiry still
     resumes after a restart.
 11. **Standalone replication:** primary + replica; neither sees the other's index
-    rows, and both answer correctly.
+    rows, and both answer correctly. With `read_only` and with `super_read_only` on
+    the replica, it refuses the index with the documented error; the primary warns
+    when the index is created; a server turned read-only at runtime stops
+    checkpointing and reports it.
 12. **Schema:** two indexes whose names differ only in case stay separate; a
     194-character name works; `ckpt_time` past 2038 works; the install SQL works
     with `innodb_page_size = 4096`. A `mysqldump --hex-blob` of the largest
@@ -1018,6 +1046,7 @@ guards against future layout changes.
 | D10 | Writer role | `writer_uuid` compare-and-set on every write. GR primary claims automatically; async promotion uses `MYVECTOR_INDEX_TAKEOVER`; multi-primary GR unsupported in replicated mode (§4.10). *Revised: was read_only and channel heuristics* |
 | D11 | GTID mode | Required for every `storage=innodb` index (§1.2) |
 | D12 | Online-update stalls | Copy dirty chunks to a buffer under the pause, write after it (§4.4) |
+| D13 | Read-only servers, standalone mode | Unsupported until replicated mode: a read-only server refuses `storage=innodb` indexes with a clear error (§4.8) |
 
 ## 10. Open Questions and Known Limitations
 
@@ -1028,6 +1057,9 @@ Known limitations, to be revisited:
 
 - Update-heavy indexes write far more with `innodb` than with `file` (§4.3).
 - Replicated mode doesn't support multi-primary Group Replication.
+- In standalone mode, read-only servers (usually replicas) can't hold
+  `storage=innodb` indexes, so Phase 1–2 suits topologies without read-only
+  replicas (D13).
 - GTIDs for the file backend would need a file format change (its checkpoint id
   lives in a 256-byte status line); not part of this RFC.
 
