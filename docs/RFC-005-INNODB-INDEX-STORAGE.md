@@ -232,7 +232,7 @@ CREATE TABLE IF NOT EXISTS myvector.index_upper (
   generation   BIGINT UNSIGNED NOT NULL,
   node_id      INT UNSIGNED    NOT NULL,
   version      BIGINT UNSIGNED NOT NULL,
-  links        BLOB            NOT NULL,  -- linkLists_[node_id], levels 1..L
+  links        LONGBLOB        NOT NULL,  -- linkLists_[node_id], levels 1..L
   crc32        INT UNSIGNED    NOT NULL,
   PRIMARY KEY (index_id, generation, node_id, version)
 ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
@@ -278,6 +278,12 @@ Starting defaults, both configurable and tuned by benchmark in Phase 3 (D5):
 |---|---|---|
 | `index_vectors` | `myvector_index_vec_chunk_bytes` = 4 MB | ~1,360 nodes/chunk, ~740 chunks, ~3.1 GB |
 | `index_links` | `myvector_index_lnk_chunk_bytes` = 256 KB | ~2,000 nodes/chunk, ~500 chunks, ~132 MB |
+| `index_upper` | one row per node with upper levels | ~1/M of nodes: ~62,500 rows of ~0.1–0.3 KB |
+
+A full save therefore writes about 1,240 chunk rows **and** about 62,500
+`index_upper` rows. Upper rows are written with multi-row `INSERT`s inside the same
+bounded transactions (§4.4 step 2), not one statement each, and the Phase 3
+measurements include them.
 
 **Fixed ranges, fixed sizes.** A chunk's node range never changes: chunk `k` always
 covers `[k·C, (k+1)·C)`, so a dirty node always maps to the same chunk, and a loader
@@ -289,7 +295,9 @@ node (§4.2), and never change a chunk's boundaries.
 **Packet limit.** `C` is chosen so a whole row still fits in one statement when
 dumped with `mysqldump --hex-blob`, which doubles every blob: each row's blob is at
 most `(max_allowed_packet − 64 KB) / 2`, leaving 64 KB for the `INSERT` syntax and
-the other columns. An `index_upper` row holds one node's upper links, at most
+the other columns. (`index_upper.links` is a `LONGBLOB`: a node's upper links can
+pass the 64 KB `BLOB` limit with large M, e.g. 80 KB for two upper levels at
+M=10000.) An `index_upper` row holds one node's upper links, at most
 `size_links_per_element_ × maxlevel` bytes, a few KB in practice. If
 `max_allowed_packet` is too small to hold even one record (one node's vector, its
 level-0 links, or its upper links) under that formula, the build or save **fails
@@ -297,6 +305,13 @@ before writing anything**, with an error naming the setting and the size needed.
 same check runs before each checkpoint, so an upper-links row that has grown (a node
 promoted to a new top level) fails cleanly instead of writing a row that can't be
 dumped.
+
+**If `max_allowed_packet` is lowered later,** chunks written under the old limit may
+no longer fit. `C` is fixed for a generation, so before each checkpoint the writer
+checks the generation's chunk row size (known from `C`) and the largest pending
+`index_upper` row against the current limit. If they don't fit, the checkpoint fails
+with an error that says to raise `max_allowed_packet` back, or to rebuild (a new
+generation picks a smaller `C`).
 
 **Write volume per checkpoint**, in the example above:
 
@@ -856,7 +871,7 @@ it didn't just write.
 | `innodb` | `active` | InnoDB |
 | `innodb` | `migrating_from_file`, or no row at all, and files exist | the files, then finish the migration. Standalone mode only: this server's files are its own. This also covers a replica that received the comment change through replication. |
 | `innodb` | `dropped` | nothing: the index was dropped |
-| `file` | `active` | InnoDB; then a real full save to this server's files, then set the row to `dropped` and use the files. Covers a replica that received the comment change, and a migration that stopped after step 2. The exported file index's resume position is computed from `ckpt_gtids` by the *One stream, both backends* rule (§4.10), so the listener replays every change after the checkpoint from the local binlog. In replicated mode a follower exports the writer's graph the same way and leaves the row to the writer; this needs `log_replica_updates = ON` (which file-backed online indexes on a replica need anyway), and if it is off, or the replay start is purged, the follower refuses the export and the index must be rebuilt after the switch. |
+| `file` | `active` | InnoDB; then a real full save to this server's files, then set the row to `dropped` and use the files. Covers a replica that received the comment change, and a migration that stopped after step 2. The exported file index's resume position is the **exact position of the first transaction not in `ckpt_gtids`**: scan forward from the file the *One stream, both backends* rule (§4.10) selects to the first GTID event not in the set. Starting at position 4 of that file would replay transactions the graph already has, and file-backed indexes skip only by position, so a replayed insert-then-delete from before a build could even fail at capacity. The scan also checks that **no later** transaction in the retained binlogs is in `ckpt_gtids` (the graph's transactions must be a prefix of the local binlog from that point); if one is, the export is refused and the index must be rebuilt after the switch. In replicated mode a follower exports the writer's graph the same way and leaves the row to the writer; this needs `log_replica_updates = ON` (which file-backed online indexes on a replica need anyway), and if it is off, or the replay start is purged, the follower refuses the export and the index must be rebuilt after the switch. |
 | `file` | `migrating_from_file` | **Writer** (or standalone): the files (a file → innodb migration that stopped before step 3); then set the row to `dropped`. **Follower** (replicated mode): its own file index, unchanged, and no write to the row. A follower can't write the row, and the writer may still be migrating; it switches to InnoDB only when the comment says `innodb` and the row is `active`. |
 | `file` | none or `dropped` | the files |
 
@@ -1008,6 +1023,9 @@ guards against future layout changes.
     replays the changes after the checkpoint. In replicated mode, a follower keeps
     its file index during a file → innodb migration and switches only when the row
     is `active`; with `log_replica_updates = OFF` it refuses the innodb → file export.
+    After an export, the file index resumes at the first transaction outside
+    `ckpt_gtids` and replays nothing already in the graph (check with an index at
+    full capacity).
 18. **GTID mode off:** `storage=innodb` refuses to build or load, with a clear
     error.
 
