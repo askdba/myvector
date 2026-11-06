@@ -299,11 +299,23 @@ double computeIPDistance(const FP32* __restrict v1,
     return dist;
 }
 
-/* Compute Cosine distance using standard formula */
+/* Compute Cosine distance using standard formula.
+ *
+ * This is the HNSW search/build hot loop for the Cosine metric (it does NOT go
+ * through hnswlib's InnerProduct in space_ip.h). Like L2Sqr it is a float
+ * reduction that GCC will not auto-vectorize at -O3 (FP non-associativity), so
+ * on arm64 it ran fully scalar -- the dominant cost of a 290k x 256 cosine build
+ * (~725s). Accumulate in float (4-wide NEON vs 2-wide double) and enable the
+ * same scoped reassociation flags as L2Sqr; the final norm/divide stays double
+ * for accuracy. Scoped via push_options/pop_options; no finite-math assumption. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize("O3", "tree-vectorize", "associative-math", "no-signed-zeros", "no-trapping-math")
+#endif
 double computeCosineDistance(const FP32* __restrict v1,
                              const FP32* __restrict v2,
                              int dim) {
-    double dist = 0.0, v1v2 = 0.0, normv1 = 0.0, normv2 = 0.0;
+    float v1v2 = 0.0f, normv1 = 0.0f, normv2 = 0.0f;
 
     for (int i = 0; i < dim; i++) {
         v1v2 += (v1[i] * v2[i]);
@@ -311,12 +323,16 @@ double computeCosineDistance(const FP32* __restrict v1,
         normv2 += (v2[i] * v2[i]);
     }
 
-    double t = (sqrt(normv1 * normv2));
+    double dist = 0.0;
+    double t = sqrt((double)normv1 * (double)normv2);
     if (t)
         dist = (double)v1v2 / t;
 
     return (1 - dist);
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
 
 MyVectorDistanceFn myvector_distance_fn(const char* name, size_t len) {
     std::string m(name ? name : "", name ? len : 0);
