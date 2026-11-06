@@ -1,0 +1,83 @@
+{
+  "git_ref": "1cf3030",
+  "mysql_version": "8.4",
+  "mysqld_version": "8.4.13",
+  "build_path": "component",
+  "server_mode": "docker",
+  "connection": "docker-cli",
+  "timestamp": "2026-11-06T23:43:23Z",
+  "runner": "GitHub Actions 1000020507",
+  "host": {
+    "arch": "x86_64",
+    "cpu_model": "AMD EPYC 9V45 96-Core Processor",
+    "cpu_cores": 4,
+    "cpu_governor": null,
+    "mem_total_gb": 15.6,
+    "kernel": "6.8.0-1070-azure",
+    "os": "Ubuntu 22.04.5 LTS",
+    "machine_key": "x86_64-amd-epyc-9v45-96-core-processor-4c"
+  },
+  "dataset": "synthetic",
+  "workload_params": {
+    "rows": 10000,
+    "dim": 128,
+    "M": 16,
+    "ef_construction": 200,
+    "knn_queries": 200,
+    "knn_ann_queries": 200,
+    "recall_queries": 50,
+    "holdout_queries": 0,
+    "distance": "L2"
+  },
+  "metrics": {
+    "index_build_time_s": 2.0931854248046875,
+    "insert_qps": 6334.50721136057,
+    "knn_qps": 317.41094242482916,
+    "knn_p50_ms": 3.1085000000000003,
+    "knn_p99_ms": 3.6,
+    "knn_ann_qps": 2192.766064752383,
+    "knn_ann_p50_ms": 0.4205,
+    "knn_ann_p99_ms": 0.69,
+    "ann_rewrite_active": true,
+    "recall_at_10": 0.9799999999999998,
+    "ef_search_sweep": [
+      {
+        "ef_search": 10,
+        "recall_at_10": 0.64,
+        "qps": 2814.5229383619476,
+        "p50_ms": 0.2545,
+        "p99_ms": 4.348999999999999
+      },
+      {
+        "ef_search": 20,
+        "recall_at_10": 0.7499999999999999,
+        "qps": 2476.841531678803,
+        "p50_ms": 0.305,
+        "p99_ms": 4.471
+      },
+      {
+        "ef_search": 50,
+        "recall_at_10": 0.8919999999999998,
+        "qps": 2382.4272168485254,
+        "p50_ms": 0.306,
+        "p99_ms": 4.793
+      },
+      {
+        "ef_search": 100,
+        "recall_at_10": 0.9419999999999997,
+        "qps": 1995.6096587507484,
+        "p50_ms": 0.382,
+        "p99_ms": 4.941
+      },
+      {
+        "ef_search": 200,
+        "recall_at_10": 0.99,
+        "qps": 1874.5547932366067,
+        "p50_ms": 0.4085,
+        "p99_ms": 4.957999999999999
+      }
+    ],
+    "select1_p50_ms": 0.04,
+    "select1_p99_ms": 0.062
+  }
+}
