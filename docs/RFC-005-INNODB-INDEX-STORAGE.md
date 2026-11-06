@@ -565,8 +565,11 @@ replica can't pick another backend for itself. So:
 - The same check runs when the setting changes at runtime: if a server becomes
   read-only, its `storage=innodb` indexes stop checkpointing and report it in
   `myvector_index_status`; they keep serving searches from memory until restart.
-- Creating or migrating an index to `storage=innodb` warns if any replication
-  channel is configured on this server, because its replicas will refuse the index.
+- Creating or migrating an index to `storage=innodb` warns if replicas are
+  connected to this server (`Binlog Dump` sessions other than MyVector's own
+  listener, or `SHOW REPLICAS`), because read-only replicas will refuse the index.
+  It is a warning, not a guarantee: replicas that are disconnected at that moment
+  aren't seen.
 - Replicated mode (Phase 2b) is the supported path for read-only replicas:
   followers never write.
 
