@@ -3,6 +3,14 @@
 
 namespace hnswlib {
 
+// See the note in space_l2.h: enable FP reassociation + vectorization for this
+// scalar inner-product reduction (used by Cosine/IP metrics) so GCC emits
+// NEON/SSE where the hand-written x86 SIMD paths aren't compiled in. Scoped via
+// push_options/pop_options; no finite-math assumption.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize("O3", "tree-vectorize", "associative-math", "no-signed-zeros", "no-trapping-math")
+#endif
     static float InnerProduct(const void* pVect1,
                               const void* pVect2,
                               const void* qty_ptr) {
@@ -19,6 +27,9 @@ namespace hnswlib {
                                       const void* qty_ptr) {
         return 1.0f - InnerProduct(pVect1, pVect2, qty_ptr);
     }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
 
 #if defined(USE_AVX)
 
