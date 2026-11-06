@@ -214,16 +214,27 @@ CREATE TABLE IF NOT EXISTS myvector.index_vectors (
   PRIMARY KEY (index_id, generation, chunk_id, version)
 ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
 
--- Level-0 links of each node, plus upper-level links, in smaller chunks.
+-- Level-0 links of each node, in smaller chunks of a fixed node range and size.
 CREATE TABLE IF NOT EXISTS myvector.index_links (
   index_id     BIGINT UNSIGNED NOT NULL,
   generation   BIGINT UNSIGNED NOT NULL,
   chunk_id     INT UNSIGNED    NOT NULL,
   version      BIGINT UNSIGNED NOT NULL,
   level0       LONGBLOB        NOT NULL,  -- level-0 links per node
-  upper        LONGBLOB        NULL,      -- (node_id, len, bytes)* for level > 0
   crc32        INT UNSIGNED    NOT NULL,
   PRIMARY KEY (index_id, generation, chunk_id, version)
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
+
+-- Upper-level links (levels > 0), one row per node that has them (about 1/M of
+-- the nodes). Variable size, so kept out of the fixed-size chunks.
+CREATE TABLE IF NOT EXISTS myvector.index_upper (
+  index_id     BIGINT UNSIGNED NOT NULL,
+  generation   BIGINT UNSIGNED NOT NULL,
+  node_id      INT UNSIGNED    NOT NULL,
+  version      BIGINT UNSIGNED NOT NULL,
+  links        BLOB            NOT NULL,  -- linkLists_[node_id], levels 1..L
+  crc32        INT UNSIGNED    NOT NULL,
+  PRIMARY KEY (index_id, generation, node_id, version)
 ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
 ```
 
@@ -268,12 +279,24 @@ Starting defaults, both configurable and tuned by benchmark in Phase 3 (D5):
 | `index_vectors` | `myvector_index_vec_chunk_bytes` = 4 MB | ~1,360 nodes/chunk, ~740 chunks, ~3.1 GB |
 | `index_links` | `myvector_index_lnk_chunk_bytes` = 256 KB | ~2,000 nodes/chunk, ~500 chunks, ~132 MB |
 
-Both are clamped so a **whole row** still fits in one statement when dumped with
-`mysqldump --hex-blob`, which doubles every blob: the sum of all blobs in a row
-(`data`; or `level0` plus `upper`) is at most
-`(max_allowed_packet − 64 KB) / 2`, leaving 64 KB for the `INSERT` syntax and the
-other columns. `upper` has no fixed size, so the links chunk builder stops adding
-nodes when the row would pass the limit.
+**Fixed ranges, fixed sizes.** A chunk's node range never changes: chunk `k` always
+covers `[k·C, (k+1)·C)`, so a dirty node always maps to the same chunk, and a loader
+knows each chunk's range from `chunk_id` and `C` (stored in `index_meta`). Vector and
+level-0 records have a fixed size per node, so every chunk's row size is known in
+advance. Upper-level links vary in size, so they live in `index_upper`, one row per
+node (§4.2), and never change a chunk's boundaries.
+
+**Packet limit.** `C` is chosen so a whole row still fits in one statement when
+dumped with `mysqldump --hex-blob`, which doubles every blob: each row's blob is at
+most `(max_allowed_packet − 64 KB) / 2`, leaving 64 KB for the `INSERT` syntax and
+the other columns. An `index_upper` row holds one node's upper links, at most
+`size_links_per_element_ × maxlevel` bytes, a few KB in practice. If
+`max_allowed_packet` is too small to hold even one record (one node's vector, its
+level-0 links, or its upper links) under that formula, the build or save **fails
+before writing anything**, with an error naming the setting and the size needed. The
+same check runs before each checkpoint, so an upper-links row that has grown (a node
+promoted to a new top level) fails cleanly instead of writing a row that can't be
+dumped.
 
 **Write volume per checkpoint**, in the example above:
 
@@ -332,8 +355,10 @@ promotion.
 
 **Dirty node sets map to dirty chunks:**
 
-- whole node → its vector chunk **and** its links chunk;
-- level-0 or upper links only → its links chunk.
+- whole node → its vector chunk **and** its links chunk (and its `index_upper`
+  row, if it has upper levels);
+- level-0 links only → its links chunk;
+- upper links only → that node's `index_upper` row.
 
 **Copy, then write.** The checkpoint holds the online-update queue paused (as today,
 §3) only while it takes a snapshot of the graph's state. While paused, at a
@@ -501,9 +526,10 @@ Readers only ever see the generation that `index_meta` points to.
    untrusted: anyone who can write to `myvector.*` could otherwise point the graph
    at memory outside it.
 4. Scan `index_vectors` and `index_links` for `(index_id, generation)` in
-   `chunk_id` order, taking the newest version `≤ ckpt_seq` of each chunk. Check
-   each chunk's CRC, that no chunk is missing, and that every node id in `upper` is
-   below `node_count`, with sizes matching its level. **Validate every adjacency
+   `chunk_id` order, and `index_upper` in `node_id` order, taking the newest version
+   `≤ ckpt_seq` of each row. Check each row's CRC, that no chunk is missing, and
+   that every `index_upper` node id is below `node_count`, with a size matching its
+   level. **Validate every adjacency
    list**, level 0 and upper: its count is at most `maxM0_` (level 0) or `maxM_`
    (upper levels), every neighbor id is below `node_count`, and every neighbor
    exists at that level (its level ≥ the list's level). The search code reads as
@@ -711,11 +737,12 @@ it refuses and says the index must be rebuilt.
 2. If `state` is `dropped`, unload the index. If `generation` changed, reload the
    whole index (§4.7).
 3. Otherwise, if `ckpt_seq` advanced: count the chunk rows with
-   `version = ckpt_seq`. If the count is less than `ckpt_chunks`, the applier hasn't
+   `version = ckpt_seq` in all three tables. If the count is less than `ckpt_chunks`
+   (which counts `index_upper` rows too), the applier hasn't
    committed them all yet: wait and retry, and log an error if it stays short for
    longer than `myvector_follower_wait_timeout`.
-4. Read every chunk with `last applied seq < version ≤ ckpt_seq` (newest version
-   per chunk). Validate the header and the chunks (§4.7 steps 3–4). Copy them into
+4. Read every chunk and `index_upper` row with
+   `last applied seq < version ≤ ckpt_seq` (newest version per row). Validate the header and the chunks (§4.7 steps 3–4). Copy them into
    the in-memory graph under the index's exclusive lock (`lockExclusive()`). Update
    the header, rebuild `label_lookup_` and `num_deleted_`, and allocate `linkLists_`
    for new upper-level nodes. Searches wait during the copy.
@@ -765,11 +792,15 @@ indexes. File-backed indexes resume from a file and position on this server's
 binlog; InnoDB-stored indexes from a GTID set. The stream must start early enough
 for **every** index, whichever checkpoint is older:
 
-1. For each InnoDB-stored index, find the earliest binlog file on this server that
-   contains a transaction not in its `ckpt_gtids`. Each binlog file starts with a
-   `Previous_gtids` event listing everything before it, so this is the first file
-   whose successor's `Previous_gtids` is not contained in `ckpt_gtids`. The index's
-   start is that file, at position 4.
+1. For each InnoDB-stored index, its start is the **newest** binlog file on this
+   server whose `Previous_gtids` event (written at the start of every binlog file,
+   listing every transaction before that file) is contained in the index's
+   `ckpt_gtids`, at position 4. Everything before that file is already in the index,
+   so nothing it needs is skipped. The current (last) file qualifies like any other,
+   so a restart or takeover with no rotation since the checkpoint, or with only one
+   retained binlog, starts in the current file. If **no** retained file qualifies,
+   the oldest retained file already starts after a transaction the index lacks: that
+   is the purged-gap case, reported by the §5 check, and the index needs a rebuild.
 2. For each file-backed index, its start is its saved file and position.
 3. The stream starts at the **earliest** of all these positions, by file and
    position. Positions on the same server's binlog are comparable.
@@ -779,11 +810,12 @@ for **every** index, whichever checkpoint is older:
 If an InnoDB-stored index's start file was purged, the §5 check reports it and the
 index needs a rebuild; the other indexes are unaffected.
 
-- On any restart, takeover or claim, the listener starts its stream from
-  `ckpt_gtids`, using GTID-based `mysql_binlog_open()` (`MYSQL_RPL_GTID` and an
-  encoded GTID set; the listener calls `mysql_binlog_open()` at
-  `src/component_src/myvector_binlog_service.cc:2363` today, with file and
-  position).
+- On any restart, takeover or claim, the listener opens its stream **by file and
+  position** (as it does today with `mysql_binlog_open()`,
+  `src/component_src/myvector_binlog_service.cc:2363`), at the start computed
+  above. It never passes a GTID set to the server: a GTID filter shared by indexes
+  with different checkpoints could make the server drop a transaction one of them
+  needs. GTID sets are used only to compute the start and to skip events per index.
 - For `storage=innodb` indexes, whether an event is already in the index is
   decided by GTID-set membership, not by `isAfter()`. `isAfter()` compares binlog
   file names as strings, which is meaningless across servers: on a promoted replica
@@ -824,8 +856,8 @@ it didn't just write.
 | `innodb` | `active` | InnoDB |
 | `innodb` | `migrating_from_file`, or no row at all, and files exist | the files, then finish the migration. Standalone mode only: this server's files are its own. This also covers a replica that received the comment change through replication. |
 | `innodb` | `dropped` | nothing: the index was dropped |
-| `file` | `active` | InnoDB; then a real full save to this server's files, then set the row to `dropped` and use the files. Covers a replica that received the comment change, and a migration that stopped after step 2. In replicated mode a follower exports the writer's graph the same way and leaves the row to the writer. |
-| `file` | `migrating_from_file` | the files (a file → innodb migration that stopped before step 3); then set the row to `dropped` |
+| `file` | `active` | InnoDB; then a real full save to this server's files, then set the row to `dropped` and use the files. Covers a replica that received the comment change, and a migration that stopped after step 2. The exported file index's resume position is computed from `ckpt_gtids` by the *One stream, both backends* rule (§4.10), so the listener replays every change after the checkpoint from the local binlog. In replicated mode a follower exports the writer's graph the same way and leaves the row to the writer; this needs `log_replica_updates = ON` (which file-backed online indexes on a replica need anyway), and if it is off, or the replay start is purged, the follower refuses the export and the index must be rebuilt after the switch. |
+| `file` | `migrating_from_file` | **Writer** (or standalone): the files (a file → innodb migration that stopped before step 3); then set the row to `dropped`. **Follower** (replicated mode): its own file index, unchanged, and no write to the row. A follower can't write the row, and the writer may still be migrating; it switches to InnoDB only when the comment says `innodb` and the row is `active`. |
 | `file` | none or `dropped` | the files |
 
 A load never falls back to files when the comment says `innodb` and the row is
@@ -933,7 +965,7 @@ guards against future layout changes.
 5. **Transaction boundary:** fire the timer during a 10,000-row
    `INSERT ... SELECT`; kill and restart; every row is in the index.
 6. **Corruption and validation:** change one byte of a vector chunk, a links chunk
-   and the header; set the header's entry point and an `upper` node id out of range.
+   and the header; set the header's entry point and an `index_upper` node id out of range.
    Each load fails with a clear error, and nothing reads outside the graph.
 7. **Versioned checkpoints:** with `myvector_checkpoint_txn_bytes` small enough to
    force several transactions, the result equals a single-transaction checkpoint.
@@ -954,7 +986,10 @@ guards against future layout changes.
 12. **Schema:** two indexes whose names differ only in case stay separate; a
     194-character name works; `ckpt_time` past 2038 works; the install SQL works
     with `innodb_page_size = 4096`. A `mysqldump --hex-blob` of the largest
-    possible rows restores with the source's `max_allowed_packet`.
+    possible rows restores with the source's `max_allowed_packet`. With a
+    `max_allowed_packet` too small for one record, the build fails before writing.
+    A node promoted to a new top level changes only its `index_upper` row, and every
+    chunk keeps its node range.
 13. **Serialization:** start a full save while a timer checkpoint is mid-batch;
     one waits for the other, and the published index is consistent.
 14. **Build replay at capacity:** fill an index to `size=`, then insert and
@@ -963,11 +998,16 @@ guards against future layout changes.
 15. **Adjacency validation:** a links chunk with an oversized list count, a
     neighbor id out of range, or a neighbor at a lower level fails the load.
 16. **Mixed backends:** a file-backed and an InnoDB-stored online index, with the
-    InnoDB checkpoint older; restart; neither index misses a change.
+    InnoDB checkpoint older; restart; neither index misses a change. Restart with no
+    rotation since the checkpoint, and with only one retained binlog: the stream
+    starts in the current file.
 17. **Migration:** both directions, with a kill after each step; the load follows
     the table in §4.11 every time. A drop during a migration leaves nothing. A
     file → innodb → file round trip never loads stale files. On a replica that
-    receives the comment change, innodb → file exports its own index first.
+    receives the comment change, innodb → file exports its own index first and
+    replays the changes after the checkpoint. In replicated mode, a follower keeps
+    its file index during a file → innodb migration and switches only when the row
+    is `active`; with `log_replica_updates = OFF` it refuses the innodb → file export.
 18. **GTID mode off:** `storage=innodb` refuses to build or load, with a clear
     error.
 
