@@ -3,12 +3,24 @@
 
 namespace hnswlib {
 
+// See the note in space_l2.h: enable FP reassociation + vectorization for this
+// scalar inner-product reduction (used by Cosine/IP metrics) so GCC emits
+// NEON/SSE where the hand-written x86 SIMD paths aren't compiled in. Scoped via
+// push_options/pop_options; no finite-math assumption.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize("O3", "tree-vectorize", "associative-math", "no-signed-zeros", "no-trapping-math")
+#endif
     static float InnerProduct(const void* pVect1,
                               const void* pVect2,
                               const void* qty_ptr) {
         size_t qty = *((size_t*)qty_ptr);
         float res = 0;
-        for (unsigned i = 0; i < qty; i++) {
+        /* size_t (not unsigned) loop counter: with a 32-bit index against a
+         * 64-bit trip count GCC can't prove no wraparound and refuses to
+         * vectorize this reduction even under the pragma (verified: 0 vs 4 NEON
+         * ops). Matching L2Sqr's size_t index lets it emit NEON/SSE. */
+        for (size_t i = 0; i < qty; i++) {
             res += ((float*)pVect1)[i] * ((float*)pVect2)[i];
         }
         return res;
@@ -19,6 +31,9 @@ namespace hnswlib {
                                       const void* qty_ptr) {
         return 1.0f - InnerProduct(pVect1, pVect2, qty_ptr);
     }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
 
 #if defined(USE_AVX)
 

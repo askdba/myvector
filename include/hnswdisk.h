@@ -555,6 +555,13 @@ namespace hnswlib {
                 top_candidates.pop();
             }
 
+            // keepPrunedConnections: candidates rejected by the RNG diversity
+            // check are kept aside and used to fill the connection list back up
+            // to M. Without this a node can end up with far fewer than M links
+            // (aggressive pruning, worse at high dim), giving a sparser graph and
+            // lower recall-per-ef than pgvector/vsql. This matches upstream
+            // hnswlib's keepPrunedConnections=true.
+            std::vector<std::pair<dist_t, tableint>> pruned_list;
             while (queue_closest.size()) {
                 if (return_list.size() >= M)
                     break;
@@ -575,7 +582,17 @@ namespace hnswlib {
                 }
                 if (good) {
                     return_list.push_back(curent_pair);
+                } else {
+                    pruned_list.push_back(curent_pair);
                 }
+            }
+
+            // Fill up to M with the closest pruned candidates (they were visited
+            // closest-first, so pruned_list is already in that order).
+            for (std::pair<dist_t, tableint> curent_pair : pruned_list) {
+                if (return_list.size() >= M)
+                    break;
+                return_list.push_back(curent_pair);
             }
 
             for (std::pair<dist_t, tableint> curent_pair : return_list) {
