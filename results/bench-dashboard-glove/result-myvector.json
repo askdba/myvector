@@ -1,10 +1,10 @@
 {
   "version": "MyVector",
-  "container": "vdb-myvector",
-  "host_label": "",
+  "container": "bench-kpglove",
+  "host_label": "Ampere A2 (8 vCPU / 24 GB), engine-isolated",
   "arch": "aarch64",
-  "timestamp": "2026-11-04T17:20:24.398031+00:00",
-  "dataset": "glove-100-angular.hdf5",
+  "timestamp": "2026-11-06T15:25:47.703866+00:00",
+  "dataset": "glove-100-angular",
   "rows_indexed": 1183514,
   "query_set": "held-out test set (published)",
   "recall_ground_truth": "published",
@@ -16,83 +16,69 @@
     "distance": "Cosine",
     "holdout_queries": 1000
   },
-  "wall_seconds": 3745.0,
+  "wall_seconds": 3171.6,
   "metrics": {
-    "index_build_time_s": 2631.6004433631897,
-    "insert_qps": 3190.7103442888183,
-    "knn_qps": 0.07215547600173808,
-    "knn_p50_ms": 13864.222,
-    "knn_p99_ms": 14099.719000000001,
-    "knn_ann_qps": 233.6923626998946,
-    "knn_ann_p50_ms": 4.256,
-    "knn_ann_p99_ms": 6.288,
+    "index_build_time_s": 1886.7917754650116,
+    "insert_qps": 3188.2780180240557,
+    "knn_qps": 0.0971615036235489,
+    "knn_p50_ms": 10295.055,
+    "knn_p99_ms": 10448.788,
+    "knn_ann_qps": 128.6540980189842,
+    "knn_ann_p50_ms": 7.677,
+    "knn_ann_p99_ms": 10.58,
     "ann_rewrite_active": true,
-    "recall_at_10": 0.8671,
+    "recall_at_10": 0.8712000000000001,
     "ef_search_sweep": [
       {
         "ef_search": 10,
-        "recall_at_10": 0.4706,
-        "qps": 778.1241294736301,
-        "p50_ms": 1.245,
-        "p99_ms": 1.7650000000000001
+        "recall_at_10": 0.4953333333333333,
+        "qps": 906.0022650056625,
+        "p50_ms": 1.038,
+        "p99_ms": 1.434
       },
       {
         "ef_search": 20,
-        "recall_at_10": 0.5866,
-        "qps": 635.7836860449296,
-        "p50_ms": 1.5215,
-        "p99_ms": 2.15
+        "recall_at_10": 0.6083333333333333,
+        "qps": 842.6800596617481,
+        "p50_ms": 1.1260000000000001,
+        "p99_ms": 1.596
       },
       {
         "ef_search": 50,
-        "recall_at_10": 0.7358,
-        "qps": 499.3154385337702,
-        "p50_ms": 1.9369999999999998,
-        "p99_ms": 3.081
+        "recall_at_10": 0.728,
+        "qps": 600.8207211050294,
+        "p50_ms": 1.5935,
+        "p99_ms": 2.535
       },
       {
         "ef_search": 100,
-        "recall_at_10": 0.8122,
-        "qps": 373.0708506313851,
-        "p50_ms": 2.6565000000000003,
-        "p99_ms": 3.871
+        "recall_at_10": 0.811,
+        "qps": 477.6241066439105,
+        "p50_ms": 2.0575,
+        "p99_ms": 2.972
       },
       {
         "ef_search": 200,
-        "recall_at_10": 0.8654,
-        "qps": 251.81977560843436,
-        "p50_ms": 4.045999999999999,
-        "p99_ms": 5.446000000000001
+        "recall_at_10": 0.8686666666666667,
+        "qps": 286.80578659355035,
+        "p50_ms": 3.4385000000000003,
+        "p99_ms": 4.916
       },
       {
         "ef_search": 400,
-        "recall_at_10": 0.914,
-        "qps": 146.32864359785844,
-        "p50_ms": 6.955500000000001,
-        "p99_ms": 9.297
+        "recall_at_10": 0.915,
+        "qps": 206.3543379121068,
+        "p50_ms": 4.8855,
+        "p99_ms": 7.541
       },
       {
         "ef_search": 800,
-        "recall_at_10": 0.9458,
-        "qps": 84.23095453886921,
-        "p50_ms": 12.1605,
-        "p99_ms": 16.732
-      },
-      {
-        "ef_search": 1600,
-        "recall_at_10": 0.97,
-        "qps": 49.14595631494577,
-        "p50_ms": 20.7025,
-        "p99_ms": 28.9
-      },
-      {
-        "ef_search": 3200,
-        "recall_at_10": 0.9848,
-        "qps": 27.469878591377586,
-        "p50_ms": 37.3895,
-        "p99_ms": 51.244
+        "recall_at_10": 0.9470000000000001,
+        "qps": 129.55437613090174,
+        "p50_ms": 7.8355,
+        "p99_ms": 10.462000000000002
       }
     ]
   },
-  "label": "MyVector \u00b7 MySQL 8.4"
+  "label": "MyVector \u00b7 MySQL 8.4 (PR #278: NEON+keepPruned)"
 }
