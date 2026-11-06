@@ -202,6 +202,17 @@ Measured on MySQL 26.10.0, aarch64 (16 cores, a shared host), `oltp_point_select
 
 Most of the cost is MySQL's event-tracking dispatch for the event classes the guard needs (query, table access), not guard code, which adds about 0.6%. With `oltp_read_write` (many statements per transaction) the guard costs about 2.6% CPU per transaction and under 1% TPS. **Status of the criterion:** p99 medians are within noise on this host (single pairs vary by ±5–15%), so p99 cannot be resolved to 1% here, and the point-select CPU cost (about 2.3%) is above 1%. Deciding it needs a dedicated amd64 host and a load client that records exact per-query latencies, as sysbench's histogram cannot resolve a 1% p99 change ([#256](https://github.com/askdba/myvector/issues/256)).
 
+#### Why the guard does not subscribe only while MCP sessions are connected
+
+Most of the remaining cost is MySQL's event dispatch, which every statement pays as long as some component subscribes to query and table-access events. Subscribing only while MCP sessions are connected was investigated on MySQL 26.10.0 and rejected:
+
+- **No in-place toggle.** The server builds its event channels privately (`g_event_channels` in `mysqld`), so a component cannot reach their ignore lists. Registering a service implementation at runtime does not notify the channels, so sessions never see it.
+- **Loading a separate consumer component works**, through the public `mysql_dynamic_loader` service, even from inside a connection-event callback. Sessions already connected start (and, after an unload, stop) paying the dispatch cost.
+- **Unloading it is not safe.** From inside an event callback, `mysqld` crashed (SIGSEGV): the unload notification flushes the calling session's reference caches while its own dispatch is iterating them. From outside a callback, the unload races with busy sessions that still hold cached references: it can fail with error 3540 (a service unregistration failed during the unload), which can leave the component partly unregistered. Neither is acceptable for a security component.
+- **The gain would be limited anyway.** While any MCP session is connected, all traffic pays, and the server builds each event's data (including the query text) before the consumer filters subclasses, so a consumer cannot make its own subscriptions cheaper.
+
+The guard therefore keeps static subscriptions. A lower cost would need a server change, for example letting consumers declare the subclasses they want so the server skips building events no one reads, or a per-session subscription.
+
 ## component_mcp (Phase 4 spike)
 
 An MCP **Streamable HTTP** endpoint (JSON-RPC 2.0 over `POST /mcp`) inside `mysqld`. It runs on MySQL Router's HTTP server, the libraries `component_mysql_rest_service` links (RFC 0001 §5.3). This is the Phase 4 build spike and is **not for production**. It is limited to the following:
