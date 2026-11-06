@@ -16,7 +16,11 @@ namespace hnswlib {
                               const void* qty_ptr) {
         size_t qty = *((size_t*)qty_ptr);
         float res = 0;
-        for (unsigned i = 0; i < qty; i++) {
+        /* size_t (not unsigned) loop counter: with a 32-bit index against a
+         * 64-bit trip count GCC can't prove no wraparound and refuses to
+         * vectorize this reduction even under the pragma (verified: 0 vs 4 NEON
+         * ops). Matching L2Sqr's size_t index lets it emit NEON/SSE. */
+        for (size_t i = 0; i < qty; i++) {
             res += ((float*)pVect1)[i] * ((float*)pVect2)[i];
         }
         return res;
