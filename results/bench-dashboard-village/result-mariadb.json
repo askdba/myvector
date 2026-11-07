@@ -1,0 +1,57 @@
+{
+  "version": "MariaDB",
+  "label": "MariaDB 12.3 \u00b7 MHNSW",
+  "timestamp": "2026-11-03T05:06:18.713635+00:00",
+  "dataset": "fashion-mnist-784",
+  "rows_indexed": 60000,
+  "recall_ground_truth": "published",
+  "harness": "vector-dev-bench (recall_bench)",
+  "workload": {
+    "rows": 60000,
+    "dim": 784,
+    "distance": "L2"
+  },
+  "metrics": {
+    "index_build_time_s": 165.72,
+    "ef_search_excluded": [
+      {
+        "ef_search": 10,
+        "recall_at_10": 0.9983,
+        "qps": 653.3,
+        "reason": "ef_search=10 is below MariaDB's enforced mhnsw_ef_search floor (~2*M=32). At this sub-floor request MariaDB hits a cold edge path that measures QPS lower than its ef_search=20 point despite doing less search work (a physical inversion), so it is not a valid operating point. Retained here for transparency, omitted from the plotted sweep and the matched-recall table. Other engines apply no ef_search floor, so their ef=10 points are kept."
+      }
+    ],
+    "ef_search_sweep": [
+      {
+        "ef_search": 20,
+        "recall_at_10": 0.9996,
+        "qps": 1074.1
+      },
+      {
+        "ef_search": 50,
+        "recall_at_10": 0.9998,
+        "qps": 732.9
+      },
+      {
+        "ef_search": 100,
+        "recall_at_10": 0.9998,
+        "qps": 542.3
+      },
+      {
+        "ef_search": 200,
+        "recall_at_10": 0.9999,
+        "qps": 382.7
+      },
+      {
+        "ef_search": 400,
+        "recall_at_10": 1.0,
+        "qps": 264.4
+      },
+      {
+        "ef_search": 800,
+        "recall_at_10": 1.0,
+        "qps": 174.3
+      }
+    ]
+  }
+}

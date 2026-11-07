@@ -1,0 +1,84 @@
+{
+  "version": "MyVector",
+  "container": "bench-kp",
+  "host_label": "myvector-dev (A1 16/96)",
+  "arch": "aarch64",
+  "timestamp": "2026-11-06T14:02:06.733277+00:00",
+  "dataset": "fashion-mnist-784",
+  "rows_indexed": 60000,
+  "query_set": "held-out test set (published)",
+  "recall_ground_truth": "published",
+  "workload": {
+    "rows": 60000,
+    "dim": 784,
+    "M": 16,
+    "ef_construction": 200,
+    "distance": "L2",
+    "holdout_queries": 1000
+  },
+  "wall_seconds": 286.3,
+  "metrics": {
+    "index_build_time_s": 67.5284309387207,
+    "insert_qps": 1135.922715694155,
+    "knn_qps": 0.5744757945715461,
+    "knn_p50_ms": 1726.9610000000002,
+    "knn_p99_ms": 2153.585,
+    "knn_ann_qps": 103.95593931468086,
+    "knn_ann_p50_ms": 9.540000000000001,
+    "knn_ann_p99_ms": 13.350000000000001,
+    "ann_rewrite_active": true,
+    "recall_at_10": 0.9997,
+    "ef_search_sweep": [
+      {
+        "ef_search": 10,
+        "recall_at_10": 0.9706666666666667,
+        "qps": 602.0687080809662,
+        "p50_ms": 1.6315,
+        "p99_ms": 1.7830000000000001
+      },
+      {
+        "ef_search": 20,
+        "recall_at_10": 0.9916666666666667,
+        "qps": 585.2139834930642,
+        "p50_ms": 1.6800000000000002,
+        "p99_ms": 1.88
+      },
+      {
+        "ef_search": 50,
+        "recall_at_10": 0.999,
+        "qps": 530.7771107678752,
+        "p50_ms": 1.85,
+        "p99_ms": 2.111
+      },
+      {
+        "ef_search": 100,
+        "recall_at_10": 0.9996666666666666,
+        "qps": 474.89168512148524,
+        "p50_ms": 2.0774999999999997,
+        "p99_ms": 2.4229999999999996
+      },
+      {
+        "ef_search": 200,
+        "recall_at_10": 1.0,
+        "qps": 409.19488179041855,
+        "p50_ms": 2.4145,
+        "p99_ms": 2.9650000000000003
+      },
+      {
+        "ef_search": 400,
+        "recall_at_10": 1.0,
+        "qps": 337.81082818828673,
+        "p50_ms": 2.8955,
+        "p99_ms": 3.663
+      },
+      {
+        "ef_search": 800,
+        "recall_at_10": 1.0,
+        "qps": 259.103157603814,
+        "p50_ms": 3.8200000000000003,
+        "p99_ms": 4.928
+      }
+    ]
+  },
+  "label": "MyVector \u00b7 MySQL 8.4 \u00b7 PR #278 (NEON+keepPruned)"
+}

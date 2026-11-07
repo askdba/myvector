@@ -1,0 +1,5 @@
+{
+  "title": "MyVector — MySQL version comparison",
+  "subtitle": "MySQL 8.4 vs 9.7 vs 26.10 · HNSW vector search (synthetic 50k×128)",
+  "nav": "<a href=\"/\">← cross-engine (MyVector vs vsql_vector vs pgvector vs MariaDB)</a> · <a href=\"/real/\">real-dataset →</a>"
+}
