@@ -37,18 +37,25 @@ footer{color:var(--muted);font-size:12.5px;margin-top:10px}
 <body>
 <div class="wrap">
   <h1>MyVector — executive benchmark summary</h1>
-  <p class="sub">Native vector search (HNSW) for MySQL, benchmarked head-to-head vs vsql_vector, pgvector &amp; MariaDB · 2026-11-08 20:56 UTC</p>
+  <p class="sub">Native vector search (HNSW) for MySQL, benchmarked head-to-head vs vsql_vector, pgvector &amp; MariaDB · 2026-11-09 08:51 UTC</p>
   <p class="sub" style="margin-top:-6px"><a href="/fair/">fair same-host</a> · <a href="/">cross-engine</a> · <a href="/real/">by version</a> · <a href="/glove/">glove 1.2M</a> · <a href="/village/">neutral harness</a> · <a href="/x86/">x86 / cross-ISA</a></p>
 
-  <p class="desc"><b>Bottom line:</b> after two shipped optimizations, MyVector's HNSW is <b>competitive-to-leading at matched recall</b> against VillageSQL's <code>vsql_vector</code>, <code>pgvector</code>, and MariaDB's native vector index — on real ann-benchmarks datasets scored against <b>published</b> ground truth, measured on the same hardware and, for cross-checking, through a neutral third-party harness. The results below are reported with their caveats intact, including where MyVector still trails.</p>
+  <p class="desc"><b>Bottom line:</b> MyVector's HNSW is the <b>clear leader at scale</b> and <b>competitive on smaller sets</b>, benchmarked against VillageSQL's <code>vsql_vector</code>, <code>pgvector</code>, and MariaDB's native vector index on real ann-benchmarks datasets scored vs <b>published</b> ground truth. It's not the fastest on every point — pgvector and MariaDB lead at relaxed recall on the easy 60k dataset — and those results are shown here with their caveats intact.</p>
 
-  <h2>The four takeaways</h2>
+  <h2>Headline: recall vs throughput, same host</h2>
+  <p class="desc" style="margin-top:0">fashion-mnist-784, four engines, one Ampere A1 host, recall@10 vs published ground truth. <b>Up and to the right is better.</b> Each line is an <code>ef_search</code> sweep: as recall rises, throughput falls. MyVector's curve is <b>flatter into the high-recall region</b> (it gives up less QPS to reach recall 1.0, beating pgvector/vsql there), while pgvector &amp; vsql are faster at relaxed recall (~0.99) and MariaDB is fast on this small set — but MariaDB <a href="/glove/">cannot build the 1.2M glove index</a>.</p>
+  <div style="position:relative;height:340px;margin:8px 0 4px">
+    <canvas id="heroChart"></canvas>
+  </div>
+  <p class="sub" style="margin-top:0">Source: <a href="/fair/">/fair/</a> same-host measured ef_search sweep (M=16, ef_construction=200). Log QPS axis.</p>
+
+  <h2>What the full report shows</h2>
   <table>
     <thead><tr><th>#</th><th>Finding</th><th>Evidence</th></tr></thead>
     <tbody>
-      <tr><td>1</td><td><b>MyVector leads or ties at high recall on the same host.</b> At recall 0.999 it serves the most QPS of the four engines; it wins outright at recall 1.0.</td><td><a href="/fair/">/fair/</a> (A1, same-host 4-way)</td></tr>
-      <tr><td>2</td><td><b>It scales where others don't.</b> On glove-100 (1.18M, cosine) MyVector builds in ~46&nbsp;min and dominates matched-recall QPS; vsql's build is super-linear (~7&nbsp;h) and MariaDB cannot build the index within <b>10&nbsp;h</b> (measured, excluded).</td><td><a href="/glove/">/glove/</a></td></tr>
-      <tr><td>3</td><td><b>The win reproduces in a neutral harness.</b> The same recall/QPS advantage shows up through VillageSQL's own <code>vector-dev-bench</code>, not just MyVector's harness — so it isn't a measurement artifact.</td><td><a href="/village/">/village/</a></td></tr>
+      <tr><td>1</td><td><b>Clear lead at scale.</b> On glove-100 (1.18M, cosine) MyVector builds in ~46&nbsp;min and serves the most QPS at matched recall; vsql's build is super-linear (~7&nbsp;h) and MariaDB <b>cannot build the index within 10&nbsp;h</b> (measured, excluded).</td><td><a href="/glove/">/glove/</a></td></tr>
+      <tr><td>2</td><td><b>Competitive on the small same-host 4-way.</b> At recall 0.999 MyVector (531 QPS) sits with vsql (533) just behind pgvector (623); at recall 1.0 it serves more QPS than pgvector &amp; vsql (475 vs 272 &amp; 258). pgvector/vsql lead at relaxed recall (~0.99); MariaDB is fastest on this easy set.</td><td><a href="/fair/">/fair/</a></td></tr>
+      <tr><td>3</td><td><b>The comparison reproduces in a neutral harness</b> — VillageSQL's own <code>vector-dev-bench</code>, not just MyVector's — so it isn't a measurement artifact.</td><td><a href="/village/">/village/</a></td></tr>
       <tr><td>4</td><td><b>The speedups are hardware-general.</b> The vectorized distance kernels reproduce on AMD (9.4×), Intel (4.2×) and ARM/NEON (3.8×) silicon.</td><td><a href="/x86/">/x86/</a></td></tr>
     </tbody>
   </table>
@@ -57,26 +64,26 @@ footer{color:var(--muted);font-size:12.5px;margin-top:10px}
   <table>
     <thead><tr><th>Change</th><th>What</th><th>Measured effect</th><th>Status</th></tr></thead>
     <tbody>
-      <tr><td><a href="https://github.com/askdba/myvector/pull/278">PR&nbsp;#278</a></td><td>Vectorized the scalar HNSW distance kernels (L2/IP/cosine) + <code>keepPrunedConnections</code> in graph construction</td><td>Build 1.8–2.6× faster; <b>recall-per-ef lifted onto pgvector's curve</b> (the recall-efficiency gap closed)</td><td><b>Merged to main</b></td></tr>
-      <tr><td><a href="https://github.com/askdba/myvector/pull/280">PR&nbsp;#280</a></td><td>Removed a <code>std::regex</code> pass over the query-vector literal in the ANN query rewrite</td><td><b>+48% to +80% QPS at low ef_search</b>, identical recall (same-host A/B)</td><td><b>Merged to main</b></td></tr>
-      <tr><td><a href="https://github.com/askdba/myvector/pull/281">RFC&nbsp;#281</a></td><td>Design to remove the remaining JSON_TABLE round-trip (~0.28&nbsp;ms/query) via a native result set</td><td>Est. further +20–40% at low ef (to be confirmed)</td><td>Draft / design review</td></tr>
+      <tr><td><a href="https://github.com/askdba/myvector/pull/278">PR&nbsp;#278</a></td><td>Vectorized the scalar HNSW distance kernels (L2/IP/cosine) + <code>keepPrunedConnections</code> in graph construction</td><td>Build 1.8–2.6× faster; <b>recall-per-ef lifted onto pgvector's curve</b></td><td><b>Merged to main</b></td></tr>
+      <tr><td><a href="https://github.com/askdba/myvector/pull/280">PR&nbsp;#280</a></td><td>Removed a <code>std::regex</code> pass over the query-vector literal in the ANN rewrite</td><td><b>+48% to +80% QPS at low ef_search</b>, identical recall (same-host A/B)</td><td><b>Merged to main</b></td></tr>
+      <tr><td><a href="https://github.com/askdba/myvector/pull/281">RFC&nbsp;#281</a></td><td>Design to remove the remaining JSON_TABLE round-trip (~0.28&nbsp;ms/query)</td><td>Est. further +20–40% at low ef (to be confirmed)</td><td>Design review</td></tr>
     </tbody>
   </table>
 
   <h2>What we tested</h2>
   <ul class="caveats">
     <li><b>Engines:</b> MyVector (MySQL 8.4/9.7/26.10 component), VillageSQL <code>vsql_vector</code>, <code>pgvector</code> (Postgres&nbsp;17), MariaDB&nbsp;12.3 native vector index.</li>
-    <li><b>Datasets:</b> <code>fashion-mnist-784-euclidean</code> (60k×784, L2), <code>nytimes-256-angular</code> (290k×256, cosine), <code>glove-100-angular</code> (1.18M×100, cosine) — ann-benchmarks HDF5, recall@10 vs the datasets' <b>published</b> exact neighbors.</li>
+    <li><b>Datasets:</b> <code>fashion-mnist-784</code> (60k×784, L2), <code>nytimes-256</code> (290k×256, cosine), <code>glove-100</code> (1.18M×100, cosine) — ann-benchmarks HDF5, recall@10 vs the datasets' <b>published</b> exact neighbors.</li>
     <li><b>Method:</b> HNSW M=16, ef_construction=200 (where tunable); server-side query timing; recall/throughput <b>ef_search sweeps</b>; engine-isolated or same-host as each page states; two harnesses (MyVector's and VillageSQL's neutral one) for cross-validation.</li>
     <li><b>Hardware:</b> Ampere A1/A2 (arm64) for the engine comparisons; AMD EPYC &amp; Intel Xeon (x86) via CI runners for the cross-ISA kernel validation.</li>
   </ul>
 
   <h2>Honest caveats (the unbiased part)</h2>
   <ul class="caveats">
-    <li><b>Where MyVector still trails:</b> at the very lowest ef_search operating points, per-query execution overhead leaves pgvector ahead on raw QPS. PR&nbsp;#280 cut most of it; the remainder is architectural (<a href="https://github.com/askdba/myvector/pull/281">RFC&nbsp;#281</a>) plus MySQL's inherent text-literal lexing, which every engine pays equally in these tests.</li>
-    <li><b>MariaDB on glove-100 is excluded</b> — not omitted, but <b>measured</b>: its online MHNSW build did not complete within a 10&nbsp;h cap at 1.18M rows (insert rate decays as the graph grows). It appears on the smaller fashion-mnist pages where its build does complete.</li>
-    <li><b>Neutral-harness scope:</b> the <a href="/village/">/village/</a> page deliberately shows only what one tool measures for all four engines (recall/QPS/build); insert and exact-KNN live on the per-engine pages, to keep that comparison apples-to-apples.</li>
-    <li><b>x86 end-to-end</b> numbers come from shared CI runners (indicative throughput, valid same-runner kernel A/B); a persistent dedicated x86 host for a same-host end-to-end A/B was out of scope on cost.</li>
+    <li><b>Where MyVector trails:</b> at relaxed recall (~0.99) on the small dataset, pgvector and vsql serve more QPS; per-query execution overhead is the cause. PR&nbsp;#280 cut most of it; the remainder is architectural (<a href="https://github.com/askdba/myvector/pull/281">RFC&nbsp;#281</a>) plus MySQL's inherent text-literal lexing, which every engine pays equally here.</li>
+    <li><b>MariaDB is fast on fashion-mnist but excluded from glove-100</b> — not omitted, but <b>measured</b>: its online MHNSW build did not complete within a 10&nbsp;h cap at 1.18M rows. It appears on the fashion-mnist pages where its build completes.</li>
+    <li><b>Neutral-harness scope:</b> the <a href="/village/">/village/</a> page deliberately shows only what one tool measures for all four engines; insert and exact-KNN live on the per-engine pages, to keep that comparison apples-to-apples.</li>
+    <li><b>x86 end-to-end</b> numbers come from shared CI runners (indicative throughput; valid same-runner kernel A/B); a persistent dedicated x86 host for a same-host end-to-end A/B was out of scope on cost.</li>
   </ul>
 
   <h2>Read the detailed reports</h2>
@@ -88,5 +95,34 @@ footer{color:var(--muted);font-size:12.5px;margin-top:10px}
     <li><a href="/x86/">/x86/</a> — cross-ISA kernel + x86 end-to-end validation</li>
   </ul>
 </div>
+<script src="chart.umd.min.js"></script>
+<script>
+(function(){
+  try {
+    if (typeof Chart === 'undefined') return;
+    var el = document.getElementById('heroChart');
+    if (!el) return;
+    var dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+               && !document.documentElement.getAttribute('data-theme');
+    var light = document.documentElement.getAttribute('data-theme') === 'light';
+    var ink = (dark && !light) ? '#c9d4e3' : '#333';
+    var grid = (dark && !light) ? 'rgba(200,210,225,0.12)' : 'rgba(0,0,0,0.08)';
+    new Chart(el.getContext('2d'), {
+      type:'scatter',
+      data:{ datasets:[{label:'MyVector',borderColor:'#4f9dff',backgroundColor:'#4f9dff',showLine:true,pointRadius:3,borderWidth:2,tension:0.2,data:[{x:0.971,y:602},{x:0.992,y:585},{x:0.999,y:531},{x:1.0,y:475},{x:1.0,y:409},{x:1.0,y:338},{x:1.0,y:259}]},{label:'vsql_vector',borderColor:'#f0a93b',backgroundColor:'#f0a93b',showLine:true,pointRadius:3,borderWidth:2,tension:0.2,data:[{x:0.974,y:1202},{x:0.993,y:1020},{x:0.998,y:744},{x:0.999,y:533},{x:0.999,y:386},{x:1.0,y:258},{x:1.0,y:167}]},{label:'pgvector',borderColor:'#36c98d',backgroundColor:'#36c98d',showLine:true,pointRadius:3,borderWidth:2,tension:0.2,data:[{x:0.974,y:1415},{x:0.993,y:1154},{x:0.998,y:834},{x:0.999,y:623},{x:0.999,y:421},{x:1.0,y:272},{x:1.0,y:162}]},{label:'MariaDB',borderColor:'#a56bd8',backgroundColor:'#a56bd8',showLine:true,pointRadius:3,borderWidth:2,tension:0.2,data:[{x:0.999,y:1263},{x:1.0,y:992},{x:1.0,y:792},{x:1.0,y:585},{x:1.0,y:439},{x:1.0,y:299}]}] },
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{ labels:{ color:ink, usePointStyle:true } } },
+        scales:{
+          x:{ min:0.965, max:1.003, title:{display:true,text:'recall@10  (higher → better)',color:ink},
+               ticks:{color:ink}, grid:{color:grid} },
+          y:{ type:'logarithmic', title:{display:true,text:'QPS  (higher ↑ better)',color:ink},
+               ticks:{color:ink}, grid:{color:grid} }
+        }
+      }
+    });
+  } catch(e) {}
+})();
+</script>
 </body>
 </html>
