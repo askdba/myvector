@@ -17,6 +17,10 @@ Checks:
      silently returning no rows.
   C. Control: with the files restored, MYVECTOR_INDEX_LOAD reports SUCCESS and
      the search returns rows.
+  D. Plugin only (its myvector_index_dir can be changed at runtime): the index
+     files exist but their directory can't be traversed (EACCES). The load must
+     report an error, not start an empty index and report SUCCESS. Only a
+     missing file (ENOENT) means "no saved index".
 
 Usage:
   python3 scripts/test-unloaded-index.py --plugin-dir dist/plugin-8.4
@@ -55,9 +59,10 @@ def main():
     ap.add_argument("--image", default="mysql:8.4")
     ap.add_argument("--keep", action="store_true",
                     help="keep the container for debugging")
-    ap.add_argument("--cases", default="ABC",
-                    help="which checks to run (default ABC). Without the fix,"
-                         " A crashes the server, so use --cases BC to see B")
+    ap.add_argument("--cases", default="ABCD",
+                    help="which checks to run (default ABCD; D is plugin"
+                         " only). Without the fix, A crashes the server, so use"
+                         " --cases BC to see B")
     args = ap.parse_args()
 
     component = bool(args.component_dir)
@@ -116,35 +121,23 @@ def main():
             for i in range(1, ROWS + 1))
         srv.sql(f"INSERT INTO {name} VALUES {values};")
 
-    try:
-        srv.wait_ready()
-        if component:
-            idle.install_component(srv, args.component_dir)
-        else:
-            idle.install_plugin(srv, args.plugin_dir)
-        srv.sql("CREATE DATABASE vtest;", db=None)
+    def case_a():
+        """Registered by MYVECTOR_INDEX_STATUS, never built or loaded."""
+        create_table("u")
+        fill("u")
+        run("CALL mysql.myvector_index_status('vtest.u.v');")
+        rc, out, err = search("vtest.u.v")
+        record("A1. server survives a search on an index with no graph",
+               alive(), f"rc={rc} err={err[:160]!r}")
+        record("A2. the search fails with an error naming the index",
+               rc != 0 and "vtest.u.v" in err,
+               f"rc={rc} out={out[:80]!r} err={err[:160]!r}")
 
-        # --- A. registered by MYVECTOR_INDEX_STATUS, never built or loaded ---
-        if "A" in args.cases:
-            create_table("u")
-            fill("u")
-            run("CALL mysql.myvector_index_status('vtest.u.v');")
-            rc, out, err = search("vtest.u.v")
-            record("A1. server survives a search on an index with no graph",
-                   alive(), f"rc={rc} err={err[:160]!r}")
-            record("A2. the search fails with an error naming the index",
-                   rc != 0 and "vtest.u.v" in err,
-                   f"rc={rc} out={out[:80]!r} err={err[:160]!r}")
-            if "B" not in args.cases and "C" not in args.cases:
-                raise SystemExit
-
-        # --- B. corrupt files: the load must fail, not report SUCCESS ---
-        if "B" not in args.cases and "C" not in args.cases:
-            raise SystemExit
+    def case_bc():
+        """B: corrupt files must fail the load. C: restored files load again."""
         create_table("t")
         fill("t")
-        rc, out, err = run(
-            f"CALL mysql.myvector_index_build('{INDEX}','id');")
+        rc, out, err = run(f"CALL mysql.myvector_index_build('{INDEX}','id');")
         record("setup: index builds", rc == 0 and out.startswith("SUCCESS"),
                f"rc={rc} out={out[:80]!r} err={err[:160]!r}")
         rc, out, err = search()
@@ -159,33 +152,77 @@ def main():
             # Truncate the index file to its header: the loader rejects it.
             idle.sh(["docker", "exec", srv.name, "truncate", "-s", "96",
                      indexfile])
-
             rc, out, err = run(f"CALL mysql.myvector_index_load('{INDEX}');")
-            record("B1. a load from corrupt files does not report SUCCESS",
-                   not out.startswith("SUCCESS"),
-                   f"rc={rc} out={out[:120]!r} err={err[:160]!r}")
-            record("B2. server survives the failed load", alive(),
-                   "mysqladmin ping")
-            rc, out, err = search()
-            record("B3. a search after the failed load fails with an error",
-                   rc != 0 and INDEX in err,
-                   f"rc={rc} out={out[:80]!r} err={err[:160]!r}")
-            record("B4. server survives that search", alive(), "mysqladmin ping")
+            if "B" in args.cases:
+                # The load reports its failure as a status row, not an SQL error.
+                record("B1. a load from corrupt files reports the load error",
+                       out.startswith("ERROR:")
+                       and "could not be loaded" in out and INDEX in out,
+                       f"rc={rc} out={out[:120]!r} err={err[:160]!r}")
+                record("B2. server survives the failed load", alive(),
+                       "mysqladmin ping")
+                rc, out, err = search()
+                record("B3. a search after the failed load fails with an error",
+                       rc != 0 and INDEX in err,
+                       f"rc={rc} out={out[:80]!r} err={err[:160]!r}")
+                record("B4. server survives that search", alive(),
+                       "mysqladmin ping")
+            if "C" in args.cases:
+                idle.sh(["docker", "cp", backup, f"{srv.name}:{indexfile}"])
+                idle.sh(["docker", "exec", srv.name, "chown", "mysql:mysql",
+                         indexfile])
+                rc, out, err = run(
+                    f"CALL mysql.myvector_index_load('{INDEX}');")
+                record("C1. a load from good files reports SUCCESS",
+                       rc == 0 and out.startswith("SUCCESS"),
+                       f"rc={rc} out={out[:80]!r} err={err[:160]!r}")
+                rc, out, err = search()
+                record("C2. the search returns rows again",
+                       rc == 0 and out.startswith("[") and out != "[]",
+                       f"rc={rc} out={out[:80]!r} err={err[:160]!r}")
 
-            # --- C. control: restore the files and load again ---
-            idle.sh(["docker", "cp", backup, f"{srv.name}:{indexfile}"])
-            idle.sh(["docker", "exec", srv.name, "chown", "mysql:mysql",
-                     indexfile])
-            rc, out, err = run(f"CALL mysql.myvector_index_load('{INDEX}');")
-            record("C1. a load from good files reports SUCCESS",
-                   rc == 0 and out.startswith("SUCCESS"),
-                   f"rc={rc} out={out[:80]!r} err={err[:160]!r}")
-            rc, out, err = search()
-            record("C2. the search returns rows again",
-                   rc == 0 and out.startswith("[") and out != "[]",
-                   f"rc={rc} out={out[:80]!r} err={err[:160]!r}")
-    except SystemExit:
-        pass
+    def case_d():
+        """Plugin only: files exist, but their directory can't be traversed."""
+        sub = "/var/lib/mysql/myvidx"
+        idle.sh(["docker", "exec", srv.name, "bash", "-c",
+                 f"mkdir -p {sub} && chown mysql:mysql {sub}"])
+        srv.sql(f"SET GLOBAL myvector_index_dir='{sub}';", db=None)
+        create_table("d")
+        fill("d")
+        rc, out, err = run("CALL mysql.myvector_index_build('vtest.d.v','id');")
+        record("D0. index builds in the subdirectory",
+               rc == 0 and out.startswith("SUCCESS"),
+               f"rc={rc} out={out[:80]!r} err={err[:160]!r}")
+        idle.sh(["docker", "exec", srv.name, "chmod", "000", sub])
+        rc, out, err = run("CALL mysql.myvector_index_load('vtest.d.v');")
+        record("D1. a load whose files can't be reached reports an error",
+               out.startswith("ERROR:") and "vtest.d.v" in out,
+               f"rc={rc} out={out[:120]!r} err={err[:160]!r}")
+        rc, out, err = search("vtest.d.v")
+        record("D2. the search fails with an error, not an empty result",
+               rc != 0 and "vtest.d.v" in err,
+               f"rc={rc} out={out[:80]!r} err={err[:160]!r}")
+        idle.sh(["docker", "exec", srv.name, "chmod", "750", sub])
+        record("D3. server survives", alive(), "mysqladmin ping")
+
+    try:
+        srv.wait_ready()
+        if component:
+            idle.install_component(srv, args.component_dir)
+        else:
+            idle.install_plugin(srv, args.plugin_dir)
+        srv.sql("CREATE DATABASE vtest;", db=None)
+
+        if "A" in args.cases:
+            case_a()
+        if "B" in args.cases or "C" in args.cases:
+            case_bc()
+        if "D" in args.cases:
+            if component:
+                print("[SKIP] D: plugin only (the component's index directory"
+                      " is fixed at startup)")
+            else:
+                case_d()
     except Exception as e:  # noqa: BLE001 - report and fail
         record("test ran to completion", False, repr(e))
     finally:

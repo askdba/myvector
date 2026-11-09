@@ -977,11 +977,20 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
      * that was never built, for example). Files that exist but can't be loaded
      * are: the index is left with no graph, so searches fail with an error
      * instead of silently returning nothing, and the caller reports it (#265).
-     * Checked before getSpace(): initIndex() allocates its own space. */
+     * Checked before getSpace(): initIndex() allocates its own space. Only
+     * ENOENT means "no saved index": EACCES, EIO etc. on files that may exist
+     * are a failed load, not an empty index. */
     if (access(indexfile.c_str(), F_OK) != 0) {
-        MYVEC_LOG_INFO("No saved HNSW index for %s (%s); starting empty.",
-                       m_name.c_str(), indexfile.c_str());
-        return initIndex();
+        int access_errno = errno;
+        if (access_errno == ENOENT) {
+            MYVEC_LOG_INFO("No saved HNSW index for %s (%s); starting empty.",
+                           m_name.c_str(), indexfile.c_str());
+            return initIndex();
+        }
+        MYVEC_LOG_ERROR("Cannot access HNSW index file for %s (%s): %s",
+                        m_name.c_str(), indexfile.c_str(),
+                        strerror(access_errno));
+        return false;
     }
 
     m_space = getSpace(m_dim);
