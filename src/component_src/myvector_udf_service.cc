@@ -186,6 +186,10 @@ bool myvector_ann_set_init(UDF_INIT* initid, UDF_ARGS* args, char* message) {
         return true;  // error
     }
     SharedLockGuard l(vi);
+    if (!vi->isReady()) {  // in the collection, but no graph to search (#265)
+        snprintf(message, MYSQL_ERRMSG_SIZE, ER_MYVECTOR_INDEX_NOT_LOADED " (%s)", col);
+        return true;  // error
+    }
 
     /* Room for MYVECTOR_MAX_ANN_RETURN_COUNT keys of any size */
     initid->max_length = MYVECTOR_ANN_SET_MAX_LEN;
@@ -286,9 +290,15 @@ char* myvector_ann_set(UDF_INIT* initid,
         std::vector<KeyTypeInteger> result_keys;
         /* ef_search is passed per call: storing it on the shared index raced
          * with concurrent searches and stuck for later queries (#165). */
-        if (!filtered || !allowed.empty())
-            vi->searchVectorNN(searchvec, vi->getDimension(), result_keys, nn,
-                               filtered ? &allowed : nullptr, ef_search);
+        if ((!filtered || !allowed.empty()) &&
+            !vi->searchVectorNN(searchvec, vi->getDimension(), result_keys, nn,
+                                filtered ? &allowed : nullptr, ef_search)) {
+            /* the graph went away after init, e.g. a failed reload (#265) */
+            MYVEC_LOG_ERROR("myvector_ann_set: index '%s' is not loaded.", col);
+            *error = 1;
+            *is_null = 1;
+            return initid->ptr;
+        }
 
         ss << "[";
         for (size_t i = 0; i < result_keys.size(); i++) {
