@@ -505,18 +505,23 @@ chunk count and chunk sizes can change. It writes a **new generation**:
    **One case isn't:** a key inserted and then deleted inside that window is absent
    from the snapshot, so replaying its insert adds a node. If the snapshot already
    filled the index's capacity (`size=`), that insert fails before its delete is
-   reached. So during the replay window (until the listener has passed the GTID
-   set read right after the snapshot opened), an insert that fails for capacity is
-   **deferred**, not reported. Deferred inserts are kept in a map keyed by row key,
-   holding the latest vector for each key:
+   reached. And even when it fits, it takes a slot that its delete doesn't give
+   back: a delete only marks the node (the index doesn't reuse deleted slots;
+   `allow_replace_deleted_` is off, `src/myvector.cc:851`), so a later valid insert
+   could fail at capacity.
+
+   So during the replay window (until the listener has passed the GTID set read
+   right after the snapshot opened), **every insert of a key that isn't in the
+   graph is held back**, whether it would fit or not. Held inserts are kept in a
+   map keyed by row key, holding the latest vector for each key:
    - a later **delete** of that key cancels its entry (the key must stay absent);
    - a later **update or re-insert** of that key replaces the entry's vector;
-   - an operation on a key with no entry is applied normally, which may free
-     capacity (deletes) or use it (inserts that fit).
+   - operations on keys already in the graph apply normally (updates in place,
+     deletes mark the node).
 
    When the window ends, the remaining entries are applied in the order they were
-   first deferred. Only an entry that still fails then is reported. A key that was
-   inserted and deleted inside the window therefore never reaches the graph.
+   first held. Only an entry that fails then is reported. A key that was inserted
+   and deleted inside the window never reaches the graph and never takes a slot.
 4. Write all vector and links chunks for `g` (version 1) in bounded transactions.
 5. Publish with a compare-and-set:
 
@@ -881,10 +886,20 @@ files before it switches:
   retention period finds the row `dropped` and the chunks gone; it has no files it
   wrote itself, so it must rebuild (below).
 
-A server uses files only if **it wrote them itself**: a full save or export on this
-server writes an export marker (`Checkpoint:export:<generation>`) into the files'
-checkpoint id, and a file-backed index that has been checkpointed on this server
-since counts too. Stale or missing files never stand in for an export.
+A server uses files only if **it wrote them itself, for the current generation**:
+
+- A full save or export on this server writes an **export marker**: a separate
+  `export=<generation>` key in the `.status` line, next to the existing
+  `ckptid=Checkpoint:binlog:<file>:<pos>`. The `.status` line is already parsed as
+  key=value pairs (`MyVectorOptions`, `include/hnswdisk.i:233`), so the loader reads
+  both: the resume position from `ckptid`, as today, and the marker from `export`.
+  The marker never replaces the checkpoint id. Later checkpoints of the file-backed
+  index keep the `export` key.
+- The marker counts only if its generation **equals** the `index_meta` row's
+  generation (a tombstone keeps it). Files from an earlier migration carry an older
+  generation and are refused.
+
+Stale or missing files never stand in for an export.
 
 **Rules for loading during or after a crash:**
 
@@ -896,7 +911,8 @@ since counts too. Stale or missing files never stand in for an export.
 | `file` | `active` | InnoDB; then a real full save to this server's files, then set the row to `dropped` and use the files. Covers a replica that received the comment change, and a migration that stopped after step 2. The exported file index's resume position is the **exact position of the first transaction not in `ckpt_gtids`**: scan forward from the file the *One stream, both backends* rule (§4.10) selects to the first GTID event not in the set. Starting at position 4 of that file would replay transactions the graph already has, and file-backed indexes skip only by position, so a replayed insert-then-delete from before a build could even fail at capacity. The scan also checks that **no later** transaction in the retained binlogs is in `ckpt_gtids` (the graph's transactions must be a prefix of the local binlog from that point); if one is, the export is refused and the index must be rebuilt after the switch. In replicated mode a follower exports the writer's graph the same way and leaves the row to the writer; this needs `log_replica_updates = ON` (which file-backed online indexes on a replica need anyway), and if it is off, or the replay start is purged, the follower refuses the export and the index must be rebuilt after the switch. |
 | `file` | `migrating_from_file` | **Writer** (or standalone): the files (a file → innodb migration that stopped before step 3); then set the row to `dropped`. **Follower** (replicated mode): its own file index, unchanged, and no write to the row. A follower can't write the row, and the writer may still be migrating; it switches to InnoDB only when the comment says `innodb` and the row is `active`. |
 | `file` | `migrating_to_file` | **Writer:** the files it exported in step 1; it finishes step 4 when the retention period ends. **Follower** (replicated mode): InnoDB, then export to its own files and use them, as for `active`. |
-| `file` | none or `dropped` | the files, **if this server wrote them** (export marker, or checkpointed here). Otherwise refuse to load, with an error that the index must be rebuilt (for example, a follower that missed the retention period). |
+| `file` | `dropped` | the files, **if this server wrote them for this generation** (an `export` marker equal to the row's generation). Otherwise refuse to load, with an error that the index must be rebuilt (for example, a follower that missed the retention period, or kept files from an earlier migration). |
+| `file` | none | the files (an index that was never in InnoDB on this server) |
 
 A load never falls back to files when the comment says `innodb` and the row is
 `dropped` or `active`. So a dropped index can't come back from stale files left by an
@@ -1034,6 +1050,8 @@ guards against future layout changes.
     delete one key between the build's GTID capture and its snapshot; the build
     and the replay succeed and the key is absent. Repeat with insert, update,
     delete, and with insert, delete, re-insert: the final state matches the table.
+    Repeat with one free slot: the transient key doesn't take it, and a later valid
+    insert succeeds.
 15. **Adjacency validation:** a links chunk with an oversized list count, a
     neighbor id out of range, or a neighbor at a lower level fails the load.
 16. **Mixed backends:** a file-backed and an InnoDB-stored online index, with the
@@ -1049,7 +1067,9 @@ guards against future layout changes.
     is `active`; with `log_replica_updates = OFF` it refuses the innodb → file export.
     A follower that receives the `migrating_to_file` change before it loads exports
     and uses its own files; one that comes back after the retention period, finding
-    the row `dropped`, refuses to load and asks for a rebuild.
+    the row `dropped`, refuses to load and asks for a rebuild. So does a follower
+    holding files from an earlier migration (older `export` generation). After an
+    export and a restart, the file index resumes from its `ckptid` position.
     After an export, the file index resumes at the first transaction outside
     `ckpt_gtids` and replays nothing already in the graph (check with an index at
     full capacity).
