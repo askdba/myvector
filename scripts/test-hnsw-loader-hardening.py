@@ -30,10 +30,10 @@ each .links nodeID against max_elements_ before using it as an array index.
 
 This test builds a real HNSW index, corrupts specific header/sidecar fields
 in the saved files byte-for-byte, reloads, and checks: the server survives
-(mysqladmin ping, a normal query), the corruption is rejected (this loader's
-existing catch block already falls back to a fresh empty index on any
-std::runtime_error -- the same path a missing file already took before this
-fix), and the index is fully usable again afterward. The label_offset_ case
+(mysqladmin ping, a normal query), the corruption is rejected (the loader's
+catch block leaves the index with no graph and MYVECTOR_INDEX_LOAD reports an
+error, #265; before that it fell back to a fresh empty index), and the index is
+fully usable again afterward. The label_offset_ case
 is a positive control: since that field is no longer trusted at all, it
 should reload successfully despite the corruption.
 

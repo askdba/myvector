@@ -724,6 +724,9 @@ public:
 
     string getStatus();
 
+    /// false until the index is built or loaded, and after a failed load (#265)
+    bool isReady() override { return m_alg_hnsw != nullptr; }
+
     bool searchVectorNN(VectorPtr qvec,
                         int dim,
                         vector<KeyTypeInteger>& keys,
@@ -968,9 +971,20 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
     m_alg_hnsw = nullptr;
     m_space = nullptr;
 
-    m_space = getSpace(m_dim);
-
     string indexfile = MyVectorIndexBase(path, m_name) + ".hnsw.index";
+
+    /* No saved files is not an error: the index starts empty (an online index
+     * that was never built, for example). Files that exist but can't be loaded
+     * are: the index is left with no graph, so searches fail with an error
+     * instead of silently returning nothing, and the caller reports it (#265).
+     * Checked before getSpace(): initIndex() allocates its own space. */
+    if (access(indexfile.c_str(), F_OK) != 0) {
+        MYVEC_LOG_INFO("No saved HNSW index for %s (%s); starting empty.",
+                       m_name.c_str(), indexfile.c_str());
+        return initIndex();
+    }
+
+    m_space = getSpace(m_dim);
 
     MYVEC_LOG_DEBUG(
         "Loading HNSW index %s from %s", m_name.c_str(), indexfile.c_str());
@@ -987,13 +1001,14 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
     try {
         m_alg_hnsw = new hnswlib::HierarchicalDiskNSW<FP32>(m_space, indexfile);
     } catch (const std::exception& e) {
-        MYVEC_LOG_WARN("Error loading hnsw index (%s) from file : %s",
-                      m_name.c_str(),
-                      e.what());
+        MYVEC_LOG_ERROR("Error loading hnsw index (%s) from file %s : %s",
+                        m_name.c_str(),
+                        indexfile.c_str(),
+                        e.what());
     }
 
-    if (!m_alg_hnsw) { /* no disk files found */
-        initIndex();
+    if (!m_alg_hnsw) {
+        return false;
     } else {
         string binlogFile;
         size_t binlogPosition = 0;
@@ -1113,6 +1128,11 @@ bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec,
                                      const unordered_set<KeyTypeInteger>* allowed,
                                      int ef_search) {
     priority_queue<pair<FP32, hnswlib::labeltype>> result;
+
+    /* No graph: opened but never built or loaded, or the load failed (#265).
+     * The callers report the error; searching would dereference null. */
+    if (!m_alg_hnsw)
+        return false;
 
     auto* disk_hnsw =
         dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw);
@@ -1921,6 +1941,10 @@ PLUGIN_EXPORT bool myvector_ann_set_init(UDF_INIT* initid,
         return true;  // error
     }
     SharedLockGuard l(vi);
+    if (!vi->isReady()) {  // in the collection, but no graph to search (#265)
+        snprintf(message, MYSQL_ERRMSG_SIZE, ER_MYVECTOR_INDEX_NOT_LOADED " (%s)", col);
+        return true;  // error
+    }
 
     /* Room for MYVECTOR_MAX_ANN_RETURN_COUNT keys of any size */
     initid->max_length = MYVECTOR_ANN_SET_MAX_LEN;
@@ -2032,9 +2056,16 @@ PLUGIN_EXPORT char* myvector_ann_set(UDF_INIT* initid,
         vector<KeyTypeInteger> result;
         /* ef_search is passed per call: storing it on the shared index raced
          * with concurrent searches and stuck for later queries (#165). */
-        if (!filtered || !allowed.empty())
-            vi->searchVectorNN(searchvec, vi->getDimension(), result, nn,
-                               filtered ? &allowed : nullptr, ef_search);
+        if ((!filtered || !allowed.empty()) &&
+            !vi->searchVectorNN(searchvec, vi->getDimension(), result, nn,
+                                filtered ? &allowed : nullptr, ef_search)) {
+            /* the graph went away after init, e.g. a failed reload (#265) */
+            MYVECTOR_UDF_FAIL("myvector_ann_set", "index '%s' is not loaded.", col);
+            *error = 1;
+            *is_null = 1;
+            *length = 0;
+            return initid->ptr;
+        }
 
         /* simple JSON list of neighbour rows Pkid */
         ss << "[";
@@ -2898,7 +2929,13 @@ void myvector_open_index_impl(char* vecid,
 
     else if (!strcmp(action, "load")) {
         MYVEC_LOG_DEBUG("Loading index %s.", vecid);
-        vi->loadIndex(myvector_index_dir);  // will handle 'reload' also
+        // will handle 'reload' also
+        if (!vi->loadIndex(myvector_index_dir))
+            snprintf(result,
+                     255,
+                     "ERROR: index %.80s could not be loaded from disk (see the"
+                     " server log). Rebuild it with MYVECTOR_INDEX_BUILD.",
+                     vecid);
     } else if (!strcmp(action, "build")) {
         vi->dropIndex(myvector_index_dir);
 

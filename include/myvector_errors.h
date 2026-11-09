@@ -14,6 +14,9 @@
     "Incorrect arguments. Please check the function's documentation."
 #define ER_MYVECTOR_INDEX_NOT_FOUND                                            \
     "Vector index not defined or not open for access."
+#define ER_MYVECTOR_INDEX_NOT_LOADED                                           \
+    "Vector index is not loaded. Run MYVECTOR_INDEX_LOAD or "                  \
+    "MYVECTOR_INDEX_BUILD first."
 #define ER_MYVECTOR_INVALID_VECTOR "Invalid vector format or checksum mismatch."
 
 // Stored Procedure Errors

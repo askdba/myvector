@@ -118,6 +118,9 @@ public:
 
     virtual bool supportsIncrRefresh() { return false; }
 
+    /* isReady - true when the index can be searched. An HNSW index can be in
+     * the collection with no graph (opened but never built or loaded, or after
+     * a failed load); searching it must be refused (#265). */
     virtual bool isReady() { return false; }
 
     virtual bool isDirty() { return false; }
