@@ -156,7 +156,7 @@ def main():
             if "B" in args.cases:
                 # The load reports its failure as a status row, not an SQL error.
                 record("B1. a load from corrupt files reports the load error",
-                       out.startswith("ERROR:")
+                       rc == 0 and out.startswith("ERROR:")
                        and "could not be loaded" in out and INDEX in out,
                        f"rc={rc} out={out[:120]!r} err={err[:160]!r}")
                 record("B2. server survives the failed load", alive(),
@@ -196,7 +196,7 @@ def main():
         idle.sh(["docker", "exec", srv.name, "chmod", "000", sub])
         rc, out, err = run("CALL mysql.myvector_index_load('vtest.d.v');")
         record("D1. a load whose files can't be reached reports an error",
-               out.startswith("ERROR:") and "vtest.d.v" in out,
+               rc == 0 and out.startswith("ERROR:") and "vtest.d.v" in out,
                f"rc={rc} out={out[:120]!r} err={err[:160]!r}")
         rc, out, err = search("vtest.d.v")
         record("D2. the search fails with an error, not an empty result",
