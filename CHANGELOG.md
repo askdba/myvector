@@ -158,6 +158,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **A search on an HNSW index with no graph crashed mysqld; a failed load reported SUCCESS** ([#265](https://github.com/askdba/myvector/issues/265)). An index can be registered without a graph, for example by `MYVECTOR_INDEX_STATUS` on an index that was never built or loaded; a search on it dereferenced a null pointer (SIGSEGV). And `MYVECTOR_INDEX_LOAD` on corrupt index files fell back to an empty index and reported SUCCESS, so searches silently returned nothing.
+  - `myvector_ann_set` now refuses an index that isn't loaded, with "Vector index is not loaded. Run MYVECTOR_INDEX_LOAD or MYVECTOR_INDEX_BUILD first.", in the plugin and the component.
+  - `MYVECTOR_INDEX_LOAD` on files that exist but can't be loaded returns an error and leaves the index unloaded; the startup loaders then skip it. Missing files still start an empty index, as before.
+  - `scripts/test-unloaded-index.py` covers both cases and runs in the integration-scripts workflow.
 - **`component_mcp_guard`: sessions opened by components were never guarded** (RFC 0001 Phase 4, open question 4). A component's `"local"` command-service session that impersonates an MCP account raises no connection event, so the guard never marked it as an MCP session. On 9.7.2 such a session could write, read `mysql.user` and run without the time limit.
   - The guard now classifies an unclassified session from its privileges at its first statement. A "not MCP" marker keeps the cost at one grant check per session.
   - `mcp.sessions_connected` is decremented when the session's THD ends, which also covers sessions without a disconnect event.
