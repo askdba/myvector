@@ -2,7 +2,7 @@
   "tab_title": "8.4 family — vector search",
   "title": "8.4 family — full-metric cross-engine",
   "subtitle": "MyVector 8.4 · vsql_vector (VillageSQL 8.4) · pgvector · MariaDB — fashion-mnist-784",
-  "nav": "<a href=\"../9.7/\">9.7 family →</a> · <a href=\"/real/\">real-dataset (MySQL versions)</a> · <a href=\"/village/\">village (recall/QPS)</a> · <a href=\"/\">cross-engine</a> · <a href=\"/versions/\">MySQL versions</a>",
+  "nav": "<a href=\"../9.7/\">9.7 family →</a> · <a href=\"/real/\">real-dataset (MySQL versions)</a> · <a href=\"/village/\">village (recall/QPS)</a> · <a href=\"/\">cross-engine</a>",
   "order": [
     "MyVector",
     "vsql_vector",

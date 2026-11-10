@@ -2,7 +2,7 @@
   "tab_title": "glove-100-angular — big cosine dataset",
   "title": "Big dataset — glove-100-angular (cosine, 1.2M)",
   "subtitle": "MyVector · vsql_vector · pgvector — 1.18M × 100-d word embeddings, cosine, published ground truth",
-  "nav": "<a href=\"/\">← cross-engine (fashion-mnist)</a> · <a href=\"/versions/\">MySQL versions</a> · <a href=\"/real/\">real-dataset</a> · <a href=\"/village/\">village</a>",
+  "nav": "<a href=\"/\">← cross-engine (fashion-mnist)</a> · <a href=\"/real/\">real-dataset</a> · <a href=\"/village/\">village</a>",
   "order": [
     "MyVector",
     "vsql_vector",

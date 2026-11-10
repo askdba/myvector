@@ -2,7 +2,7 @@
   "tab_title": "MyVector — vector search benchmarks",
   "title": "MyVector — cross-engine vector search",
   "subtitle": "MyVector · vsql_vector · pgvector · MariaDB — fashion-mnist-784, full metrics",
-  "nav": "<a href=\"/summary/\">★ executive summary</a> · <a href=\"/fair/\">fair same-host</a> · <a href=\"/versions/\">MySQL versions (8.4/9.7/26.10)</a> · <a href=\"/real/\">real-dataset by version</a> · <a href=\"/glove/\">glove 1.2M</a> · <a href=\"/village/\">village (recall/QPS)</a> · <a href=\"/x86/\">x86 / cross-ISA</a> · <a href=\"/fourway/8.4/\">8.4 family</a> · <a href=\"/fourway/9.7/\">9.7 family</a>",
+  "nav": "<a href=\"/summary/\">★ executive summary</a> · <a href=\"/fair/\">fair same-host</a> · <a href=\"/real/\">real-dataset by version</a> · <a href=\"/glove/\">glove 1.2M</a> · <a href=\"/village/\">village (recall/QPS)</a> · <a href=\"/x86/\">x86 / cross-ISA</a> · <a href=\"/fourway/8.4/\">8.4 family</a> · <a href=\"/fourway/9.7/\">9.7 family</a>",
   "order": [
     "MyVector",
     "vsql_vector",

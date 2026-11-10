@@ -2,7 +2,7 @@
   "tab_title": "MyVector Real-Data Benchmark",
   "title": "MyVector — real-dataset benchmark",
   "subtitle": "MySQL 8.4 / 9.7 / 26.10 + MariaDB 12.3 · fashion-mnist-784 · published ground truth",
-  "nav": "<a href=\"/\">cross-engine</a> · <a href=\"/versions/\">MySQL version comparison</a>",
+  "nav": "<a href=\"/\">cross-engine</a>",
   "order": [
     "8.4",
     "8.4-opt",
