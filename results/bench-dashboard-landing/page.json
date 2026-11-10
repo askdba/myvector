@@ -3,15 +3,25 @@
   "title": "MyVector — cross-engine vector search",
   "subtitle": "MyVector · vsql_vector · pgvector · MariaDB — fashion-mnist-784, full metrics",
   "nav": "<a href=\"/summary/\">★ executive summary</a> · <a href=\"/fair/\">fair same-host</a> · <a href=\"/versions/\">MySQL versions (8.4/9.7/26.10)</a> · <a href=\"/real/\">real-dataset by version</a> · <a href=\"/glove/\">glove 1.2M</a> · <a href=\"/village/\">village (recall/QPS)</a> · <a href=\"/x86/\">x86 / cross-ISA</a> · <a href=\"/fourway/8.4/\">8.4 family</a> · <a href=\"/fourway/9.7/\">9.7 family</a>",
-  "order": ["MyVector", "vsql_vector", "pgvector", "MariaDB"],
-  "col": {"MyVector": "#4f9dff", "vsql_vector": "#f0a93b", "pgvector": "#36c98d", "MariaDB": "#a56bd8"},
+  "order": [
+    "MyVector",
+    "vsql_vector",
+    "pgvector",
+    "MariaDB"
+  ],
+  "col": {
+    "MyVector": "#4f9dff",
+    "vsql_vector": "#f0a93b",
+    "pgvector": "#36c98d",
+    "MariaDB": "#a56bd8"
+  },
   "headline_ef": 200,
-  "description": "MyVector's native HNSW vector search for MySQL, head-to-head with <b>VillageSQL's vsql_vector</b>, <b>pgvector</b>, and <b>MariaDB</b>'s native vector index on a real dataset (fashion-mnist-784-euclidean, 60k × 784, L2) with the dataset's <b>published</b> ground truth and full metrics (build, insert, exact-KNN, ANN p50/p99, recall@10). This is the 9.7-base cross-engine view; see the <a href=\"/fourway/8.4/\">8.4</a> / <a href=\"/fourway/9.7/\">9.7</a> family pages for per-base detail, <a href=\"/versions/\">MySQL versions</a> for MyVector across 8.4/9.7/26.10, and <a href=\"/village/\">village</a> for the same four engines through VillageSQL's neutral vector-dev-bench harness.",
+  "description": "<b>Controlled same-host 4-way</b>, re-run 2026-11-10: current-<code>main</code> MyVector (MySQL&nbsp;9.7, <a href=\"https://github.com/askdba/myvector/pull/278\">PR&nbsp;#278</a> + <a href=\"https://github.com/askdba/myvector/pull/280\">#280</a>) vs vsql_vector, pgvector (Postgres&nbsp;17) and MariaDB&nbsp;12.3 — all on one A1 host, each pinned to the same cores with its working set cached above the ~188&nbsp;MB index, run one-at-a-time, on fashion-mnist-784 vs <b>published</b> ground truth. At matched recall@10 <b>MyVector leads ~2–3×</b>. The pgvector/vsql/MariaDB baselines are the same controlled measurements as the <a href=\"/fair/\">/fair/</a> page — only MyVector’s MySQL version differs here.",
   "caveats": [
-    "<b>Full metrics</b> via MyVector's harness: index build, insert QPS, exact brute-force KNN (QPS + p50/p99), ANN (QPS + p50/p99), and recall@10 vs the dataset's <b>published</b> ground truth. Headline cards are the warm ef_search=200 point.",
-    "<b>Dataset:</b> <code>fashion-mnist-784-euclidean</code> (60k train × 784-d, 10k test, L2). HNSW M=16, ef_construction=200 for MyVector/vsql_vector/pgvector; MariaDB's MHNSW fixes ef_construction at 10 internally. MariaDB also floors <code>mhnsw_ef_search</code> to ~2×M (≈32), so an ef_search=10 request is not a valid operating point for it — that point is <b>omitted from MariaDB's plotted curve</b> (its measured value is kept in the result JSON under <code>ef_search_excluded</code> for transparency). Every other engine applies no such floor, so their ef_search=10 points are plotted as-is.",
-    "<b>Engines here are on the 9.7 base</b> (MyVector on MySQL 9.7, vsql_vector on the VillageSQL 9.7 dev-server) plus pgvector (Postgres 17) and MariaDB 12.3. The <a href=\"/fourway/8.4/\">8.4 family</a> is the 8.4-base companion.",
-    "<b>Cache parity:</b> each engine's graph sized above the ~188&nbsp;MB index. <b>Hardware:</b> all on the same Ampere&nbsp;A1 dev host.",
-    "<b>A bigger cosine dataset</b> is on the <a href=\"/glove/\">glove-100-angular (1.2M)</a> page; the <a href=\"/x86/\">x86 / cross-ISA</a> page validates the PR&nbsp;#278 kernel speedup on AMD, Intel and ARM silicon."
+    "<b>Fresh controlled re-run (2026-11-10) — supersedes the earlier numbers on this page</b>, which showed MyVector’s <b>scalar</b> build (pre-#278, recall 0.934 at ef=10) measured under host load. Now: current <code>main</code> (#278 vectorized kernels + keepPrunedConnections, #280 ANN-rewrite overhead removed), all engines pinned to the same cores, each cache-sized above the index, run sequentially.",
+    "<b>The honest read (matched recall@10):</b> MyVector (MySQL&nbsp;9.7) serves the most QPS at every matched-recall point (~2.7k vs pgvector ~1.3k / vsql ~1.2k at recall&nbsp;0.975). The old “MyVector trails” was the scalar, pre-#280 build under load; #278 fixed recall-per-ef and #280 removed the per-query overhead. Residual engine overhead (JSON_TABLE round-trip) is designed out in <a href=\"https://github.com/askdba/myvector/pull/281\">RFC-006</a>.",
+    "<b>Cache parity:</b> MyVector holds its HNSW graph in its own memory; pgvector <code>shared_buffers</code>=2&nbsp;GB; vsql InnoDB pool 4&nbsp;GB; MariaDB InnoDB pool 2&nbsp;GB + <code>mhnsw_max_cache_size</code>=1&nbsp;GiB. All pinned to cores&nbsp;12–15 and run one-at-a-time.",
+    "<b>Dataset / params:</b> fashion-mnist-784-euclidean (60k×784, L2), HNSW M=16, ef_construction=200 (MariaDB fixes it at 10). Recall@10 vs published neighbors. 500 queries/point; headline cards = warm ef_search=200.",
+    "<b>Honest limits:</b> same-host run on a <b>shared</b> A1 box (controlled via core-pinning + cache-parity + sequential runs, not a dedicated quiet machine); each engine uses its own server-side-timed harness. Method disclosed — read ~2–3× as ‘clearly ahead’, not a precise ratio."
   ]
 }
