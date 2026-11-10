@@ -3,12 +3,20 @@
   "title": "Big dataset — glove-100-angular (cosine, 1.2M)",
   "subtitle": "MyVector · vsql_vector · pgvector — 1.18M × 100-d word embeddings, cosine, published ground truth",
   "nav": "<a href=\"/\">← cross-engine (fashion-mnist)</a> · <a href=\"/versions/\">MySQL versions</a> · <a href=\"/real/\">real-dataset</a> · <a href=\"/village/\">village</a>",
-  "order": ["MyVector", "vsql_vector", "pgvector"],
-  "col": {"MyVector": "#4f9dff", "vsql_vector": "#f0a93b", "pgvector": "#36c98d"},
+  "order": [
+    "MyVector",
+    "vsql_vector",
+    "pgvector"
+  ],
+  "col": {
+    "MyVector": "#4f9dff",
+    "vsql_vector": "#f0a93b",
+    "pgvector": "#36c98d"
+  },
   "headline_ef": 200,
   "description": "The big-dataset round: <b>glove-100-angular</b> — 1.18 million 100-d GloVe word embeddings with a <b>cosine</b> metric (vs the 60k×784 L2 fashion-mnist on the other pages). Recall@10 is scored against the dataset's <b>published</b> exact neighbors. GloVe is a genuinely hard ANN benchmark, so recall sits well below the ~0.99 of fashion-mnist — the interesting comparison is the recall/throughput <i>tradeoff</i> each engine strikes at this scale. Full metrics via MyVector's harness.",
   "caveats": [
-    "<b>⚡ MyVector here is the optimized build (<a href=\"https://github.com/askdba/myvector/pull/278\">PR #278</a>), re-measured on glove:</b> this page's MyVector curve is the <b>NEON cosine kernel + keepPrunedConnections</b> build (re-run on the same A2 host, engine-isolated, like the other engines). Versus the previous scalar build it lifts glove QPS <b>+14% (ef=10, 778→906) to +55% (ef=800, 84→130)</b> from the vectorized distance, and recall-per-ef at low ef (ef=10 0.471→0.495, ef=20 0.587→0.608) from keepPrunedConnections filling each node's graph links back up to M. (Merged to <code>main</code> in <a href=\"https://github.com/askdba/myvector/pull/278\">PR&nbsp;#278</a>, commit <code>1cf3030</code>.)",
+    "<b>⚡ MyVector here is current <code>main</code> (<a href=\"https://github.com/askdba/myvector/pull/278\">PR #278</a> + <a href=\"https://github.com/askdba/myvector/pull/280\">#280</a>), re-measured on glove 2026-11-10:</b> the current-main build (NEON cosine kernel + keepPrunedConnections, plus #280 which removed the ANN-rewrite overhead), engine-isolated on A2 like the other engines. <b>PR #280 lifts glove QPS +35–48% across the sweep</b> (e.g. ef=50 601→872, ef=200 287→424) at unchanged recall, on top of #278. pgvector and vsql are unaffected by #280 and keep their engine-isolated numbers, so MyVector’s matched-recall lead here <b>widens</b> (e.g. ~872 QPS vs pgvector ~281 / vsql ~360 at recall ~0.73). (Both are merged to <code>main</code>.)",
     "<b>Dataset:</b> <code>glove-100-angular</code> (ann-benchmarks) — 1.18M train × 100-d GloVe word vectors, 10k test, <b>cosine</b>. HNSW M=16, ef_construction=200. Recall is intrinsically lower than on fashion-mnist — GloVe is a hard, high-overlap embedding space.",
     "<b>Reading the sweep:</b> MyVector tunes for throughput, so it reaches each recall at a <i>lower</i> ef_search — its per-point dots sit lower-and-righter, but at <b>matched recall</b> (the table above) it serves the most QPS across the mid-to-high recall range. This re-measured optimized run sweeps ef=10→800 (the prior scalar run also went to ef=1600/3200, reaching recall 0.985, confirming MyVector doesn't plateau — the optimized build would reach those recalls even faster).",
     "<b>Engine-isolated:</b> each engine was benchmarked with the <b>other engines stopped</b>, so its 1.2M index build had the full A2 host (24 GB) to itself — building four 1.2M HNSW indexes with all servers resident OOMs the box. pgvector also needed <code>--shm-size=4g</code> for its parallel build.",

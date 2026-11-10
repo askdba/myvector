@@ -3,12 +3,22 @@
   "title": "Cross-engine vector search — 4 engines, one harness",
   "subtitle": "MyVector · vsql_vector · pgvector · MariaDB — fashion-mnist-784, published ground truth",
   "nav": "<a href=\"/\">cross-engine (full metrics)</a> · <a href=\"/versions/\">MySQL versions</a> · <a href=\"/real/\">real-dataset by version</a>",
-  "order": ["MyVector", "vsql_vector", "pgvector", "MariaDB"],
-  "col": {"MyVector": "#4f9dff", "vsql_vector": "#f0a93b", "pgvector": "#36c98d", "MariaDB": "#a56bd8"},
+  "order": [
+    "MyVector",
+    "vsql_vector",
+    "pgvector",
+    "MariaDB"
+  ],
+  "col": {
+    "MyVector": "#4f9dff",
+    "vsql_vector": "#f0a93b",
+    "pgvector": "#36c98d",
+    "MariaDB": "#a56bd8"
+  },
   "headline_ef": 200,
   "description": "A cross-<b>engine</b> comparison run through a neutral third-party harness — VillageSQL's <a href=\"https://github.com/villagesql/vector-dev-bench\">vector-dev-bench</a> (the MyVector profile is <a href=\"https://github.com/villagesql/vector-dev-bench/pull/14\">upstream PR #14</a>). Same real dataset (fashion-mnist-784-euclidean, 60k × 784, L2) and published exact ground truth drive all three engines; this answers \"how does MyVector's HNSW compare to VillageSQL's own <code>vsql_vector</code>, pgvector, and MariaDB's native vector indexes on the <i>same</i> workload and harness?\" (The other pages compare MyVector across MySQL versions.)",
   "caveats": [
-    "<b>⚡ MyVector here is the optimized build (<a href=\"https://github.com/askdba/myvector/pull/278\">PR #278</a>), re-measured through this neutral harness:</b> this page's MyVector curve is the <b>NEON kernel + keepPrunedConnections</b> build, re-run via VillageSQL's own <code>recall_bench</code> (not MyVector's harness) on the same A2 container. Versus the prior scalar build it lifts <b>recall-per-ef</b> (ef=10 0.944→0.971, ef=20 0.983→0.991 — from keepPrunedConnections densifying the graph) and <b>QPS</b> (+12% at ef=50, +37% at ef=800 — from the vectorized L2 kernel). That the gain reproduces in a <b>third-party</b> harness is the point: it's not an artifact of MyVector's own measurement. (Merged to <code>main</code> in <a href=\"https://github.com/askdba/myvector/pull/278\">PR&nbsp;#278</a>, commit <code>1cf3030</code>.)",
+    "<b>⚡ MyVector here is current <code>main</code> (<a href=\"https://github.com/askdba/myvector/pull/278\">PR #278</a> + <a href=\"https://github.com/askdba/myvector/pull/280\">#280</a>), re-measured through this neutral harness 2026-11-10:</b> the current-main build, re-run via VillageSQL’s own <code>recall_bench</code> (not MyVector’s harness) on A2. <b>PR #280 (ANN-rewrite overhead removed) lifts QPS +26% at ef=10 (486→613)</b> at unchanged recall (0.9705), on top of #278’s recall-per-ef gains; the other engines are unaffected by #280. That the gains reproduce in a <b>third-party</b> harness is the point — it’s not an artifact of MyVector’s own measurement. (Both are merged to <code>main</code>.)",
     "<b>Harness:</b> VillageSQL <code>vector-dev-bench</code> <code>recall_bench.py</code> — one PyMySQL/psql path, numpy ground truth. The MyVector engine profile is upstream PR&nbsp;#14. It reports build time + a recall@10/QPS ef_search sweep; insert and exact-KNN columns aren't produced by this harness, so they show &ldquo;&mdash;&rdquo; here — those metrics (insert QPS, exact brute-force KNN p50/p99) are measured by MyVector's own harness and shown on the <a href=\"/glove/\">glove</a> and <a href=\"/real/\">real-dataset</a> pages. They're intentionally left off this page to keep every engine on the <b>same neutral harness</b>.",
     "<b>Dataset &amp; recall:</b> <code>fashion-mnist-784-euclidean</code> (60k train × 784-d, 10k test, L2) with recall@10 scored against the dataset's <b>published</b> exact neighbors (ann-benchmarks methodology).",
     "<b>Index params:</b> HNSW M=16, ef_construction=200 for MyVector and pgvector. MariaDB's MHNSW fixes ef_construction at 10 internally (not tunable) — documented, not matched. MariaDB also floors <code>mhnsw_ef_search</code> to ~2×M (≈32), so an ef_search=10 request is not a valid operating point (QPS below the ef=20 point despite less work); that point is omitted from MariaDB's plotted curve (kept in the result JSON under <code>ef_search_excluded</code>). The other engines apply no such floor, so their ef=10 points are plotted as-is.",
