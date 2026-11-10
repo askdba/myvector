@@ -377,12 +377,12 @@ footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
     var ds = DATA.filter(function(d){{return (d.metrics.ef_search_sweep||[]).length;}}).map(function(d){{
       return {{label:disp(d),borderColor:COL[d.version],backgroundColor:COL[d.version],
         showLine:true,tension:.25,pointRadius:4,
-        data:d.metrics.ef_search_sweep.map(function(p){{return {{x:p.qps,y:p.recall_at_10,ef:p.ef_search}};}})}};
+        data:d.metrics.ef_search_sweep.map(function(p){{return {{x:p.recall_at_10,y:p.qps,ef:p.ef_search}};}})}};
     }});
     new Chart(document.getElementById('c_sweep'),{{type:'scatter',data:{{datasets:ds}},
-      options:{{plugins:{{tooltip:{{callbacks:{{label:function(c){{return 'ef='+c.raw.ef+': recall '+f(c.raw.y,3)+' @ '+f(c.raw.x)+' QPS';}}}}}}}},
-        scales:{{x:{{title:{{display:true,text:'QPS (higher = faster)'}},beginAtZero:true}},
-                y:{{title:{{display:true,text:'recall@10 (higher = accurate)'}},suggestedMax:1}}}}}}}});
+      options:{{plugins:{{tooltip:{{callbacks:{{label:function(c){{return 'ef='+c.raw.ef+': recall '+f(c.raw.x,3)+' @ '+f(c.raw.y)+' QPS';}}}}}}}},
+        scales:{{x:{{title:{{display:true,text:'recall@10 (higher → better)'}}}},
+                y:{{type:'logarithmic',title:{{display:true,text:'QPS (higher ↑ better)'}}}}}}}}}});
   }}
 }})();
 </script>
