@@ -1432,6 +1432,14 @@ AbstractVectorIndex* VectorIndexCollection::open(const string& name,
      * its users, then deletes its files): opening now would let the new index
      * save files that cleanup then deletes. Wait for it to finish. */
     m_retired.wait(l, [&] { return m_retiring.count(name) == 0; });
+    /* Another opener of the same name (e.g. a second BUILD that waited too)
+     * may have got there first: use its index rather than overwrite the entry,
+     * which would leave two objects writing the same files (#286 review). */
+    auto existing = m_indexes.find(name);
+    if (existing != m_indexes.end()) {
+        existing->second->lockShared(); /* as get() does */
+        return existing->second;
+    }
 
     MYVEC_LOG_DEBUG("Opening new index %s %s %s",
                 name.c_str(),
@@ -3041,7 +3049,9 @@ void myvector_open_index_impl(char* vecid,
                                [&current](AbstractVectorIndex* idx) {
                                    return idx->getOptions() != current;
                                });
-        vi = g_indexes.get(vecid);  /// kept if another build already replaced it
+        /// kept if another build already replaced it; has() first, so the usual
+        /// case (gone) doesn't log get()'s "index not found" error
+        vi = g_indexes.has(vecid) ? g_indexes.get(vecid) : nullptr;
         if (vi && vi->getOptions() != current) {
             /* still the stale one (only possible in a race): give up safely */
             vi->unlockShared();
