@@ -485,6 +485,8 @@ public:
 
     int getDimension() { return m_dim; }
 
+    string getOptions() override { return m_options; }
+
     bool startParallelBuild(int nthreads) { return false; }
 
     void setUpdateTs(unsigned long ts) { m_updateTs = ts; }
@@ -745,6 +747,9 @@ public:
 
     unsigned long getRowCount() { return m_n_rows; }
 
+    string getOptions() override { return m_options; }
+    unsigned long getRejectedCount() override { return m_n_rejected; }
+
     bool startParallelBuild(int nthreads);
 
     virtual hnswlib::SpaceInterface<float>* getSpace(size_t dim);
@@ -778,6 +783,8 @@ private:
 
     atomic<unsigned long> m_n_rows{0};
     atomic<unsigned long> m_n_searches{0};
+    /// rows hnswlib refused because the graph is full (size= reached, #285)
+    atomic<unsigned long> m_n_rejected{0};
 
     bool m_isDirty;
 
@@ -791,6 +798,7 @@ private:
 
     bool flushBatchParallel();
     bool flushBatchSerial();
+    bool addPointChecked(const void* data, KeyTypeInteger id);
 
     int m_threads;
 
@@ -875,6 +883,7 @@ bool HNSWMemoryIndex::initIndex() {
 
     m_n_rows = 0;
     m_n_searches = 0;
+    m_n_rejected = 0;
 
     setLastUpdateCoordinates("zzzzzz.bin", 99999999999);
     setUpdateTs(0);
@@ -1007,6 +1016,7 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
      * crafted file's header abort the entire server via std::terminate()
      * (review of audit run-1, Slice 4: PR #235). Catch any std::exception. */
     m_alg_hnsw = nullptr;
+    m_n_rejected = 0;  /// counts refusals of this graph only (#285)
     try {
         m_alg_hnsw = new hnswlib::HierarchicalDiskNSW<FP32>(m_space, indexfile);
     } catch (const std::exception& e) {
@@ -1113,6 +1123,8 @@ string HNSWMemoryIndex::getStatus() {
            << endl;
         ss << "Searches : " << m_n_searches << endl;
     }
+    if (m_n_rejected)
+        ss << "Rows rejected (index full) : " << m_n_rejected << endl;
 
     return ss.str();
 }
@@ -1279,11 +1291,31 @@ bool HNSWMemoryIndex::startParallelBuild(int nthreads) {
     return true;
 }
 
+/* addPointChecked - add one row to the graph. hnswlib throws (for example
+ * "The number of elements exceeds the specified limit" once size= rows are in
+ * the graph); an exception escaping a UDF or the binlog worker thread
+ * terminates mysqld (#285). Count the row as rejected and report false
+ * instead. Updating a key that is already in the graph needs no new slot and
+ * still succeeds on a full graph. */
+bool HNSWMemoryIndex::addPointChecked(const void* data, KeyTypeInteger id) {
+    try {
+        m_alg_hnsw->addPoint(data, id);
+        return true;
+    } catch (const std::exception& e) {
+        if (m_n_rejected++ == 0)
+            MYVEC_LOG_WARN("Index %s: row %zu not added (%s). The index holds at "
+                           "most size=%d rows; rebuild it with a larger size.",
+                           m_name.c_str(), (size_t)id, e.what(), m_size);
+        return false;
+    }
+}
+
 bool HNSWMemoryIndex::flushBatchSerial() {
     MYVEC_LOG_DEBUG("flushBatchSerial %lu", m_batchkeys.size());
     for (unsigned int i = 0; i < m_batchkeys.size(); i++) {
-        m_alg_hnsw->addPoint((void*)&(m_batch[i * m_space->get_data_size()]),
-                             m_batchkeys[i]);
+        if (!addPointChecked((void*)&(m_batch[i * m_space->get_data_size()]),
+                             m_batchkeys[i]) && m_n_rows > 0)
+            m_n_rows--;  /// counted by insertVector() when it was batched
     }
     // Mirror flushBatchParallel(): once the pending rows are in the in-memory graph,
     // this batch is consumed regardless of whether the caller's later on-disk save
@@ -1304,9 +1336,10 @@ bool HNSWMemoryIndex::flushBatchParallel() {
      */
     ParallelFor(
         0, m_batchkeys.size(), m_threads, [&](size_t row, size_t threadId) {
-            m_alg_hnsw->addPoint(
-                (void*)&(m_batch[row * m_space->get_data_size()]),
-                m_batchkeys[row]);
+            if (!addPointChecked(
+                    (void*)&(m_batch[row * m_space->get_data_size()]),
+                    m_batchkeys[row]) && m_n_rows > 0)
+                m_n_rows--;  /// counted by insertVector() when it was batched
         });
 
     m_batch.clear();
@@ -1329,7 +1362,8 @@ bool HNSWMemoryIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
     } else {
         if (!m_alg_hnsw)
             return false;  /// not built or loaded yet (#187)
-        m_alg_hnsw->addPoint(fvec, id);
+        if (!addPointChecked(fvec, id))
+            return false;  /// graph full (#285); counted in m_n_rejected
     }
 
     m_n_rows++;  // atomic
@@ -1424,6 +1458,20 @@ bool VectorIndexCollection::close(AbstractVectorIndex* hindex) {
 
     delete hindex; /* no other thread can hold shared lock */
     return true;
+}
+
+std::vector<string> VectorIndexCollection::names() {
+    lock_guard<mutex> l(m_mutex);
+    std::vector<string> out;
+    out.reserve(m_indexes.size());
+    for (const auto& e : m_indexes)
+        out.push_back(e.first);
+    return out;
+}
+
+bool VectorIndexCollection::has(const string& name) {
+    lock_guard<mutex> l(m_mutex);
+    return m_indexes.count(name) > 0;
 }
 
 /* FindEarliestBinlogFile() - Find the oldest binlog file from all
@@ -2874,6 +2922,20 @@ void myvector_open_index_impl(char* vecid,
     AbstractVectorIndex* vi = nullptr;
     if (!readsComment || isValidIndexType(itype))
         vi = g_indexes.get(vecid);
+    /* build reads the column's current COMMENT. An index still open from an
+     * earlier COMMENT -- or from an earlier table of the same name that was
+     * dropped and recreated -- keeps the space, dim, M, ef and size it was
+     * created with, so rebuilding it silently used the old metric and
+     * parameters (#283). Drop it and open a new one from the current options. */
+    if (vi && !strcmp(action, "build") &&
+        vi->getOptions() != effective_details) {
+        MYVEC_LOG_INFO("Index %s: the column options changed since the index was "
+                       "opened (%s -> %s); rebuilding it from the new options.",
+                       vecid, vi->getOptions().c_str(), effective_details);
+        vi->dropIndex(myvector_index_dir);
+        g_indexes.close(vi);
+        vi = nullptr;
+    }
     if (!vi) {
         if (isValidIndexType(itype))
             vi = g_indexes.open(vecid, effective_details, action);
@@ -2965,6 +3027,7 @@ void myvector_open_index_impl(char* vecid,
     }
 
     if (!strcmp(action, "build") || !strcmp(action, "refresh")) {
+        const string indexName(vecid);  /// vecid is split in place below
         char errorbuf[1024];
         char *db, *table, *veccol;
         db = vecid;
@@ -3008,6 +3071,16 @@ void myvector_open_index_impl(char* vecid,
             strcpy(result,
                    "ERROR: index built but could not be saved to disk"
                    " (see the server log)");
+        /* Rows the graph refused because it is full (#285): the index is
+         * incomplete, so the build must not report SUCCESS. */
+        if (unsigned long rejected = vi->getRejectedCount())
+            snprintf(result,
+                     255,
+                     "ERROR: index %.80s is full: %lu rows were not added (its"
+                     " size=%d is too small). Rebuild it with a larger size.",
+                     indexName.c_str(),
+                     rejected,
+                     vo.getIntOption("size", 0));
     }
     return;
 }
@@ -3298,8 +3371,12 @@ void myvector_table_op(const string& dbname,
                 MYVEC_LOG_WARN("Skipping zero-magnitude vector for cosine index"
                                " (pkid=%zu), row is in table but not in index.",
                                (size_t)pkid);
-            } else {
-                vi->insertVector(vec.data(), vi->getDimension(), pkid);
+            } else if (!vi->insertVector(vec.data(), vi->getDimension(), pkid) &&
+                       vi->isReady()) {
+                /* The graph is full (#285): the row is in the table but not in
+                 * the index. Counted and warned like other skipped events. */
+                myvector_online_skip(dbname, tbname, OnlineSkipReason::kIndexFull,
+                                     "");
             }
         } else {
             MYVEC_LOG_DEBUG("Skipping index update (%s %lu) < (%s %lu).",
@@ -3332,6 +3409,8 @@ const char* onlineSkipReasonText(OnlineSkipReason why) {
             return "column count does not match the table";
         case OnlineSkipReason::kColumnType:
             return "unreadable column type or truncated event";
+        case OnlineSkipReason::kIndexFull:
+            return "the index is full (size= reached); rebuild it with a larger size";
     }
     return "unknown";
 }
@@ -3418,6 +3497,42 @@ void myvector_checkpoint_index(const string& dbtable,
         }
     }
 }
+
+std::vector<string> myvector_evict_dropped(const string& db,
+                                           const string& table,
+                                           const string& binlogfile,
+                                           size_t binlogpos) {
+    const string prefix = table.empty() ? db + "." : db + "." + table + ".";
+    std::vector<string> dropped;
+    for (const string& name : g_indexes.names()) {
+        if (name.compare(0, prefix.size(), prefix) != 0)
+            continue;
+        /* table empty (DROP DATABASE): name is db.<table>.<column>, any table */
+        AbstractVectorIndex* vi = g_indexes.get(name);
+        if (!vi)
+            continue;  /// closed meanwhile
+        string builtFile;
+        size_t builtPos = 0;
+        vi->getLastUpdateCoordinates(builtFile, builtPos);
+        /* Only online indexes track binlog coordinates. An index built after
+         * this DROP belongs to a recreated table: keep it (this also makes a
+         * replay of old binlog events after a restart harmless). */
+        if (!vi->supportsIncrUpdates() ||
+            !isAfter(binlogfile, binlogpos, builtFile, builtPos)) {
+            vi->unlockShared();  /// taken by get()
+            continue;
+        }
+        MYVEC_LOG_INFO("Index %s: its table was dropped (binlog %s %zu); "
+                       "removing the index.",
+                       name.c_str(), binlogfile.c_str(), binlogpos);
+        vi->dropIndex(myvector_index_dir);
+        g_indexes.close(vi);
+        dropped.push_back(name);
+    }
+    return dropped;
+}
+
+bool myvector_index_is_open(const string& vecid) { return g_indexes.has(vecid); }
 
 string myvector_find_earliest_binlog_file() {
     return g_indexes.FindEarliestBinlogFile();

@@ -108,6 +108,15 @@ public:
 
     virtual int getDimension() { return 0; }
 
+    /* getOptions - the MYVECTOR column options (the COMMENT) the index was
+     * opened with. MYVECTOR_INDEX_BUILD compares them with the column's current
+     * options, so a table recreated with new options gets a new index (#283). */
+    virtual std::string getOptions() { return ""; }
+
+    /* getRejectedCount - rows the index refused since it was built or loaded,
+     * because an HNSW graph was full (its size= reached, #285). */
+    virtual unsigned long getRejectedCount() { return 0; }
+
     virtual bool supportsIncrUpdates() { return false; }
 
     virtual bool supportsPersist() { return false; }
@@ -203,6 +212,10 @@ public:
 
     bool close(AbstractVectorIndex* hindex);
 
+    /* names - every open index (db.table.column), a snapshot. */
+    std::vector<std::string> names();
+    bool has(const std::string& name);
+
     std::string FindEarliestBinlogFile();
     bool FindEarliestCheckpoint(std::string& binlogfile, size_t& binlogpos);
 
@@ -286,6 +299,7 @@ enum class OnlineSkipReason {
     kRowImage,     // binlog_row_image is not FULL: a column is missing
     kColumnCount,  // column count unreadable or not matching the table map
     kColumnType,   // a column type the parser cannot read, or a truncated event
+    kIndexFull,    // the HNSW graph is full: the index's size= is reached (#285)
 };
 void myvector_online_skip(const std::string& db,
                           const std::string& table,
@@ -296,5 +310,18 @@ std::string myvector_online_skip_status(const std::string& dbtable);
 /* The index of db.table was rebuilt or reloaded: warn again on the next skip
  * of each reason. The counts are kept. */
 void myvector_online_skip_rearm(const std::string& dbtable);
+
+/* A DROP TABLE (table non-empty) or DROP DATABASE (table empty) at binlog
+ * position (binlogfile, binlogpos) removed db.table: drop the online indexes on
+ * its columns that were built before that position, in memory and on disk, so a
+ * table recreated under the same name doesn't feed the old graph (#283, #285).
+ * Indexes built after the DROP (on a recreated table) are kept. Returns the
+ * names (db.table.column) of the indexes dropped. */
+std::vector<std::string> myvector_evict_dropped(const std::string& db,
+                                                const std::string& table,
+                                                const std::string& binlogfile,
+                                                size_t binlogpos);
+/* true if an index named db.table.column is open. */
+bool myvector_index_is_open(const std::string& vecid);
 
 #endif  // PLUGIN_MYVECTOR_H

@@ -34,6 +34,10 @@
 #                                       with an error instead of crashing, and a
 #                                       load from corrupt files reports an error
 #                                       instead of SUCCESS (#265)
+#   scripts/test-stale-index-overflow.py  a rebuild after the table or its COMMENT
+#                                       changed uses the new options (#283), and
+#                                       rows past size= are rejected instead of
+#                                       crashing mysqld, at build and online (#285)
 # Artifacts are built with the Docker build scripts (Oracle Linux 9, like the
 # mysql images), so they load in the containers; the ci.yml builds are made on
 # the Ubuntu runner and target the runner's own MySQL instead.
@@ -142,7 +146,7 @@ jobs:
                    "test-distance-udf.py" "test-crash-regressions.py" \
                    "test-index-governance.py" "test-udf-input-validation.py" \
                    "test-hnsw-loader-hardening.py" "test-ef-search-clamp.py" \
-                   "test-unloaded-index.py"; do
+                   "test-unloaded-index.py" "test-stale-index-overflow.py"; do
             read -r -a T <<< "$t"
             echo "::group::${t} (${KIND} ${MYSQL_VERSION})"
             if python3 "scripts/${T[0]}" "${ARGS[@]}" "${T[@]:1}"; then
