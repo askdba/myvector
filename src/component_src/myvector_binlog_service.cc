@@ -625,14 +625,17 @@ struct SqlScanner {
         if (i < q.size() && q[i] == c) { i++; return true; }
         return false;
     }
-    // An identifier: `back``quoted` or bare [A-Za-z0-9_$] and non-ASCII bytes.
+    // An identifier: `back``quoted`, "double""quoted" (ANSI_QUOTES; without it
+    // a double-quoted name is a syntax error, so it can't be a logged DROP), or
+    // bare [A-Za-z0-9_$] and non-ASCII bytes. A doubled quote is a literal one.
     bool ident(std::string& out) {
         skipSpace();
         out.clear();
-        if (i < q.size() && q[i] == '`') {
+        if (i < q.size() && (q[i] == '`' || q[i] == '"')) {
+            const char quote = q[i];
             for (i++; i < q.size(); i++) {
-                if (q[i] == '`') {
-                    if (i + 1 < q.size() && q[i + 1] == '`') { out += '`'; i++; }
+                if (q[i] == quote) {
+                    if (i + 1 < q.size() && q[i + 1] == quote) { out += quote; i++; }
                     else { i++; return !out.empty(); }
                 } else {
                     out += q[i];
@@ -2616,6 +2619,23 @@ private:
                     }
                     for (const auto& d : drops)
                         myvector_evict_dropped(d.first, d.second, file, pos);
+                    // Which online indexes are still open, read before taking
+                    // binlog_stream_mutex_: the build path takes an index lock and
+                    // then that mutex, so don't take them the other way round.
+                    std::set<std::string> openOnline;
+                    {
+                        std::vector<std::string> candidates;
+                        {
+                            std::lock_guard<std::mutex> lk(binlog_stream_mutex_);
+                            for (const auto& reg : g_OnlineVectorIndexes)
+                                for (const auto& c : reg.second)
+                                    candidates.push_back(reg.first + "." +
+                                                         c.vectorColumn);
+                        }
+                        for (const auto& name : candidates)
+                            if (myvector_online_index_is_open(name))
+                                openOnline.insert(name);
+                    }
                     std::lock_guard<std::mutex> lk(binlog_stream_mutex_);
                     for (const auto& d : drops) {
                         const std::string prefix =
@@ -2628,18 +2648,27 @@ private:
                         for (auto it = g_NonOnlineTables.begin();
                              it != g_NonOnlineTables.end();)
                             it = matches(*it) ? g_NonOnlineTables.erase(it) : std::next(it);
-                        // Keep a registration whose index is still open: it was
-                        // built after this DROP, on the recreated table.
+                        // Per column, keep only a registration whose online index
+                        // is still open: that index was built after this DROP, on
+                        // the recreated table, and its build re-registered the
+                        // column with the new table's positions. Drop the rest.
                         for (auto it = g_OnlineVectorIndexes.begin();
                              it != g_OnlineVectorIndexes.end();) {
-                            bool keep = false;
-                            if (matches(it->first))
-                                for (const auto& c : it->second)
-                                    keep = keep || myvector_index_is_open(
-                                                       it->first + "." + c.vectorColumn);
-                            it = (matches(it->first) && !keep)
-                                     ? g_OnlineVectorIndexes.erase(it)
-                                     : std::next(it);
+                            if (!matches(it->first)) {
+                                ++it;
+                                continue;
+                            }
+                            auto& cols = it->second;
+                            const std::string table = it->first;
+                            cols.erase(std::remove_if(
+                                           cols.begin(), cols.end(),
+                                           [&](const VectorIndexColumnInfo& c) {
+                                               return !openOnline.count(
+                                                   table + "." + c.vectorColumn);
+                                           }),
+                                       cols.end());
+                            it = cols.empty() ? g_OnlineVectorIndexes.erase(it)
+                                              : std::next(it);
                         }
                     }
                 }

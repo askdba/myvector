@@ -26,6 +26,7 @@
 
 #define MYVECTOR_PLUGIN_VERSION "1.0.2-rc3"
 
+#include <functional>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -212,6 +213,20 @@ public:
 
     bool close(AbstractVectorIndex* hindex);
 
+    /* closeAndDrop - remove the index named `name` from the collection, wait
+     * until no thread uses it, then delete its files under `path` and free it.
+     * The caller must NOT hold the index's shared lock. Taking it out of the
+     * map first (under the collection mutex) makes one caller its only owner,
+     * and waiting for exclusive access without that mutex held lets other
+     * index operations proceed meanwhile. If `pred` is given, it is checked on
+     * the index first, atomically with taking it out, and the index is kept
+     * unless it returns true -- so a caller deciding on stale information can't
+     * drop an index another thread just rebuilt. Returns false if nothing was
+     * dropped. */
+    bool closeAndDrop(const std::string& name, const std::string& path,
+                      const std::function<bool(AbstractVectorIndex*)>& pred =
+                          nullptr);
+
     /* names - every open index (db.table.column), a snapshot. */
     std::vector<std::string> names();
     bool has(const std::string& name);
@@ -321,7 +336,7 @@ std::vector<std::string> myvector_evict_dropped(const std::string& db,
                                                 const std::string& table,
                                                 const std::string& binlogfile,
                                                 size_t binlogpos);
-/* true if an index named db.table.column is open. */
-bool myvector_index_is_open(const std::string& vecid);
+/* true if an online (online=Y) index named db.table.column is open. */
+bool myvector_online_index_is_open(const std::string& vecid);
 
 #endif  // PLUGIN_MYVECTOR_H

@@ -27,7 +27,8 @@ Checks:
      recreated with the old name and filled past the old size=. The server
      survives and logs that the old index was removed; the recreated table then
      builds with every row, and after a restart (which replays the binlog,
-     including the old DROP) the new index still has every row.
+     including the old DROP) the new index still has every row. Also, a
+     DROP DATABASE "name" written with ANSI_QUOTES removes that database's index.
 
 Usage:
   python3 scripts/test-stale-index-overflow.py --plugin-dir dist/plugin-8.4
@@ -117,6 +118,21 @@ def main():
         rc, out, err = run(f"CALL mysql.myvector_index_status('{index}');")
         return out.replace("\\n", "\n") if rc == 0 else f"<rc={rc} {err}>"
 
+    def wait_for(probe, ok, timeout=60):
+        """Poll probe() until ok(value) or the deadline; return the last value.
+        The binlog listener applies events asynchronously, so a fixed sleep
+        could check before it gets there."""
+        deadline = time.time() + timeout
+        while True:
+            value = probe()
+            if ok(value) or time.time() >= deadline:
+                return value
+            time.sleep(1)
+
+    def log_has(pattern, timeout=60):
+        return wait_for(lambda: re.search(pattern, srv.log()) is not None,
+                        lambda found: found, timeout)
+
     def ann(index, n=1):
         return run(f"SELECT myvector_ann_set('{index}', 'id', {QUERY}, "
                    f"'nn={n}');")
@@ -171,17 +187,18 @@ def main():
         record("D0. setup: the online index builds at its capacity",
                rc == 0 and out.startswith("SUCCESS"), f"rc={rc} out={out[:80]!r}")
         insert("d", [(4, "[20,20]"), (5, "[30,30]")])
-        time.sleep(4)  # the binlog worker applies them asynchronously
+        st = wait_for(lambda: status("vtest.d.v"),
+                      lambda v: "Online events skipped : 2" in v or not alive())
         record("D1. server survives INSERTs past size=", alive(),
                "mysqladmin ping")
-        st = status("vtest.d.v")
         record("D2. the status counts the rejected rows",
                "index is full" in st and "Online events skipped : 2" in st,
                repr(st[-300:]))
         srv.sql("UPDATE d SET v = myvector_construct('[40,40]') WHERE id = 1;")
-        time.sleep(4)
-        rc, out, err = run(f"SELECT myvector_ann_set('vtest.d.v', 'id', "
-                           f"myvector_construct('[40,40]'), 'nn=1');")
+        rc, out, err = wait_for(
+            lambda: run("SELECT myvector_ann_set('vtest.d.v', 'id', "
+                        "myvector_construct('[40,40]'), 'nn=1');"),
+            lambda r: r[1] == "[1]")
         record("D3. an UPDATE of an indexed row still applies on a full index",
                rc == 0 and out == "[1]", f"rc={rc} out={out!r} err={err[:120]!r}")
 
@@ -196,13 +213,17 @@ def main():
         srv.sql("DROP DATABASE e; CREATE DATABASE e;", db=None)
         create("t", f"type=HNSW,dim={DIM},size=10,M=16,ef=64,online=Y,dist=L2",
                db="e")
+        evicted = log_has(r"Index e\.t\.v: its table was dropped")
         insert("t", [(i, f"[{i},{i}]") for i in range(1, 9)], db="e")
-        time.sleep(4)
+        # Wait until the listener reaches these INSERTs: with the old index gone
+        # it finds no index for the (not yet built) table and logs that; before
+        # the fix it fed them to the old size=3 graph and mysqld died (#285).
+        wait_for(lambda: "index not found e.t.v" in srv.log() or not alive(),
+                 lambda done: done, timeout=30)
         record("E1. server survives 8 INSERTs into the recreated table",
                alive(), "mysqladmin ping")
         record("E2. the log reports that the dropped table's index was removed",
-               re.search(r"Index e\.t\.v: its table was dropped", srv.log())
-               is not None, "server log")
+               evicted, "server log")
         rc, out, err = build("e.t.v")
         rows = idle.current_rows(srv, "e.t.v")
         record("E3. the recreated table builds with all 8 rows",
@@ -210,9 +231,24 @@ def main():
                f"rc={rc} out={out[:80]!r} rows={rows}")
         idle.sh(["docker", "restart", srv.name])
         srv.wait_ready()
-        rows = idle.current_rows(srv, "e.t.v")
+        # The component loads indexes and replays the binlog in the background
+        # after the server is up: poll until the index reports its rows.
+        rows = wait_for(lambda: idle.current_rows(srv, "e.t.v"),
+                        lambda r: r == 8)
         record("E4. after a restart (binlog replay) the new index keeps 8 rows",
                rows == 8, f"rows={rows}")
+        # A DROP DATABASE written with ANSI_QUOTES ("name") is parsed too.
+        srv.sql("CREATE DATABASE e2;", db=None)
+        create("t", f"type=HNSW,dim={DIM},size=10,M=16,ef=64,online=Y,dist=L2",
+               db="e2")
+        insert("t", [(1, "[0,0]"), (2, "[5,5]")], db="e2")
+        rc, out, err = build("e2.t.v")
+        srv.sql("SET SESSION sql_mode = 'ANSI_QUOTES'; DROP DATABASE \"e2\";",
+                db=None)
+        record("E5. DROP DATABASE \"e2\" (ANSI_QUOTES) removes its index",
+               rc == 0 and out.startswith("SUCCESS")
+               and log_has(r"Index e2\.t\.v: its table was dropped"),
+               f"build={out[:40]!r}")
 
     try:
         srv.wait_ready()
