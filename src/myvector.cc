@@ -931,6 +931,16 @@ bool HNSWMemoryIndex::saveIndex(const string& path, const string& option) {
         m_isParallelBuild = false;
     }
 
+    /* A graph an insert left inconsistent must never reach disk: a later load
+     * would make it searchable again (#285 review). Checked after the flush
+     * above, which can fail too. */
+    if (m_graphFailed) {
+        MYVEC_LOG_ERROR("Index %s: not saving it, an insert failed part-way;"
+                        " rebuild it with MYVECTOR_INDEX_BUILD.",
+                        m_name.c_str());
+        return false;
+    }
+
     MYVEC_LOG_DEBUG(
         "HNSWemoryIndex::saveIndex %s %s.", path.c_str(), option.c_str());
 
@@ -1310,6 +1320,8 @@ bool HNSWMemoryIndex::addPointChecked(const void* data, KeyTypeInteger id) {
      * refusal leaves the graph intact: the row is simply not added. */
     static const char* const kFull =
         "The number of elements exceeds the specified limit";
+    if (m_graphFailed)
+        return false;  /// no more changes to a graph that is already broken
     try {
         m_alg_hnsw->addPoint(data, id);
         return true;
@@ -3151,6 +3163,14 @@ void myvector_open_index_impl(char* vecid,
                          ? " It also could not be saved to disk (see the server"
                            " log)."
                          : "");
+        /* An insert failed part-way (not a capacity refusal): the graph is
+         * unusable and was not saved. This outranks the messages above. */
+        if (!vi->isReady())
+            snprintf(result,
+                     255,
+                     "ERROR: index %.80s could not be built: adding a row failed"
+                     " (see the server log). The index is not usable; rebuild it.",
+                     indexName.c_str());
     }
     return;
 }
