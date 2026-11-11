@@ -3083,6 +3083,16 @@ void myvector_open_index_impl(char* vecid,
                 strcpy(result, "Failed to open index");
             return;
         }
+        /* open() returns an index another session opened meanwhile rather than
+         * replace it; if that one came from an older COMMENT, don't build it
+         * with the wrong options (#286 review). */
+        if (!strcmp(action, "build") && vi->getOptions() != effective_details) {
+            vi->unlockShared();
+            snprintf(result, 255,
+                     "ERROR: index %.80s is being changed by another session;"
+                     " retry the build.", vecid);
+            return;
+        }
         existing = false;
     }
     SharedLockGuard l(vi);
