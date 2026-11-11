@@ -26,6 +26,7 @@
 
 #define MYVECTOR_PLUGIN_VERSION "1.0.2-rc3"
 
+#include <condition_variable>
 #include <functional>
 #include <limits>
 #include <map>
@@ -222,10 +223,18 @@ public:
      * the index first, atomically with taking it out, and the index is kept
      * unless it returns true -- so a caller deciding on stale information can't
      * drop an index another thread just rebuilt. Returns false if nothing was
-     * dropped. */
+     * dropped. Until the old index's files are gone, open() of the same name
+     * waits, so a replacement can't save files the cleanup would delete. With
+     * skipIfBuilding, an index a MYVECTOR_INDEX_BUILD is working on is kept. */
     bool closeAndDrop(const std::string& name, const std::string& path,
                       const std::function<bool(AbstractVectorIndex*)>& pred =
-                          nullptr);
+                          nullptr,
+                      bool skipIfBuilding = false);
+
+    /* beginBuild/endBuild - a MYVECTOR_INDEX_BUILD of `name` is in progress
+     * (counted, so concurrent builds nest). Call beginBuild before get(). */
+    void beginBuild(const std::string& name);
+    void endBuild(const std::string& name);
 
     /* names - every open index (db.table.column), a snapshot. */
     std::vector<std::string> names();
@@ -237,6 +246,11 @@ public:
 private:
     std::unordered_map<std::string, AbstractVectorIndex*> m_indexes;
     std::mutex m_mutex;
+    /// names whose old index closeAndDrop() is still cleaning up; open() waits
+    std::unordered_set<std::string> m_retiring;
+    std::condition_variable m_retired;
+    /// names with a MYVECTOR_INDEX_BUILD in progress (count per name)
+    std::unordered_map<std::string, int> m_building;
 };
 
 /* Distance function for a metric name (L2, EUCLIDEAN, Cosine, IP; any case),

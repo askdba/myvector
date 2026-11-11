@@ -96,7 +96,12 @@ typedef struct {
     std::string vectorColumn;
     int idColumnPosition;
     int vecColumnPosition;
+    /// set from g_registrationGen each time the column is (re-)registered, so the
+    /// DROP cleanup can tell a stale registration from one added after it looked
+    uint64_t generation = 0;
 } VectorIndexColumnInfo;
+
+static std::atomic<uint64_t> g_registrationGen{0};
 
 /* Table ID in binlog is 6 bytes little-endian; use uint64_t for safe storage. */
 static uint64_t read_table_id_6(const unsigned char* buf) {
@@ -1594,6 +1599,7 @@ void OpenAllOnlineVectorIndexes(MYSQL* hnd) {
 
             snprintf(vecid, sizeof(vecid), "%s.%s", dbname, tbl);
             VectorIndexColumnInfo vc{col, idcolpos, veccolpos};
+            vc.generation = ++g_registrationGen;
             g_OnlineVectorIndexes[vecid].push_back(vc);
         }
     }  // while
@@ -2000,6 +2006,7 @@ void BuildMyVectorIndexSQL(const char* db,
                 [&](const VectorIndexColumnInfo& c) {
                     return c.vectorColumn == vc.vectorColumn;
                 });
+            vc.generation = ++g_registrationGen;
             if (it != cols.end())
                 *it = vc;
             else
@@ -2619,22 +2626,27 @@ private:
                     }
                     for (const auto& d : drops)
                         myvector_evict_dropped(d.first, d.second, file, pos);
-                    // Which online indexes are still open, read before taking
-                    // binlog_stream_mutex_: the build path takes an index lock and
-                    // then that mutex, so don't take them the other way round.
-                    std::set<std::string> openOnline;
+                    // Stale registrations: those whose online index is not open.
+                    // Openness is read without binlog_stream_mutex_ held (the
+                    // build path takes an index lock and then that mutex, so
+                    // don't take them the other way round), so remember each
+                    // candidate's generation: a column (re-)registered after this
+                    // snapshot -- e.g. by a BUILD that finished meanwhile -- has
+                    // a newer generation and is kept (#286 review).
+                    std::set<std::pair<std::string, uint64_t>> stale;
                     {
-                        std::vector<std::string> candidates;
+                        std::vector<std::pair<std::string, uint64_t>> candidates;
                         {
                             std::lock_guard<std::mutex> lk(binlog_stream_mutex_);
                             for (const auto& reg : g_OnlineVectorIndexes)
                                 for (const auto& c : reg.second)
-                                    candidates.push_back(reg.first + "." +
-                                                         c.vectorColumn);
+                                    candidates.emplace_back(
+                                        reg.first + "." + c.vectorColumn,
+                                        c.generation);
                         }
-                        for (const auto& name : candidates)
-                            if (myvector_online_index_is_open(name))
-                                openOnline.insert(name);
+                        for (const auto& cand : candidates)
+                            if (!myvector_online_index_is_open(cand.first))
+                                stale.insert(cand);
                     }
                     std::lock_guard<std::mutex> lk(binlog_stream_mutex_);
                     for (const auto& d : drops) {
@@ -2648,10 +2660,11 @@ private:
                         for (auto it = g_NonOnlineTables.begin();
                              it != g_NonOnlineTables.end();)
                             it = matches(*it) ? g_NonOnlineTables.erase(it) : std::next(it);
-                        // Per column, keep only a registration whose online index
-                        // is still open: that index was built after this DROP, on
-                        // the recreated table, and its build re-registered the
-                        // column with the new table's positions. Drop the rest.
+                        // Per column, drop exactly the registrations found stale
+                        // above (same name and generation). A column whose online
+                        // index is still open was rebuilt after this DROP, on the
+                        // recreated table, and its build re-registered it with the
+                        // new table's positions: it stays.
                         for (auto it = g_OnlineVectorIndexes.begin();
                              it != g_OnlineVectorIndexes.end();) {
                             if (!matches(it->first)) {
@@ -2663,8 +2676,9 @@ private:
                             cols.erase(std::remove_if(
                                            cols.begin(), cols.end(),
                                            [&](const VectorIndexColumnInfo& c) {
-                                               return !openOnline.count(
-                                                   table + "." + c.vectorColumn);
+                                               return stale.count(
+                                                   {table + "." + c.vectorColumn,
+                                                    c.generation}) > 0;
                                            }),
                                        cols.end());
                             it = cols.empty() ? g_OnlineVectorIndexes.erase(it)
@@ -2694,14 +2708,16 @@ private:
                         } else {
                             std::lock_guard<std::mutex> lk(binlog_stream_mutex_);
                             auto& cols = g_OnlineVectorIndexes[peekKey];
-                            for (const auto& vc : newCols) {
+                            for (auto vc : newCols) {
                                 auto it = std::find_if(
                                     cols.begin(), cols.end(),
                                     [&](const VectorIndexColumnInfo& c) {
                                         return c.vectorColumn == vc.vectorColumn;
                                     });
-                                if (it == cols.end())
+                                if (it == cols.end()) {
+                                    vc.generation = ++g_registrationGen;
                                     cols.push_back(vc);
+                                }
                             }
                         }
                     }

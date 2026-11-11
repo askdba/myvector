@@ -1427,7 +1427,11 @@ bool HNSWMemoryIndex::deleteVector(KeyTypeInteger id) {
 AbstractVectorIndex* VectorIndexCollection::open(const string& name,
                                                  const string& options,
                                                  const string& useraction) {
-    lock_guard<mutex> l(m_mutex);  // exclusive
+    std::unique_lock<mutex> l(m_mutex);  // exclusive
+    /* An old index of this name is still being retired (closeAndDrop waits for
+     * its users, then deletes its files): opening now would let the new index
+     * save files that cleanup then deletes. Wait for it to finish. */
+    m_retired.wait(l, [&] { return m_retiring.count(name) == 0; });
 
     MYVEC_LOG_DEBUG("Opening new index %s %s %s",
                 name.c_str(),
@@ -1497,7 +1501,8 @@ bool VectorIndexCollection::close(AbstractVectorIndex* hindex) {
 bool VectorIndexCollection::closeAndDrop(
     const string& name,
     const string& path,
-    const std::function<bool(AbstractVectorIndex*)>& pred) {
+    const std::function<bool(AbstractVectorIndex*)>& pred,
+    bool skipIfBuilding) {
     AbstractVectorIndex* hindex = nullptr;
     {
         lock_guard<mutex> l(m_mutex);
@@ -1505,6 +1510,10 @@ bool VectorIndexCollection::closeAndDrop(
         if (it == m_indexes.end())
             return false;
         hindex = it->second;
+        /* A build working on this object (it reused it under a shared lock)
+         * would finish and save into an index we are about to destroy. */
+        if (skipIfBuilding && m_building.count(name))
+            return false;
         if (pred) {
             /* Exclusive locks are taken only by close() (which holds m_mutex)
              * and below (after erase), so this shared lock can't block here. */
@@ -1515,13 +1524,31 @@ bool VectorIndexCollection::closeAndDrop(
                 return false;
         }
         m_indexes.erase(it);  /// no new get() can return it; we own it now
+        m_retiring.insert(name);  /// and no open() of the name until cleaned up
     }
     hindex->lockExclusive();  /// wait for threads already using it
     hindex->dropIndex(path);
     hindex->closeIndex();
     hindex->unlockExclusive();
     delete hindex;
+    {
+        lock_guard<mutex> l(m_mutex);
+        m_retiring.erase(name);
+    }
+    m_retired.notify_all();
     return true;
+}
+
+void VectorIndexCollection::beginBuild(const string& name) {
+    lock_guard<mutex> l(m_mutex);
+    m_building[name]++;
+}
+
+void VectorIndexCollection::endBuild(const string& name) {
+    lock_guard<mutex> l(m_mutex);
+    auto it = m_building.find(name);
+    if (it != m_building.end() && --it->second <= 0)
+        m_building.erase(it);
 }
 
 std::vector<string> VectorIndexCollection::names() {
@@ -2984,6 +3011,18 @@ void myvector_open_index_impl(char* vecid,
     bool readsComment = !strcmp(action, "build") || !strcmp(action, "refresh") ||
                         !strcmp(action, "load");
     AbstractVectorIndex* vi = nullptr;
+    /* Mark the build in progress before looking the index up, so a DROP seen
+     * by the binlog listener meanwhile doesn't retire the object this build is
+     * filling (#286 review). Cleared on every return. */
+    struct BuildMark {
+        std::string name;
+        explicit BuildMark(const char* n) : name(n ? n : "") {
+            if (!name.empty()) g_indexes.beginBuild(name);
+        }
+        ~BuildMark() {
+            if (!name.empty()) g_indexes.endBuild(name);
+        }
+    } buildMark(!strcmp(action, "build") ? vecid : nullptr);
     if (!readsComment || isValidIndexType(itype))
         vi = g_indexes.get(vecid);
     /* build reads the column's current COMMENT. An index still open from an
@@ -3614,7 +3653,8 @@ std::vector<string> myvector_evict_dropped(const string& db,
     for (const string& name : g_indexes.names()) {
         if (name.compare(0, prefix.size(), prefix) != 0)
             continue;
-        if (g_indexes.closeAndDrop(name, myvector_index_dir, builtBeforeDrop)) {
+        if (g_indexes.closeAndDrop(name, myvector_index_dir, builtBeforeDrop,
+                                   /* skipIfBuilding = */ true)) {
             MYVEC_LOG_INFO("Index %s: its table was dropped (binlog %s %zu); "
                            "removed the index.",
                            name.c_str(), binlogfile.c_str(), binlogpos);
