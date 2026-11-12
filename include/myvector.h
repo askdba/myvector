@@ -26,6 +26,8 @@
 
 #define MYVECTOR_PLUGIN_VERSION "1.0.2-rc3"
 
+#include <condition_variable>
+#include <functional>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -107,6 +109,15 @@ public:
     virtual std::string getType() = 0;
 
     virtual int getDimension() { return 0; }
+
+    /* getOptions - the MYVECTOR column options (the COMMENT) the index was
+     * opened with. MYVECTOR_INDEX_BUILD compares them with the column's current
+     * options, so a table recreated with new options gets a new index (#283). */
+    virtual std::string getOptions() { return ""; }
+
+    /* getRejectedCount - rows the index refused since it was built or loaded,
+     * because an HNSW graph was full (its size= reached, #285). */
+    virtual unsigned long getRejectedCount() { return 0; }
 
     virtual bool supportsIncrUpdates() { return false; }
 
@@ -203,12 +214,43 @@ public:
 
     bool close(AbstractVectorIndex* hindex);
 
+    /* closeAndDrop - remove the index named `name` from the collection, wait
+     * until no thread uses it, then delete its files under `path` and free it.
+     * The caller must NOT hold the index's shared lock. Taking it out of the
+     * map first (under the collection mutex) makes one caller its only owner,
+     * and waiting for exclusive access without that mutex held lets other
+     * index operations proceed meanwhile. If `pred` is given, it is checked on
+     * the index first, atomically with taking it out, and the index is kept
+     * unless it returns true -- so a caller deciding on stale information can't
+     * drop an index another thread just rebuilt. Returns false if nothing was
+     * dropped. Until the old index's files are gone, open() of the same name
+     * waits, so a replacement can't save files the cleanup would delete. With
+     * skipIfBuilding, an index a MYVECTOR_INDEX_BUILD is working on is kept. */
+    bool closeAndDrop(const std::string& name, const std::string& path,
+                      const std::function<bool(AbstractVectorIndex*)>& pred =
+                          nullptr,
+                      bool skipIfBuilding = false);
+
+    /* beginBuild/endBuild - a MYVECTOR_INDEX_BUILD of `name` is in progress
+     * (counted, so concurrent builds nest). Call beginBuild before get(). */
+    void beginBuild(const std::string& name);
+    void endBuild(const std::string& name);
+
+    /* names - every open index (db.table.column), a snapshot. */
+    std::vector<std::string> names();
+    bool has(const std::string& name);
+
     std::string FindEarliestBinlogFile();
     bool FindEarliestCheckpoint(std::string& binlogfile, size_t& binlogpos);
 
 private:
     std::unordered_map<std::string, AbstractVectorIndex*> m_indexes;
     std::mutex m_mutex;
+    /// names whose old index closeAndDrop() is still cleaning up; open() waits
+    std::unordered_set<std::string> m_retiring;
+    std::condition_variable m_retired;
+    /// names with a MYVECTOR_INDEX_BUILD in progress (count per name)
+    std::unordered_map<std::string, int> m_building;
 };
 
 /* Distance function for a metric name (L2, EUCLIDEAN, Cosine, IP; any case),
@@ -286,6 +328,7 @@ enum class OnlineSkipReason {
     kRowImage,     // binlog_row_image is not FULL: a column is missing
     kColumnCount,  // column count unreadable or not matching the table map
     kColumnType,   // a column type the parser cannot read, or a truncated event
+    kIndexFull,    // the HNSW graph is full: the index's size= is reached (#285)
 };
 void myvector_online_skip(const std::string& db,
                           const std::string& table,
@@ -296,5 +339,18 @@ std::string myvector_online_skip_status(const std::string& dbtable);
 /* The index of db.table was rebuilt or reloaded: warn again on the next skip
  * of each reason. The counts are kept. */
 void myvector_online_skip_rearm(const std::string& dbtable);
+
+/* A DROP TABLE (table non-empty) or DROP DATABASE (table empty) at binlog
+ * position (binlogfile, binlogpos) removed db.table: drop the online indexes on
+ * its columns that were built before that position, in memory and on disk, so a
+ * table recreated under the same name doesn't feed the old graph (#283, #285).
+ * Indexes built after the DROP (on a recreated table) are kept. Returns the
+ * names (db.table.column) of the indexes dropped. */
+std::vector<std::string> myvector_evict_dropped(const std::string& db,
+                                                const std::string& table,
+                                                const std::string& binlogfile,
+                                                size_t binlogpos);
+/* true if an online (online=Y) index named db.table.column is open. */
+bool myvector_online_index_is_open(const std::string& vecid);
 
 #endif  // PLUGIN_MYVECTOR_H

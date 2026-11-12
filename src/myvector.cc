@@ -485,6 +485,8 @@ public:
 
     int getDimension() { return m_dim; }
 
+    string getOptions() override { return m_options; }
+
     bool startParallelBuild(int nthreads) { return false; }
 
     void setUpdateTs(unsigned long ts) { m_updateTs = ts; }
@@ -724,8 +726,9 @@ public:
 
     string getStatus();
 
-    /// false until the index is built or loaded, and after a failed load (#265)
-    bool isReady() override { return m_alg_hnsw != nullptr; }
+    /// false until the index is built or loaded, after a failed load (#265), and
+    /// after an insert failed part-way through a graph change (#285)
+    bool isReady() override { return m_alg_hnsw != nullptr && !m_graphFailed; }
 
     bool searchVectorNN(VectorPtr qvec,
                         int dim,
@@ -744,6 +747,9 @@ public:
     unsigned long getUpdateTs() { return m_updateTs; }
 
     unsigned long getRowCount() { return m_n_rows; }
+
+    string getOptions() override { return m_options; }
+    unsigned long getRejectedCount() override { return m_n_rejected; }
 
     bool startParallelBuild(int nthreads);
 
@@ -778,6 +784,12 @@ private:
 
     atomic<unsigned long> m_n_rows{0};
     atomic<unsigned long> m_n_searches{0};
+    /// rows hnswlib refused because the graph is full (size= reached, #285)
+    atomic<unsigned long> m_n_rejected{0};
+    /// an insert threw after the graph had started to change (not a capacity
+    /// refusal): the graph may be inconsistent, so searches refuse it until it
+    /// is rebuilt or reloaded (#285)
+    atomic<bool> m_graphFailed{false};
 
     bool m_isDirty;
 
@@ -791,6 +803,7 @@ private:
 
     bool flushBatchParallel();
     bool flushBatchSerial();
+    bool addPointChecked(const void* data, KeyTypeInteger id);
 
     int m_threads;
 
@@ -875,6 +888,8 @@ bool HNSWMemoryIndex::initIndex() {
 
     m_n_rows = 0;
     m_n_searches = 0;
+    m_n_rejected = 0;
+    m_graphFailed = false;
 
     setLastUpdateCoordinates("zzzzzz.bin", 99999999999);
     setUpdateTs(0);
@@ -914,6 +929,16 @@ bool HNSWMemoryIndex::saveIndex(const string& path, const string& option) {
         // already-completed step from the on-disk write below, so it must not be
         // repeated on a later call just because that write happens to fail.
         m_isParallelBuild = false;
+    }
+
+    /* A graph an insert left inconsistent must never reach disk: a later load
+     * would make it searchable again (#285 review). Checked after the flush
+     * above, which can fail too. */
+    if (m_graphFailed) {
+        MYVEC_LOG_ERROR("Index %s: not saving it, an insert failed part-way;"
+                        " rebuild it with MYVECTOR_INDEX_BUILD.",
+                        m_name.c_str());
+        return false;
     }
 
     MYVEC_LOG_DEBUG(
@@ -1007,6 +1032,8 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
      * crafted file's header abort the entire server via std::terminate()
      * (review of audit run-1, Slice 4: PR #235). Catch any std::exception. */
     m_alg_hnsw = nullptr;
+    m_n_rejected = 0;  /// counts refusals of this graph only (#285)
+    m_graphFailed = false;
     try {
         m_alg_hnsw = new hnswlib::HierarchicalDiskNSW<FP32>(m_space, indexfile);
     } catch (const std::exception& e) {
@@ -1113,6 +1140,8 @@ string HNSWMemoryIndex::getStatus() {
            << endl;
         ss << "Searches : " << m_n_searches << endl;
     }
+    if (m_n_rejected)
+        ss << "Rows rejected (index full) : " << m_n_rejected << endl;
 
     return ss.str();
 }
@@ -1138,9 +1167,10 @@ bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec,
                                      int ef_search) {
     priority_queue<pair<FP32, hnswlib::labeltype>> result;
 
-    /* No graph: opened but never built or loaded, or the load failed (#265).
-     * The callers report the error; searching would dereference null. */
-    if (!m_alg_hnsw)
+    /* No graph: opened but never built or loaded, or the load failed (#265);
+     * or an insert failed part-way through a graph change (#285). The callers
+     * report the error; searching would dereference null or a broken graph. */
+    if (!isReady())
         return false;
 
     auto* disk_hnsw =
@@ -1279,11 +1309,47 @@ bool HNSWMemoryIndex::startParallelBuild(int nthreads) {
     return true;
 }
 
+/* addPointChecked - add one row to the graph. hnswlib throws (for example
+ * "The number of elements exceeds the specified limit" once size= rows are in
+ * the graph); an exception escaping a UDF or the binlog worker thread
+ * terminates mysqld (#285). Count the row as rejected and report false
+ * instead. Updating a key that is already in the graph needs no new slot and
+ * still succeeds on a full graph. */
+bool HNSWMemoryIndex::addPointChecked(const void* data, KeyTypeInteger id) {
+    /* hnswlib's capacity check runs before it changes the graph, so that
+     * refusal leaves the graph intact: the row is simply not added. */
+    static const char* const kFull =
+        "The number of elements exceeds the specified limit";
+    if (m_graphFailed)
+        return false;  /// no more changes to a graph that is already broken
+    try {
+        m_alg_hnsw->addPoint(data, id);
+        return true;
+    } catch (const std::exception& e) {
+        if (!strcmp(e.what(), kFull)) {
+            if (m_n_rejected++ == 0)
+                MYVEC_LOG_WARN("Index %s: row %zu not added (%s). The index holds"
+                               " at most size=%d rows; rebuild it with a larger"
+                               " size.",
+                               m_name.c_str(), (size_t)id, e.what(), m_size);
+        } else if (!m_graphFailed.exchange(true)) {
+            /* Anything else (e.g. an allocation failure) may have happened after
+             * the element was registered: don't search a half-inserted graph. */
+            MYVEC_LOG_ERROR("Index %s: adding row %zu failed (%s); the index is "
+                            "unusable until it is rebuilt with "
+                            "MYVECTOR_INDEX_BUILD.",
+                            m_name.c_str(), (size_t)id, e.what());
+        }
+        return false;
+    }
+}
+
 bool HNSWMemoryIndex::flushBatchSerial() {
     MYVEC_LOG_DEBUG("flushBatchSerial %lu", m_batchkeys.size());
     for (unsigned int i = 0; i < m_batchkeys.size(); i++) {
-        m_alg_hnsw->addPoint((void*)&(m_batch[i * m_space->get_data_size()]),
-                             m_batchkeys[i]);
+        if (!addPointChecked((void*)&(m_batch[i * m_space->get_data_size()]),
+                             m_batchkeys[i]) && m_n_rows > 0)
+            m_n_rows--;  /// counted by insertVector() when it was batched
     }
     // Mirror flushBatchParallel(): once the pending rows are in the in-memory graph,
     // this batch is consumed regardless of whether the caller's later on-disk save
@@ -1304,9 +1370,10 @@ bool HNSWMemoryIndex::flushBatchParallel() {
      */
     ParallelFor(
         0, m_batchkeys.size(), m_threads, [&](size_t row, size_t threadId) {
-            m_alg_hnsw->addPoint(
-                (void*)&(m_batch[row * m_space->get_data_size()]),
-                m_batchkeys[row]);
+            if (!addPointChecked(
+                    (void*)&(m_batch[row * m_space->get_data_size()]),
+                    m_batchkeys[row]) && m_n_rows > 0)
+                m_n_rows--;  /// counted by insertVector() when it was batched
         });
 
     m_batch.clear();
@@ -1329,7 +1396,8 @@ bool HNSWMemoryIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
     } else {
         if (!m_alg_hnsw)
             return false;  /// not built or loaded yet (#187)
-        m_alg_hnsw->addPoint(fvec, id);
+        if (!addPointChecked(fvec, id))
+            return false;  /// graph full (#285); counted in m_n_rejected
     }
 
     m_n_rows++;  // atomic
@@ -1359,7 +1427,19 @@ bool HNSWMemoryIndex::deleteVector(KeyTypeInteger id) {
 AbstractVectorIndex* VectorIndexCollection::open(const string& name,
                                                  const string& options,
                                                  const string& useraction) {
-    lock_guard<mutex> l(m_mutex);  // exclusive
+    std::unique_lock<mutex> l(m_mutex);  // exclusive
+    /* An old index of this name is still being retired (closeAndDrop waits for
+     * its users, then deletes its files): opening now would let the new index
+     * save files that cleanup then deletes. Wait for it to finish. */
+    m_retired.wait(l, [&] { return m_retiring.count(name) == 0; });
+    /* Another opener of the same name (e.g. a second BUILD that waited too)
+     * may have got there first: use its index rather than overwrite the entry,
+     * which would leave two objects writing the same files (#286 review). */
+    auto existing = m_indexes.find(name);
+    if (existing != m_indexes.end()) {
+        existing->second->lockShared(); /* as get() does */
+        return existing->second;
+    }
 
     MYVEC_LOG_DEBUG("Opening new index %s %s %s",
                 name.c_str(),
@@ -1424,6 +1504,73 @@ bool VectorIndexCollection::close(AbstractVectorIndex* hindex) {
 
     delete hindex; /* no other thread can hold shared lock */
     return true;
+}
+
+bool VectorIndexCollection::closeAndDrop(
+    const string& name,
+    const string& path,
+    const std::function<bool(AbstractVectorIndex*)>& pred,
+    bool skipIfBuilding) {
+    AbstractVectorIndex* hindex = nullptr;
+    {
+        lock_guard<mutex> l(m_mutex);
+        auto it = m_indexes.find(name);
+        if (it == m_indexes.end())
+            return false;
+        hindex = it->second;
+        /* A build working on this object (it reused it under a shared lock)
+         * would finish and save into an index we are about to destroy. */
+        if (skipIfBuilding && m_building.count(name))
+            return false;
+        if (pred) {
+            /* Exclusive locks are taken only by close() (which holds m_mutex)
+             * and below (after erase), so this shared lock can't block here. */
+            hindex->lockShared();
+            bool drop = pred(hindex);
+            hindex->unlockShared();
+            if (!drop)
+                return false;
+        }
+        m_indexes.erase(it);  /// no new get() can return it; we own it now
+        m_retiring.insert(name);  /// and no open() of the name until cleaned up
+    }
+    hindex->lockExclusive();  /// wait for threads already using it
+    hindex->dropIndex(path);
+    hindex->closeIndex();
+    hindex->unlockExclusive();
+    delete hindex;
+    {
+        lock_guard<mutex> l(m_mutex);
+        m_retiring.erase(name);
+    }
+    m_retired.notify_all();
+    return true;
+}
+
+void VectorIndexCollection::beginBuild(const string& name) {
+    lock_guard<mutex> l(m_mutex);
+    m_building[name]++;
+}
+
+void VectorIndexCollection::endBuild(const string& name) {
+    lock_guard<mutex> l(m_mutex);
+    auto it = m_building.find(name);
+    if (it != m_building.end() && --it->second <= 0)
+        m_building.erase(it);
+}
+
+std::vector<string> VectorIndexCollection::names() {
+    lock_guard<mutex> l(m_mutex);
+    std::vector<string> out;
+    out.reserve(m_indexes.size());
+    for (const auto& e : m_indexes)
+        out.push_back(e.first);
+    return out;
+}
+
+bool VectorIndexCollection::has(const string& name) {
+    lock_guard<mutex> l(m_mutex);
+    return m_indexes.count(name) > 0;
 }
 
 /* FindEarliestBinlogFile() - Find the oldest binlog file from all
@@ -2872,8 +3019,48 @@ void myvector_open_index_impl(char* vecid,
     bool readsComment = !strcmp(action, "build") || !strcmp(action, "refresh") ||
                         !strcmp(action, "load");
     AbstractVectorIndex* vi = nullptr;
+    /* Mark the build in progress before looking the index up, so a DROP seen
+     * by the binlog listener meanwhile doesn't retire the object this build is
+     * filling (#286 review). Cleared on every return. */
+    struct BuildMark {
+        std::string name;
+        explicit BuildMark(const char* n) : name(n ? n : "") {
+            if (!name.empty()) g_indexes.beginBuild(name);
+        }
+        ~BuildMark() {
+            if (!name.empty()) g_indexes.endBuild(name);
+        }
+    } buildMark(!strcmp(action, "build") ? vecid : nullptr);
     if (!readsComment || isValidIndexType(itype))
         vi = g_indexes.get(vecid);
+    /* build reads the column's current COMMENT. An index still open from an
+     * earlier COMMENT -- or from an earlier table of the same name that was
+     * dropped and recreated -- keeps the space, dim, M, ef and size it was
+     * created with, so rebuilding it silently used the old metric and
+     * parameters (#283). Drop it and open a new one from the current options. */
+    if (vi && !strcmp(action, "build") &&
+        vi->getOptions() != effective_details) {
+        MYVEC_LOG_INFO("Index %s: the column options changed since the index was "
+                       "opened (%s -> %s); rebuilding it from the new options.",
+                       vecid, vi->getOptions().c_str(), effective_details);
+        vi->unlockShared();  /// taken by get(); closeAndDrop needs it released
+        const string current(effective_details);
+        g_indexes.closeAndDrop(vecid, myvector_index_dir,
+                               [&current](AbstractVectorIndex* idx) {
+                                   return idx->getOptions() != current;
+                               });
+        /// kept if another build already replaced it; has() first, so the usual
+        /// case (gone) doesn't log get()'s "index not found" error
+        vi = g_indexes.has(vecid) ? g_indexes.get(vecid) : nullptr;
+        if (vi && vi->getOptions() != current) {
+            /* still the stale one (only possible in a race): give up safely */
+            vi->unlockShared();
+            snprintf(result, 255,
+                     "ERROR: index %.80s is being changed by another session;"
+                     " retry the build.", vecid);
+            return;
+        }
+    }
     if (!vi) {
         if (isValidIndexType(itype))
             vi = g_indexes.open(vecid, effective_details, action);
@@ -2894,6 +3081,16 @@ void myvector_open_index_impl(char* vecid,
                          vecid);
             else
                 strcpy(result, "Failed to open index");
+            return;
+        }
+        /* open() returns an index another session opened meanwhile rather than
+         * replace it; if that one came from an older COMMENT, don't build it
+         * with the wrong options (#286 review). */
+        if (!strcmp(action, "build") && vi->getOptions() != effective_details) {
+            vi->unlockShared();
+            snprintf(result, 255,
+                     "ERROR: index %.80s is being changed by another session;"
+                     " retry the build.", vecid);
             return;
         }
         existing = false;
@@ -2930,9 +3127,11 @@ void myvector_open_index_impl(char* vecid,
          * caller's in the component's startup load */
         snprintf(result, MYVECTOR_BUFF_SIZE, "%s", s.c_str());
     } else if (!strcmp(action, "drop")) {
-        vi->dropIndex(myvector_index_dir);
+        /* Free the graph only once no search or binlog worker uses it, and
+         * without holding the collection mutex while waiting (#285 review). */
         l.release();
-        g_indexes.close(vi);
+        vi->unlockShared();
+        g_indexes.closeAndDrop(vecid, myvector_index_dir);
         vi = nullptr;
     }
 
@@ -2965,6 +3164,7 @@ void myvector_open_index_impl(char* vecid,
     }
 
     if (!strcmp(action, "build") || !strcmp(action, "refresh")) {
+        const string indexName(vecid);  /// vecid is split in place below
         char errorbuf[1024];
         char *db, *table, *veccol;
         db = vecid;
@@ -3008,6 +3208,28 @@ void myvector_open_index_impl(char* vecid,
             strcpy(result,
                    "ERROR: index built but could not be saved to disk"
                    " (see the server log)");
+        /* Rows the graph refused because it is full (#285): the index is
+         * incomplete, so the build must not report SUCCESS. */
+        if (unsigned long rejected = vi->getRejectedCount())
+            snprintf(result,
+                     255,
+                     "ERROR: index %.80s is full: %lu rows were not added (its"
+                     " size=%d is too small). Rebuild it with a larger size.%s",
+                     indexName.c_str(),
+                     rejected,
+                     vo.getIntOption("size", 0),
+                     strstr(result, "could not be saved")
+                         ? " It also could not be saved to disk (see the server"
+                           " log)."
+                         : "");
+        /* An insert failed part-way (not a capacity refusal): the graph is
+         * unusable and was not saved. This outranks the messages above. */
+        if (!vi->isReady())
+            snprintf(result,
+                     255,
+                     "ERROR: index %.80s could not be built: adding a row failed"
+                     " (see the server log). The index is not usable; rebuild it.",
+                     indexName.c_str());
     }
     return;
 }
@@ -3278,6 +3500,11 @@ void myvector_table_op(const string& dbname,
         string binlogfileold;
         size_t binlogposold;
 
+        /* Only online=Y indexes follow the binlog. A registration left from
+         * before the column's COMMENT changed to non-online must not update the
+         * rebuilt index (#283 review). */
+        if (!vi->supportsIncrUpdates())
+            return;
         vi->getLastUpdateCoordinates(binlogfileold, binlogposold);
         if (isAfter(binlogfile, binlogpos, binlogfileold, binlogposold)) {
             if (isDelete) {
@@ -3298,8 +3525,12 @@ void myvector_table_op(const string& dbname,
                 MYVEC_LOG_WARN("Skipping zero-magnitude vector for cosine index"
                                " (pkid=%zu), row is in table but not in index.",
                                (size_t)pkid);
-            } else {
-                vi->insertVector(vec.data(), vi->getDimension(), pkid);
+            } else if (!vi->insertVector(vec.data(), vi->getDimension(), pkid) &&
+                       vi->isReady()) {
+                /* The graph is full (#285): the row is in the table but not in
+                 * the index. Counted and warned like other skipped events. */
+                myvector_online_skip(dbname, tbname, OnlineSkipReason::kIndexFull,
+                                     "");
             }
         } else {
             MYVEC_LOG_DEBUG("Skipping index update (%s %lu) < (%s %lu).",
@@ -3332,6 +3563,8 @@ const char* onlineSkipReasonText(OnlineSkipReason why) {
             return "column count does not match the table";
         case OnlineSkipReason::kColumnType:
             return "unreadable column type or truncated event";
+        case OnlineSkipReason::kIndexFull:
+            return "the index is full (size= reached); rebuild it with a larger size";
     }
     return "unknown";
 }
@@ -3417,6 +3650,47 @@ void myvector_checkpoint_index(const string& dbtable,
             }
         }
     }
+}
+
+std::vector<string> myvector_evict_dropped(const string& db,
+                                           const string& table,
+                                           const string& binlogfile,
+                                           size_t binlogpos) {
+    /* table empty (DROP DATABASE): every db.<table>.<column> */
+    const string prefix = table.empty() ? db + "." : db + "." + table + ".";
+    /* Only online indexes track binlog coordinates. An index built after this
+     * DROP belongs to a recreated table: keep it (this also makes a replay of
+     * old binlog events after a restart harmless). Checked atomically with the
+     * removal, so a concurrent rebuild is never dropped. */
+    auto builtBeforeDrop = [&](AbstractVectorIndex* vi) {
+        string builtFile;
+        size_t builtPos = 0;
+        vi->getLastUpdateCoordinates(builtFile, builtPos);
+        return vi->supportsIncrUpdates() &&
+               isAfter(binlogfile, binlogpos, builtFile, builtPos);
+    };
+    std::vector<string> dropped;
+    for (const string& name : g_indexes.names()) {
+        if (name.compare(0, prefix.size(), prefix) != 0)
+            continue;
+        if (g_indexes.closeAndDrop(name, myvector_index_dir, builtBeforeDrop,
+                                   /* skipIfBuilding = */ true)) {
+            MYVEC_LOG_INFO("Index %s: its table was dropped (binlog %s %zu); "
+                           "removed the index.",
+                           name.c_str(), binlogfile.c_str(), binlogpos);
+            dropped.push_back(name);
+        }
+    }
+    return dropped;
+}
+
+bool myvector_online_index_is_open(const string& vecid) {
+    AbstractVectorIndex* vi = g_indexes.has(vecid) ? g_indexes.get(vecid) : nullptr;
+    if (!vi)
+        return false;
+    bool online = vi->supportsIncrUpdates();
+    vi->unlockShared();  /// taken by get()
+    return online;
 }
 
 string myvector_find_earliest_binlog_file() {
