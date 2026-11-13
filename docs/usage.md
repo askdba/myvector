@@ -172,6 +172,10 @@ Build, load, status and drop work as for `storage=file`. Requirements (component
 
 Each server keeps its own index rows; they are not written to the binlog. Uninstalling the component keeps them. See [RFC-005](RFC-005-INNODB-INDEX-STORAGE.md) for the design.
 
+Changing `storage=` on an existing index doesn't move it: run `MYVECTOR_INDEX_BUILD` after the change, or a load finds no saved index in the new backend.
+
+Backups: the index rows are in the `myvector` schema, not in the application's database, so include it (for example `mysqldump --single-transaction --hex-blob myvector`). A backup without it still has the table data; the index then has to be rebuilt after a restore. The restoring server needs a `max_allowed_packet` large enough for one node, as the build does.
+
 ## Vector Functions
 
 **Create a Vector:**

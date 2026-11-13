@@ -34,17 +34,21 @@ public:
         size_t link_record = 0;
         std::string metric;
         int dim = 0;
+        unsigned long long update_ts = 0;  ///< refresh watermark (track= indexes)
         std::function<std::string(size_t first, size_t count)> vectors;
         std::function<std::string(size_t first, size_t count)> links;
         std::function<std::string(size_t node)> upper;
     };
 
-    /* What a load feeds, in this order: begin(header, node_count), then every
+    /* What a load feeds, in this order: begin(header, node_count, update_ts),
+     * node_count being the stored count the header must agree with, then every
      * vector chunk and every link chunk (first = first node of the chunk),
      * end_level0(), every upper row, finish(). Any of them may throw
      * std::exception, which fails the load. */
     struct GraphSink {
-        std::function<void(const std::string& header, size_t node_count)> begin;
+        std::function<void(const std::string& header, size_t node_count,
+                           unsigned long long update_ts)>
+            begin;
         std::function<void(size_t first, const std::string& data)> vectors;
         std::function<void(size_t first, const std::string& data)> links;
         std::function<void()> end_level0;

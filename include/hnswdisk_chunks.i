@@ -16,6 +16,8 @@
  * (cur_element_count stays 0 until the per-node arrays exist). */
 
     size_t m_importCount{0};  ///< nodes declared by the header being imported
+    size_t m_nextVector{0};   ///< next node a vector chunk must start at
+    size_t m_nextLink{0};     ///< next node a link chunk must start at
 
     static constexpr size_t kHeaderBytes =
         6 * sizeof(size_t) + sizeof(int) + sizeof(tableint) + 3 * sizeof(size_t) +
@@ -80,9 +82,11 @@
         return std::string(linkLists_[i], size_links_per_element_ * element_levels_[i]);
     }
 
-    /* beginImport - parse and validate the header, allocate the level-0 block. */
+    /* beginImport - parse and validate the header (which must declare
+     * expected_count nodes, the count stored next to it), allocate the level-0
+     * block. */
     void beginImport(SpaceInterface<dist_t> *s, const std::string &header,
-                     size_t max_elements_i) {
+                     size_t expected_count, size_t max_elements_i) {
         clear();
         if (header.size() != kHeaderBytes)
             throw std::runtime_error(
@@ -101,9 +105,18 @@
         getPOD(header, pos, M_);
         getPOD(header, pos, mult_);
         getPOD(header, pos, ef_construction_);
+        if (cur != expected_count)
+            throw std::runtime_error(
+                "Index seems to be corrupted (header node count differs from the stored count)");
         cur_element_count = cur;  // validateHeader() checks it against capacity
-        validateHeader(s, max_elements_i);
+        try {
+            validateHeader(s, max_elements_i);
+        } catch (...) {
+            cur_element_count = 0;  // nothing per-node allocated: keep clear() safe
+            throw;
+        }
         m_importCount = cur;
+        m_nextVector = m_nextLink = 0;
         cur_element_count = 0;  // until endLevel0Import(): see the file comment
         data_level0_memory_ = (char *)malloc(max_elements_ * size_data_per_element_);
         if (data_level0_memory_ == nullptr)
@@ -112,15 +125,20 @@
 
     /* importVectorChunk / importLinkChunk - records for nodes [first, ...). */
     void importVectorChunk(size_t first, const std::string &data) {
-        importRecords(first, data, vectorRecordBytes(), offsetData_);
+        importRecords(first, data, vectorRecordBytes(), offsetData_, m_nextVector);
     }
     void importLinkChunk(size_t first, const std::string &data) {
-        importRecords(first, data, linkRecordBytes(), offsetLevel0_);
+        importRecords(first, data, linkRecordBytes(), offsetLevel0_, m_nextLink);
     }
 
     /* endLevel0Import - every vector and link chunk is in: register labels and
      * allocate the per-node arrays. */
     void endLevel0Import() {
+        /* Every record written exactly once: no gap, no short chunk, so no
+         * uninitialized byte of data_level0_memory_ is read as graph data. */
+        if (m_nextVector != m_importCount || m_nextLink != m_importCount)
+            throw std::runtime_error(
+                "Index seems to be corrupted (chunks don't cover every node)");
         cur_element_count = m_importCount;
         try {
             allocateForLoad();
@@ -169,14 +187,18 @@
 
 private:
     void importRecords(size_t first, const std::string &data, size_t record,
-                       size_t offset) {
-        if (record == 0 || data.size() % record != 0)
+                       size_t offset, size_t &next) {
+        if (record == 0 || data.empty() || data.size() % record != 0)
             throw std::runtime_error(
                 "Index seems to be corrupted (chunk size not a whole number of records)");
         size_t count = data.size() / record;
+        if (first != next)
+            throw std::runtime_error(
+                "Index seems to be corrupted (chunk doesn't start where the last ended)");
         if (first > m_importCount || count > m_importCount - first)
             throw std::runtime_error(
                 "Index seems to be corrupted (chunk past the node count)");
+        next = first + count;
         for (size_t k = 0; k < count; k++)
             memcpy(data_level0_memory_ + (first + k) * size_data_per_element_ + offset,
                    data.data() + k * record, record);

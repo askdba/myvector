@@ -84,18 +84,24 @@ public:
         ulong* lengths = nullptr;
         Row r;
         bool keep = true;
-        while (keep && !mysql_service_mysql_command_query_result->fetch_row(res, &row) &&
-               row != nullptr) {
-            mysql_service_mysql_command_query_result->fetch_lengths(res, &lengths);
-            r.cols.assign(n, std::string());
-            r.is_null.assign(n, false);
-            for (unsigned int i = 0; i < n; i++) {
-                if (row[i] == nullptr)
-                    r.is_null[i] = true;
-                else
-                    r.cols[i].assign(row[i], lengths ? lengths[i] : strlen(row[i]));
+        try {
+            while (keep && !mysql_service_mysql_command_query_result->fetch_row(res, &row) &&
+                   row != nullptr) {
+                mysql_service_mysql_command_query_result->fetch_lengths(res, &lengths);
+                r.cols.assign(n, std::string());
+                r.is_null.assign(n, false);
+                for (unsigned int i = 0; i < n; i++) {
+                    if (row[i] == nullptr)
+                        r.is_null[i] = true;
+                    else
+                        r.cols[i].assign(row[i], lengths ? lengths[i] : strlen(row[i]));
+                }
+                keep = on_row(r);
             }
-            keep = on_row(r);
+        } catch (...) {
+            mysql_service_mysql_command_query_result->free_result(res);
+            drain();
+            throw;
         }
         mysql_service_mysql_command_query_result->free_result(res);
         drain();
@@ -224,8 +230,16 @@ bool run(const std::function<bool(Session&, std::string*)>& fn, std::string* err
             return;
         }
         LocalSession s(h);
-        ok = fn(s, &e);
-        mysql_service_mysql_command_factory->close(h);
+        try {
+            ok = fn(s, &e);
+        } catch (const std::exception& ex) {
+            ok = false;
+            e = std::string("storage error: ") + ex.what();
+        } catch (...) {
+            ok = false;
+            e = "storage error";
+        }
+        mysql_service_mysql_command_factory->close(h);  // also rolls back
     });
     if (!submitted)
         e = "the MyVector storage thread is not running";
@@ -413,6 +427,9 @@ public:
     }
 
 private:
+    /* Two saves of one index never overlap: every store job runs on the single
+     * storage thread, one at a time, so generation allocation, cleanup of
+     * leftovers and publication can't interleave with another build's. */
     static bool save_in(Session& s, const std::string& name, const GraphSource& src,
                         std::string* e) {
         if (!session_setup(s, e))
@@ -471,10 +488,10 @@ private:
             if (!s.exec("INSERT INTO myvector.index_meta (index_name, name_sha256, state, "
                         "format_version, generation, ckpt_seq, ckpt_chunks, header, "
                         "header_crc32, metric, dim, vec_chunk_nodes, lnk_chunk_nodes, "
-                        "ckpt_gtids, writer_uuid, ckpt_time, node_count) VALUES (" +
+                        "ckpt_gtids, writer_uuid, ckpt_time, node_count, update_ts) VALUES (" +
                             lit(name) + ", UNHEX(SHA2(" + lit(name) + ", 256)), 'dropped', " +
                             std::to_string(kFormatVersion) +
-                            ", 0, 0, 0, '', 0, '', 0, 0, 0, '', @@server_uuid, NOW(6), 0)",
+                            ", 0, 0, 0, '', 0, '', 0, 0, 0, '', @@server_uuid, NOW(6), 0, 0)",
                         e) ||
                 !scalar(s, "SELECT LAST_INSERT_ID()", &id, e))
                 return false;
@@ -527,12 +544,16 @@ private:
                      d.size()))
                 return false;
         }
+        /* Upper rows go in multi-row INSERTs whose whole statement text (hex
+         * literals and syntax included) stays under the statement limit. */
+        static const std::string kUpperInsert = "INSERT INTO myvector.index_upper VALUES ";
+        const size_t stmt_limit = map - kStatementOverhead;
         std::string batch;
-        size_t batch_bytes = 0;
+        size_t batch_bytes = 0;  // raw link bytes, for the transaction size
         auto flush_upper = [&]() {
             if (batch.empty())
                 return true;
-            bool ok = put("INSERT INTO myvector.index_upper VALUES " + batch, batch_bytes);
+            bool ok = put(kUpperInsert + batch, batch_bytes);
             batch.clear();
             batch_bytes = 0;
             return ok;
@@ -541,18 +562,19 @@ private:
             std::string d = src.upper(node);
             if (d.empty())
                 continue;
-            if (d.size() > row_limit) {
+            std::string row = "(" + I + ", " + G + ", " + std::to_string(node) + ", 1, " +
+                              lit(d) + ", " + std::to_string(crc(d)) + ")";
+            if (d.size() > row_limit || kUpperInsert.size() + row.size() > stmt_limit) {
                 *e = "a node's upper-level links (" + std::to_string(d.size()) +
                      " bytes) don't fit in max_allowed_packet (" + map_s + ")";
                 return false;
             }
-            std::string row = std::string(batch.empty() ? "" : ", ") + "(" + I + ", " + G +
-                              ", " + std::to_string(node) + ", 1, " + lit(d) + ", " +
-                              std::to_string(crc(d)) + ")";
-            if (batch_bytes + 2 * d.size() + 128 > row_limit && !flush_upper())
+            if (!batch.empty() &&
+                kUpperInsert.size() + batch.size() + 2 + row.size() > stmt_limit &&
+                !flush_upper())
                 return false;
-            if (batch.empty() && row[0] == ',')
-                row.erase(0, 2);
+            if (!batch.empty())
+                batch += ", ";
             batch += row;
             batch_bytes += d.size();
         }
@@ -572,7 +594,8 @@ private:
                         ", vec_chunk_nodes = " + std::to_string(vec_nodes) +
                         ", lnk_chunk_nodes = " + std::to_string(lnk_nodes) +
                         ", ckpt_gtids = '', ckpt_time = NOW(6), node_count = " +
-                        std::to_string(n) + " WHERE index_id = " + I +
+                        std::to_string(n) + ", update_ts = " + std::to_string(src.update_ts) +
+                        " WHERE index_id = " + I +
                         " AND generation = " + std::to_string(old_gen) +
                         " AND writer_uuid = @@server_uuid",
                     e))
@@ -605,7 +628,7 @@ private:
         bool found = false;
         if (!s.query("SELECT index_id, state, format_version, generation, ckpt_seq, "
                      "HEX(header), header_crc32, metric, dim, vec_chunk_nodes, "
-                     "lnk_chunk_nodes, node_count, HEX(index_name) "
+                     "lnk_chunk_nodes, node_count, HEX(index_name), update_ts "
                      "FROM myvector.index_meta WHERE " + by_name(name),
                      [&](const Row& r) {
                          found = true;
@@ -641,7 +664,7 @@ private:
             return LoadStatus::Failed;
         }
         try {
-            sink.begin(header, n);
+            sink.begin(header, n, std::stoull(meta.cols[13]));
             if (!read_chunks(s, "index_vectors", "data", I, G, SEQ, n, vec_nodes,
                              kVecChunkTarget, sink.vectors, e) ||
                 !read_chunks(s, "index_links", "level0", I, G, SEQ, n, lnk_nodes,

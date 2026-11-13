@@ -928,7 +928,9 @@
          * PR #235). maxlevel_ is the graph's top layer index, which for any
          * practical element count/M is at most a few dozen in expectation;
          * enterpoint_node_ must name an actual existing element. */
-        if (maxlevel_ < 0 || maxlevel_ > kMaxSaneLevel)
+        /* An empty graph is saved with maxlevel_ = -1 (no entry point yet). */
+        bool empty_sentinel = cur_element_count == 0 && maxlevel_ == -1;
+        if ((maxlevel_ < 0 && !empty_sentinel) || maxlevel_ > kMaxSaneLevel)
             throw std::runtime_error(
                 "Index seems to be corrupted or unsupported (maxlevel_ out of range)");
         if (cur_element_count > 0 && enterpoint_node_ >= cur_element_count)

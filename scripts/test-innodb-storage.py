@@ -20,6 +20,8 @@ Component build (8.4, 9.7, 26.10):
   9. Drop: tombstone, rows gone, searches refused; a rebuild continues the
      generation counter.
  10. A server with innodb_page_size=4096 installs the schema and stores an index.
+ 11. An empty index builds, loads and searches; a rebuild after the table was
+     emptied publishes the empty graph instead of keeping the old one.
 Plugin build: storage=innodb is refused.
 
 Usage:
@@ -202,11 +204,18 @@ def main():
                f"{m}")
         c = counts(srv, m[3]) if m else (0, 0, 0)
         record("2d. vector, link and upper rows stored", all(x > 0 for x in c), f"{c}")
+        # mysqlbinlog must succeed, so an unreadable binlog can't pass as "0".
+        mb = idle.sh(["docker", "exec", srv.name, "bash", "-c",
+                      "mysqlbinlog /var/lib/mysql/binlog.0* > /tmp/binlog.txt"],
+                     check=False)
         binlog = idle.sh(["docker", "exec", srv.name, "bash", "-c",
-                          "mysqlbinlog /var/lib/mysql/binlog.0* 2>/dev/null | "
-                          "grep -ci 'myvector.index_'"], check=False).stdout.strip()
-        record("2e. no index rows in the binlog (sql_log_bin = 0)", binlog == "0",
-               f"mentions={binlog}")
+                          "grep -ci 'myvector.index_' /tmp/binlog.txt; true"],
+                         check=False).stdout.strip()
+        size = idle.sh(["docker", "exec", srv.name, "bash", "-c",
+                        "wc -c < /tmp/binlog.txt"], check=False).stdout.strip()
+        record("2e. no index rows in the binlog (sql_log_bin = 0)",
+               mb.returncode == 0 and size.isdigit() and int(size) > 0 and binlog == "0",
+               f"mysqlbinlog rc={mb.returncode} bytes={size} mentions={binlog}")
         base = searches(srv, idx)
         record("2f. searches return rows", all(b.startswith("[") and b != "[]" for b in base),
                base[0])
@@ -324,6 +333,22 @@ def main():
         record("9c. rebuild after drop continues the generation counter",
                out.startswith("SUCCESS") and m and int(m[1]) == gen_before + 1,
                f"before={gen_before} now={m}")
+
+        # --- 11. empty indexes -------------------------------------------
+        create(srv, "e", ",storage=innodb", data=False)
+        o1 = build(srv, "vtest.e.v")[1]
+        o2 = load(srv, "vtest.e.v")[1]
+        rc, o3, e3 = run(srv, f"SELECT myvector_ann_set('vtest.e.v','id',{qvecs[0]},'nn=3');")
+        record("11a. an empty index builds, loads and searches (no rows, no error)",
+               o1.startswith("SUCCESS") and o2 == "SUCCESS" and rc == 0 and o3 == "[]",
+               f"build={o1[:40]} load={o2} search rc={rc} {o3!r} {e3[:80]}")
+        srv.sql("DELETE FROM t;")
+        o1 = build(srv, idx)[1]
+        o2 = load(srv, idx)[1]
+        rc, o3, e3 = run(srv, f"SELECT myvector_ann_set('{idx}','id',{qvecs[0]},'nn=3');")
+        record("11b. a rebuild after the table was emptied publishes the empty graph",
+               o1.startswith("SUCCESS") and o2 == "SUCCESS" and o3 == "[]",
+               f"build={o1[:40]} load={o2} search={o3!r}")
 
         # --- 10. innodb_page_size = 4096 ---------------------------------
         srv4 = start_server(args.image, f"myv-innodb4k-{os.getpid()}",

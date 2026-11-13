@@ -1183,7 +1183,13 @@ bool HNSWMemoryIndex::dropIndex(const string& path) {
          * one is published; only a drop removes it (RFC-005 4.6, 4.11). */
         IndexStore* st = myvector_index_store();
         std::string err;
-        if (st && !st->drop(m_name, &err)) {
+        if (st == nullptr) {
+            setStorageError("storage=innodb needs the MyVector component: the index's "
+                            "stored rows were not deleted");
+            MYVEC_LOG_ERROR("Index %s: %s", m_name.c_str(), storageError().c_str());
+            return false;
+        }
+        if (!st->drop(m_name, &err)) {
             MYVEC_LOG_ERROR("Index %s: dropping its stored rows failed: %s",
                             m_name.c_str(), err.c_str());
             setStorageError(err);
@@ -1196,6 +1202,9 @@ bool HNSWMemoryIndex::dropIndex(const string& path) {
 bool HNSWMemoryIndex::rebuildIndex(const string& path) {
     std::unique_lock<std::shared_mutex> g(m_graphLock);
     dropGraph(path);
+    /* A new graph must be saved even if no row is added to it (an emptied
+     * table): with storage=innodb an unchanged-looking index skips its save. */
+    m_isDirty = true;
     return initGraph();
 }
 
@@ -1285,6 +1294,7 @@ bool HNSWMemoryIndex::saveToStore() {
     src.link_record = disk->linkRecordBytes();
     src.metric = (m_type == "HNSW_BV" ? "Hamming" : m_dist);
     src.dim = m_dim;
+    src.update_ts = getUpdateTs();
     src.vectors = [disk](size_t first, size_t count) {
         return disk->exportVectorChunk(first, count);
     };
@@ -1319,8 +1329,10 @@ bool HNSWMemoryIndex::loadFromStore(bool requireSaved) {
     hnswlib::SpaceInterface<float>* space = getSpace(m_dim);
     auto* fresh = new hnswlib::HierarchicalDiskNSW<FP32>(space);
     IndexStore::GraphSink sink;
-    sink.begin = [&](const std::string& header, size_t) {
-        fresh->beginImport(space, header, 0);
+    unsigned long long stored_ts = 0;
+    sink.begin = [&](const std::string& header, size_t count, unsigned long long ts) {
+        fresh->beginImport(space, header, count, 0);
+        stored_ts = ts;
     };
     sink.vectors = [&](size_t first, const std::string& d) {
         fresh->importVectorChunk(first, d);
@@ -1342,6 +1354,7 @@ bool HNSWMemoryIndex::loadFromStore(bool requireSaved) {
         m_space = space;
         m_graphFailed = false;
         m_n_rows = fresh->getCurrentElementCount() - fresh->getDeletedCount();
+        setUpdateTs(stored_ts);  // the refresh watermark saved with this graph
         m_isDirty = false;
         m_storedOnce = true;
         return true;
@@ -1773,7 +1786,8 @@ bool VectorIndexCollection::closeAndDrop(
     const string& name,
     const string& path,
     const std::function<bool(AbstractVectorIndex*)>& pred,
-    bool skipIfBuilding) {
+    bool skipIfBuilding,
+    std::string* dropError) {
     AbstractVectorIndex* hindex = nullptr;
     {
         lock_guard<mutex> l(m_mutex);
@@ -1798,7 +1812,8 @@ bool VectorIndexCollection::closeAndDrop(
         m_retiring.insert(name);  /// and no open() of the name until cleaned up
     }
     hindex->lockExclusive();  /// wait for threads already using it
-    hindex->dropIndex(path);
+    if (!hindex->dropIndex(path) && dropError)
+        *dropError = hindex->storageError();
     hindex->closeIndex();
     hindex->unlockExclusive();
     delete hindex;
@@ -3411,8 +3426,12 @@ void myvector_open_index_impl(char* vecid,
          * without holding the collection mutex while waiting (#285 review). */
         l.release();
         vi->unlockShared();
-        g_indexes.closeAndDrop(vecid, myvector_index_dir);
+        string dropError;
+        g_indexes.closeAndDrop(vecid, myvector_index_dir, nullptr, false, &dropError);
         vi = nullptr;
+        if (!dropError.empty())  // storage=innodb: the stored rows are still there
+            snprintf(result, 255, "ERROR: index removed from memory, but %.200s",
+                     dropError.c_str());
     }
 
     else if (!strcmp(action, "load")) {

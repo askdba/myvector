@@ -252,7 +252,8 @@ public:
     bool closeAndDrop(const std::string& name, const std::string& path,
                       const std::function<bool(AbstractVectorIndex*)>& pred =
                           nullptr,
-                      bool skipIfBuilding = false);
+                      bool skipIfBuilding = false,
+                      std::string* dropError = nullptr);
 
     /* beginBuild/endBuild - a MYVECTOR_INDEX_BUILD of `name` is in progress
      * (counted, so concurrent builds nest). Call beginBuild before get(). */

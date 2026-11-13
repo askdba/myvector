@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS myvector.index_meta (
   writer_uuid     CHAR(36)          NOT NULL,
   ckpt_time       DATETIME(6)       NOT NULL,
   node_count      BIGINT UNSIGNED   NOT NULL,
+  update_ts       BIGINT UNSIGNED   NOT NULL COMMENT 'refresh watermark (track=)',
   PRIMARY KEY (index_id),
   UNIQUE KEY (name_sha256)
 ) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
