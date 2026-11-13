@@ -6,10 +6,12 @@ index took INSERTs from the binlog listener whether or not its column had
 online=Y, contrary to docs/ONLINE_INDEX_UPDATES.md. HNSW accepted only an
 upper-case online=Y, while both listeners' discovery accepts Y or y.
 
-The listener applies events in binlog order. To see that an INSERT was *not*
-applied, each check inserts into the table under test first and then into an
-online control table; once the control has the row, the listener is past the
-first INSERT.
+To see that an INSERT was *not* applied, each check inserts into the table
+under test first and then into an online control table, and waits until the
+control index has every new row. Row events are spread over worker queues by
+key (pkid % workers), and each queue is applied in order, so the control rows
+use CONTROL_ROWS consecutive keys: one in every queue for up to that many
+workers. Once all are in, every queue is past the earlier INSERT.
 
 Checks:
   A. KNN without online=Y: an INSERT is not applied (Rows Inserted unchanged).
@@ -17,6 +19,8 @@ Checks:
   C. A column changed from online HNSW to non-online KNN (ALTER, rebuild):
      INSERTs are no longer applied.
   D. HNSW with a lower-case online=y: an INSERT is applied.
+  E. Component only: a non-online KNN index whose table is dropped is removed
+     (the DROP handling of #286 must not depend on online=Y).
 
 Usage:
   python3 scripts/test-knn-online.py --plugin-dir dist/plugin-8.4
@@ -40,6 +44,7 @@ idle = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(idle)
 
 DIM = 4
+CONTROL_ROWS = 16  # >= the binlog worker count (component default 2)
 
 
 def main():
@@ -125,8 +130,8 @@ def main():
 
         def control_step():
             nonlocal ctl
-            insert("ctl")
-            ctl += 1
+            insert("ctl", CONTROL_ROWS)
+            ctl += CONTROL_ROWS
             got = wait_rows("ctl", ctl)
             if got != ctl:
                 raise RuntimeError(f"control index did not reach {ctl} rows "
@@ -177,6 +182,21 @@ def main():
         got = wait_rows("d", 5, timeout=15)
         record("D. HNSW with online=y (lower case): INSERT applied",
                ok and got == 5, f"build={out!r} rows={got}")
+
+        # E. component: a dropped table's non-online KNN index is removed
+        if component:
+            create("e", f"type=KNN,dim={DIM},dist=L2")
+            insert("e", 3)
+            ok, out = build("e")
+            srv.sql("DROP TABLE e;")
+            control_step()  # the listener has passed the DROP
+            evicted = re.search(r"Index vtest\.e\.v: its table was dropped",
+                                srv.log()) is not None
+            record("E. non-online KNN index of a dropped table is removed",
+                   ok and evicted, f"build={out!r} evicted={evicted}")
+        else:
+            print("[SKIP] E: component only (the plugin's binlog listener does"
+                  " not watch DROP statements)")
     except Exception as e:  # noqa: BLE001 - report and fail
         record("test ran to completion", False, repr(e))
     finally:

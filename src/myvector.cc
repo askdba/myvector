@@ -3668,16 +3668,19 @@ std::vector<string> myvector_evict_dropped(const string& db,
                                            size_t binlogpos) {
     /* table empty (DROP DATABASE): every db.<table>.<column> */
     const string prefix = table.empty() ? db + "." : db + "." + table + ".";
-    /* Only online indexes track binlog coordinates. An index built after this
-     * DROP belongs to a recreated table: keep it (this also makes a replay of
-     * old binlog events after a restart harmless). Checked atomically with the
-     * removal, so a concurrent rebuild is never dropped. */
+    /* Every index the component builds records the binlog position of its
+     * build, online or not (BuildMyVectorIndexSQL); one never built keeps the
+     * "never" sentinel and is left alone. So evict by that position alone, not
+     * by online=Y: a non-online index of a dropped table would otherwise stay
+     * searchable under a recreated table's name (#288 review). An index built
+     * after this DROP belongs to a recreated table: keep it (this also makes a
+     * replay of old binlog events after a restart harmless). Checked
+     * atomically with the removal, so a concurrent rebuild is never dropped. */
     auto builtBeforeDrop = [&](AbstractVectorIndex* vi) {
         string builtFile;
         size_t builtPos = 0;
         vi->getLastUpdateCoordinates(builtFile, builtPos);
-        return vi->supportsIncrUpdates() &&
-               isAfter(binlogfile, binlogpos, builtFile, builtPos);
+        return isAfter(binlogfile, binlogpos, builtFile, builtPos);
     };
     std::vector<string> dropped;
     for (const string& name : g_indexes.names()) {
