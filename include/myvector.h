@@ -356,9 +356,10 @@ std::string myvector_online_skip_status(const std::string& dbtable);
 void myvector_online_skip_rearm(const std::string& dbtable);
 
 /* A DROP TABLE (table non-empty) or DROP DATABASE (table empty) at binlog
- * position (binlogfile, binlogpos) removed db.table: drop the online indexes on
- * its columns that were built before that position, in memory and on disk, so a
- * table recreated under the same name doesn't feed the old graph (#283, #285).
+ * position (binlogfile, binlogpos) removed db.table: drop the indexes on its
+ * columns (online or not) that were built before that position, in memory and
+ * on disk, so a table recreated under the same name neither feeds the old graph
+ * nor is searched through it (#283, #285, #288).
  * Indexes built after the DROP (on a recreated table) are kept. Returns the
  * names (db.table.column) of the indexes dropped. */
 std::vector<std::string> myvector_evict_dropped(const std::string& db,

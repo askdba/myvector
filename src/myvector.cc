@@ -429,6 +429,14 @@ public:
     ~HammingBinaryVectorSpace() {}
 };
 
+/* onlineOption - the column's options ask for online (binlog) updates:
+ * online=Y, in either case, as the plugin and component discovery accept it.
+ * Shared by KNN and HNSW so an index agrees with its registration (#287). */
+static bool onlineOption(MyVectorOptions& opts) {
+    const string v = opts.getOption("online");
+    return v == "Y" || v == "y";
+}
+
 /* KNNIndex - A vector index type that implements brute-force KNN search in
  * the MyVector plugin. This index type could possibly be faster than SQL
  * performing ORDER BY myvector_distance(...) [as long as all vectors fit
@@ -471,7 +479,9 @@ public:
     bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
     bool deleteVector(KeyTypeInteger id) override;
 
-    bool supportsIncrUpdates() { return true; }
+    /* Only with online=Y, as for HNSW and as docs/ONLINE_INDEX_UPDATES.md
+     * says: a KNN index without it used to take every binlog update (#287). */
+    bool supportsIncrUpdates() { return onlineOption(m_optionsMap); }
 
     bool supportsPersist() { return false; }
 
@@ -862,7 +872,7 @@ HNSWMemoryIndex::HNSWMemoryIndex(const string& name, const string& options)
     transform(m_type.begin(), m_type.end(), m_type.begin(), [](unsigned char c) {
         return static_cast<char>(toupper(c));
     });
-    m_incrUpdates = m_optionsMap.getOption("online") == "Y";
+    m_incrUpdates = onlineOption(m_optionsMap);  /// Y or y, as discovery accepts
     m_incrRefresh = m_optionsMap.getOption("track").length() > 0;
 
     m_dist = "L2";
@@ -3739,16 +3749,19 @@ std::vector<string> myvector_evict_dropped(const string& db,
                                            size_t binlogpos) {
     /* table empty (DROP DATABASE): every db.<table>.<column> */
     const string prefix = table.empty() ? db + "." : db + "." + table + ".";
-    /* Only online indexes track binlog coordinates. An index built after this
-     * DROP belongs to a recreated table: keep it (this also makes a replay of
-     * old binlog events after a restart harmless). Checked atomically with the
-     * removal, so a concurrent rebuild is never dropped. */
+    /* Every index the component builds records the binlog position of its
+     * build, online or not (BuildMyVectorIndexSQL); one never built keeps the
+     * "never" sentinel and is left alone. So evict by that position alone, not
+     * by online=Y: a non-online index of a dropped table would otherwise stay
+     * searchable under a recreated table's name (#288 review). An index built
+     * after this DROP belongs to a recreated table: keep it (this also makes a
+     * replay of old binlog events after a restart harmless). Checked
+     * atomically with the removal, so a concurrent rebuild is never dropped. */
     auto builtBeforeDrop = [&](AbstractVectorIndex* vi) {
         string builtFile;
         size_t builtPos = 0;
         vi->getLastUpdateCoordinates(builtFile, builtPos);
-        return vi->supportsIncrUpdates() &&
-               isAfter(binlogfile, binlogpos, builtFile, builtPos);
+        return isAfter(binlogfile, binlogpos, builtFile, builtPos);
     };
     std::vector<string> dropped;
     for (const string& name : g_indexes.names()) {
