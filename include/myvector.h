@@ -156,6 +156,14 @@ public:
      * persistence of their own (KNN) have nothing to look for: true. */
     virtual bool hasSavedIndex(const std::string& /* path */) { return true; }
 
+    /* storageProblem - why this index can't be built, saved or loaded with the
+     * storage its options ask for, or "" (RFC-005: storage=innodb needs the
+     * component, GTID mode, a writable server, and no online=Y until Phase 1b). */
+    virtual std::string storageProblem() { return ""; }
+
+    /* storageError - the last storage failure's description, or "". */
+    virtual std::string storageError() { return ""; }
+
     virtual bool initIndex() = 0;
 
     /* rebuildIndex - drop the saved files and the graph and start an empty

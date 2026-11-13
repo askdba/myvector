@@ -1993,6 +1993,11 @@ void BuildMyVectorIndexSQL(const char* db,
                      savedBinlogFile.c_str(),
                      (unsigned long)savedBinlogPos,
                      nRows);
+        } else if (!vi->storageError().empty()) {
+            snprintf(errorbuf,
+                     MYVECTOR_BUFF_SIZE,
+                     "ERROR: index built but could not be saved: %s",
+                     vi->storageError().c_str());
         } else {
             snprintf(errorbuf,
                      MYVECTOR_BUFF_SIZE,

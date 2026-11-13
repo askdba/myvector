@@ -155,6 +155,23 @@ CALL mysql.myvector_index_load('database.table.column');
 
 If the index has no saved files, the load returns `ERROR: no saved index ...` and leaves the index in memory as it is. If the files exist but can't be read, it returns `ERROR: ... could not be loaded ...` and the index stays unloaded until a later load succeeds (once the files can be read) or it is rebuilt. Searching an index that isn't loaded fails with "Vector index is not loaded." A load or build waits for searches on that index to finish before it replaces the index's graph, and searches wait while the graph is replaced. A build then fills the new graph while searches run, so searches during a build can return partial or empty results until it finishes.
 
+## Storing an index in InnoDB (storage=innodb)
+
+Add `storage=innodb` to an HNSW column's options to keep the index in InnoDB tables (schema `myvector`) instead of files in `myvector_index_dir`. The index is then saved with the server's data, crash-safe and included in physical and logical backups.
+
+```sql
+COMMENT 'MYVECTOR COLUMN type=hnsw,dim=768,size=1000000,idcol=id,storage=innodb'
+```
+
+Build, load, status and drop work as for `storage=file`. Requirements (component build only):
+
+- `gtid_mode = ON`;
+- a writable server: not `read_only` or `super_read_only` (replicas: keep `storage=file` for now);
+- no `online=Y` yet (planned);
+- `max_allowed_packet` large enough for one node.
+
+Each server keeps its own index rows; they are not written to the binlog. Uninstalling the component keeps them. See [RFC-005](RFC-005-INNODB-INDEX-STORAGE.md) for the design.
+
 ## Vector Functions
 
 **Create a Vector:**

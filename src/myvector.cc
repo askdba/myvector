@@ -110,6 +110,7 @@ using std::vector;
 #include "hnswlib.h"
 #include "my_checksum.h"
 #include "myvectorutils.h"
+#include "myvector_index_store.h"
 
 #ifndef MYVECTOR_COMPONENT_BUILD
 extern REQUIRES_SERVICE_PLACEHOLDER(mysql_udf_metadata);
@@ -481,6 +482,13 @@ public:
 
     bool isReady() { return true; }
 
+    std::string storageProblem() override {
+        string st = MyVectorOptions(m_options).getOption("storage");
+        if (!st.empty() && myvector_strcasecmp(st.c_str(), "file"))
+            return "storage=" + st + " is for HNSW indexes; a KNN index is kept in memory only";
+        return "";
+    }
+
     bool isDirty() { return false; }  /// No persistence
 
     int getDimension() { return m_dim; }
@@ -739,9 +747,26 @@ public:
     /// false only if the index file is missing (ENOENT); other errors are the
     /// load's to report
     bool hasSavedIndex(const string& path) override {
+        if (isInnoDB()) {
+            IndexStore* st = myvector_index_store();
+            return st == nullptr || st->exists(m_name);
+        }
         string f = MyVectorIndexBase(path, m_name) + ".hnsw.index";
         return access(f.c_str(), F_OK) == 0 || errno != ENOENT;
     }
+
+    std::string storageProblem() override;
+    std::string storageError() override {
+        std::lock_guard<std::mutex> l(m_storageErrorMutex);
+        return m_storageError;
+    }
+    void setStorageError(const std::string& e) {
+        std::lock_guard<std::mutex> l(m_storageErrorMutex);
+        m_storageError = e;
+    }
+
+    /// storage=innodb (RFC-005): the graph is kept in myvector.* tables
+    bool isInnoDB() const { return m_storage == "innodb"; }
 
     bool searchVectorNN(VectorPtr qvec,
                         int dim,
@@ -823,7 +848,13 @@ private:
     /// is rebuilt or reloaded (#285)
     atomic<bool> m_graphFailed{false};
 
-    bool m_isDirty;
+    bool m_isDirty{false};
+    string m_storage;       ///< "file" (default) or "innodb"
+    string m_storageError;  ///< last storage failure, for the caller's message
+    std::mutex m_storageErrorMutex;  ///< saves run under the shared graph lock
+    bool m_storedOnce{false};  ///< a storage=innodb save or load succeeded
+    bool saveToStore();
+    bool loadFromStore(bool requireSaved);
 
     bool m_incrUpdates;
     bool m_incrRefresh;
@@ -864,6 +895,11 @@ HNSWMemoryIndex::HNSWMemoryIndex(const string& name, const string& options)
     });
     m_incrUpdates = m_optionsMap.getOption("online") == "Y";
     m_incrRefresh = m_optionsMap.getOption("track").length() > 0;
+    m_storage = m_optionsMap.getOption("storage");
+    transform(m_storage.begin(), m_storage.end(), m_storage.begin(),
+              [](unsigned char c) { return static_cast<char>(tolower(c)); });
+    if (m_storage.empty())
+        m_storage = "file";
 
     m_dist = "L2";
 
@@ -980,6 +1016,9 @@ bool HNSWMemoryIndex::saveIndex(const string& path, const string& option) {
         return false;
     }
 
+    if (isInnoDB())
+        return saveToStore();
+
     MYVEC_LOG_DEBUG(
         "HNSWemoryIndex::saveIndex %s %s.", path.c_str(), option.c_str());
 
@@ -1028,6 +1067,8 @@ bool HNSWMemoryIndex::saveIndexIncr(const string& path, const string& option) {
 
 bool HNSWMemoryIndex::loadIndex(const string& path, bool requireSaved) {
     std::unique_lock<std::shared_mutex> g(m_graphLock);  // replaces the graph
+    if (isInnoDB())
+        return loadFromStore(requireSaved);
 
     string indexfile = MyVectorIndexBase(path, m_name) + ".hnsw.index";
 
@@ -1137,6 +1178,18 @@ bool HNSWMemoryIndex::loadIndex(const string& path, bool requireSaved) {
 bool HNSWMemoryIndex::dropIndex(const string& path) {
     std::unique_lock<std::shared_mutex> g(m_graphLock);  // deletes the graph
     dropGraph(path);
+    if (isInnoDB()) {
+        /* A build's rebuildIndex() keeps the stored generation until the new
+         * one is published; only a drop removes it (RFC-005 4.6, 4.11). */
+        IndexStore* st = myvector_index_store();
+        std::string err;
+        if (st && !st->drop(m_name, &err)) {
+            MYVEC_LOG_ERROR("Index %s: dropping its stored rows failed: %s",
+                            m_name.c_str(), err.c_str());
+            setStorageError(err);
+            return false;
+        }
+    }
     return true;
 }
 
@@ -1185,6 +1238,139 @@ hnswlib::SpaceInterface<float>* HNSWMemoryIndex::getSpace(size_t dim) {
     return nullptr;
 }
 
+/* ---- storage=innodb (RFC-005 Phase 1a) ---- */
+
+static IndexStore* g_index_store = nullptr;
+IndexStore* myvector_index_store() { return g_index_store; }
+void myvector_set_index_store(IndexStore* store) { g_index_store = store; }
+
+std::string HNSWMemoryIndex::storageProblem() {
+    if (m_storage == "file")
+        return "";
+    if (!isInnoDB())
+        return "unknown storage '" + m_storage + "' (use storage=file or storage=innodb)";
+    IndexStore* st = myvector_index_store();
+    if (st == nullptr)
+        return "storage=innodb needs the MyVector component (INSTALL COMPONENT), not the "
+               "plugin";
+    string online = m_optionsMap.getOption("online");
+    if (online == "Y" || online == "y")
+        return "storage=innodb doesn't support online=Y yet (RFC-005 Phase 1b); use "
+               "storage=file for an online index";
+    return st->checkServer();
+}
+
+/* saveToStore - publish the graph as a new generation. m_graphLock held shared;
+ * the parallel-build flush and the #285 check in saveIndex() have run. */
+bool HNSWMemoryIndex::saveToStore() {
+    setStorageError("");
+    IndexStore* st = myvector_index_store();
+    auto* disk = dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw);
+    if (st == nullptr || disk == nullptr) {
+        std::string why = st == nullptr ? "storage=innodb needs the MyVector component"
+                                        : "the index has no graph to save";
+        setStorageError(why);
+        MYVEC_LOG_ERROR("Index %s: %s", m_name.c_str(), why.c_str());
+        return false;
+    }
+    /* The component's build saves twice (inside BuildMyVectorIndexSQL and
+     * after it); with no change in between, the second would only write the
+     * same generation again. */
+    if (m_storedOnce && !m_isDirty)
+        return true;
+    IndexStore::GraphSource src;
+    src.header = disk->headerBytes();
+    src.node_count = disk->getCurrentElementCount();
+    src.vector_record = disk->vectorRecordBytes();
+    src.link_record = disk->linkRecordBytes();
+    src.metric = (m_type == "HNSW_BV" ? "Hamming" : m_dist);
+    src.dim = m_dim;
+    src.vectors = [disk](size_t first, size_t count) {
+        return disk->exportVectorChunk(first, count);
+    };
+    src.links = [disk](size_t first, size_t count) {
+        return disk->exportLinkChunk(first, count);
+    };
+    src.upper = [disk](size_t node) { return disk->upperLinksBytes(node); };
+    std::string err;
+    if (!st->save(m_name, src, &err)) {
+        setStorageError(err);
+        MYVEC_LOG_ERROR("Index %s: saving to InnoDB failed: %s", m_name.c_str(),
+                        err.c_str());
+        return false;
+    }
+    m_isDirty = false;
+    m_storedOnce = true;
+    return true;
+}
+
+/* loadFromStore - read the stored graph into a new graph object, and only on
+ * success put it in place of the current one. m_graphLock held exclusively.
+ * Same outcomes as the file loader (RFC-005 Phase 0): no saved index with
+ * requireSaved keeps the current graph; without it starts empty; a failed load
+ * leaves the index with no graph. */
+bool HNSWMemoryIndex::loadFromStore(bool requireSaved) {
+    setStorageError("");
+    IndexStore* st = myvector_index_store();
+    if (st == nullptr) {
+        setStorageError("storage=innodb needs the MyVector component");
+        return false;
+    }
+    hnswlib::SpaceInterface<float>* space = getSpace(m_dim);
+    auto* fresh = new hnswlib::HierarchicalDiskNSW<FP32>(space);
+    IndexStore::GraphSink sink;
+    sink.begin = [&](const std::string& header, size_t) {
+        fresh->beginImport(space, header, 0);
+    };
+    sink.vectors = [&](size_t first, const std::string& d) {
+        fresh->importVectorChunk(first, d);
+    };
+    sink.links = [&](size_t first, const std::string& d) {
+        fresh->importLinkChunk(first, d);
+    };
+    sink.end_level0 = [&]() { fresh->endLevel0Import(); };
+    sink.upper = [&](size_t node, const std::string& d) { fresh->importUpper(node, d); };
+    sink.finish = [&]() { fresh->finishImport(); };
+
+    std::string err;
+    IndexStore::LoadStatus status =
+        st->load(m_name, (m_type == "HNSW_BV" ? "Hamming" : m_dist), m_dim, sink, &err);
+    if (status == IndexStore::LoadStatus::Ok) {
+        delete m_alg_hnsw;
+        delete m_space;
+        m_alg_hnsw = fresh;
+        m_space = space;
+        m_graphFailed = false;
+        m_n_rows = fresh->getCurrentElementCount() - fresh->getDeletedCount();
+        m_isDirty = false;
+        m_storedOnce = true;
+        return true;
+    }
+    delete fresh;
+    delete space;
+    if (status == IndexStore::LoadStatus::NotSaved) {
+        if (requireSaved) {
+            MYVEC_LOG_ERROR("No saved index for %s in InnoDB; keeping the index in memory"
+                            " as it is.",
+                            m_name.c_str());
+            return false;
+        }
+        delete m_alg_hnsw;
+        delete m_space;
+        m_alg_hnsw = nullptr;
+        m_space = nullptr;
+        return initGraph();
+    }
+    setStorageError(err);
+    MYVEC_LOG_ERROR("Error loading hnsw index (%s) from InnoDB: %s", m_name.c_str(),
+                    err.c_str());
+    delete m_alg_hnsw;
+    delete m_space;
+    m_alg_hnsw = nullptr;
+    m_space = nullptr;
+    return false;
+}
+
 string HNSWMemoryIndex::getStatus() {
     std::shared_lock<std::shared_mutex> g(m_graphLock);
     std::stringstream ss;
@@ -1200,6 +1386,7 @@ string HNSWMemoryIndex::getStatus() {
     ss << "Distance : " << (m_type == "HNSW_BV" ? "Hamming" : m_dist) << endl;
     ss << "Max. Capacity : " << m_size << endl;
     ss << "M = " << m_M << endl;
+    ss << "Storage : " << m_storage << endl;
 
     if (m_alg_hnsw) {
         ss << "Element Data Size : "
@@ -3173,6 +3360,17 @@ void myvector_open_index_impl(char* vecid,
     }
     SharedLockGuard l(vi);
 
+    /* storage=innodb needs the component, GTID mode and a writable server, and
+     * doesn't take online=Y until RFC-005 Phase 1b: refuse before any work. */
+    if (!strcmp(action, "build") || !strcmp(action, "load") ||
+        !strcmp(action, "refresh") || !strcmp(action, "save")) {
+        string problem = vi->storageProblem();
+        if (!problem.empty()) {
+            snprintf(result, 255, "ERROR: %.240s", problem.c_str());
+            return;
+        }
+    }
+
     string trackingColumn = "";
     int nthreads = 0;
 
@@ -3191,10 +3389,16 @@ void myvector_open_index_impl(char* vecid,
     }
 
     if (!strcmp(action, "save")) {
-        if (!vi->saveIndex(myvector_index_dir))
-            strcpy(result,
-                   "ERROR: index could not be saved to disk"
-                   " (see the server log)");
+        if (!vi->saveIndex(myvector_index_dir)) {
+            string why = vi->storageError();
+            if (!why.empty())
+                snprintf(result, 255, "ERROR: index could not be saved: %.200s",
+                         why.c_str());
+            else
+                strcpy(result,
+                       "ERROR: index could not be saved to disk"
+                       " (see the server log)");
+        }
     } else if (!strcmp(action, "status")) {
         string s = vi->getStatus();
         string idx(vecid);  // db.table.column; skips are counted per db.table
@@ -3227,6 +3431,12 @@ void myvector_open_index_impl(char* vecid,
                          "ERROR: no saved index for %.80s. Build it with"
                          " MYVECTOR_INDEX_BUILD.",
                          vecid);
+            else if (!vi->storageError().empty())
+                snprintf(result,
+                         255,
+                         "ERROR: index %.60s could not be loaded: %.120s. Rebuild it"
+                         " with MYVECTOR_INDEX_BUILD.",
+                         vecid, vi->storageError().c_str());
             else
                 snprintf(result,
                          255,
@@ -3292,10 +3502,16 @@ void myvector_open_index_impl(char* vecid,
             strcat(result, timebuf);
         }
 
-        if (!vi->saveIndex(myvector_index_dir, action))
-            strcpy(result,
-                   "ERROR: index built but could not be saved to disk"
-                   " (see the server log)");
+        if (!vi->saveIndex(myvector_index_dir, action)) {
+            string why = vi->storageError();
+            if (!why.empty())
+                snprintf(result, 255, "ERROR: index built but could not be saved: %.190s",
+                         why.c_str());
+            else
+                strcpy(result,
+                       "ERROR: index built but could not be saved to disk"
+                       " (see the server log)");
+        }
         /* Rows the graph refused because it is full (#285): the index is
          * incomplete, so the build must not report SUCCESS. */
         if (unsigned long rejected = vi->getRejectedCount())

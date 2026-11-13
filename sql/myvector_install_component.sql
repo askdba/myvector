@@ -64,6 +64,80 @@ FROM INFORMATION_SCHEMA.COLUMNS
 WHERE COLUMN_COMMENT LIKE 'MYVECTOR%'
 ORDER BY db,tbl,col;
 
+-- InnoDB storage for indexes declared with storage=innodb (RFC-005,
+-- docs/RFC-005-INNODB-INDEX-STORAGE.md section 4.2). Each server keeps its own
+-- rows (standalone mode), so these statements and every write the component
+-- makes to them stay out of the binlog. IF NOT EXISTS: re-running this script
+-- keeps existing indexes. The uninstall script leaves the schema in place.
+SET @myvector_old_sql_log_bin = @@SESSION.sql_log_bin;
+SET SESSION sql_log_bin = 0;
+
+CREATE DATABASE IF NOT EXISTS myvector;
+
+CREATE TABLE IF NOT EXISTS myvector.index_meta (
+  index_id        BIGINT UNSIGNED   NOT NULL AUTO_INCREMENT,
+  index_name      VARBINARY(776)    NOT NULL COMMENT 'db.table.column, exact bytes',
+  name_sha256     BINARY(32)        NOT NULL COMMENT 'SHA2(index_name, 256)',
+  state           ENUM('active','dropped','migrating_from_file','migrating_to_file')
+                                    NOT NULL,
+  format_version  SMALLINT UNSIGNED NOT NULL,
+  generation      BIGINT UNSIGNED   NOT NULL COMMENT 'never reset',
+  ckpt_seq        BIGINT UNSIGNED   NOT NULL,
+  ckpt_chunks     INT UNSIGNED      NOT NULL,
+  header          VARBINARY(256)    NOT NULL,
+  header_crc32    INT UNSIGNED      NOT NULL,
+  metric          VARCHAR(16)       NOT NULL,
+  dim             INT UNSIGNED      NOT NULL,
+  vec_chunk_nodes INT UNSIGNED      NOT NULL,
+  lnk_chunk_nodes INT UNSIGNED      NOT NULL,
+  ckpt_gtids      MEDIUMTEXT        NOT NULL,
+  writer_uuid     CHAR(36)          NOT NULL,
+  ckpt_time       DATETIME(6)       NOT NULL,
+  node_count      BIGINT UNSIGNED   NOT NULL,
+  PRIMARY KEY (index_id),
+  UNIQUE KEY (name_sha256)
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
+
+CREATE TABLE IF NOT EXISTS myvector.index_vectors (
+  index_id    BIGINT UNSIGNED NOT NULL,
+  generation  BIGINT UNSIGNED NOT NULL,
+  chunk_id    INT UNSIGNED    NOT NULL,
+  version     BIGINT UNSIGNED NOT NULL,
+  data        LONGBLOB        NOT NULL COMMENT '(vector | label) per node',
+  crc32       INT UNSIGNED    NOT NULL,
+  PRIMARY KEY (index_id, generation, chunk_id, version)
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
+
+CREATE TABLE IF NOT EXISTS myvector.index_links (
+  index_id    BIGINT UNSIGNED NOT NULL,
+  generation  BIGINT UNSIGNED NOT NULL,
+  chunk_id    INT UNSIGNED    NOT NULL,
+  version     BIGINT UNSIGNED NOT NULL,
+  level0      LONGBLOB        NOT NULL COMMENT 'level-0 links per node',
+  crc32       INT UNSIGNED    NOT NULL,
+  PRIMARY KEY (index_id, generation, chunk_id, version)
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
+
+CREATE TABLE IF NOT EXISTS myvector.index_upper (
+  index_id    BIGINT UNSIGNED NOT NULL,
+  generation  BIGINT UNSIGNED NOT NULL,
+  node_id     INT UNSIGNED    NOT NULL,
+  version     BIGINT UNSIGNED NOT NULL,
+  links       LONGBLOB        NOT NULL COMMENT 'links of levels 1..L',
+  crc32       INT UNSIGNED    NOT NULL,
+  PRIMARY KEY (index_id, generation, node_id, version)
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC;
+
+-- The component reads and writes these tables in its own sessions as this
+-- locked account: nobody can log in as it, and the myvector.cnf credentials
+-- gain nothing. SESSION_VARIABLES_ADMIN lets it set sql_log_bin = 0.
+DROP USER IF EXISTS 'mysql.myvector'@'localhost';
+CREATE USER 'mysql.myvector'@'localhost' ACCOUNT LOCK;
+GRANT SELECT, INSERT, UPDATE, DELETE ON myvector.* TO 'mysql.myvector'@'localhost';
+GRANT SESSION_VARIABLES_ADMIN ON *.* TO 'mysql.myvector'@'localhost';
+
+SET SESSION sql_log_bin = @myvector_old_sql_log_bin;
+
 -- sqlfluff: disable=PRS
 INSTALL COMPONENT 'file://myvector';
 -- sqlfluff: enable=PRS

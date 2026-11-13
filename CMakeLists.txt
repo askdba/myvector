@@ -118,6 +118,7 @@ set(MYVECTOR_COMPONENT_SRCS
   src/component_src/myvector_component_config.cc
   src/component_src/myvector_binlog_service.cc
   src/component_src/myvector_udf_service.cc
+  src/component_src/myvector_innodb_store.cc
   src/myvector.cc
   src/myvectorutils.cc
 )

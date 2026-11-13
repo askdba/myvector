@@ -89,6 +89,7 @@ namespace hnswlib {
             deleted_elements;  // contains internal ids of deleted elements
 
 #include "hnswdisk.i"
+#include "hnswdisk_chunks.i"
 
         HierarchicalDiskNSW(SpaceInterface<dist_t>* s) {}
 
