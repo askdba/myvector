@@ -21,6 +21,22 @@ Checks:
      files exist but their directory can't be traversed (EACCES). The load must
      report an error, not start an empty index and report SUCCESS. Only a
      missing file (ENOENT) means "no saved index".
+  E. An explicit MYVECTOR_INDEX_LOAD with no saved files reports an error
+     (RFC-005 Phase 0); the startup loaders still start such an index empty.
+  F. Reload under load: four sessions search in a loop while the index is
+     reloaded 40 times. Load replaces the graph under the index's exclusive
+     lock, so no search runs on a graph being deleted: the server stays up and
+     every search returns rows.
+  G. Rebuild under load: four sessions search in a loop while the index is
+     rebuilt 10 times. The drop and the new empty graph happen under one lock,
+     so no search finds the index unloaded (results during a rebuild may be
+     partial or empty; errors may not). The index has a 2,000,000-row capacity,
+     so creating the empty graph takes long enough for a search to land in it.
+  I. The same for a brute-force KNN index: a build clears its rows under the
+     index's search/insert lock, so a search never iterates rows being freed.
+  H. An explicit load whose saved files are gone keeps the index in memory:
+     build, delete the saved files, MYVECTOR_INDEX_LOAD reports "no saved
+     index", and searches still return the same rows.
 
 Usage:
   python3 scripts/test-unloaded-index.py --plugin-dir dist/plugin-8.4
@@ -59,8 +75,8 @@ def main():
     ap.add_argument("--image", default="mysql:8.4")
     ap.add_argument("--keep", action="store_true",
                     help="keep the container for debugging")
-    ap.add_argument("--cases", default="ABCD",
-                    help="which checks to run (default ABCD; D is plugin"
+    ap.add_argument("--cases", default="ABCDEFGHI",
+                    help="which checks to run (default ABCDEFGHI; D is plugin"
                          " only). Without the fix, A crashes the server, so use"
                          " --cases BC to see B")
     args = ap.parse_args()
@@ -102,14 +118,15 @@ def main():
             raise RuntimeError("no .hnsw.index file found under /var/lib/mysql")
         return paths[0]
 
-    def create_table(name):
+    def create_table(name, size=SIZE, itype="HNSW"):
         if component:
             srv.sql(f"""CREATE TABLE {name} (id INT PRIMARY KEY,
                 v VARBINARY({DIM * 4 + 64}) NULL COMMENT 'MYVECTOR COLUMN """
-                    f"""type=hnsw,dim={DIM},size={SIZE},idcol=id,dist=L2');""")
+                    f"""type={itype.lower()},dim={DIM},size={size},idcol=id,"""
+                    f"""dist=L2');""")
         else:
             srv.sql(f"""CREATE TABLE {name} (id INT PRIMARY KEY,
-                v MYVECTOR(type=HNSW,dim={DIM},size={SIZE},idcol=id,dist=L2)
+                v MYVECTOR(type={itype},dim={DIM},size={size},idcol=id,dist=L2)
                 NULL);""")
 
     def fill(name):
@@ -205,6 +222,117 @@ def main():
         idle.sh(["docker", "exec", srv.name, "chmod", "750", sub])
         record("D3. server survives", alive(), "mysqladmin ping")
 
+    def case_e():
+        """Explicit load of an index that was never saved."""
+        create_table("e")
+        fill("e")
+        rc, out, err = run("CALL mysql.myvector_index_load('vtest.e.v');")
+        record("E1. an explicit load with no saved files reports an error",
+               rc == 0 and out.startswith("ERROR:") and "no saved index" in out
+               and "vtest.e.v" in out,
+               f"rc={rc} out={out[:120]!r} err={err[:160]!r}")
+        rc, out, err = search("vtest.e.v")
+        record("E2. the search then fails with an error", rc != 0
+               and "vtest.e.v" in err, f"rc={rc} out={out[:80]!r} err={err[:120]!r}")
+
+    def case_f():
+        """Reload the index while other sessions search it."""
+        create_table("f")
+        fill("f")
+        rc, out, err = run("CALL mysql.myvector_index_build('vtest.f.v','id');")
+        record("F0. index builds", rc == 0 and out.startswith("SUCCESS"),
+               f"rc={rc} out={out[:80]!r}")
+        q = (f"SELECT myvector_ann_set('vtest.f.v','id',{QUERY_VEC},'nn=3');")
+        script = f"""
+            M="mysql -uroot -p{idle.PW} -N -B vtest"
+            for w in 1 2 3 4; do
+              ( n=0; e=0
+                for i in $(seq 1 150); do
+                  o=$($M -e "{q}" 2>/dev/null) || e=$((e+1))
+                  case "$o" in "["[0-9]*) n=$((n+1));; esac
+                done
+                echo "worker $w ok=$n err=$e" ) &
+            done
+            ok=0
+            for i in $(seq 1 40); do
+              o=$($M -e "CALL mysql.myvector_index_load('vtest.f.v');" 2>/dev/null) \
+                && [ "$o" = SUCCESS ] && ok=$((ok+1))
+            done
+            wait
+            echo "loads ok=$ok"
+            """
+        r = idle.sh(["docker", "exec", srv.name, "bash", "-c", script],
+                    check=False, timeout=900)
+        lines = [l for l in r.stdout.splitlines() if l.startswith("worker")]
+        oks = [int(l.split("ok=")[1].split()[0]) for l in lines]
+        loads = [l for l in r.stdout.splitlines() if l.startswith("loads ok=")]
+        record("F1. all 40 reloads succeeded, and the server survives",
+               loads == ["loads ok=40"] and alive(), f"{loads}")
+        record("F2. every search returned rows",
+               len(oks) == 4 and all(n == 150 for n in oks), "; ".join(lines))
+
+    def case_g():
+        rebuild_under_load("G", "g", size=2000000, itype="HNSW")
+
+    def case_i():
+        rebuild_under_load("I", "i", size=SIZE, itype="KNN")
+
+    def rebuild_under_load(tag, table, size, itype):
+        """Rebuild an index while other sessions search it."""
+        create_table(table, size=size, itype=itype)
+        fill(table)
+        idx = f"vtest.{table}.v"
+        rc, out, err = run(f"CALL mysql.myvector_index_build('{idx}','id');")
+        record(f"{tag}0. {itype} index builds",
+               rc == 0 and out.startswith("SUCCESS"), f"rc={rc} out={out[:80]!r}")
+        q = (f"SELECT myvector_ann_set('{idx}','id',{QUERY_VEC},'nn=3');")
+        script = f"""
+            M="mysql -uroot -p{idle.PW} -N -B vtest"
+            for w in 1 2 3 4; do
+              ( e=0
+                for i in $(seq 1 150); do
+                  $M -e "{q}" >/dev/null 2>&1 || e=$((e+1))
+                done
+                echo "worker $w err=$e" ) &
+            done
+            ok=0
+            for i in $(seq 1 10); do
+              o=$($M -e "CALL mysql.myvector_index_build('{idx}','id');" \
+                  2>/dev/null) && case "$o" in SUCCESS*) ok=$((ok+1));; esac
+            done
+            wait
+            echo "builds ok=$ok"
+            """
+        r = idle.sh(["docker", "exec", srv.name, "bash", "-c", script],
+                    check=False, timeout=900)
+        lines = [l for l in r.stdout.splitlines() if l.startswith("worker")]
+        errs = [int(l.split("err=")[1]) for l in lines]
+        builds = [l for l in r.stdout.splitlines() if l.startswith("builds ok=")]
+        record(f"{tag}1. all 10 rebuilds succeeded, and the server survives",
+               builds == ["builds ok=10"] and alive(), f"{builds}")
+        record(f"{tag}2. no search failed during the rebuilds",
+               len(errs) == 4 and all(e == 0 for e in errs), "; ".join(lines))
+
+    def case_h():
+        """Explicit load with the saved files gone keeps the graph."""
+        create_table("h")
+        fill("h")
+        rc, out, err = run("CALL mysql.myvector_index_build('vtest.h.v','id');")
+        record("H0. index builds", rc == 0 and out.startswith("SUCCESS"),
+               f"rc={rc} out={out[:80]!r}")
+        rc, before, err = search("vtest.h.v")
+        idle.sh(["docker", "exec", srv.name, "bash", "-c",
+                 "find /var/lib/mysql -name '*vtest.h.v.hnsw.index*' -delete"])
+        rc, out, err = run("CALL mysql.myvector_index_load('vtest.h.v');")
+        record("H1. the load reports that there is no saved index",
+               rc == 0 and out.startswith("ERROR:") and "no saved index" in out,
+               f"rc={rc} out={out[:120]!r} err={err[:120]!r}")
+        rc, after, err = search("vtest.h.v")
+        record("H2. searches still return the same rows",
+               rc == 0 and after == before and before.startswith("[")
+               and before != "[]",
+               f"before={before[:60]!r} after={after[:60]!r} err={err[:120]!r}")
+
     try:
         srv.wait_ready()
         if component:
@@ -223,6 +351,16 @@ def main():
                       " is fixed at startup)")
             else:
                 case_d()
+        if "E" in args.cases:
+            case_e()
+        if "F" in args.cases:
+            case_f()
+        if "G" in args.cases:
+            case_g()
+        if "H" in args.cases:
+            case_h()
+        if "I" in args.cases:
+            case_i()
     except Exception as e:  # noqa: BLE001 - report and fail
         record("test ran to completion", False, repr(e))
     finally:

@@ -445,7 +445,7 @@ public:
 
     bool saveIndexIncr(const string& path, const string& option = "");
 
-    bool loadIndex(const string& path);
+    bool loadIndex(const string& path, bool requireSaved = false) override;
 
     bool dropIndex(const string& path);
 
@@ -658,7 +658,7 @@ bool KNNIndex::dropIndex(const string&) {
     return true;
 }
 
-bool KNNIndex::loadIndex(const string&) {
+bool KNNIndex::loadIndex(const string&, bool) {
     MYVEC_LOG_WARN("KNN Memory Index (%s) - Load Index is no op",
                    m_name.c_str());
     return true;
@@ -667,6 +667,9 @@ bool KNNIndex::loadIndex(const string&) {
 bool KNNIndex::initIndex() {
     MYVEC_LOG_DEBUG("KNN Memory Index (%s) - initIndex()", m_name.c_str());
 
+    /* A build clears the rows while searches may be iterating them: take the
+     * same lock as insertVector()/deleteVector(). */
+    std::unique_lock lock(search_insert_mutex_);
     m_vectors.clear();
     m_n_rows = 0;
     m_n_searches = 0;
@@ -708,7 +711,7 @@ public:
 
     bool saveIndexIncr(const string& path, const string& option);
 
-    bool loadIndex(const string& path);
+    bool loadIndex(const string& path, bool requireSaved = false) override;
 
     bool dropIndex(const string& path);
 
@@ -728,7 +731,17 @@ public:
 
     /// false until the index is built or loaded, after a failed load (#265), and
     /// after an insert failed part-way through a graph change (#285)
-    bool isReady() override { return m_alg_hnsw != nullptr && !m_graphFailed; }
+    bool isReady() override {
+        std::shared_lock<std::shared_mutex> g(m_graphLock);
+        return graphUsable();
+    }
+
+    /// false only if the index file is missing (ENOENT); other errors are the
+    /// load's to report
+    bool hasSavedIndex(const string& path) override {
+        string f = MyVectorIndexBase(path, m_name) + ".hnsw.index";
+        return access(f.c_str(), F_OK) == 0 || errno != ENOENT;
+    }
 
     bool searchVectorNN(VectorPtr qvec,
                         int dim,
@@ -780,6 +793,25 @@ private:
     string m_dist;
 
     hnswlib::AlgorithmInterface<FP32>* m_alg_hnsw = nullptr;
+    /* m_graphLock - guards m_alg_hnsw itself. Callers already hold the index's
+     * shared lock (from get()/open()), which load and build can't upgrade, so
+     * load/init/drop take this one exclusively while they replace or delete the
+     * graph, and every method that uses the graph takes it shared: a search or
+     * online update waits for the swap instead of using a deleted graph. Taken
+     * only in the public methods below; the helpers they call (flushBatch*,
+     * initGraph, getCheckPointString) don't take it again. */
+    mutable std::shared_mutex m_graphLock;
+    /// isReady() without the lock, for methods that already hold m_graphLock
+    /// (taking a std::shared_mutex twice on one thread is undefined)
+    bool graphUsable() const { return m_alg_hnsw != nullptr && !m_graphFailed; }
+    bool initGraph();
+    void dropGraph(const string& path);
+
+public:
+    /// drop and re-create under one exclusive lock: no "not loaded" gap
+    bool rebuildIndex(const string& path) override;
+
+private:
     hnswlib::SpaceInterface<float>* m_space = nullptr;
 
     atomic<unsigned long> m_n_rows{0};
@@ -870,6 +902,12 @@ HNSWMemoryIndex::~HNSWMemoryIndex() {
 }
 
 bool HNSWMemoryIndex::initIndex() {
+    std::unique_lock<std::shared_mutex> g(m_graphLock);
+    return initGraph();
+}
+
+/* initGraph - create an empty graph. m_graphLock held exclusively. */
+bool HNSWMemoryIndex::initGraph() {
     MYVEC_LOG_DEBUG("hnsw initIndexO %p %s %d %d %d %d %d",
                 this,
                 m_name.c_str(),
@@ -913,6 +951,7 @@ void HNSWMemoryIndex::getCheckPointString(string& ckstr) {
 }
 
 bool HNSWMemoryIndex::saveIndex(const string& path, const string& option) {
+    std::shared_lock<std::shared_mutex> g(m_graphLock);
 #ifdef TODO
     if (!m_isDirty) {
         MYVEC_LOG_WARN("HNSW index %s is not updated, save not required",
@@ -987,7 +1026,31 @@ bool HNSWMemoryIndex::saveIndexIncr(const string& path, const string& option) {
     return true;
 }
 
-bool HNSWMemoryIndex::loadIndex(const string& path) {
+bool HNSWMemoryIndex::loadIndex(const string& path, bool requireSaved) {
+    std::unique_lock<std::shared_mutex> g(m_graphLock);  // replaces the graph
+
+    string indexfile = MyVectorIndexBase(path, m_name) + ".hnsw.index";
+
+    /* Checked before the current graph is freed, under the same lock:
+     * - ENOENT with requireSaved (an explicit MYVECTOR_INDEX_LOAD): fail and
+     *   keep the graph in memory as it is.
+     * - ENOENT otherwise (startup): no saved files is not an error; the index
+     *   starts empty (an online index that was never built, for example).
+     * - EACCES, EIO etc. on files that may exist, and files that exist but
+     *   can't be loaded, are a failed load: the index is left with no graph,
+     *   so searches fail with an error instead of silently returning nothing,
+     *   and the caller reports it (#265). */
+    int access_errno = 0;
+    if (access(indexfile.c_str(), F_OK) != 0) {
+        access_errno = errno;
+        if (access_errno == ENOENT && requireSaved) {
+            MYVEC_LOG_ERROR("No saved HNSW index for %s (%s); keeping the index"
+                            " in memory as it is.",
+                            m_name.c_str(), indexfile.c_str());
+            return false;
+        }
+    }
+
     if (m_alg_hnsw)
         delete m_alg_hnsw;
     if (m_space)
@@ -996,22 +1059,12 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
     m_alg_hnsw = nullptr;
     m_space = nullptr;
 
-    string indexfile = MyVectorIndexBase(path, m_name) + ".hnsw.index";
-
-    /* No saved files is not an error: the index starts empty (an online index
-     * that was never built, for example). Files that exist but can't be loaded
-     * are: the index is left with no graph, so searches fail with an error
-     * instead of silently returning nothing, and the caller reports it (#265).
-     * Checked before getSpace(): initIndex() allocates its own space. Only
-     * ENOENT means "no saved index": EACCES, EIO etc. on files that may exist
-     * are a failed load, not an empty index. */
-    if (access(indexfile.c_str(), F_OK) != 0) {
-        int access_errno = errno;
-        if (access_errno == ENOENT) {
-            MYVEC_LOG_INFO("No saved HNSW index for %s (%s); starting empty.",
-                           m_name.c_str(), indexfile.c_str());
-            return initIndex();
-        }
+    if (access_errno == ENOENT) {  // initGraph() allocates its own space
+        MYVEC_LOG_INFO("No saved HNSW index for %s (%s); starting empty.",
+                       m_name.c_str(), indexfile.c_str());
+        return initGraph();
+    }
+    if (access_errno != 0) {
         MYVEC_LOG_ERROR("Cannot access HNSW index file for %s (%s): %s",
                         m_name.c_str(), indexfile.c_str(),
                         strerror(access_errno));
@@ -1075,7 +1128,20 @@ bool HNSWMemoryIndex::loadIndex(const string& path) {
 }
 
 bool HNSWMemoryIndex::dropIndex(const string& path) {
-    /* Force drop index - delete files and free memory */
+    std::unique_lock<std::shared_mutex> g(m_graphLock);  // deletes the graph
+    dropGraph(path);
+    return true;
+}
+
+bool HNSWMemoryIndex::rebuildIndex(const string& path) {
+    std::unique_lock<std::shared_mutex> g(m_graphLock);
+    dropGraph(path);
+    return initGraph();
+}
+
+/* dropGraph - delete the saved files and free the graph. m_graphLock held
+ * exclusively. */
+void HNSWMemoryIndex::dropGraph(const string& path) {
     const string base = MyVectorIndexBase(path, m_name);
     string indexfile = base + ".hnsw.index";
     myvector_unlink(indexfile.c_str());
@@ -1093,8 +1159,6 @@ bool HNSWMemoryIndex::dropIndex(const string& path) {
     if (m_space)
         delete m_space;
     m_space = nullptr;
-
-    return true;
 }
 
 bool HNSWMemoryIndex::closeIndex() { return true; }
@@ -1115,6 +1179,7 @@ hnswlib::SpaceInterface<float>* HNSWMemoryIndex::getSpace(size_t dim) {
 }
 
 string HNSWMemoryIndex::getStatus() {
+    std::shared_lock<std::shared_mutex> g(m_graphLock);
     std::stringstream ss;
 
     ss << endl;
@@ -1165,12 +1230,14 @@ bool HNSWMemoryIndex::searchVectorNN(VectorPtr qvec,
                                      int n,
                                      const unordered_set<KeyTypeInteger>* allowed,
                                      int ef_search) {
+    std::shared_lock<std::shared_mutex> g(m_graphLock);
     priority_queue<pair<FP32, hnswlib::labeltype>> result;
 
     /* No graph: opened but never built or loaded, or the load failed (#265);
      * or an insert failed part-way through a graph change (#285). The callers
-     * report the error; searching would dereference null or a broken graph. */
-    if (!isReady())
+     * report the error; searching would dereference null or a broken graph.
+     * graphUsable(), not isReady(): m_graphLock is already held. */
+    if (!graphUsable())
         return false;
 
     auto* disk_hnsw =
@@ -1383,6 +1450,7 @@ bool HNSWMemoryIndex::flushBatchParallel() {
 }
 
 bool HNSWMemoryIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
+    std::shared_lock<std::shared_mutex> g(m_graphLock);
     FP32* fvec = static_cast<FP32*>(vec);
     if (m_isParallelBuild) {
         // m_batch.insert(m_batch.end(), fvec, fvec + m_dim);
@@ -1410,6 +1478,7 @@ bool HNSWMemoryIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
  * A later insertVector() of the same key clears the mark and updates the vector.
  */
 bool HNSWMemoryIndex::deleteVector(KeyTypeInteger id) {
+    std::shared_lock<std::shared_mutex> g(m_graphLock);
     auto* disk = dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw);
     if (!disk || m_isParallelBuild)
         return false;
@@ -3137,17 +3206,29 @@ void myvector_open_index_impl(char* vecid,
 
     else if (!strcmp(action, "load")) {
         MYVEC_LOG_DEBUG("Loading index %s.", vecid);
-        // will handle 'reload' also
-        if (!vi->loadIndex(myvector_index_dir))
-            snprintf(result,
-                     255,
-                     "ERROR: index %.80s could not be loaded from disk (see the"
-                     " server log). Rebuild it with MYVECTOR_INDEX_BUILD.",
-                     vecid);
+        /* An explicit MYVECTOR_INDEX_LOAD (validateAgainstSchema: a UDF call)
+         * needs saved files; the startup loaders don't, so an online index
+         * that was never built still starts empty (RFC-005 Phase 0). The
+         * in-memory index, if any, is left as it is. */
+        // also reloads; searches wait while the graph is replaced
+        if (!vi->loadIndex(myvector_index_dir, validateAgainstSchema)) {
+            /* The decision was made under the graph lock; this only picks the
+             * message, so a file appearing or vanishing now can't matter. */
+            if (!vi->hasSavedIndex(myvector_index_dir))
+                snprintf(result,
+                         255,
+                         "ERROR: no saved index for %.80s. Build it with"
+                         " MYVECTOR_INDEX_BUILD.",
+                         vecid);
+            else
+                snprintf(result,
+                         255,
+                         "ERROR: index %.80s could not be loaded from disk (see"
+                         " the server log). Rebuild it with MYVECTOR_INDEX_BUILD.",
+                         vecid);
+        }
     } else if (!strcmp(action, "build")) {
-        vi->dropIndex(myvector_index_dir);
-
-        vi->initIndex();  // start new
+        vi->rebuildIndex(myvector_index_dir);  // drop and start new, atomically
 
         if (nthreads >= 2)
             vi->startParallelBuild(nthreads);
