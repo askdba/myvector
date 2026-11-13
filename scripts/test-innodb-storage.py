@@ -204,18 +204,18 @@ def main():
                f"{m}")
         c = counts(srv, m[3]) if m else (0, 0, 0)
         record("2d. vector, link and upper rows stored", all(x > 0 for x in c), f"{c}")
-        # mysqlbinlog must succeed, so an unreadable binlog can't pass as "0".
-        mb = idle.sh(["docker", "exec", srv.name, "bash", "-c",
-                      "mysqlbinlog /var/lib/mysql/binlog.0* > /tmp/binlog.txt"],
-                     check=False)
-        binlog = idle.sh(["docker", "exec", srv.name, "bash", "-c",
-                          "grep -ci 'myvector.index_' /tmp/binlog.txt; true"],
-                         check=False).stdout.strip()
-        size = idle.sh(["docker", "exec", srv.name, "bash", "-c",
-                        "wc -c < /tmp/binlog.txt"], check=False).stdout.strip()
+        # Read the binlog over SQL (the image has no mysqlbinlog): every event of
+        # every file, and none may touch the myvector schema.
+        logs = [r[0] for r in srv.sql("SHOW BINARY LOGS;", db=None)]
+        events, mentions = 0, 0
+        for lg in logs:
+            for r in srv.sql(f"SHOW BINLOG EVENTS IN '{lg}';", db=None):
+                events += 1
+                if "myvector.index_" in "\t".join(r) or "`myvector`" in "\t".join(r):
+                    mentions += 1
         record("2e. no index rows in the binlog (sql_log_bin = 0)",
-               mb.returncode == 0 and size.isdigit() and int(size) > 0 and binlog == "0",
-               f"mysqlbinlog rc={mb.returncode} bytes={size} mentions={binlog}")
+               logs and events > 0 and mentions == 0,
+               f"files={len(logs)} events={events} mentions={mentions}")
         base = searches(srv, idx)
         record("2f. searches return rows", all(b.startswith("[") and b != "[]" for b in base),
                base[0])
