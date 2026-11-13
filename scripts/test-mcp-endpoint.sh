@@ -226,7 +226,7 @@ expect "initialize keeps 2024-11-05" "$(req tok-123 POST "${J[@]}" -d '{"jsonrpc
 expect "a call in the session" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $SID" -H 'MCP-Protocol-Version: 2025-11-25' -d "$CALL")" 'one\\":\\"1\\".*"isError":false'
 badver=$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $SID" -H 'MCP-Protocol-Version: 1999-01-01' -d "$CALL")
 expect "an unsupported MCP-Protocol-Version: 400" "$(printf '%s\n' "$badver" | head -1)" "^HTTP/1.1 400"
-expect "the 400 is JSON-RPC -32022 listing the supported versions" "$(printf '%s\n' "$badver" | tail -1)" '^\{"jsonrpc":"2.0","id":null,"error":\{"code":-32022,"message":"Unsupported protocol version \(supported versions: 2026-07-28, 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05\)","data":\{"supported":\["2026-07-28","2025-11-25","2025-06-18","2025-03-26","2024-11-05"\],"requested":"1999-01-01"\}\}\}$'
+expect "the 400 is JSON-RPC -32022 listing the supported versions (no id: the body is not read)" "$(printf '%s\n' "$badver" | tail -1)" '^\{"jsonrpc":"2.0","error":\{"code":-32022,"message":"Unsupported protocol version \(supported versions: 2026-07-28, 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05\)","data":\{"supported":\["2026-07-28","2025-11-25","2025-06-18","2025-03-26","2024-11-05"\],"requested":"1999-01-01"\}\}\}$'
 expect "an unknown session: 404" "$(req tok-123 POST "${J[@]}" -H 'Mcp-Session-Id: 00000000000000000000000000000000' -d "$CALL" | head -1)" "^HTTP/1.1 404"
 expect "another account's token on the session: 403" "$(req tbl-app POST "${J[@]}" -H "Mcp-Session-Id: $SID" -d "$CALL" | head -1)" "^HTTP/1.1 403"
 expect "a request without a session id is still served" "$(req tok-123 POST "${J[@]}" -d "$CALL")" '"isError":false'

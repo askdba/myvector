@@ -1374,7 +1374,7 @@ class McpHandler : public http::base::RequestHandler {
         rpc_error(out, kUnsupportedProtocolVersion,
                   "Unsupported protocol version (supported versions: " + supported_versions() + ")",
                   &data);
-      }, HttpStatusCode::BadRequest);
+      }, HttpStatusCode::BadRequest, /*omit_id=*/true);
       return;
     }
     // The stateless era has no sessions: DELETE does not exist in it (405, leaving any session
@@ -1553,15 +1553,17 @@ class McpHandler : public http::base::RequestHandler {
     req.send_reply(status, HttpStatusCode::get_default_status_text(status), text);
   }
 
+  // A JSON-RPC response. A null id is written as null (as JSON-RPC 2.0 requires for a parse
+  // error) unless omit_id is set: MCP 2026-07-28 errors allow an absent id but not null.
   template <typename F>
   static void reply(http::base::Request &req, const rapidjson::Value *id, F fill,
-                    int status = HttpStatusCode::Ok) {
+                    int status = HttpStatusCode::Ok, bool omit_id = false) {
     Json out(rapidjson::kObjectType);
     auto &a = out.GetAllocator();
     out.AddMember("jsonrpc", "2.0", a);
     rapidjson::Value idv;
     if (id != nullptr) idv.CopyFrom(*id, a);
-    out.AddMember("id", idv, a);
+    if (id != nullptr || !omit_id) out.AddMember("id", idv, a);
     fill(out);
     req.get_output_headers().add("Content-Type", "application/json");
     req.send_reply(status, HttpStatusCode::get_default_status_text(status), to_string(out));
