@@ -1112,8 +1112,8 @@ void list_tools(Json &out) {
 //   - the stateless revision 2026-07-28 (SEP-2575): no handshake; every request carries its
 //     protocol version and client capabilities in _meta, mirrored in HTTP headers.
 // A request is in the stateless era when it carries _meta io.modelcontextprotocol/protocolVersion
-// or an MCP-Protocol-Version header of 2026-07-28 or later (versions are dates, so they compare
-// as strings). The component is stateless per call either way: each tool call runs in its own
+// or the MCP-Protocol-Version header 2026-07-28; a header naming a version not served gets
+// -32022 before anything else. The component is stateless per call either way: each tool call runs in its own
 // impersonated session.
 constexpr const char *kProtocolVersions[] = {"2025-11-25", "2025-06-18", "2025-03-26",
                                              "2024-11-05"};
@@ -1140,8 +1140,6 @@ bool supported_version(const std::string &v) {
     if (v == s) return true;
   return false;
 }
-
-bool stateless_version(const std::string &v) { return v >= kStatelessVersion; }
 
 // Every version served, newest first.
 std::vector<std::string> all_versions() {
@@ -1361,21 +1359,34 @@ class McpHandler : public http::base::RequestHandler {
       req.send_reply(HttpStatusCode::Unauthorized);
       return;
     }
-    // MCP-Protocol-Version: a session-era version must be one this server negotiates. A
-    // stateless-era version (2026-07-28 or later) is checked against the request's _meta below,
-    // where an unsupported one gets the JSON-RPC error that stateless clients expect.
+    // MCP-Protocol-Version must name a version this server serves. Otherwise 400 with the
+    // JSON-RPC UnsupportedProtocolVersion error (-32022) listing the supported versions, before
+    // the body is read: stateless clients recognize it and retry with a supported version, and
+    // session-era clients only look at the status.
     const std::string *header_version = req.get_input_headers().find("MCP-Protocol-Version");
     if (header_version != nullptr && !supported_version(*header_version) &&
-        !stateless_version(*header_version)) {
-      plain(req, HttpStatusCode::BadRequest,
-            "Bad Request: Unsupported protocol version (supported versions: " +
-                supported_versions() + ")");
+        *header_version != kStatelessVersion) {
+      reply(req, nullptr, [&](Json &out) {
+        auto &a = out.GetAllocator();
+        rapidjson::Value data(rapidjson::kObjectType);
+        data.AddMember("supported", versions_array(a), a);
+        data.AddMember("requested", rapidjson::Value(header_version->c_str(), a), a);
+        rpc_error(out, kUnsupportedProtocolVersion,
+                  "Unsupported protocol version (supported versions: " + supported_versions() + ")",
+                  &data);
+      }, HttpStatusCode::BadRequest);
       return;
     }
-    // The stateless era has no sessions: its requests' Mcp-Session-Id, if any, is ignored.
-    const bool stateless_header = header_version != nullptr && stateless_version(*header_version);
+    // The stateless era has no sessions: DELETE does not exist in it (405, leaving any session
+    // alone), and its requests' Mcp-Session-Id, if any, is ignored.
+    const bool stateless_era = header_version != nullptr && *header_version == kStatelessVersion;
+    if (is_delete && stateless_era) {
+      req.get_output_headers().add("Allow", "POST");
+      req.send_reply(HttpStatusCode::MethodNotAllowed);
+      return;
+    }
     const std::string *session_id =
-        stateless_header && !is_delete ? nullptr : req.get_input_headers().find("Mcp-Session-Id");
+        stateless_era ? nullptr : req.get_input_headers().find("Mcp-Session-Id");
     if (is_delete && session_id == nullptr) {
       plain(req, HttpStatusCode::BadRequest, "Bad Request: DELETE requires an Mcp-Session-Id header");
       return;
@@ -1425,7 +1436,7 @@ class McpHandler : public http::base::RequestHandler {
                                            params["_meta"].IsObject()
                                        ? &params["_meta"]
                                        : nullptr;
-    if (stateless_header || (meta != nullptr && meta->HasMember(kMetaProtocolVersion))) {
+    if (stateless_era || (meta != nullptr && meta->HasMember(kMetaProtocolVersion))) {
       if (serve_stateless(req, in, method, params, meta, header_version, *account)) return;
       // A session-era version in _meta, matching the header: served as that era (as the Go SDK).
     }
@@ -1476,18 +1487,12 @@ class McpHandler : public http::base::RequestHandler {
       return fail(HttpStatusCode::BadRequest, kHeaderMismatch,
                   "MCP-Protocol-Version header '" + *header_version +
                       "' does not match _meta " + kMetaProtocolVersion + " '" + version + "'");
+    // The header passed the version check, so a matching _meta version is served: a session-era
+    // one is left to the caller, and anything else is 2026-07-28.
     if (supported_version(version)) return false;
-    if (version != kStatelessVersion) {
-      Json scratch;
-      auto &a = scratch.GetAllocator();
-      rapidjson::Value data(rapidjson::kObjectType);
-      data.AddMember("supported", versions_array(a), a);
-      data.AddMember("requested", rapidjson::Value(version.c_str(), a), a);
-      return fail(HttpStatusCode::BadRequest, kUnsupportedProtocolVersion,
-                  "protocol version '" + version + "' is not supported (supported versions: " +
-                      supported_versions() + ")",
-                  &data);
-    }
+    if (!in.HasMember("jsonrpc") || !in["jsonrpc"].IsString() ||
+        std::strcmp(in["jsonrpc"].GetString(), "2.0") != 0)
+      return fail(HttpStatusCode::BadRequest, kInvalidRequest, "jsonrpc must be \"2.0\"");
     if (!id.IsString() && !id.IsInt64())
       return fail(HttpStatusCode::BadRequest, kInvalidRequest,
                   "the request id must be a string or an integer");
