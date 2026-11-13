@@ -148,9 +148,12 @@ CALL mysql.myvector_index_drop('database.table.column');
 **Save and Load an Index:**
 
 ```sql
--- Indexes are automatically saved. To load an index on startup:
+-- Indexes are saved by MYVECTOR_INDEX_BUILD and, for online indexes, at
+-- binlog checkpoints. Load a saved index (for example after a restart):
 CALL mysql.myvector_index_load('database.table.column');
 ```
+
+If the index has no saved files, the load returns `ERROR: no saved index ...` and leaves the index in memory as it is. If the files exist but can't be read, it returns `ERROR: ... could not be loaded ...` and the index stays unloaded until a later load succeeds (once the files can be read) or it is rebuilt. Searching an index that isn't loaded fails with "Vector index is not loaded." A load or build waits for searches on that index to finish before it replaces the index's graph, and searches wait while the graph is replaced. A build then fills the new graph while searches run, so searches during a build can return partial or empty results until it finishes.
 
 ## Vector Functions
 

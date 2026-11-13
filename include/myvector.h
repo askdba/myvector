@@ -138,7 +138,10 @@ public:
 
     virtual std::string getStatus() { return getName() + "<Status>"; }
 
-    virtual bool loadIndex(const std::string& path) = 0;
+    /* loadIndex - load the saved index from path, replacing any in memory.
+     * With requireSaved, a missing saved index fails the load (an explicit
+     * MYVECTOR_INDEX_LOAD); without it, the index starts empty (startup). */
+    virtual bool loadIndex(const std::string& path, bool requireSaved = false) = 0;
 
     virtual bool saveIndex(const std::string& path,
                            const std::string& option = "") = 0;
@@ -148,7 +151,19 @@ public:
 
     virtual bool dropIndex(const std::string& path) = 0;
 
+    /* hasSavedIndex - false if the index has nothing saved under path to load
+     * (an explicit MYVECTOR_INDEX_LOAD then reports an error). Indexes with no
+     * persistence of their own (KNN) have nothing to look for: true. */
+    virtual bool hasSavedIndex(const std::string& /* path */) { return true; }
+
     virtual bool initIndex() = 0;
+
+    /* rebuildIndex - drop the saved files and the graph and start an empty
+     * one, as a build does. Indexes that can do both in one step override it
+     * so a search never sees the gap between them. */
+    virtual bool rebuildIndex(const std::string& path) {
+        return dropIndex(path) && initIndex();
+    }
 
     virtual bool closeIndex() = 0;
 
