@@ -158,6 +158,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     and rebuild the index. See [Declaring a Vector Column](docs/usage.md#declaring-a-vector-column).
 
 ### Fixed
+- **KNN indexes took online (binlog) updates without `online=Y`** ([#287](https://github.com/askdba/myvector/issues/287)). `KNNIndex` reported itself as online whatever the column said, so both binlog listeners registered and updated every KNN index, contrary to `docs/ONLINE_INDEX_UPDATES.md`. It also kept updating a column changed from online HNSW to non-online KNN.
+  - **Behavior change:** a KNN index now takes online updates only when its column has `online=Y`, as HNSW does. A KNN column that relied on the old implicit updates needs `online=Y` in its MYVECTOR options (then `MYVECTOR_INDEX_BUILD`).
+  - `online=y` (lower case) now counts as online for HNSW too. Both listeners' discovery already accepted it, but the index didn't, so its updates were skipped.
+  - `scripts/test-knn-online.py` checks KNN with and without `online=Y`, the HNSW-to-KNN change and `online=y`, for the plugin and the component, in the `integration-scripts` CI job.
 - **An insert past an HNSW index's `size=` crashed mysqld** ([#285](https://github.com/askdba/myvector/issues/285)). hnswlib throws once `size=` rows are in the graph, and nothing caught it, so the next row terminated the server: from `MYVECTOR_INDEX_BUILD` on a table with more rows than `size=`, and from the binlog worker applying an `online=Y` INSERT.
   - Rows the graph can't take are now rejected and counted. `MYVECTOR_INDEX_BUILD` reports an error naming the index ("is full: N rows were not added ... Rebuild it with a larger size") instead of SUCCESS, and `MYVECTOR_INDEX_STATUS` shows `Rows rejected (index full)`.
   - Online INSERTs past the capacity are skipped and counted with the other skipped row events (#205), under the new reason "the index is full". An UPDATE of a row already in the index still applies.

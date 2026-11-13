@@ -429,6 +429,14 @@ public:
     ~HammingBinaryVectorSpace() {}
 };
 
+/* onlineOption - the column's options ask for online (binlog) updates:
+ * online=Y, in either case, as the plugin and component discovery accept it.
+ * Shared by KNN and HNSW so an index agrees with its registration (#287). */
+static bool onlineOption(MyVectorOptions& opts) {
+    const string v = opts.getOption("online");
+    return v == "Y" || v == "y";
+}
+
 /* KNNIndex - A vector index type that implements brute-force KNN search in
  * the MyVector plugin. This index type could possibly be faster than SQL
  * performing ORDER BY myvector_distance(...) [as long as all vectors fit
@@ -471,7 +479,9 @@ public:
     bool insertVector(VectorPtr vec, int dim, KeyTypeInteger id);
     bool deleteVector(KeyTypeInteger id) override;
 
-    bool supportsIncrUpdates() { return true; }
+    /* Only with online=Y, as for HNSW and as docs/ONLINE_INDEX_UPDATES.md
+     * says: a KNN index without it used to take every binlog update (#287). */
+    bool supportsIncrUpdates() { return onlineOption(m_optionsMap); }
 
     bool supportsPersist() { return false; }
 
@@ -830,7 +840,7 @@ HNSWMemoryIndex::HNSWMemoryIndex(const string& name, const string& options)
     transform(m_type.begin(), m_type.end(), m_type.begin(), [](unsigned char c) {
         return static_cast<char>(toupper(c));
     });
-    m_incrUpdates = m_optionsMap.getOption("online") == "Y";
+    m_incrUpdates = onlineOption(m_optionsMap);  /// Y or y, as discovery accepts
     m_incrRefresh = m_optionsMap.getOption("track").length() > 0;
 
     m_dist = "L2";
