@@ -12,8 +12,8 @@ import json
 import os
 import sys
 
-ORDER = ["8.4", "9.7", "26.7", "MariaDB"]
-COL = {"8.4": "#4f9dff", "9.7": "#36c98d", "26.7": "#f0a93b", "MariaDB": "#a56bd8"}
+ORDER = ["8.4", "9.7", "26.10", "MariaDB"]
+COL = {"8.4": "#4f9dff", "9.7": "#36c98d", "26.10": "#f0a93b", "MariaDB": "#a56bd8"}
 
 
 def e(s):
@@ -32,7 +32,25 @@ def fmt(x, dp=0):
     return f"{x:,.{dp}f}"
 
 
-def load(results_dir):
+def interp_qps(sweep, rtar):
+    """Linear-interpolate an engine's QPS at a target recall from its ef sweep
+    (the Pareto-frontier reading of the tradeoff). None if out of range."""
+    pts = sorted((p.get("recall_at_10"), p.get("qps")) for p in sweep
+                 if p.get("recall_at_10") is not None and p.get("qps") is not None)
+    if len(pts) < 2:
+        return None
+    rs = [r for r, _ in pts]
+    qs = [q for _, q in pts]
+    if rtar < rs[0] or rtar > rs[-1]:
+        return None
+    for i in range(1, len(rs)):
+        if rtar <= rs[i]:
+            r0, r1, q0, q1 = rs[i - 1], rs[i], qs[i - 1], qs[i]
+            return q1 if r1 == r0 else q0 + (q1 - q0) * (rtar - r0) / (r1 - r0)
+    return qs[-1]
+
+
+def load(results_dir, order):
     rows = {}
     for p in glob.glob(os.path.join(results_dir, "*.json")):
         try:
@@ -42,15 +60,52 @@ def load(results_dir):
         if "version" in d and "metrics" in d:
             d["_srcfile"] = os.path.basename(p)
             rows[str(d["version"])] = d
-    return [rows[v] for v in ORDER if v in rows]
+    return [rows[v] for v in order if v in rows]
+
+
+def load_page_cfg(results_dir):
+    """Optional per-dataset page.json sidecar: title/subtitle/description/
+    tab_title/caveats override the synthetic defaults. Absent = defaults, so
+    the original synthetic dashboard is unchanged."""
+    p = os.path.join(results_dir, "page.json")
+    if os.path.exists(p):
+        try:
+            return json.load(open(p))
+        except Exception:
+            pass
+    return {}
 
 
 def main():
     results_dir, out_html = sys.argv[1], sys.argv[2]
-    data = load(results_dir)
+    cfg = load_page_cfg(results_dir)
+    # page.json may override the series order/colors (e.g. the village page keys
+    # on engine names instead of MySQL versions). Default = the version series.
+    order = cfg.get("order", ORDER)
+    col = {**COL, **cfg.get("col", {})}
+    data = load(results_dir, order)
     if not data:
         print("no result JSONs found", file=sys.stderr)
         sys.exit(1)
+
+    # Optional: derive the headline ANN cards/table from a fixed WARM sweep point
+    # (page.json "headline_ef") instead of the separate cold first-batch ANN
+    # measurement. This makes the glance cards a consistent, warm, directly
+    # comparable operating point across engines (some engines — e.g. MariaDB —
+    # pay a large one-time graph-cache load on their first query after build,
+    # which would make a cold headline misrepresent steady state). Absent =
+    # unchanged (synthetic dashboard keeps its own knn_ann_qps).
+    headline_ef = cfg.get("headline_ef")
+    if headline_ef is not None:
+        for d in data:
+            sw = {p.get("ef_search"): p for p in d["metrics"].get("ef_search_sweep", [])}
+            p = sw.get(headline_ef)
+            if p:
+                d["metrics"] = dict(
+                    d["metrics"],
+                    knn_ann_qps=p.get("qps"), knn_ann_p50_ms=p.get("p50_ms"),
+                    knn_ann_p99_ms=p.get("p99_ms"), recall_at_10=p.get("recall_at_10"))
+
     generated = max((d.get("timestamp", "") for d in data), default="")[:19].replace("T", " ") + " UTC"
     # Escape "<" so a field value can't terminate the inline <script> payload.
     payload = json.dumps(data).replace("<", "\\u003c")
@@ -65,16 +120,16 @@ def main():
 
     # ---- static (no-JS) content ----
     legend = "".join(
-        f'<span class="lg"><span class="dot" style="background:{COL.get(d["version"],"#888")}"></span>'
+        f'<span class="lg"><span class="dot" style="background:{col.get(d["version"],"#888")}"></span>'
         f'{e(disp(d))} <span class="mut">· {e(d.get("arch",""))} · {e(d.get("host_label",""))}</span></span>'
         for d in data)
 
     cards = "".join(
-        f'<div class="card"><h3 style="color:{COL.get(d["version"],"#888")}">{e(disp(d))}</h3>'
-        f'<div class="row"><span>Index build</span><b>{fmt(d["metrics"]["index_build_time_s"],1)}s</b></div>'
-        f'<div class="row"><span>Insert QPS</span><b>{fmt(d["metrics"]["insert_qps"])}</b></div>'
-        f'<div class="row"><span>ANN QPS</span><b>{fmt(d["metrics"]["knn_ann_qps"])}</b></div>'
-        f'<div class="row"><span>Recall@10</span><b>{fmt(d["metrics"]["recall_at_10"],3)}</b></div></div>'
+        f'<div class="card"><h3 style="color:{col.get(d["version"],"#888")}">{e(disp(d))}</h3>'
+        f'<div class="row"><span>Index build</span><b>{fmt(d["metrics"].get("index_build_time_s"),1)}s</b></div>'
+        f'<div class="row"><span>Insert QPS</span><b>{fmt(d["metrics"].get("insert_qps"))}</b></div>'
+        f'<div class="row"><span>ANN QPS</span><b>{fmt(d["metrics"].get("knn_ann_qps"))}</b></div>'
+        f'<div class="row"><span>Recall@10</span><b>{fmt(d["metrics"].get("recall_at_10"),3)}</b></div></div>'
         for d in data)
 
     rowsdef = [
@@ -88,10 +143,13 @@ def main():
         ("ANN p99 (ms)", "knn_ann_p99_ms", 1),
         ("Recall@10", "recall_at_10", 3),
     ]
-    thead = "".join(f'<th style="color:{COL.get(d["version"],"#888")}">{e(disp(d))}</th>' for d in data)
+    thead = "".join(f'<th style="color:{col.get(d["version"],"#888")}">{e(disp(d))}</th>' for d in data)
     tbody = ""
     for label, key, dp in rowsdef:
-        cells = "".join(f"<td>{fmt(d['metrics'].get(key), dp)}</td>" for d in data)
+        vals = [d['metrics'].get(key) for d in data]
+        if all(v is None for v in vals):
+            continue  # drop metric rows no engine on this page reports
+        cells = "".join(f"<td>{fmt(v, dp)}</td>" for v in vals)
         tbody += f"<tr><td>{label}</td>{cells}</tr>"
 
     w = data[0].get("workload", {})
@@ -108,14 +166,82 @@ def main():
          '(build time = load time, no separate build phase or ef_construction) — a comparison against '
          'MyVector-on-MySQL, not a different MyVector build.'),
     ]
+    caveats = cfg.get("caveats", caveats)
     caveats_html = "".join(f"<li>{c}</li>" for c in caveats)
+
+    # Matched-recall frontier: the QPS each engine delivers at a target recall@10
+    # -- the honest read of the ef_search tradeoff, since per-ef points mislead
+    # (an engine tuned for throughput reaches a recall at a lower ef, so its dots
+    # sit lower-and-righter even when its frontier dominates). Industry-standard
+    # ANN reporting picks recall thresholds and reads QPS off each engine's own
+    # curve; an engine whose index can't be tuned to a given recall (e.g. a
+    # saturated graph that only operates near 1.0) simply shows "—" there. A row
+    # is kept when >=2 engines reach it, so the table survives engines that live
+    # in different recall regimes instead of collapsing to their (often empty)
+    # intersection -- the earlier intersection-only rule silently dropped the
+    # whole table whenever one engine saturated recall near 1.0.
+    sweeps = [(disp(d), d.get("version"), d["metrics"].get("ef_search_sweep") or [])
+              for d in data]
+    sweeps = [(lab, v, sw) for lab, v, sw in sweeps
+              if len([p for p in sw if p.get("recall_at_10") is not None
+                      and p.get("qps") is not None]) >= 2]
+    frontier_html = ""
+    if len(sweeps) >= 2:
+        recs = [[p["recall_at_10"] for p in sw if p.get("recall_at_10") is not None]
+                for _, _, sw in sweeps]
+        glo = min(min(r) for r in recs)
+        ghi = max(max(r) for r in recs)
+        EPS = 1e-9
+        # a fixed, industry-standard recall ladder; keep thresholds inside the
+        # data's overall range that at least two engines actually reach.
+        ladder = [0.50, 0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95,
+                  0.97, 0.98, 0.99, 0.995, 0.999]
+        targets = []
+        for t in ladder:
+            if t < glo - EPS or t > ghi + EPS:
+                continue
+            if sum(1 for _, _, sw in sweeps if interp_qps(sw, t) is not None) >= 2:
+                targets.append(t)
+        if len(targets) > 6:  # keep it compact: evenly sample 6 rows
+            targets = sorted({targets[round(i * (len(targets) - 1) / 5)]
+                              for i in range(6)})
+        if targets:
+            head = "".join(f'<th style="color:{col.get(v,"#888")}">{e(lab)}</th>'
+                           for lab, v, _ in sweeps)
+            body = ""
+            for t in targets:
+                qs = [interp_qps(sw, t) for _, _, sw in sweeps]
+                valid = [q for q in qs if q is not None]
+                best = max(valid) if valid else None
+                cells = ""
+                for q in qs:
+                    bold = ' style="font-weight:700"' if (q is not None and q == best) else ""
+                    cells += f"<td{bold}>{fmt(q)}</td>"
+                body += f"<tr><td>recall {t:g}</td>{cells}</tr>"
+            frontier_html = (
+                '<div class="panel"><h2>QPS at matched recall@10</h2>'
+                '<div class="note">the honest read of the sweep: at a target recall, who serves the most queries/sec? interpolated from each engine\'s own curve; <b>bold = fastest</b> at that recall, higher is better. <b>&mdash;</b> = that engine\'s index can\'t be tuned to this recall (e.g. a graph that saturates near 1.0 can\'t operate lower).</div>'
+                f'<table><thead><tr><th>Recall@10</th>{head}</tr></thead>'
+                f'<tbody>{body}</tbody></table></div>')
+
+    nav = cfg.get("nav", "")
+    nav_html = f'<p class="sub" style="margin-top:-6px">{nav}</p>' if nav else ""
+    tab_title = cfg.get("tab_title", "MyVector Benchmark")
+    page_h1 = cfg.get("title", "MyVector — cross-version benchmark")
+    page_sub = cfg.get("subtitle", "MySQL 8.4 vs 9.7 vs 26.10 · HNSW vector search")
+    page_desc = cfg.get("description",
+        "A comparison of MyVector's native HNSW vector search across three MySQL versions "
+        "(plus MariaDB's native vector as a cross-engine reference) — same data and index parameters, each "
+        "pinned to an identical 4 vCPU / 24 GB slice (hardware noted below). It measures index build time, "
+        "insert throughput, exact KNN, approximate (ANN) QPS and latency, recall@10, and the "
+        "accuracy/throughput tradeoff as <code>ef_search</code> varies.")
 
     html = f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MyVector Benchmark</title>
+<title>{e(tab_title)}</title>
 {favlink}
 <style>
 :root{{ --bg:#f6f8fa; --card:#fff; --fg:#1b2733; --muted:#5a6b7b; --line:#e3e8ee; }}
@@ -148,13 +274,10 @@ footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
 </head>
 <body>
 <div class="wrap">
-  <h1>MyVector — cross-version benchmark</h1>
-  <p class="sub">MySQL 8.4 vs 9.7 vs 26.7 · HNSW vector search · generated {generated}</p>
-  <p class="desc">A comparison of MyVector's native HNSW vector search across three MySQL versions
-  (plus MariaDB's native vector as a cross-engine reference) — same data and index parameters, each
-  pinned to an identical 4 vCPU / 24 GB slice (hardware noted below). It measures index build time,
-  insert throughput, exact KNN, approximate (ANN) QPS and latency, recall@10, and the
-  accuracy/throughput tradeoff as <code>ef_search</code> varies.</p>
+  <h1>{page_h1}</h1>
+  <p class="sub">{page_sub} · generated {generated}</p>
+  {nav_html}
+  <p class="desc">{page_desc}</p>
   <div class="legend">{legend}</div>
   <div class="cards">{cards}</div>
 
@@ -176,6 +299,7 @@ footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
     <div class="note">each point is an ef_search value; up-and-right is better</div>
     <canvas id="c_sweep" style="max-height:340px"></canvas>
   </div>
+  {frontier_html}
 
   <div class="panel" style="margin-top:18px">
     <h2>Notes &amp; caveats</h2>
@@ -189,7 +313,7 @@ footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
 (function(){{
   if (typeof Chart === 'undefined') return;   // charts are enhancement only
   var DATA = {payload};
-  var COL = {{"8.4":"#4f9dff","9.7":"#36c98d","26.7":"#f0a93b","MariaDB":"#a56bd8"}};
+  var COL = {json.dumps(col)};
   function disp(d){{return d.label||("MySQL "+d.version);}}
   var css = getComputedStyle(document.documentElement);
   Chart.defaults.color = css.getPropertyValue('--muted').trim();
@@ -216,18 +340,21 @@ footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
         return mt.better==='high' ? (mx?100*v/mx:0) : (v?100*mn/v:0);
       }});
     }});
+    var keptIdx=[]; norm.forEach(function(n,j){{ if(n!=null) keptIdx.push(j); }});
+    if(!keptIdx.length) return;   // nothing to compare
     var datasets = DATA.map(function(d,i){{
       return {{label:disp(d), backgroundColor:COL[d.version]||"#888", borderRadius:5,
-        data:metrics.map(function(_,j){{return norm[j]?Math.round(norm[j][i]):0;}})}};
+        data:keptIdx.map(function(j){{return Math.round(norm[j][i]);}})}};
     }});
     document.getElementById('comparePanel').style.display='';
     new Chart(document.getElementById('c_compare'),{{type:'bar',
-      data:{{labels:metrics.map(function(m){{return m.name;}}),datasets:datasets}},
+      data:{{labels:keptIdx.map(function(j){{return metrics[j].name;}}),datasets:datasets}},
       options:{{plugins:{{tooltip:{{callbacks:{{label:function(c){{return c.dataset.label+': '+c.parsed.y+'% of best';}}}}}}}},
         scales:{{y:{{beginAtZero:true,max:100,ticks:{{callback:function(v){{return v+'%';}}}}}}}}}}}});
   }})();
 
   function bar(title,note,vals,dp){{
+    if(vals.every(function(v){{return v==null;}})) return;  // skip empty charts
     var wrap=document.createElement('div'); wrap.className='panel';
     var cid='ch'+Math.random().toString(36).slice(2);
     wrap.innerHTML='<h2>'+title+'</h2>'+(note?'<div class="note">'+note+'</div>':'')+'<canvas id="'+cid+'"></canvas>';
@@ -250,12 +377,12 @@ footer{{color:var(--muted);font-size:12.5px;margin-top:10px}}
     var ds = DATA.filter(function(d){{return (d.metrics.ef_search_sweep||[]).length;}}).map(function(d){{
       return {{label:disp(d),borderColor:COL[d.version],backgroundColor:COL[d.version],
         showLine:true,tension:.25,pointRadius:4,
-        data:d.metrics.ef_search_sweep.map(function(p){{return {{x:p.qps,y:p.recall_at_10,ef:p.ef_search}};}})}};
+        data:d.metrics.ef_search_sweep.map(function(p){{return {{x:p.recall_at_10,y:p.qps,ef:p.ef_search}};}})}};
     }});
     new Chart(document.getElementById('c_sweep'),{{type:'scatter',data:{{datasets:ds}},
-      options:{{plugins:{{tooltip:{{callbacks:{{label:function(c){{return 'ef='+c.raw.ef+': recall '+f(c.raw.y,3)+' @ '+f(c.raw.x)+' QPS';}}}}}}}},
-        scales:{{x:{{title:{{display:true,text:'QPS (higher = faster)'}},beginAtZero:true}},
-                y:{{title:{{display:true,text:'recall@10 (higher = accurate)'}},suggestedMax:1}}}}}}}});
+      options:{{plugins:{{tooltip:{{callbacks:{{label:function(c){{return 'ef='+c.raw.ef+': recall '+f(c.raw.x,3)+' @ '+f(c.raw.y)+' QPS';}}}}}}}},
+        scales:{{x:{{title:{{display:true,text:'recall@10 (higher → better)'}}}},
+                y:{{type:'logarithmic',title:{{display:true,text:'QPS (higher ↑ better)'}}}}}}}}}});
   }}
 }})();
 </script>

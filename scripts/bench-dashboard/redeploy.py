@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Recreate one bench container from a BASE mysql image and install a freshly
 built MyVector component (query-rewrite active). Run on the docker host that
-owns the container (dev host for 9.7/26.7, the VM for 8.4).
+owns the container (dev host for 9.7/26.10, the VM for 8.4).
 
 Reuses scripts/myvectorbench.py's install_component / _configure_myvector /
 INSTALL_PROCS path -- the same flow CI uses.

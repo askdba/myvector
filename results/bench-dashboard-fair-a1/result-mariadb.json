@@ -1,0 +1,84 @@
+{
+  "version": "MariaDB",
+  "label": "MariaDB 12.3",
+  "engine": "MariaDB native VECTOR/HNSW",
+  "container": "fair-mdb",
+  "host_label": "A1 (Ampere) \u00b7 all engines pinned to cores 12-15 \u00b7 cache-parity \u00b7 controlled sequential re-run 2026-11-10",
+  "arch": "aarch64",
+  "timestamp": "2026-11-10T13:31:15.358565+00:00",
+  "dataset": "fashion-mnist-784-euclidean.hdf5",
+  "rows_indexed": 60000,
+  "query_set": "held-out test set (published)",
+  "recall_ground_truth": "published",
+  "workload": {
+    "rows": 60000,
+    "dim": 784,
+    "M": 16,
+    "distance": "L2",
+    "holdout_queries": 1000
+  },
+  "mhnsw_cache_mib": 1024,
+  "metrics": {
+    "index_build_time_s": 209.06,
+    "insert_qps": 286.9989929168436,
+    "knn_qps": 0.2199207863800805,
+    "knn_p50_ms": 4529.323,
+    "knn_p99_ms": 5032.976,
+    "knn_ann_qps": 214.01704645775035,
+    "knn_ann_p50_ms": 2.5085,
+    "knn_ann_p99_ms": 24.43,
+    "ann_rewrite_active": true,
+    "recall_at_10": 0.9997999999999999,
+    "ef_search_sweep": [
+      {
+        "ef_search": 10,
+        "recall_at_10": 0.9977999999999999,
+        "qps": 1427.2542767674404,
+        "p50_ms": 0.6715,
+        "p99_ms": 1.139
+      },
+      {
+        "ef_search": 20,
+        "recall_at_10": 0.999,
+        "qps": 1232.951365000456,
+        "p50_ms": 0.7689999999999999,
+        "p99_ms": 1.335
+      },
+      {
+        "ef_search": 50,
+        "recall_at_10": 0.9996,
+        "qps": 965.3590556471573,
+        "p50_ms": 0.9665,
+        "p99_ms": 1.9480000000000002
+      },
+      {
+        "ef_search": 100,
+        "recall_at_10": 0.9996,
+        "qps": 788.0630513486122,
+        "p50_ms": 1.193,
+        "p99_ms": 2.371
+      },
+      {
+        "ef_search": 200,
+        "recall_at_10": 0.9997999999999999,
+        "qps": 599.6584345556771,
+        "p50_ms": 1.5375,
+        "p99_ms": 3.197
+      },
+      {
+        "ef_search": 400,
+        "recall_at_10": 0.9997999999999999,
+        "qps": 422.9488671737542,
+        "p50_ms": 2.2035,
+        "p99_ms": 4.867
+      },
+      {
+        "ef_search": 800,
+        "recall_at_10": 0.9997999999999999,
+        "qps": 290.38230572842986,
+        "p50_ms": 3.2025,
+        "p99_ms": 7.087000000000001
+      }
+    ]
+  }
+}

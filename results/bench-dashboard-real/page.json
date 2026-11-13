@@ -1,0 +1,32 @@
+{
+  "tab_title": "MyVector Real-Data Benchmark",
+  "title": "MyVector — real-dataset benchmark",
+  "subtitle": "MySQL 8.4 / 9.7 / 26.10 + MariaDB 12.3 · fashion-mnist-784 · published ground truth",
+  "nav": "<a href=\"/\">cross-engine</a>",
+  "order": [
+    "8.4",
+    "8.4-opt",
+    "9.7",
+    "9.7-opt",
+    "26.10",
+    "26.10-opt",
+    "MariaDB"
+  ],
+  "col": {
+    "8.4": "#9bb0c8",
+    "8.4-opt": "#4f9dff",
+    "9.7": "#e0c89a",
+    "9.7-opt": "#f0a93b",
+    "26.10": "#c9b3dc",
+    "26.10-opt": "#a56bd8",
+    "MariaDB": "#e0607e"
+  },
+  "headline_ef": 200,
+  "description": "MyVector across MySQL <b>8.4 / 9.7 / 26.10</b> on a real dataset (fashion-mnist-784-euclidean vs <b>published</b> ground truth): each version's <b>scalar baseline</b> vs its <b>current-<code>main</code></b> build (PR&nbsp;#278 + #280). The <code>-opt</code> curves were re-measured 2026-11-10 on current main (controlled: cores 12–15, cache-above-index); the scalar baselines are the original pre-optimization measurements. Current-main MyVector is <b>consistent across all three versions</b> (~2.7k QPS at ef=10, recall 0.975), a ~4–5× lift over the scalar baseline.",
+  "caveats": [
+    "<b>The <code>-opt</code> curves are current <code>main</code> (#278+#280), re-measured 2026-11-10</b> under controlled conditions (cores 12–15, HNSW graph in memory, 500 queries/point). The plain <code>8.4/9.7/26.10</code> curves are the <b>original scalar baselines</b> (pre-#278) kept as the 'before'. The scalar→opt gap therefore reflects the optimizations <i>and</i> the move from the original to controlled measurement conditions.",
+    "<b>Consistent across versions:</b> current-main MyVector performs essentially identically on 8.4, 9.7 and 26.10 (ef=10 ~2667–2696 QPS, recall 0.975) — the optimizations are version-independent (same rewrite + kernels).",
+    "<b>MariaDB 12.3</b> is included as a native-vector reference (same fashion-mnist, published GT).",
+    "<b>Dataset / params:</b> fashion-mnist-784-euclidean, HNSW M=16, ef_construction=200. Recall@10 vs published neighbors. Headline cards = warm ef_search=200. A1 host."
+  ]
+}

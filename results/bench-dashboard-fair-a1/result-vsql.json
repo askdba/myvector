@@ -1,0 +1,84 @@
+{
+  "version": "vsql_vector",
+  "label": "vsql_vector \u00b7 VillageSQL",
+  "engine": "VillageSQL vsql_vector (SVECTOR+HNSW)",
+  "host_label": "A1 (Ampere) \u00b7 all engines pinned to cores 12-15 \u00b7 cache-parity \u00b7 controlled sequential re-run 2026-11-10",
+  "arch": "aarch64",
+  "timestamp": "2026-11-10T13:45:47.761754+00:00",
+  "dataset": "fashion-mnist-784-euclidean.hdf5",
+  "rows_indexed": 60000,
+  "server_version": "8.4.11-villagesql-0.0.7",
+  "recall_ground_truth": "published",
+  "harness": "myvector bench_vsql_real",
+  "workload": {
+    "rows": 60000,
+    "dim": 784,
+    "M": 16,
+    "ef_construction": 200,
+    "distance": "L2",
+    "holdout_queries": 1000
+  },
+  "metrics": {
+    "index_build_time_s": 164.02,
+    "insert_qps": 1434.0417906040796,
+    "knn_qps": 10.34975121268035,
+    "knn_p50_ms": 96.481,
+    "knn_p99_ms": 104.661,
+    "knn_ann_qps": 381.9534627900937,
+    "knn_ann_p50_ms": 2.5235,
+    "knn_ann_p99_ms": 3.835,
+    "ann_rewrite_active": true,
+    "recall_at_10": 0.9993,
+    "ef_search_sweep": [
+      {
+        "ef_search": 10,
+        "recall_at_10": 0.9736,
+        "qps": 1175.5246366453348,
+        "p50_ms": 0.824,
+        "p99_ms": 1.1039999999999999
+      },
+      {
+        "ef_search": 20,
+        "recall_at_10": 0.9926,
+        "qps": 993.3248569612206,
+        "p50_ms": 0.9789999999999999,
+        "p99_ms": 1.36
+      },
+      {
+        "ef_search": 50,
+        "recall_at_10": 0.998,
+        "qps": 728.7524923335237,
+        "p50_ms": 1.342,
+        "p99_ms": 1.874
+      },
+      {
+        "ef_search": 100,
+        "recall_at_10": 0.9994,
+        "qps": 526.985893641599,
+        "p50_ms": 1.846,
+        "p99_ms": 2.713
+      },
+      {
+        "ef_search": 200,
+        "recall_at_10": 0.9994,
+        "qps": 381.60423367001,
+        "p50_ms": 2.5365,
+        "p99_ms": 3.968
+      },
+      {
+        "ef_search": 400,
+        "recall_at_10": 1.0,
+        "qps": 256.37239218002674,
+        "p50_ms": 3.7355,
+        "p99_ms": 5.8950000000000005
+      },
+      {
+        "ef_search": 800,
+        "recall_at_10": 1.0,
+        "qps": 163.74694939433277,
+        "p50_ms": 5.9345,
+        "p99_ms": 9.023
+      }
+    ]
+  }
+}
