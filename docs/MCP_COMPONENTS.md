@@ -296,12 +296,26 @@ Hash the token outside MySQL (`printf %s "$TOKEN" | sha256sum`): `SHA2('<token>'
 
 ### Streamable HTTP
 
-The endpoint follows the MCP Streamable HTTP transport as mysql-mcp-server's default (stateful) transport does:
+The endpoint serves both eras of the MCP Streamable HTTP transport on the same URL: the session-based revisions, as mysql-mcp-server's default (stateful) transport does, and the stateless revision 2026-07-28 (below).
 
-- **Protocol versions:** 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05. `initialize` keeps the client's version when it is one of these, and otherwise answers with 2025-11-25. A request whose `MCP-Protocol-Version` header names another version gets 400, with the supported versions in the body. The stateless revision 2026-07-28 is not served yet ([#273](https://github.com/askdba/myvector/issues/273)).
+- **Protocol versions:** 2026-07-28, 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05. `initialize` keeps the client's version when it is one of the session-based ones, and otherwise answers with 2025-11-25 (`initialize` does not exist in 2026-07-28). A request whose `MCP-Protocol-Version` header names an older unknown version gets 400, with the supported versions in the body.
 - **Sessions:** `initialize` returns an `Mcp-Session-Id` (128 random bits, hex), bound to the account its token maps to. A request carrying the header must name a live session of the same account: unknown or expired, 404 (the client initializes again); another account's, 403. `DELETE /mcp` with the header ends the session (204; without it, 400). A session expires after `mcp_http.session_timeout_minutes` idle (default 30, as mysql-mcp-server), and at most 4096 are kept (the least recently used goes first). A session id is not a credential: every request still needs its bearer token, and a request without a session id is served on its own.
 - **Requests:** `POST` with `Content-Type: application/json` (else 415) and an `Accept` listing `application/json` and `text/event-stream` (wildcards count; else 400), as the Go SDK checks. Replies are JSON (`application/json`), never an SSE stream. `GET` gets 405: the endpoint sends no requests or notifications of its own, so it offers no server-to-client stream.
-- **Browsers:** for an allowed `Origin`, the preflight allows `POST` and `DELETE`, and replies expose `Mcp-Session-Id`.
+- **Browsers:** for an allowed `Origin`, the preflight allows `POST` and `DELETE` and the MCP headers (`MCP-Protocol-Version`, `Mcp-Session-Id`, `Mcp-Method`, `Mcp-Name`), and replies expose `Mcp-Session-Id`.
+
+#### The stateless revision 2026-07-28
+
+In MCP 2026-07-28 (SEP-2575) there is no handshake and no session: every request carries its protocol version and client capabilities in `_meta` (`io.modelcontextprotocol/protocolVersion`, `io.modelcontextprotocol/clientCapabilities`, optionally `io.modelcontextprotocol/clientInfo`), and HTTP headers mirror the body. The component was already stateless per call (each tool call runs in its own impersonated session), so nothing about how calls run changes. A request is in this era when its `_meta` names a protocol version or its `MCP-Protocol-Version` header is 2026-07-28 or later; a session-era version named consistently in both is served as that era, as the Go SDK does.
+
+- **Methods:** `server/discover` (the supported versions, newest first, and the `tools` capability), `tools/list` and `tools/call`. Every result has `resultType: "complete"` and the server's identity in `_meta` (`io.modelcontextprotocol/serverInfo`); `server/discover` and `tools/list` also carry the cache hints `ttlMs` (one hour) and `cacheScope: "public"` (the tool list is the same for every account). Other methods, `initialize` and `ping` included, get 404 with JSON-RPC -32601.
+- **Validation, each a 400 with a JSON-RPC error** (so that clients probing the era recognize a 2026-07-28 server):
+  - no `MCP-Protocol-Version` header, or one that differs from the `_meta` version: -32020 (header mismatch);
+  - no `_meta` version, no `clientCapabilities` object, or a malformed `clientInfo`: -32602;
+  - a version this server does not serve: -32022, with `data` `{"supported": [...], "requested": "..."}`;
+  - no `Mcp-Method` header or one that differs from the method, and for `tools/call` no `Mcp-Name` header or one that differs from the tool name: -32020;
+  - a request id that is not a string or an integer: -32600.
+- **Errors:** an unknown tool is JSON-RPC -32602 (`Unknown tool: ...`); a tool that fails, or a statement the guard refuses, is a result with `isError: true`, as in the session era.
+- **No sessions:** no `Mcp-Session-Id` is issued, and one sent with a 2026-07-28 request is ignored. Replies are JSON; the endpoint never sends notifications, so it needs no `subscriptions/listen` stream, and it ignores `io.modelcontextprotocol/logLevel`. Tool arguments carry no `x-mcp-header` annotations, so there are no `Mcp-Param-*` headers to check.
 
 ### How a tool call runs
 
@@ -341,8 +355,8 @@ Facts recorded for Phase 5:
 
 `scripts/test-mcp-conformance.sh <mysql-image> <artifact-dir>` is the conformance check of RFC 0001 §10 ("against at least two clients"). It drives the endpoint with two independent MCP clients over Streamable HTTP, each pinned and run in its own container:
 
-- **MCP Inspector's CLI** (`@modelcontextprotocol/inspector`): `tools/list`, `tools/call` (`run_query`, `describe_table`), a refused statement as a tool error, a wrong token failing to connect;
-- **the official Python SDK client** (`mcp`, `scripts/mcp-conformance/sdk_client.py`): a full session (initialize at 2025-11-25, `tools/list` with annotations, tool calls, a guard refusal, ping, close), and the transport as the SDK uses it. It records every HTTP exchange and checks that later requests carry `Mcp-Session-Id` and `MCP-Protocol-Version`, that closing ends the session with `DELETE` (204), and that the SDK's optional `GET` stream request gets 405.
+- **MCP Inspector's CLI** (`@modelcontextprotocol/inspector`): `tools/list`, `tools/call` (`run_query`, `describe_table`), a refused statement as a tool error, a wrong token failing to connect. The same calls run again with `--protocol-era modern`, which pins 2026-07-28 and does not fall back (against a server without it, the CLI fails with "the server did not offer pinned protocol version 2026-07-28 via server/discover"), and once with `--protocol-era auto`;
+- **the official Python SDK client** (`mcp`, `scripts/mcp-conformance/sdk_client.py`), in both eras. A full session (initialize at 2025-11-25, `tools/list` with annotations, tool calls, a guard refusal, ping, close), and the transport as the SDK uses it: it records every HTTP exchange and checks that later requests carry `Mcp-Session-Id` and `MCP-Protocol-Version`, that closing ends the session with `DELETE` (204), and that the SDK's optional `GET` stream request gets 405. Then 2026-07-28: `server/discover` (version, supported versions, cache hints, `serverInfo`), `tools/list`, tool calls and a guard refusal, checking on the wire that every request is a `POST` answered 200, carries the version in `_meta` and the header, `Mcp-Method` and (for `tools/call`) `Mcp-Name` matching the body, and that no session id is sent or issued.
 
 Both run in the `mcp-endpoint` CI job after the endpoint test.
 

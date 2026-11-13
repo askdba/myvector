@@ -1106,10 +1106,34 @@ void list_tools(Json &out) {
 
 // ----- Streamable HTTP: protocol versions and sessions --------------------------------------
 
-// The session-based protocol revisions (newest first), as mysql-mcp-server's default stateful
-// transport. 2026-07-28 (SEP-2575) is stateless and not served yet.
+// Two protocol eras share the endpoint (MCP 2026-07-28, "Versioning and Compatibility"):
+//   - the session-based revisions (initialize, then Mcp-Session-Id), as mysql-mcp-server's default
+//     stateful transport;
+//   - the stateless revision 2026-07-28 (SEP-2575): no handshake; every request carries its
+//     protocol version and client capabilities in _meta, mirrored in HTTP headers.
+// A request is in the stateless era when it carries _meta io.modelcontextprotocol/protocolVersion
+// or an MCP-Protocol-Version header of 2026-07-28 or later (versions are dates, so they compare
+// as strings). The component is stateless per call either way: each tool call runs in its own
+// impersonated session.
 constexpr const char *kProtocolVersions[] = {"2025-11-25", "2025-06-18", "2025-03-26",
                                              "2024-11-05"};
+constexpr const char kStatelessVersion[] = "2026-07-28";
+constexpr const char kServerName[] = "component_mcp";
+constexpr const char kServerVersion[] = "0.1.0";
+constexpr const char kMetaProtocolVersion[] = "io.modelcontextprotocol/protocolVersion";
+constexpr const char kMetaClientCapabilities[] = "io.modelcontextprotocol/clientCapabilities";
+constexpr const char kMetaClientInfo[] = "io.modelcontextprotocol/clientInfo";
+constexpr const char kMetaServerInfo[] = "io.modelcontextprotocol/serverInfo";
+// tools/list and server/discover results may be cached this long (ms). The tool list is the
+// same for every account, so the cache scope is public.
+constexpr int kListTtlMs = 3600000;
+
+// JSON-RPC error codes of MCP 2026-07-28.
+constexpr int kInvalidRequest = -32600;
+constexpr int kMethodNotFound = -32601;
+constexpr int kInvalidParams = -32602;
+constexpr int kHeaderMismatch = -32020;
+constexpr int kUnsupportedProtocolVersion = -32022;
 
 bool supported_version(const std::string &v) {
   for (const char *s : kProtocolVersions)
@@ -1117,10 +1141,32 @@ bool supported_version(const std::string &v) {
   return false;
 }
 
+bool stateless_version(const std::string &v) { return v >= kStatelessVersion; }
+
+// Every version served, newest first.
+std::vector<std::string> all_versions() {
+  std::vector<std::string> out{kStatelessVersion};
+  for (const char *s : kProtocolVersions) out.emplace_back(s);
+  return out;
+}
+
 std::string supported_versions() {
   std::string out;
-  for (const char *s : kProtocolVersions) out += (out.empty() ? "" : ", ") + std::string(s);
+  for (const std::string &s : all_versions()) out += (out.empty() ? "" : ", ") + s;
   return out;
+}
+
+rapidjson::Value versions_array(rapidjson::Document::AllocatorType &a) {
+  rapidjson::Value out(rapidjson::kArrayType);
+  for (const std::string &s : all_versions()) out.PushBack(rapidjson::Value(s.c_str(), a), a);
+  return out;
+}
+
+rapidjson::Value server_info(rapidjson::Document::AllocatorType &a) {
+  rapidjson::Value info(rapidjson::kObjectType);
+  info.AddMember("name", rapidjson::StringRef(kServerName), a);
+  info.AddMember("version", rapidjson::StringRef(kServerVersion), a);
+  return info;
 }
 
 // Mcp-Session-Id sessions: issued by initialize, bound to the token's account, expired after
@@ -1218,7 +1264,7 @@ bool json_content_type(const std::string *type) {
 void initialize(const rapidjson::Value &params, Json &out) {
   auto &a = out.GetAllocator();
   rapidjson::Value result(rapidjson::kObjectType), caps(rapidjson::kObjectType),
-      tools(rapidjson::kObjectType), info(rapidjson::kObjectType);
+      tools(rapidjson::kObjectType);
   // Version negotiation: the client's version when supported, else the newest supported.
   const std::string asked = params.IsObject() && params.HasMember("protocolVersion") &&
                                     params["protocolVersion"].IsString()
@@ -1228,18 +1274,52 @@ void initialize(const rapidjson::Value &params, Json &out) {
   result.AddMember("protocolVersion", rapidjson::Value(version.c_str(), a), a);
   caps.AddMember("tools", tools, a);
   result.AddMember("capabilities", caps, a);
-  info.AddMember("name", "component_mcp", a);
-  info.AddMember("version", "0.1.0", a);
-  result.AddMember("serverInfo", info, a);
+  result.AddMember("serverInfo", server_info(a), a);
   out.AddMember("result", result, a);
 }
 
-void rpc_error(Json &out, int code, const char *message) {
+void rpc_error(Json &out, int code, const std::string &message,
+               rapidjson::Value *data = nullptr) {
   auto &a = out.GetAllocator();
   rapidjson::Value err(rapidjson::kObjectType);
   err.AddMember("code", code, a);
-  err.AddMember("message", rapidjson::Value(message, a), a);
+  err.AddMember("message", rapidjson::Value(message.c_str(), a), a);
+  if (data != nullptr) err.AddMember("data", *data, a);
   out.AddMember("error", err, a);
+}
+
+// server/discover (2026-07-28): the versions, capabilities and identity, without a handshake.
+void discover(Json &out) {
+  auto &a = out.GetAllocator();
+  rapidjson::Value result(rapidjson::kObjectType), caps(rapidjson::kObjectType);
+  result.AddMember("supportedVersions", versions_array(a), a);
+  caps.AddMember("tools", rapidjson::Value(rapidjson::kObjectType), a);
+  result.AddMember("capabilities", caps, a);
+  out.AddMember("result", result, a);
+}
+
+// A stateless-era result: resultType "complete", the cache hints of list results, and the
+// server's identity in _meta (servers SHOULD identify themselves on every result).
+void stateless_result(Json &out, bool cacheable) {
+  if (!out.HasMember("result") || !out["result"].IsObject()) return;
+  auto &a = out.GetAllocator();
+  rapidjson::Value &result = out["result"];
+  result.AddMember("resultType", "complete", a);
+  if (cacheable) {
+    result.AddMember("ttlMs", kListTtlMs, a);
+    result.AddMember("cacheScope", "public", a);
+  }
+  rapidjson::Value meta(rapidjson::kObjectType);
+  meta.AddMember(rapidjson::StringRef(kMetaServerInfo), server_info(a), a);
+  result.AddMember("_meta", meta, a);
+}
+
+bool known_tool(const std::string &name) {
+  static const char *const kNames[] = {"list_databases", "list_tables", "describe_table",
+                                       "run_query",      "ping",        "server_info"};
+  for (const char *n : kNames)
+    if (name == n) return true;
+  return false;
 }
 
 class McpHandler : public http::base::RequestHandler {
@@ -1261,7 +1341,7 @@ class McpHandler : public http::base::RequestHandler {
       req.get_output_headers().add("Access-Control-Allow-Methods", "POST, DELETE");
       req.get_output_headers().add("Access-Control-Allow-Headers",
                                    "Authorization, Content-Type, Mcp-Session-Id, "
-                                   "MCP-Protocol-Version");
+                                   "MCP-Protocol-Version, Mcp-Method, Mcp-Name");
       req.get_output_headers().add("Access-Control-Max-Age", "600");
       req.send_reply(HttpStatusCode::NoContent);
       return;
@@ -1281,15 +1361,21 @@ class McpHandler : public http::base::RequestHandler {
       req.send_reply(HttpStatusCode::Unauthorized);
       return;
     }
-    // MCP-Protocol-Version, sent after initialize: must be a version this server negotiates.
-    if (const std::string *v = req.get_input_headers().find("MCP-Protocol-Version");
-        v != nullptr && !supported_version(*v)) {
+    // MCP-Protocol-Version: a session-era version must be one this server negotiates. A
+    // stateless-era version (2026-07-28 or later) is checked against the request's _meta below,
+    // where an unsupported one gets the JSON-RPC error that stateless clients expect.
+    const std::string *header_version = req.get_input_headers().find("MCP-Protocol-Version");
+    if (header_version != nullptr && !supported_version(*header_version) &&
+        !stateless_version(*header_version)) {
       plain(req, HttpStatusCode::BadRequest,
             "Bad Request: Unsupported protocol version (supported versions: " +
                 supported_versions() + ")");
       return;
     }
-    const std::string *session_id = req.get_input_headers().find("Mcp-Session-Id");
+    // The stateless era has no sessions: its requests' Mcp-Session-Id, if any, is ignored.
+    const bool stateless_header = header_version != nullptr && stateless_version(*header_version);
+    const std::string *session_id =
+        stateless_header && !is_delete ? nullptr : req.get_input_headers().find("Mcp-Session-Id");
     if (is_delete && session_id == nullptr) {
       plain(req, HttpStatusCode::BadRequest, "Bad Request: DELETE requires an Mcp-Session-Id header");
       return;
@@ -1335,6 +1421,14 @@ class McpHandler : public http::base::RequestHandler {
     }
     static const rapidjson::Value kNoParams(rapidjson::kObjectType);
     const rapidjson::Value &params = in.HasMember("params") ? in["params"] : kNoParams;
+    const rapidjson::Value *meta = params.IsObject() && params.HasMember("_meta") &&
+                                           params["_meta"].IsObject()
+                                       ? &params["_meta"]
+                                       : nullptr;
+    if (stateless_header || (meta != nullptr && meta->HasMember(kMetaProtocolVersion))) {
+      if (serve_stateless(req, in, method, params, meta, header_version, *account)) return;
+      // A session-era version in _meta, matching the header: served as that era (as the Go SDK).
+    }
     if (method == "initialize" && session_id == nullptr) {
       const std::string id = sessions.create(*account);
       if (!id.empty()) req.get_output_headers().add("Mcp-Session-Id", id.c_str());
@@ -1349,18 +1443,114 @@ class McpHandler : public http::base::RequestHandler {
       else if (method == "ping")
         out.AddMember("result", rapidjson::Value(rapidjson::kObjectType), out.GetAllocator());
       else
-        rpc_error(out, -32601, "method not found");
+        rpc_error(out, kMethodNotFound, "method not found");
     });
   }
 
  private:
+  // A request of the stateless era (MCP 2026-07-28): validates its _meta and the HTTP headers
+  // that mirror the body, then serves server/discover, tools/list and tools/call. Returns false,
+  // having replied nothing, when the request names a session-era version consistently in the
+  // header and _meta; the caller serves it as that era.
+  static bool serve_stateless(http::base::Request &req, const Json &in, const std::string &method,
+                              const rapidjson::Value &params, const rapidjson::Value *meta,
+                              const std::string *header_version, const std::string &account) {
+    const rapidjson::Value &id = in["id"];
+    const auto fail = [&](int status, int code, const std::string &message,
+                          rapidjson::Value *data = nullptr) {
+      reply(req, &id, [&](Json &out) { rpc_error(out, code, message, data); }, status);
+      return true;
+    };
+    const rapidjson::Value *meta_version =
+        meta != nullptr && meta->HasMember(kMetaProtocolVersion) ? &(*meta)[kMetaProtocolVersion]
+                                                                 : nullptr;
+    if (header_version == nullptr)
+      return fail(HttpStatusCode::BadRequest, kHeaderMismatch,
+                  std::string("MCP-Protocol-Version header is required for requests carrying _meta ") +
+                      kMetaProtocolVersion);
+    if (meta_version == nullptr || !meta_version->IsString())
+      return fail(HttpStatusCode::BadRequest, kInvalidParams,
+                  std::string("missing or invalid _meta field ") + kMetaProtocolVersion);
+    const std::string version(meta_version->GetString(), meta_version->GetStringLength());
+    if (version != *header_version)
+      return fail(HttpStatusCode::BadRequest, kHeaderMismatch,
+                  "MCP-Protocol-Version header '" + *header_version +
+                      "' does not match _meta " + kMetaProtocolVersion + " '" + version + "'");
+    if (supported_version(version)) return false;
+    if (version != kStatelessVersion) {
+      Json scratch;
+      auto &a = scratch.GetAllocator();
+      rapidjson::Value data(rapidjson::kObjectType);
+      data.AddMember("supported", versions_array(a), a);
+      data.AddMember("requested", rapidjson::Value(version.c_str(), a), a);
+      return fail(HttpStatusCode::BadRequest, kUnsupportedProtocolVersion,
+                  "protocol version '" + version + "' is not supported (supported versions: " +
+                      supported_versions() + ")",
+                  &data);
+    }
+    if (!id.IsString() && !id.IsInt64())
+      return fail(HttpStatusCode::BadRequest, kInvalidRequest,
+                  "the request id must be a string or an integer");
+    if (!meta->HasMember(kMetaClientCapabilities) || !(*meta)[kMetaClientCapabilities].IsObject())
+      return fail(HttpStatusCode::BadRequest, kInvalidParams,
+                  std::string("missing or invalid _meta field ") + kMetaClientCapabilities);
+    if (meta->HasMember(kMetaClientInfo)) {
+      const rapidjson::Value &info = (*meta)[kMetaClientInfo];
+      if (!info.IsObject() || !info.HasMember("name") || !info["name"].IsString() ||
+          !info.HasMember("version") || !info["version"].IsString())
+        return fail(HttpStatusCode::BadRequest, kInvalidParams,
+                    std::string("invalid _meta field ") + kMetaClientInfo);
+    }
+    // Mcp-Method mirrors the method on every request; Mcp-Name mirrors a tools/call's tool name.
+    const std::string *method_header = req.get_input_headers().find("Mcp-Method");
+    if (method_header == nullptr)
+      return fail(HttpStatusCode::BadRequest, kHeaderMismatch, "Mcp-Method header is required");
+    if (*method_header != method)
+      return fail(HttpStatusCode::BadRequest, kHeaderMismatch,
+                  "Mcp-Method header '" + *method_header + "' does not match the method '" +
+                      method + "'");
+    std::string tool;
+    if (method == "tools/call") {
+      if (!params.HasMember("name") || !params["name"].IsString())
+        return fail(HttpStatusCode::BadRequest, kInvalidParams, "tools/call needs a string name");
+      tool.assign(params["name"].GetString(), params["name"].GetStringLength());
+      const std::string *name_header = req.get_input_headers().find("Mcp-Name");
+      if (name_header == nullptr)
+        return fail(HttpStatusCode::BadRequest, kHeaderMismatch,
+                    "Mcp-Name header is required for tools/call");
+      if (*name_header != tool)
+        return fail(HttpStatusCode::BadRequest, kHeaderMismatch,
+                    "Mcp-Name header '" + *name_header + "' does not match the tool name '" +
+                        tool + "'");
+    }
+    // initialize and ping belong to the session era; every other method is unknown here.
+    if (method != "server/discover" && method != "tools/list" && method != "tools/call")
+      return fail(HttpStatusCode::NotFound, kMethodNotFound, "method not found: " + method);
+    reply(req, &id, [&](Json &out) {
+      if (method == "server/discover") {
+        discover(out);
+        stateless_result(out, true);
+      } else if (method == "tools/list") {
+        list_tools(out);
+        stateless_result(out, true);
+      } else if (!known_tool(tool)) {
+        rpc_error(out, kInvalidParams, "Unknown tool: " + tool);
+      } else {
+        call_tool(params, out, account);
+        stateless_result(out, false);
+      }
+    });
+    return true;
+  }
+
   static void plain(http::base::Request &req, int status, const std::string &text) {
     req.get_output_headers().add("Content-Type", "text/plain; charset=utf-8");
     req.send_reply(status, HttpStatusCode::get_default_status_text(status), text);
   }
 
   template <typename F>
-  static void reply(http::base::Request &req, const rapidjson::Value *id, F fill) {
+  static void reply(http::base::Request &req, const rapidjson::Value *id, F fill,
+                    int status = HttpStatusCode::Ok) {
     Json out(rapidjson::kObjectType);
     auto &a = out.GetAllocator();
     out.AddMember("jsonrpc", "2.0", a);
@@ -1369,7 +1559,7 @@ class McpHandler : public http::base::RequestHandler {
     out.AddMember("id", idv, a);
     fill(out);
     req.get_output_headers().add("Content-Type", "application/json");
-    req.send_reply(HttpStatusCode::Ok, "OK", to_string(out));
+    req.send_reply(status, HttpStatusCode::get_default_status_text(status), to_string(out));
   }
 };
 
