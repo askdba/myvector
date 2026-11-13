@@ -285,9 +285,9 @@ def main():
         srv.sql("SET SESSION sql_log_bin = 0; INSERT INTO myvector.index_meta "
                 "(index_name, name_sha256, state, format_version, generation, ckpt_seq, "
                 "ckpt_chunks, header, header_crc32, metric, dim, vec_chunk_nodes, "
-                "lnk_chunk_nodes, ckpt_gtids, writer_uuid, ckpt_time, node_count) VALUES "
-                "('vtest.T.V', UNHEX(SHA2('vtest.T.V', 256)), 'active', 1, 41, 1, 0, '', 0, "
-                "'L2', 8, 0, 0, '', @@server_uuid, NOW(6), 0);", db=None)
+                "lnk_chunk_nodes, ckpt_gtids, writer_uuid, ckpt_time, node_count, update_ts) "
+                "VALUES ('vtest.T.V', UNHEX(SHA2('vtest.T.V', 256)), 'active', 1, 41, 1, 0, "
+                "'', 0, 'L2', 8, 0, 0, '', @@server_uuid, NOW(6), 0, 0);", db=None)
         o1 = build(srv, idx)[1]
         rows = srv.sql("SELECT index_name, generation FROM myvector.index_meta WHERE "
                        "index_name IN ('vtest.T.V', 'vtest.t.v') ORDER BY index_name;",
