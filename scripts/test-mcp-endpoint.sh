@@ -224,9 +224,9 @@ expect "initialize keeps a supported version (2025-11-25)" "$init" '"protocolVer
 expect "initialize answers an unsupported version with the newest supported" "$(req tok-123 POST "${J[@]}" -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}')" '"protocolVersion":"2025-11-25"'
 expect "initialize keeps 2024-11-05" "$(req tok-123 POST "${J[@]}" -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}')" '"protocolVersion":"2024-11-05"'
 expect "a call in the session" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $SID" -H 'MCP-Protocol-Version: 2025-11-25' -d "$CALL")" 'one\\":\\"1\\".*"isError":false'
-badver=$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $SID" -H 'MCP-Protocol-Version: 2026-07-28' -d "$CALL")
+badver=$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $SID" -H 'MCP-Protocol-Version: 1999-01-01' -d "$CALL")
 expect "an unsupported MCP-Protocol-Version: 400" "$(printf '%s\n' "$badver" | head -1)" "^HTTP/1.1 400"
-expect "the 400 lists the supported versions" "$(printf '%s\n' "$badver" | tail -1)" '^Bad Request: Unsupported protocol version \(supported versions: 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05\)$'
+expect "the 400 is JSON-RPC -32022 listing the supported versions (no id: the body is not read)" "$(printf '%s\n' "$badver" | tail -1)" '^\{"jsonrpc":"2.0","error":\{"code":-32022,"message":"Unsupported protocol version \(supported versions: 2026-07-28, 2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05\)","data":\{"supported":\["2026-07-28","2025-11-25","2025-06-18","2025-03-26","2024-11-05"\],"requested":"1999-01-01"\}\}\}$'
 expect "an unknown session: 404" "$(req tok-123 POST "${J[@]}" -H 'Mcp-Session-Id: 00000000000000000000000000000000' -d "$CALL" | head -1)" "^HTTP/1.1 404"
 expect "another account's token on the session: 403" "$(req tbl-app POST "${J[@]}" -H "Mcp-Session-Id: $SID" -d "$CALL" | head -1)" "^HTTP/1.1 403"
 expect "a request without a session id is still served" "$(req tok-123 POST "${J[@]}" -d "$CALL")" '"isError":false'
@@ -240,6 +240,46 @@ expect "Accept without text/event-stream: 400" "$(req tok-123 POST -H 'Content-T
 expect "Accept wildcards are accepted" "$(req tok-123 POST -H 'Content-Type: application/json; charset=utf-8' -H 'Accept: application/*;q=0.9, text/*' -d "$CALL")" '"isError":false'
 expect "GET (no SSE stream): 405, Allow: POST, DELETE" "$(req tok-123 GET -H 'Accept: text/event-stream' | grep -iE '^HTTP|^allow' | tr '\n' ' ')" "^HTTP/1.1 405.*[Aa]llow: POST, DELETE"
 expect "session timeout default" "$(sql "SELECT @@mcp_http.session_timeout_minutes")" "^30$"
+
+# The stateless revision 2026-07-28 (SEP-2575), on the same endpoint: no handshake or session;
+# every request carries its version and client capabilities in _meta, and the MCP-Protocol-Version,
+# Mcp-Method and Mcp-Name headers mirror the body.
+# sl METHOD PARAMS [curl args...]: one stateless-era request with the usual headers and _meta.
+META='"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"test","version":"1"}}'
+sl() { m=$1; p=$2; shift 2; req tok-123 POST "${J[@]}" -H 'MCP-Protocol-Version: 2026-07-28' -H "Mcp-Method: $m" "$@" \
+	-d "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"$m\",\"params\":{$META${p:+,$p}}}"; }
+SLQ='"name":"run_query","arguments":{"sql":"SELECT 1 AS one"}'
+disc=$(sl server/discover '')
+expect "server/discover: 200, without an Mcp-Session-Id" "$(printf '%s\n' "$disc" | grep -ciE '^HTTP/1.1 200|^mcp-session-id' | tr -d ' ')" "^1$"
+expect "server/discover: every supported version, newest first" "$disc" '"supportedVersions":\["2026-07-28","2025-11-25","2025-06-18","2025-03-26","2024-11-05"\],"capabilities":\{"tools":\{\}\}'
+expect "server/discover: resultType, cache hints, serverInfo in _meta" "$disc" '"resultType":"complete","ttlMs":3600000,"cacheScope":"public","_meta":\{"io.modelcontextprotocol/serverInfo":\{"name":"component_mcp","version":"[^"]+"\}\}'
+expect "tools/list: the six tools, with cache hints" "$(sl tools/list '' | tail -1 | grep -o '"name":"[a-z_]*"\|"ttlMs":[0-9]*\|"cacheScope":"[a-z]*"' | tr '\n' ' ')" '^"name":"list_databases" "name":"list_tables" "name":"describe_table" "name":"run_query" "name":"ping" "name":"server_info" "ttlMs":3600000 "cacheScope":"public" "name":"component_mcp" $'
+slcall=$(sl tools/call "$SLQ" -H 'Mcp-Name: run_query')
+expect "tools/call: served, resultType complete" "$slcall" 'one\\":\\"1\\".*"isError":false,"resultType":"complete","_meta":\{"io.modelcontextprotocol/serverInfo"'
+expect "tools/call: no ttlMs on a call result, no Mcp-Session-Id" "$(printf '%s\n' "$slcall" | grep -ciE 'ttlMs|^mcp-session-id' | tr -d ' ')" "^0$"
+expect "tools/call: the guard still applies" "$(sl tools/call '"name":"run_query","arguments":{"sql":"INSERT INTO d1.t VALUES (9)"}' -H 'Mcp-Name: run_query')" '"isError":true,"resultType":"complete"'
+expect "an Mcp-Session-Id is ignored, not looked up" "$(sl tools/call "$SLQ" -H 'Mcp-Name: run_query' -H 'Mcp-Session-Id: 00000000000000000000000000000000' | head -1)" "^HTTP/1.1 200"
+expect "an unknown tool: -32602" "$(sl tools/call '"name":"nope","arguments":{}' -H 'Mcp-Name: nope')" '"error":\{"code":-32602,"message":"Unknown tool: nope"\}'
+expect "ping is not a 2026-07-28 method: 404, -32601" "$(sl ping '' | sed -n '1p;$p' | tr '\n' ' ')" '^HTTP/1.1 404.*"code":-32601'
+expect "neither is initialize: 404, -32601" "$(sl initialize '' | sed -n '1p;$p' | tr '\n' ' ')" '^HTTP/1.1 404.*"code":-32601'
+expect "no MCP-Protocol-Version header: 400, -32020" "$(req tok-123 POST "${J[@]}" -H 'Mcp-Method: tools/list' -d "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\",\"params\":{$META}}" | sed -n '1p;$p' | tr '\n' ' ')" '^HTTP/1.1 400.*"id":7,"error":\{"code":-32020'
+expect "a 2026-07-28 header without _meta: 400, -32602" "$(req tok-123 POST "${J[@]}" -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/list' -d '{"jsonrpc":"2.0","id":7,"method":"tools/list"}' | sed -n '1p;$p' | tr '\n' ' ')" '^HTTP/1.1 400.*"code":-32602,"message":"missing or invalid _meta field io.modelcontextprotocol/protocolVersion"'
+expect "header and _meta versions differ: 400, -32020" "$(req tok-123 POST "${J[@]}" -H 'MCP-Protocol-Version: 2025-11-25' -H 'Mcp-Method: tools/list' -d "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\",\"params\":{$META}}" | sed -n '1p;$p' | tr '\n' ' ')" '^HTTP/1.1 400.*"code":-32020'
+expect "an unsupported newer version: 400, -32022 naming the supported ones, before the body" "$(req tok-123 POST "${J[@]}" -H 'MCP-Protocol-Version: 2099-01-01' -H 'Mcp-Method: server/discover' -d '{"jsonrpc":"2.0","id":7,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2099-01-01","io.modelcontextprotocol/clientCapabilities":{}}}}' | sed -n '1p;$p' | tr '\n' ' ')" '^HTTP/1.1 400.*"code":-32022,.*"data":\{"supported":\["2026-07-28","2025-11-25","2025-06-18","2025-03-26","2024-11-05"\],"requested":"2099-01-01"\}'
+expect "no clientCapabilities: 400, -32602" "$(req tok-123 POST "${J[@]}" -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/list' -d '{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}' | sed -n '1p;$p' | tr '\n' ' ')" '^HTTP/1.1 400.*"code":-32602,"message":"missing or invalid _meta field io.modelcontextprotocol/clientCapabilities"'
+expect "a malformed clientInfo: 400, -32602" "$(req tok-123 POST "${J[@]}" -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/list' -d '{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":"x"}}}' | sed -n '1p;$p' | tr '\n' ' ')" '^HTTP/1.1 400.*"code":-32602'
+expect "no Mcp-Method header: 400, -32020" "$(req tok-123 POST "${J[@]}" -H 'MCP-Protocol-Version: 2026-07-28' -d "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\",\"params\":{$META}}" | sed -n '1p;$p' | tr '\n' ' ')" '^HTTP/1.1 400.*"code":-32020,"message":"Mcp-Method header is required"'
+expect "Mcp-Method differs from the method: 400, -32020" "$(sl tools/list '' -H 'Mcp-Method: tools/call' | sed -n '1p;$p' | tr '\n' ' ')" '^HTTP/1.1 400.*"code":-32020'
+expect "tools/call without Mcp-Name: 400, -32020" "$(sl tools/call "$SLQ" | sed -n '1p;$p' | tr '\n' ' ')" '^HTTP/1.1 400.*"code":-32020,"message":"Mcp-Name header is required for tools/call"'
+expect "Mcp-Name differs from the tool: 400, -32020" "$(sl tools/call "$SLQ" -H 'Mcp-Name: ping' | sed -n '1p;$p' | tr '\n' ' ')" '^HTTP/1.1 400.*"code":-32020'
+expect "jsonrpc other than 2.0: 400, -32600" "$(req tok-123 POST "${J[@]}" -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/call' -H 'Mcp-Name: run_query' -d "{\"jsonrpc\":\"1.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{$META,$SLQ}}" | sed -n '1p;$p' | tr '\n' ' ')" '^HTTP/1.1 400.*"code":-32600,"message":"jsonrpc must be \\"2.0\\""'
+SID2=$(req tok-123 POST "${J[@]}" -d "$INIT" | awk -F': ' 'tolower($1) == "mcp-session-id" {print $2}')
+expect "a stateless DELETE: 405" "$(req tok-123 DELETE -H 'MCP-Protocol-Version: 2026-07-28' -H "Mcp-Session-Id: $SID2" | head -1)" "^HTTP/1.1 405"
+expect "... and the session-era session it named is untouched" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $SID2" -d "$CALL" | head -1)" "^HTTP/1.1 200"
+expect "a null request id: 400, -32600" "$(req tok-123 POST "${J[@]}" -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/list' -d "{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"tools/list\",\"params\":{$META}}" | sed -n '1p;$p' | tr '\n' ' ')" '^HTTP/1.1 400.*"code":-32600'
+expect "a stateless request needs the token: 401" "$(req nope POST "${J[@]}" -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/list' -d "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/list\",\"params\":{$META}}" | head -1)" "^HTTP/1.1 401"
+expect "a notification with the 2026-07-28 header: 202" "$(req tok-123 POST "${J[@]}" -H 'MCP-Protocol-Version: 2026-07-28' -d '{"jsonrpc":"2.0","method":"notifications/cancelled"}' | head -1)" "^HTTP/1.1 202"
+expect "a session-era version in _meta and the header is served as that era" "$(req tok-123 POST "${J[@]}" -H 'MCP-Protocol-Version: 2025-11-25' -d '{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2025-11-25"}}}' | tail -1)" '^\{"jsonrpc":"2.0","id":7,"result":\{"tools":.*\]\}\}$'
 
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).
 sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null

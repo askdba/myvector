@@ -5,6 +5,8 @@
 #   1. MCP Inspector's CLI (@modelcontextprotocol/inspector, Node);
 #   2. the official Python SDK client (mcp), scripts/mcp-conformance/sdk_client.py, which also
 #      checks the transport: session id and version headers, DELETE on close.
+# Each client runs in both protocol eras: the session-based revisions (up to 2025-11-25) and the
+# stateless revision 2026-07-28 (Inspector: --protocol-era modern, which does not fall back).
 # Client versions are pinned below; each runs in its own container sharing the server's
 # loopback (the endpoint listens on 127.0.0.1).
 #
@@ -51,6 +53,12 @@ expect "inspector: tools/call run_query" "$(inspector "$TOKEN" --method tools/ca
 expect "inspector: tools/call describe_table" "$(inspector "$TOKEN" --method tools/call --tool-name describe_table --tool-arg database=d1 --tool-arg table=t | tr '\n' ' ')" 'COLUMN_NAME\\":\\"i\\".*"isError": false.*rc=0'
 expect "inspector: a refused statement is a tool error" "$(inspector "$TOKEN" --method tools/call --tool-name run_query --tool-arg 'sql=INSERT INTO d1.t VALUES (2)' | tr '\n' ' ')" 'mcp.read_only.*"isError": true'
 expect "inspector: a wrong token fails to connect" "$(inspector wrong-token --method tools/list | tail -1)" '^rc=[1-9]'
+echo "-- client 1: MCP Inspector CLI, stateless revision 2026-07-28 (--protocol-era modern)"
+expect "inspector 2026-07-28: tools/list" "$(inspector "$TOKEN" --protocol-era modern --method tools/list | grep -o '"name": "[a-z_]*"' | tr '\n' ' ')" '"name": "list_databases" "name": "list_tables" "name": "describe_table" "name": "run_query" "name": "ping" "name": "server_info"'
+expect "inspector 2026-07-28: tools/call run_query" "$(inspector "$TOKEN" --protocol-era modern --method tools/call --tool-name run_query --tool-arg 'sql=SELECT i FROM d1.t' | tr '\n' ' ')" '"text": "\{\\"rows\\":\[\{\\"i\\":\\"1\\"\}\],\\"truncated\\":false\}".*"isError": false.*rc=0'
+expect "inspector 2026-07-28: a refused statement is a tool error" "$(inspector "$TOKEN" --protocol-era modern --method tools/call --tool-name run_query --tool-arg 'sql=INSERT INTO d1.t VALUES (2)' | tr '\n' ' ')" 'mcp.read_only.*"isError": true'
+expect "inspector --protocol-era auto: tools/call list_tables" "$(inspector "$TOKEN" --protocol-era auto --method tools/call --tool-name list_tables --tool-arg database=d1 | tr '\n' ' ')" 'TABLE_NAME\\":\\"t\\".*"isError": false.*rc=0'
+expect "inspector 2026-07-28: a wrong token fails" "$(inspector wrong-token --protocol-era modern --method tools/list | tail -1)" '^rc=[1-9]'
 
 echo "-- client 2: Python SDK ($PY_SDK)"
 sdk_out=$(docker run --rm --network "container:$C" -v "$REPO/scripts/mcp-conformance:/conf:ro" "$PY_IMAGE" \
