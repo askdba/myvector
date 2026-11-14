@@ -320,6 +320,8 @@ In MCP 2026-07-28 (SEP-2575) there is no handshake and no session: every request
 
 Each `tools/call` opens a `"local"` command-service session that **impersonates** the account the bearer token maps to (`mcp_http.account` for the `mcp_http.token_sha256` token, the row's `account` for a table token), with no password, on one of the endpoint's I/O threads. It runs one statement for the tool: `CALL mysql_mcp.list_databases()`, `CALL mysql_mcp.list_tables(...)`, `CALL mysql_mcp.describe_table(...)`, the `run_query` SQL, `SELECT 1` for `ping`, or the server information `SELECT` for `server_info`, then closes the session. Neither `CLIENT_MULTI_STATEMENTS` nor anything similar is set, so `a; b` is a parse error.
 
+**Long error messages.** The command service's backend in MySQL 26.10.0 copies a statement's error message into a 256-byte buffer, while server messages run to 512 bytes. A statement with a long error message (`SELECT 1 LIMIT <250-character name>`, error 1327) overflowed it, and glibc's fortify check aborted `mysqld`. The endpoint's consumer error service therefore hands that copy at most 255 bytes; the full message still reaches the reply.
+
 The guard enforces its policy on these sessions only because of two things, both checked by `scripts/test-mcp-endpoint.sh`:
 
 - The endpoint emits `MYSQL_AUDIT_CONNECTION_CONNECT` for each session. The server starts such sessions **unaudited**, so without this event no statement event would reach the guard.

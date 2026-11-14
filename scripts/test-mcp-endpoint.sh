@@ -281,6 +281,12 @@ expect "70 initializes issue 70 session ids" "$(printf '%s\n' "$many" | grep -c 
 expect "the account's oldest sessions were replaced (404)" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $FIRST" -d "$CALL" | head -1)" "^HTTP/1.1 404"
 expect "its newest session works" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $LAST" -d "$CALL" | head -1)" "^HTTP/1.1 200"
 expect "another account's session survives them" "$(req tbl-app POST "${J[@]}" -H "Mcp-Session-Id: $OTHER" -d "$CALL" | head -1)" "^HTTP/1.1 200"
+# A statement whose error message is longer than 255 bytes: the command service backend copies
+# the message into a 256-byte buffer (MySQL 26.10.0), which aborted mysqld before the endpoint's
+# error service capped what it hands over. The full message still comes back.
+LONGNAME=$(printf '%0250d' 0 | tr 0 a)
+expect "a 300-byte error message comes back in full" "$(call run_query "{\"sql\":\"SELECT 1 LIMIT $LONGNAME\"}")" "Error 1327: Undeclared variable: $LONGNAME\".*\"isError\":true"
+expect "... and mysqld is still up" "$(alive)" "^up$"
 expect "session timeout default" "$(sql "SELECT @@mcp_http.session_timeout_minutes")" "^30$"
 
 # The stateless revision 2026-07-28 (SEP-2575), on the same endpoint: no handshake or session;

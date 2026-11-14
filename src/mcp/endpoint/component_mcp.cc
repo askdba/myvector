@@ -109,6 +109,7 @@ REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_decimal_v1, dom_get_deci
 REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_double_v1, dom_get_double);
 REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_date_time_v1, dom_get_date_time);
 REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_get_string_v1, dom_get_string);
+REQUIRES_SERVICE_PLACEHOLDER_AS(mysql_text_consumer_error_v1, dom_error);
 
 // Defined by Router's harness (its component log handler); set at init.
 extern SERVICE_TYPE(log_builtins) *log_bi;
@@ -462,6 +463,43 @@ DEFINE_BOOL_METHOD(bounded_end_row, (SRV_CTX_H ctx)) {
   return dom_row_factory->end_row(ctx);
 }
 
+// The error service, delegating to the server's, except that error() hands back at most
+// kServerErrorCopyMax bytes. The command service's backend (csi_advanced_command, MySQL 26.10.0)
+// strcpy()s that message into a 256-byte stack buffer, while server messages run to 512 bytes:
+// a statement with a long error message, such as "SELECT 1 LIMIT <250-character name>" (error
+// 1327, Undeclared variable), overflowed it and glibc's fortify check aborted mysqld. The full
+// message still reaches the caller: the backend stores the server's diagnostic on the handle
+// (mysql_command_error_info) before it copies this one.
+constexpr size_t kServerErrorCopyMax = 255;
+
+DEFINE_METHOD(void, safe_handle_ok,
+              (SRV_CTX_H ctx, unsigned int server_status, unsigned int warn_count,
+               unsigned long long affected_rows, unsigned long long last_insert_id,
+               const char *const message)) {
+  dom_error->handle_ok(ctx, server_status, warn_count, affected_rows, last_insert_id, message);
+}
+
+DEFINE_METHOD(void, safe_handle_error,
+              (SRV_CTX_H ctx, unsigned int sql_errno, const char *const err_msg,
+               const char *const sqlstate)) {
+  dom_error->handle_error(ctx, sql_errno, err_msg, sqlstate);
+}
+
+DEFINE_BOOL_METHOD(safe_error, (SRV_CTX_H ctx, unsigned int *err_num, const char **error_msg)) {
+  if (dom_error->error(ctx, err_num, error_msg)) return true;
+  if (error_msg != nullptr && *error_msg != nullptr &&
+      std::strlen(*error_msg) > kServerErrorCopyMax) {
+    thread_local char copy[kServerErrorCopyMax + 1];
+    size_t n = kServerErrorCopyMax;
+    // Cut at a character boundary (UTF-8 continuation bytes are 10xxxxxx).
+    while (n > 0 && (static_cast<unsigned char>((*error_msg)[n]) & 0xC0) == 0x80) --n;
+    std::memcpy(copy, *error_msg, n);
+    copy[n] = '\0';
+    *error_msg = copy;
+  }
+  return false;
+}
+
 DEFINE_BOOL_METHOD(bounded_get_null, (SRV_CTX_H ctx)) {
   return skip_value(0) ? false : dom_get_null->get(ctx);
 }
@@ -512,6 +550,7 @@ constexpr std::pair<int, const char *> kBoundedConsumer[] = {
     {MYSQL_TEXT_CONSUMER_GET_DOUBLE, "mysql_text_consumer_get_double_v1.mcp"},
     {MYSQL_TEXT_CONSUMER_GET_DATE_TIME, "mysql_text_consumer_get_date_time_v1.mcp"},
     {MYSQL_TEXT_CONSUMER_GET_STRING, "mysql_text_consumer_get_string_v1.mcp"},
+    {MYSQL_TEXT_CONSUMER_ERROR, "mysql_text_consumer_error_v1.mcp"},
 };
 
 // Sets tl_budget for the calling thread while a statement runs.
@@ -1784,6 +1823,8 @@ BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_date_time_v1)
 bounded_get_date, bounded_get_time, bounded_get_datetime END_SERVICE_IMPLEMENTATION();
 BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_get_string_v1)
 bounded_get_string END_SERVICE_IMPLEMENTATION();
+BEGIN_SERVICE_IMPLEMENTATION(mcp, mysql_text_consumer_error_v1)
+safe_handle_ok, safe_handle_error, safe_error END_SERVICE_IMPLEMENTATION();
 
 BEGIN_COMPONENT_PROVIDES(mcp)
 PROVIDES_SERVICE(mcp, mysql_text_consumer_row_factory_v1),
@@ -1793,7 +1834,8 @@ PROVIDES_SERVICE(mcp, mysql_text_consumer_row_factory_v1),
     PROVIDES_SERVICE(mcp, mysql_text_consumer_get_decimal_v1),
     PROVIDES_SERVICE(mcp, mysql_text_consumer_get_double_v1),
     PROVIDES_SERVICE(mcp, mysql_text_consumer_get_date_time_v1),
-    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_string_v1), END_COMPONENT_PROVIDES();
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_get_string_v1),
+    PROVIDES_SERVICE(mcp, mysql_text_consumer_error_v1), END_COMPONENT_PROVIDES();
 
 BEGIN_COMPONENT_REQUIRES(mcp)
 REQUIRES_SERVICE(log_builtins), REQUIRES_SERVICE(log_builtins_string),
@@ -1823,6 +1865,7 @@ REQUIRES_SERVICE(log_builtins), REQUIRES_SERVICE(log_builtins_string),
                                        dom_get_date_time),
     REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_get_string_v1, mysql_server,
                                        dom_get_string),
+    REQUIRES_SERVICE_IMPLEMENTATION_AS(mysql_text_consumer_error_v1, mysql_server, dom_error),
     END_COMPONENT_REQUIRES();
 
 BEGIN_COMPONENT_METADATA(mcp)
