@@ -208,6 +208,14 @@ expect "a token mapped to root is refused (SUPER)" "$(callas tbl-root run_query 
 expect "a token mapped to a SYSTEM_USER account is refused" "$(callas tbl-sysu run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*\(it has SYSTEM_USER\).*"isError":true'
 expect "a token mapped to an MCP_ADMIN account is refused" "$(callas tbl-adm run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*\(it has MCP_ADMIN\).*"isError":true'
 expect "nothing written by table tokens" "$(sql "SELECT GROUP_CONCAT(i) FROM d1.t")" "^1$"
+# The token lookup's statement text is fixed: no token hash reaches the general log (or the
+# processlist and performance_schema), valid or not.
+sql "SET GLOBAL log_output = 'TABLE'; TRUNCATE mysql.general_log; SET GLOBAL general_log = ON"
+callas tbl-app run_query '{"sql":"SELECT 1"}' >/dev/null; callas no-such-token run_query '{"sql":"SELECT 1"}' >/dev/null
+sql "SET GLOBAL general_log = OFF"
+expect "the lookup ran (the general log has it)" "$(sql "SELECT COUNT(*) FROM mysql.general_log WHERE argument LIKE '%mcp_tokens%'")" "^[1-9]"
+expect "no token hash in the general log" "$(sql "SELECT COUNT(*) FROM mysql.general_log WHERE argument LIKE '%$(h tbl-app)%' OR argument LIKE '%$(h no-such-token)%'")" "^0$"
+sql "TRUNCATE mysql.general_log; SET GLOBAL log_output = 'FILE'"
 
 # Streamable HTTP (MCP transport spec): protocol version negotiation and header, Mcp-Session-Id
 # sessions bound to the token's account, DELETE, and the request header checks.

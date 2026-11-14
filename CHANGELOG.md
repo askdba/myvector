@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **`component_mcp`: token hashes stay out of logged SQL** (found by the security review for RFC 0001 §10, [#256](https://github.com/askdba/myvector/issues/256)). The token-table lookup put the presented token's hash in its statement text, so it reached the general log (when enabled), the processlist and performance_schema statement history, whose readers need not have access to `mysql.mcp_tokens`. A hash there allows an offline guess of a weak token. The lookup now runs fixed text, reads the unexpired rows, and compares the hash in the endpoint in constant time. `scripts/test-mcp-endpoint.sh` checks the general log for the hashes of a valid and an unknown token (both appeared before).
+
 ### Changed
 - **`component_mcp_guard` no longer subscribes to command events on 9.0+** ([#256](https://github.com/askdba/myvector/issues/256), RFC 0001 §10 guard overhead). They were used only to notice `COM_RESET_CONNECTION` in MCP sessions, but every client's commands paid for the dispatch: about 1% of the instructions of a point select. On 9.0 and later the guard reads the MCP session's `max_execution_time` at each of its statements instead (`mysql_system_variable_reader`) and restores the limit when it is 0 or above it; 8.4, which has no such reader, keeps command events. `scripts/test-mcp-guard.sh` now resets an MCP session with `COM_RESET_CONNECTION` (Python connector) and checks that the limit comes back, on 8.4, 9.7 and 26.10.
 

@@ -678,7 +678,10 @@ void read_error(MYSQL_H h, SqlResult *r) {
 constexpr char kTokenReaderUser[] = "mysql.mcp", kTokenReaderHost[] = "localhost";
 
 // The account (user@host) a token hash maps to in mysql.mcp_tokens, if any and not expired.
-// hash is the endpoint's own hex SHA-256, so it is safe in the statement text.
+// The statement text is fixed and the hash is compared here, in constant time: a hash in the
+// text would reach the general log, the processlist and performance_schema statement history,
+// where readers without access to the table could take it for an offline guess of a weak token.
+// Every unexpired row is read, which is fine for the tokens an administrator issues.
 std::optional<std::string> table_token_account(const std::string &hash) {
   MYSQL_H h = nullptr;
   if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) return std::nullopt;
@@ -690,18 +693,23 @@ std::optional<std::string> table_token_account(const std::string &hash) {
       !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_BYPASS_MAX_CONNECTIONS,
                                                 &kBypassMaxConnections) &&
       !mysql_service_mysql_command_factory->connect(h)) {
-    const std::string sql =
-        "SELECT account FROM mysql.mcp_tokens WHERE token_sha256 = '" + hash +
-        "' AND (expires_at IS NULL OR expires_at > NOW())";
+    static constexpr char kSql[] =
+        "SELECT token_sha256, account FROM mysql.mcp_tokens "
+        "WHERE expires_at IS NULL OR expires_at > NOW()";
     MYSQL_RES_H res = nullptr;
-    MYSQL_ROW_H row = nullptr;
-    ulong *lengths = nullptr;
-    if (!mysql_service_mysql_command_query->query(h, sql.data(), sql.size()) &&
+    if (!mysql_service_mysql_command_query->query(h, kSql, sizeof(kSql) - 1) &&
         !mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr) {
-      if (!mysql_service_mysql_command_query_result->fetch_row(res, &row) && row != nullptr &&
-          row[0] != nullptr &&
-          !mysql_service_mysql_command_query_result->fetch_lengths(res, &lengths) && lengths)
-        account.emplace(row[0], lengths[0]);
+      MYSQL_ROW_H row = nullptr;
+      ulong *lengths = nullptr;
+      while (!account &&
+             !mysql_service_mysql_command_query_result->fetch_row(res, &row) && row != nullptr) {
+        if (row[0] == nullptr || row[1] == nullptr ||
+            mysql_service_mysql_command_query_result->fetch_lengths(res, &lengths) ||
+            lengths == nullptr || lengths[0] != hash.size())
+          continue;
+        if (CRYPTO_memcmp(row[0], hash.data(), hash.size()) == 0)
+          account.emplace(row[1], lengths[1]);
+      }
       mysql_service_mysql_command_query_result->free_result(res);
     }
   }
