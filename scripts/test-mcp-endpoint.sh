@@ -235,6 +235,13 @@ sql "SET GLOBAL general_log = OFF"
 reads=$(sql "SELECT COUNT(*) FROM mysql.general_log WHERE argument LIKE '%mcp_tokens%'")
 expect "50 unknown tokens in ${burst}s read the token table at most once a second ($reads reads)" "$(( reads <= burst + 1 ))" "^1$"
 sql "TRUNCATE mysql.general_log; SET GLOBAL log_output = 'FILE'"
+# A token runs only as its exact account: when the mapped user@host does not exist, a wider
+# entry (here ghost@'%', without MCP_USER, so unrestricted by the guard) must not stand in for it.
+sql "CREATE USER ghost@'%'; GRANT SELECT ON *.* TO ghost@'%';
+INSERT INTO mysql.mcp_tokens (token_sha256, account) VALUES ('$(h tbl-ghost)', 'ghost@localhost'), ('$(h tbl-ghostcase)', 'ghost@%')"
+sleep 1.2  # the token table snapshot is read again once it is a second old
+expect "a token mapped to a missing account is refused, not run as a wider one (1045)" "$(callas tbl-ghost run_query '{"sql":"SELECT CURRENT_USER() AS cu FROM mysql.user LIMIT 1"}')" 'Error 1045: Access denied for user '"'"'ghost'"'"'@'"'"'localhost'"'"': the account does not exist[^"]*".*"isError":true'
+expect "... and the same token on the existing account runs" "$(callas tbl-ghostcase run_query '{"sql":"SELECT CURRENT_USER() AS cu"}')" 'cu\\":\\"ghost@%\\".*"isError":false'
 
 # Streamable HTTP (MCP transport spec): protocol version negotiation and header, Mcp-Session-Id
 # sessions bound to the token's account, DELETE, and the request header checks.
