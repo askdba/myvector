@@ -671,6 +671,29 @@ void read_error(MYSQL_H h, SqlResult *r) {
   r->error = msg != nullptr ? msg : "";
 }
 
+// Whether the session's privileges come from exactly the account user@host. An impersonated
+// session is matched against the grant tables like a login, so when user@host does not exist a
+// wider entry such as user@'%' can match instead, with other grants and possibly without
+// MCP_USER (then the guard does not restrict it). User names compare exactly, host names
+// case-insensitively, as the grant tables do. Fails closed on an unreadable context.
+bool session_is_account(MYSQL_THD thd, const std::string &user, const std::string &host) {
+  Security_context_handle sctx = nullptr;
+  MYSQL_LEX_CSTRING priv_user{nullptr, 0}, priv_host{nullptr, 0};
+  if (thd == nullptr || mysql_service_mysql_thd_security_context->get(thd, &sctx) ||
+      sctx == nullptr ||
+      mysql_service_mysql_security_context_options->get(sctx, "priv_user", &priv_user) ||
+      mysql_service_mysql_security_context_options->get(sctx, "priv_host", &priv_host) ||
+      priv_user.str == nullptr || priv_host.str == nullptr)
+    return false;
+  if (std::string(priv_user.str, priv_user.length) != user || priv_host.length != host.size())
+    return false;
+  for (size_t i = 0; i < host.size(); ++i)
+    if (std::tolower(static_cast<unsigned char>(priv_host.str[i])) !=
+        std::tolower(static_cast<unsigned char>(host[i])))
+      return false;
+  return true;
+}
+
 // The token table, mysql.mcp_tokens (src/mcp/endpoint/mcp_tokens.sql): token hashes mapped to
 // accounts, optionally expiring. The endpoint reads it in a session impersonating the locked
 // account mysql.mcp@localhost, whose only grant is SELECT on that table; MCP sessions cannot read
@@ -689,7 +712,8 @@ std::optional<std::string> table_token_account(const std::string &hash) {
       !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_HOST_NAME, kTokenReaderHost) &&
       !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_BYPASS_MAX_CONNECTIONS,
                                                 &kBypassMaxConnections) &&
-      !mysql_service_mysql_command_factory->connect(h)) {
+      !mysql_service_mysql_command_factory->connect(h) &&
+      session_is_account(session_thd(h), kTokenReaderUser, kTokenReaderHost)) {
     const std::string sql =
         "SELECT account FROM mysql.mcp_tokens WHERE token_sha256 = '" + hash +
         "' AND (expires_at IS NULL OR expires_at > NOW())";
@@ -879,6 +903,10 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
     };
     if (thd == nullptr) {
       r.error = "session refused";
+    } else if (!session_is_account(thd, user, host)) {
+      r.sql_errno = ER_ACCESS_DENIED_ERROR;
+      r.error = "Access denied for user '" + user + "'@'" + host +
+                "': the account does not exist, so the MCP endpoint does not run as it";
     } else if (account_locked(thd)) {
       r.sql_errno = ER_ACCOUNT_HAS_BEEN_LOCKED;
       r.error = "Access denied for user '" + user + "'@'" + host + "'. Account is locked.";

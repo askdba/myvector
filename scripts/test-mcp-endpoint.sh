@@ -208,6 +208,12 @@ expect "a token mapped to root is refused (SUPER)" "$(callas tbl-root run_query 
 expect "a token mapped to a SYSTEM_USER account is refused" "$(callas tbl-sysu run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*\(it has SYSTEM_USER\).*"isError":true'
 expect "a token mapped to an MCP_ADMIN account is refused" "$(callas tbl-adm run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*\(it has MCP_ADMIN\).*"isError":true'
 expect "nothing written by table tokens" "$(sql "SELECT GROUP_CONCAT(i) FROM d1.t")" "^1$"
+# A token runs only as its exact account: when the mapped user@host does not exist, a wider
+# entry (here ghost@'%', without MCP_USER, so unrestricted by the guard) must not stand in for it.
+sql "CREATE USER ghost@'%'; GRANT SELECT ON *.* TO ghost@'%';
+INSERT INTO mysql.mcp_tokens (token_sha256, account) VALUES ('$(h tbl-ghost)', 'ghost@localhost'), ('$(h tbl-ghostcase)', 'ghost@%')"
+expect "a token mapped to a missing account is refused, not run as a wider one (1045)" "$(callas tbl-ghost run_query '{"sql":"SELECT CURRENT_USER() AS cu FROM mysql.user LIMIT 1"}')" 'Error 1045: Access denied for user '"'"'ghost'"'"'@'"'"'localhost'"'"': the account does not exist[^"]*".*"isError":true'
+expect "... and the same token on the existing account runs" "$(callas tbl-ghostcase run_query '{"sql":"SELECT CURRENT_USER() AS cu"}')" 'cu\\":\\"ghost@%\\".*"isError":false'
 
 # Streamable HTTP (MCP transport spec): protocol version negotiation and header, Mcp-Session-Id
 # sessions bound to the token's account, DELETE, and the request header checks.

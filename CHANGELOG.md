@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **`component_mcp`: a token runs only as its exact account** (found by the security review for RFC 0001 §10, [#256](https://github.com/askdba/myvector/issues/256)). Impersonated sessions are matched against the grant tables like a login. So a token mapped to an account that does not exist, such as a dropped `app@localhost`, ran as a wider existing entry such as `app@'%'`, with that account's grants. If that account lacked `MCP_USER`, the guard did not restrict it either; reproduced on 26.10.0 by reading `mysql.user`. The endpoint now checks the session's `priv_user` and `priv_host` against the mapped account and refuses a mismatch with error 1045, for tool calls and for the token-table reader. `scripts/test-mcp-endpoint.sh` checks both cases.
+
 ### Changed
 - **`component_mcp_guard` no longer subscribes to command events on 9.0+** ([#256](https://github.com/askdba/myvector/issues/256), RFC 0001 §10 guard overhead). They were used only to notice `COM_RESET_CONNECTION` in MCP sessions, but every client's commands paid for the dispatch: about 1% of the instructions of a point select. On 9.0 and later the guard reads the MCP session's `max_execution_time` at each of its statements instead (`mysql_system_variable_reader`) and restores the limit when it is 0 or above it; 8.4, which has no such reader, keeps command events. `scripts/test-mcp-guard.sh` now resets an MCP session with `COM_RESET_CONNECTION` (Python connector) and checks that the limit comes back, on 8.4, 9.7 and 26.10.
 
