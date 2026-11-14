@@ -976,31 +976,50 @@ class Watchdog {
       else
         cv_.wait_until(lock, next);
       if (stopping_) break;
-      std::vector<Entry> due;
+      std::vector<std::pair<uint64_t, Entry>> due;
       const auto now = Clock::now();
       for (auto &[ticket, e] : entries_)
         if (!e.killed && e.deadline <= now) {
-          e.killed = true;
-          due.push_back(e);
+          e.killed = true;  // claimed; cleared again below if the KILL fails
+          due.emplace_back(ticket, e);
         }
       lock.unlock();
-      for (const Entry &e : due) kill_query(e);
+      std::vector<uint64_t> failed;
+      for (const auto &[ticket, e] : due)
+        if (!kill_query(e)) failed.push_back(ticket);
       lock.lock();
+      // A KILL that could not be sent (no session, say) is retried a second later, so one
+      // transient failure cannot leave the statement holding its I/O thread.
+      for (const uint64_t ticket : failed)
+        if (auto it = entries_.find(ticket); it != entries_.end()) {
+          it->second.killed = false;
+          it->second.deadline = Clock::now() + std::chrono::seconds(1);
+        }
     }
     lock.unlock();
     mysql_service_mysql_command_thread->end();
   }
 
-  static void kill_query(const Entry &e) {
+  // True if the KILL ran (or found the statement already gone: error 1094, unknown thread).
+  static bool kill_query(const Entry &e) {
     MYSQL_H h = nullptr;
-    if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) return;
+    if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) return false;
     const std::string sql = "KILL QUERY " + std::to_string(e.connection_id);
+    bool done = false;
     if (!mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_PROTOCOL, "local") &&
         !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_USER_NAME, e.user.c_str()) &&
         !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_HOST_NAME, e.host.c_str()) &&
-        !mysql_service_mysql_command_factory->connect(h))
-      mysql_service_mysql_command_query->query(h, sql.data(), sql.size());
+        !mysql_service_mysql_command_factory->connect(h)) {
+      if (!mysql_service_mysql_command_query->query(h, sql.data(), sql.size())) {
+        done = true;
+      } else {
+        unsigned int err = 0;
+        mysql_service_mysql_command_error_info->sql_errno(h, &err);
+        done = err == ER_NO_SUCH_THREAD;
+      }
+    }
     mysql_service_mysql_command_factory->close(h);
+    return done;
   }
 
   std::mutex mutex_;
