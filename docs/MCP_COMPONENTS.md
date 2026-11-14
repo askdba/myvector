@@ -23,7 +23,7 @@ GRANT MCP_USER  ON *.* TO 'mcp'@'%';          -- the account mysql-mcp-server us
 GRANT EXECUTE   ON mysql_mcp.* TO 'mcp'@'%';  -- if the SQL tool pack is installed
 ```
 
-The guard requires `component_reference_cache` (loaded by the server at startup from `plugin_dir`, part of every MySQL package): event tracking reaches components through it, so without it the guard would load but see no statements. It fails closed instead: `INSTALL COMPONENT` fails with error 3534 ("Cannot satisfy dependency for service 'reference_caching_channel'"), and `component_mcp`, which requires the guard, cannot be installed either.
+The guard requires `component_reference_cache` (loaded by the server at startup from `plugin_dir`, part of every MySQL package): event tracking reaches components through it, so without it the guard would load but see no statements. It fails closed instead: `INSTALL COMPONENT` fails with error 3534 ("Cannot satisfy dependency for service 'reference_caching_channel'"), and `component_mcp`, which requires the guard, cannot be installed either. At a restart, the server's persisted-component loader logs a component that fails to load and starts anyway, so if the cache is missing then, the guard is not loaded: `component_mcp` is not either, but plain logins of `MCP_USER` accounts are then governed by their grants alone. Grant MCP accounts only what they may do without the guard, and check `SELECT * FROM performance_schema.component_mcp_guard`-style status (`SHOW STATUS LIKE 'mcp.%'`) after restarts.
 
 `UNINSTALL COMPONENT 'file://component_mcp_guard'` removes the privileges, variables and status variables. Grants of `MCP_USER` and `MCP_ADMIN` stay in the grant tables until revoked.
 
