@@ -194,6 +194,10 @@ expect "another table token, another account" "$(callas tbl-app run_query '{"sql
 expect "the mapped account's policy applies (guard, MCP_USER)" "$(callas tbl-mcp run_query '{"sql":"INSERT INTO d1.t VALUES (5)"}')" 'Error 1290: [^"]*mcp.read_only.*"isError":true'
 expect "an expired token gets 401" "$(callas tbl-old run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
 expect "an unknown token gets 401" "$(callas tbl-none run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
+# A global sql_select_limit does not cap the token snapshot (new sessions inherit it).
+sql "SET GLOBAL sql_select_limit = 1"; sleep 1.2
+expect "with sql_select_limit = 1, both table tokens still authenticate" "$(callas tbl-mcp run_query '{"sql":"SELECT 1"}' | tail -1) $(callas tbl-app run_query '{"sql":"SELECT 1"}' | tail -1)" "^200 200$"
+sql "SET GLOBAL sql_select_limit = DEFAULT"
 expect "the single token still maps to mcp_http.account" "$(call run_query '{"sql":"SELECT CURRENT_USER() AS who"}')" 'who\\":\\"mcp@%\\"'
 expect "MCP sessions cannot read the token table" "$(callas tbl-mcp run_query '{"sql":"SELECT COUNT(*) FROM mysql.mcp_tokens"}')" 'Error 1290: [^"]*mcp.deny_system_schemas.*"isError":true'
 expect "nobody can log in as the reader account, not even with its old password" "$(docker exec "$C" mysql -umysql.mcp -pguess -N -e 'SELECT 1' 2>&1 | grep -v 'Using a password')" "ERROR (1045|3118)"

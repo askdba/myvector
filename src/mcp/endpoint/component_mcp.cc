@@ -698,7 +698,8 @@ bool load_token_rows(TokenRows *rows) {
       !mysql_service_mysql_command_factory->connect(h)) {
     static constexpr char kSql[] =
         "SELECT token_sha256, account FROM mysql.mcp_tokens "
-        "WHERE expires_at IS NULL OR expires_at > NOW()";
+        "WHERE expires_at IS NULL OR expires_at > NOW() "
+        "LIMIT 18446744073709551615";  // explicit: a global sql_select_limit must not drop tokens
     MYSQL_RES_H res = nullptr;
     if (!mysql_service_mysql_command_query->query(h, kSql, sizeof(kSql) - 1) &&
         !mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr) {
