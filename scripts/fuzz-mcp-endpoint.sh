@@ -121,6 +121,8 @@ if [ "$(docker inspect -f '{{.State.Running}}' "$C")" = true ]; then
   sql -e 'SHUTDOWN' >/dev/null 2>&1
   rc=$(timeout 600 docker wait "$C" || echo timeout)
   [ "$rc" = 0 ] || fail "unclean shutdown (exit $rc)"
+else
+  fail "mysqld not running after the run (exit code $(docker inspect -f '{{.State.ExitCode}}' "$C" 2>/dev/null))"
 fi
 if ls "$OUT"/asan.* >/dev/null 2>&1; then
   fail "AddressSanitizer reports: $(ls "$OUT"/asan.* | tr '\n' ' ')"

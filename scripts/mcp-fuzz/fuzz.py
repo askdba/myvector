@@ -349,6 +349,8 @@ def http_worker(seed, sessions):
         except (OSError, ValueError) as e:
             count("http:conn-error:" + type(e).__name__)
             time.sleep(0.01)
+        except Exception as e:  # noqa: BLE001
+            violation("worker-exception", f"http: {e!r}")
 
 
 def raw_abuse(r):
@@ -434,6 +436,8 @@ def sql_worker(seed):
         except (OSError, ValueError) as e:
             count("sql:conn-error:" + type(e).__name__)
             time.sleep(0.01)
+        except Exception as e:  # noqa: BLE001 - an unexpected reply shape must not end the worker
+            violation("worker-exception", f"sql: {e!r}")
 
 
 stall_raises = {}  # thread id -> True: rpc() raises Stalled on a missing response
@@ -514,6 +518,8 @@ def soak_worker(seed):
         except (OSError, ValueError) as e:
             count("soak:conn-error:" + type(e).__name__)
             time.sleep(0.05)
+        except Exception as e:  # noqa: BLE001
+            violation("worker-exception", f"soak: {e!r}")
 
 
 def plain_worker(seed):

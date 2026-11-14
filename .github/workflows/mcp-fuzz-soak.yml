@@ -49,7 +49,9 @@ jobs:
           SHARDS: ${{ inputs.shards }}
           MINUTES: ${{ inputs.minutes }}
         run: |
-          case "$SHARDS$MINUTES" in *[!0-9]*) echo "::error::shards and minutes must be numbers"; exit 1 ;; esac
+          for v in "$SHARDS" "$MINUTES"; do
+            case "$v" in ''|*[!0-9]*|0*) echo "::error::shards and minutes must be positive decimal numbers"; exit 1 ;; esac
+          done
           if [ "$SHARDS" -lt 1 ] || [ "$SHARDS" -gt 20 ]; then echo "::error::shards must be 1 to 20"; exit 1; fi
           if [ "$MINUTES" -lt 1 ] || [ "$MINUTES" -gt 330 ]; then echo "::error::minutes must be 1 to 330"; exit 1; fi
           echo "list=$(seq -s, 1 "$SHARDS" | sed 's/^/[/; s/$/]/')" >>"$GITHUB_OUTPUT"
