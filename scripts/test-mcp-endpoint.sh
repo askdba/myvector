@@ -188,26 +188,53 @@ expect "no account can proxy as the reader (DROP USER leaves proxy grants)" "$(s
 sql "INSERT INTO mysql.mcp_tokens (token_sha256, account, expires_at, comment) VALUES
   ('$(h tbl-mcp)', 'mcp@%', NULL, 'test'), ('$(h tbl-app)', 'app@%', NOW() + INTERVAL 1 DAY, 'test'),
   ('$(h tbl-old)', 'mcp@%', NOW() - INTERVAL 1 SECOND, 'expired')"
+sleep 1.2  # requests share a snapshot of the token table, read again once it is a second old
 expect "a table token runs as its account" "$(callas tbl-mcp run_query '{"sql":"SELECT CURRENT_USER() AS who"}')" 'who\\":\\"mcp@%\\".*"isError":false'
 expect "another table token, another account" "$(callas tbl-app run_query '{"sql":"SELECT CURRENT_USER() AS who"}')" 'who\\":\\"app@%\\".*"isError":false'
 expect "the mapped account's policy applies (guard, MCP_USER)" "$(callas tbl-mcp run_query '{"sql":"INSERT INTO d1.t VALUES (5)"}')" 'Error 1290: [^"]*mcp.read_only.*"isError":true'
 expect "an expired token gets 401" "$(callas tbl-old run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
 expect "an unknown token gets 401" "$(callas tbl-none run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
+# A global sql_select_limit does not cap the token snapshot (new sessions inherit it).
+sql "SET GLOBAL sql_select_limit = 1"; sleep 1.2
+expect "with sql_select_limit = 1, both table tokens still authenticate" "$(callas tbl-mcp run_query '{"sql":"SELECT 1"}' | tail -1) $(callas tbl-app run_query '{"sql":"SELECT 1"}' | tail -1)" "^200 200$"
+sql "SET GLOBAL sql_select_limit = DEFAULT"
 expect "the single token still maps to mcp_http.account" "$(call run_query '{"sql":"SELECT CURRENT_USER() AS who"}')" 'who\\":\\"mcp@%\\"'
 expect "MCP sessions cannot read the token table" "$(callas tbl-mcp run_query '{"sql":"SELECT COUNT(*) FROM mysql.mcp_tokens"}')" 'Error 1290: [^"]*mcp.deny_system_schemas.*"isError":true'
 expect "nobody can log in as the reader account, not even with its old password" "$(docker exec "$C" mysql -umysql.mcp -pguess -N -e 'SELECT 1' 2>&1 | grep -v 'Using a password')" "ERROR (1045|3118)"
 sql "DELETE FROM mysql.mcp_tokens WHERE token_sha256 = '$(h tbl-mcp)'"
-expect "a deleted token gets 401 on the next request" "$(callas tbl-mcp run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
+sleep 1.2
+expect "a deleted token gets 401 within a second" "$(callas tbl-mcp run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
 # RFC 0001 §7.4: a token never runs as an account with SUPER, SYSTEM_USER or MCP_ADMIN, whatever
 # maps it (checked on every call; these accounts would not be restricted by the guard).
 sql "CREATE USER sysu@'%'; GRANT SELECT, INSERT ON d1.* TO sysu@'%'; GRANT SYSTEM_USER ON *.* TO sysu@'%';
 CREATE USER adm@'%'; GRANT SELECT, INSERT ON d1.* TO adm@'%'; GRANT MCP_ADMIN ON *.* TO adm@'%';
 INSERT INTO mysql.mcp_tokens (token_sha256, account) VALUES
   ('$(h tbl-root)', 'root@%'), ('$(h tbl-sysu)', 'sysu@%'), ('$(h tbl-adm)', 'adm@%')"
+sleep 1.2
 expect "a token mapped to root is refused (SUPER)" "$(callas tbl-root run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*does not run as an account with SUPER, SYSTEM_USER or MCP_ADMIN \(it has SUPER\).*"isError":true'
 expect "a token mapped to a SYSTEM_USER account is refused" "$(callas tbl-sysu run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*\(it has SYSTEM_USER\).*"isError":true'
 expect "a token mapped to an MCP_ADMIN account is refused" "$(callas tbl-adm run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*\(it has MCP_ADMIN\).*"isError":true'
 expect "nothing written by table tokens" "$(sql "SELECT GROUP_CONCAT(i) FROM d1.t")" "^1$"
+# The token lookup's statement text is fixed: no token hash reaches the general log (or the
+# processlist and performance_schema), valid or not.
+sql "SET GLOBAL log_output = 'TABLE'; TRUNCATE mysql.general_log; SET GLOBAL general_log = ON"
+sleep 1.2  # so the next request reads the table again
+callas tbl-app run_query '{"sql":"SELECT 1"}' >/dev/null; callas no-such-token run_query '{"sql":"SELECT 1"}' >/dev/null
+sql "SET GLOBAL general_log = OFF"
+expect "the lookup ran (the general log has it)" "$(sql "SELECT COUNT(*) FROM mysql.general_log WHERE argument LIKE '%mcp_tokens%'")" "^[1-9]"
+expect "no token hash in the general log" "$(sql "SELECT COUNT(*) FROM mysql.general_log WHERE argument LIKE '%$(h tbl-app)%' OR argument LIKE '%$(h no-such-token)%'")" "^0$"
+# Unknown tokens cost at most one read of the table per second, however many arrive.
+sql "TRUNCATE mysql.general_log; SET GLOBAL general_log = ON"
+burst=$(docker run --rm --network "container:$C" --entrypoint sh "$CURL_IMAGE" -c '
+	start=$(date +%s); i=0
+	while [ $i -lt 50 ]; do
+		curl -s -o /dev/null -m 10 -X POST http://127.0.0.1:33480/mcp -H "Authorization: Bearer guess-$i" \
+			-H "Content-Type: application/json" -d "{}"; i=$((i + 1))
+	done; echo $(( $(date +%s) - start + 1 ))')
+sql "SET GLOBAL general_log = OFF"
+reads=$(sql "SELECT COUNT(*) FROM mysql.general_log WHERE argument LIKE '%mcp_tokens%'")
+expect "50 unknown tokens in ${burst}s read the token table at most once a second ($reads reads)" "$(( reads <= burst + 1 ))" "^1$"
+sql "TRUNCATE mysql.general_log; SET GLOBAL log_output = 'FILE'"
 
 # Streamable HTTP (MCP transport spec): protocol version negotiation and header, Mcp-Session-Id
 # sessions bound to the token's account, DELETE, and the request header checks.
