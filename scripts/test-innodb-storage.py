@@ -370,17 +370,24 @@ def main():
         q2 = ["myvector_construct('[" + ",".join(f"{rnd2.uniform(-1, 1):.4f}"
               for _ in range(d2)) + "]')" for _ in range(30)]
 
+        ef_errors = []
+
         def run_ef():
-            return [run(srv, f"SELECT myvector_ann_set('vtest.ef.v','id',{q},'nn=10');")[1]
-                    for q in q2]
+            out = []
+            for q in q2:
+                rc, o, e = run(srv, f"SELECT myvector_ann_set('vtest.ef.v','id',{q},'nn=10');")
+                if rc != 0 or not o.startswith("[") or o == "[]":
+                    ef_errors.append(f"rc={rc} out={o[:40]!r} err={e[:80]!r}")
+                out.append(o)
+            return out
         o1 = build(srv, "vtest.ef.v")[1]
         before = run_ef()
         o2 = load(srv, "vtest.ef.v")[1]
         after = run_ef()
         diff = sum(a != b for a, b in zip(before, after))
         record("12. same results after a reload on data where ef matters",
-               o1.startswith("SUCCESS") and o2 == "SUCCESS" and diff == 0,
-               f"{diff} of {len(q2)} queries differ")
+               o1.startswith("SUCCESS") and o2 == "SUCCESS" and not ef_errors and diff == 0,
+               f"{diff} of {len(q2)} queries differ; failed searches: {ef_errors[:2]}")
 
         # --- 10. innodb_page_size = 4096 ---------------------------------
         srv4 = start_server(args.image, f"myv-innodb4k-{os.getpid()}",
