@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **`component_mcp`: one account can no longer evict other accounts' sessions** (found by the security review for RFC 0001 §10, [#256](https://github.com/askdba/myvector/issues/256)). The `Mcp-Session-Id` table (4096 entries) dropped its least recently used session when full. Repeated `initialize` calls from one token could therefore end every other account's sessions (their next request got 404). Each account now keeps at most 64 sessions, a new one replacing that account's own least recently used. When the table is full of other accounts' live sessions, `initialize` gets 503. `scripts/test-mcp-endpoint.sh` checks 70 sessions of one account against another account's session.
+
 ### Changed
 - **`component_mcp_guard` no longer subscribes to command events on 9.0+** ([#256](https://github.com/askdba/myvector/issues/256), RFC 0001 §10 guard overhead). They were used only to notice `COM_RESET_CONNECTION` in MCP sessions, but every client's commands paid for the dispatch: about 1% of the instructions of a point select. On 9.0 and later the guard reads the MCP session's `max_execution_time` at each of its statements instead (`mysql_system_variable_reader`) and restores the limit when it is 0 or above it; 8.4, which has no such reader, keeps command events. `scripts/test-mcp-guard.sh` now resets an MCP session with `COM_RESET_CONNECTION` (Python connector) and checks that the limit comes back, on 8.4, 9.7 and 26.10.
 
