@@ -65,3 +65,4 @@ docs/ISSUE_*_CLOSE_COMMENT.md
 
 # MySQL server source trees cloned by scripts/build-component-*-docker.sh
 /mysql-server-mysql-*/
+/mysql-asan/

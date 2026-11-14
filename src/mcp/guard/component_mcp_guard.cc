@@ -45,6 +45,7 @@
 #include <mysql/components/services/mysql_system_variable.h>
 #include <mysql/components/services/mysql_thd_store_service.h>
 #include <mysql/components/services/pfs_plugin_table_service.h>
+#include <mysql/components/services/reference_caching.h>
 #include <mysql/components/services/security_context.h>
 #include "mysql_version.h"
 // From 9.0 the session's max_execution_time can be read (mysql_system_variable_reader), so a
@@ -76,6 +77,11 @@
 
 REQUIRES_SERVICE_PLACEHOLDER(dynamic_privilege_register);
 REQUIRES_SERVICE_PLACEHOLDER(global_grants_check);
+// Unused, required so the guard fails closed: the server delivers event tracking to components
+// through component_reference_cache, and without it the guard would load but see no statements
+// (an MCP_USER session would run unguarded). With this requirement INSTALL COMPONENT fails
+// instead, and so does component_mcp, which requires the guard.
+REQUIRES_SERVICE_PLACEHOLDER(reference_caching_channel);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_current_thread_reader);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_thd_security_context);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_thd_store);
@@ -1095,6 +1101,7 @@ PROVIDES_SERVICE_EVENT_TRACKING_COMMAND(mcp_guard),
 
 BEGIN_COMPONENT_REQUIRES(mcp_guard)
 REQUIRES_SERVICE(dynamic_privilege_register), REQUIRES_SERVICE(global_grants_check),
+    REQUIRES_SERVICE(reference_caching_channel),
     REQUIRES_SERVICE(mysql_current_thread_reader), REQUIRES_SERVICE(mysql_thd_security_context),
     REQUIRES_SERVICE(mysql_thd_store), REQUIRES_SERVICE(component_sys_variable_register),
     REQUIRES_SERVICE(component_sys_variable_unregister),

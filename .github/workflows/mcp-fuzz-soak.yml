@@ -1,0 +1,147 @@
+name: MCP fuzz and ASAN soak
+
+# RFC 0001 §10 go/no-go: "zero mysqld crashes over 72h of fuzzing plus a soak test under ASAN".
+#
+# One job builds an AddressSanitizer MySQL 26.10 server with component_mcp and
+# component_mcp_guard (scripts/build-mcp-asan-26.10-docker.sh, amd64). Then `shards` jobs run in
+# parallel, each a fresh server fuzzed and soaked for `minutes` with its own seed
+# (scripts/fuzz-mcp-endpoint.sh). GitHub-hosted jobs stop at 6 hours, so the 72 hours are the sum
+# of the shards' fuzzing time: the defaults, 14 shards of 330 minutes, give 77 hours. The
+# summary job adds them up and fails if any shard found a crash, a sanitizer report or an
+# invariant violation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: "Parallel fuzzing jobs (each a fresh ASAN server)"
+        default: "14"
+      minutes:
+        description: "Fuzzing minutes per job (at most 330: jobs stop at 6 hours)"
+        default: "330"
+      mysql-tag:
+        description: "MySQL source tag"
+        default: "mysql-26.10.0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-fuzz-soak
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build ASAN server
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    outputs:
+      shards: ${{ steps.shards.outputs.list }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Shard list
+        id: shards
+        env:
+          SHARDS: ${{ inputs.shards }}
+          MINUTES: ${{ inputs.minutes }}
+        run: |
+          case "$SHARDS$MINUTES" in *[!0-9]*) echo "::error::shards and minutes must be numbers"; exit 1 ;; esac
+          if [ "$SHARDS" -lt 1 ] || [ "$SHARDS" -gt 20 ]; then echo "::error::shards must be 1 to 20"; exit 1; fi
+          if [ "$MINUTES" -lt 1 ] || [ "$MINUTES" -gt 330 ]; then echo "::error::minutes must be 1 to 330"; exit 1; fi
+          echo "list=$(seq -s, 1 "$SHARDS" | sed 's/^/[/; s/$/]/')" >>"$GITHUB_OUTPUT"
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Build
+        env:
+          MYSQL_TAG: ${{ inputs.mysql-tag }}
+        run: |
+          scripts/build-mcp-asan-26.10-docker.sh "$MYSQL_TAG" dist/mcp-asan
+          ls -la dist/mcp-asan
+
+      - name: Upload server
+        uses: actions/upload-artifact@v4
+        with:
+          name: mysql-asan
+          path: dist/mcp-asan/mysql-asan.tar.gz
+          retention-days: 7
+
+  fuzz:
+    name: fuzz shard ${{ matrix.shard }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.build.outputs.shards) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download server
+        uses: actions/download-artifact@v4
+        with:
+          name: mysql-asan
+          path: dist
+
+      - name: Fuzz and soak
+        env:
+          MINUTES: ${{ inputs.minutes }}
+          SHARD: ${{ matrix.shard }}
+          RUN: ${{ github.run_id }}
+        run: |
+          scripts/fuzz-mcp-endpoint.sh dist/mysql-asan.tar.gz "$((MINUTES * 60))" "out/shard-$SHARD" "$((RUN % 100000 * 100 + SHARD))"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-shard-${{ matrix.shard }}
+          path: out/
+          retention-days: 30
+
+  summary:
+    name: summary
+    needs: fuzz
+    if: always() && needs.fuzz.result != 'skipped'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fuzz-shard-*
+          path: results
+          merge-multiple: true
+
+      - name: Summarize
+        env:
+          FUZZ_RESULT: ${{ needs.fuzz.result }}
+        run: |
+          python3 - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob, json, os
+          rows, total, bad = [], 0, 0
+          for d in sorted(glob.glob("results/shard-*"), key=lambda p: int(p.rsplit("-", 1)[1])):
+              verdict = open(f"{d}/verdict.txt").read().strip() if os.path.exists(f"{d}/verdict.txt") else "no verdict"
+              s = json.load(open(f"{d}/summary.json")) if os.path.exists(f"{d}/summary.json") else {}
+              secs = s.get("seconds", 0)
+              reqs = sum(v for k, v in s.get("stats", {}).items() if not k.startswith("violation"))
+              ok = "PASS:" in verdict and "FAIL" not in verdict
+              total += secs if ok else 0
+              bad += not ok
+              rows.append(f"| {d.rsplit('/', 1)[1]} | {'pass' if ok else '**FAIL**'} | {secs / 3600:.2f} | {reqs} | {len(s.get('violations', []))} | {verdict.splitlines()[-1] if verdict else ''} |")
+          print("## MCP fuzz and ASAN soak\n")
+          print(f"**{total / 3600:.1f} hours** of fuzzing without a crash, sanitizer report or invariant violation; **{bad}** shard(s) failed.\n")
+          print("| Shard | Result | Hours | Requests | Violations | Verdict |\n|---|---|---|---|---|---|")
+          print("\n".join(rows))
+          EOF
+          [ "$FUZZ_RESULT" = success ]
