@@ -1099,6 +1099,13 @@ bool HNSWMemoryIndex::loadIndex(const string& path, bool requireSaved) {
     if (!m_alg_hnsw) {
         return false;
     } else {
+        /* The loader leaves hnswlib's default search effort (ef = 10). Apply
+         * the index's own, as initGraph() does for a new graph: without this a
+         * loaded index searched with ef 10 whatever its ef / ef_search option
+         * said, until it was rebuilt (#291). */
+        dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw)
+            ->setEf(m_ef_search);
+
         string binlogFile;
         size_t binlogPosition = 0;
         size_t ts = 0;
