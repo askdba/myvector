@@ -1325,6 +1325,35 @@ bool accepts_json_and_stream(const std::string *accept) {
   return json && stream;
 }
 
+// The deepest JSON nesting a request may have. rapidjson parses, copies, serializes and frees
+// nested values recursively, so unbounded nesting overflows the I/O thread's stack (a body of
+// half a million '[' crashed mysqld). MCP requests need a handful of levels.
+constexpr int kMaxJsonDepth = 64;
+
+// Whether the body's arrays and objects nest at most kMaxJsonDepth deep, counted over the whole
+// text (brackets inside strings excluded), before rapidjson sees it.
+bool json_depth_ok(const std::string &body) {
+  int depth = 0;
+  bool in_string = false, escaped = false;
+  for (const char c : body) {
+    if (in_string) {
+      if (escaped)
+        escaped = false;
+      else if (c == '\\')
+        escaped = true;
+      else if (c == '"')
+        in_string = false;
+    } else if (c == '"') {
+      in_string = true;
+    } else if (c == '[' || c == '{') {
+      if (++depth > kMaxJsonDepth) return false;
+    } else if (c == ']' || c == '}') {
+      --depth;
+    }
+  }
+  return true;
+}
+
 bool json_content_type(const std::string *type) {
   if (type == nullptr) return false;
   std::string t = type->substr(0, type->find(';'));
@@ -1499,8 +1528,13 @@ class McpHandler : public http::base::RequestHandler {
             "Accept must contain both 'application/json' and 'text/event-stream'");
       return;
     }
+    const std::string &body = req.get_input_body();
+    if (!json_depth_ok(body)) {
+      reply(req, nullptr, [](Json &out) { rpc_error(out, -32700, "parse error: JSON nested too deeply"); });
+      return;
+    }
     Json in;
-    in.Parse(req.get_input_body().c_str());
+    in.Parse(body.c_str());
     if (in.HasParseError() || !in.IsObject() || !in.HasMember("method") ||
         !in["method"].IsString()) {
       reply(req, nullptr, [](Json &out) { rpc_error(out, -32700, "parse error"); });
