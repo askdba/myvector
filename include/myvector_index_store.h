@@ -56,7 +56,11 @@ public:
         std::function<void()> finish;
     };
 
-    enum class LoadStatus { Ok, NotSaved, Failed };
+    /* Ok; NotSaved: no active stored index; Failed: the stored index is
+     * invalid (bad CRC, header, links...); Unavailable: it could not be read
+     * (no session, an SQL error, a lock timeout), which says nothing about the
+     * stored data. */
+    enum class LoadStatus { Ok, NotSaved, Failed, Unavailable };
 
     /* "" if this server can hold storage=innodb indexes, otherwise why not
      * (GTID mode off, read_only or super_read_only on: RFC-005 D11, D13). */

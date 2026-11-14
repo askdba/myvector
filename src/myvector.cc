@@ -1317,8 +1317,9 @@ bool HNSWMemoryIndex::saveToStore() {
 /* loadFromStore - read the stored graph into a new graph object, and only on
  * success put it in place of the current one. m_graphLock held exclusively.
  * Same outcomes as the file loader (RFC-005 Phase 0): no saved index with
- * requireSaved keeps the current graph; without it starts empty; a failed load
- * leaves the index with no graph. */
+ * requireSaved keeps the current graph; without it starts empty; invalid
+ * stored data leaves the index with no graph. Storage that can't be read at all
+ * keeps the current graph. */
 bool HNSWMemoryIndex::loadFromStore(bool requireSaved) {
     setStorageError("");
     IndexStore* st = myvector_index_store();
@@ -1352,6 +1353,7 @@ bool HNSWMemoryIndex::loadFromStore(bool requireSaved) {
         delete m_space;
         m_alg_hnsw = fresh;
         m_space = space;
+        fresh->setEf(m_ef_search);  // as initGraph() does: the ef_search option
         m_graphFailed = false;
         m_n_rows = fresh->getCurrentElementCount() - fresh->getDeletedCount();
         setUpdateTs(stored_ts);  // the refresh watermark saved with this graph
@@ -1373,6 +1375,14 @@ bool HNSWMemoryIndex::loadFromStore(bool requireSaved) {
         m_alg_hnsw = nullptr;
         m_space = nullptr;
         return initGraph();
+    }
+    if (status == IndexStore::LoadStatus::Unavailable) {
+        /* The stored index could not be read; that says nothing about it, so
+         * the graph in memory (if any) stays. */
+        setStorageError("storage could not be read, the index in memory is unchanged: " +
+                        err);
+        MYVEC_LOG_ERROR("Index %s: %s", m_name.c_str(), storageError().c_str());
+        return false;
     }
     setStorageError(err);
     MYVEC_LOG_ERROR("Error loading hnsw index (%s) from InnoDB: %s", m_name.c_str(),

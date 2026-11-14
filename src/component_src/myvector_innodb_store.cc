@@ -337,9 +337,14 @@ bool delete_batched(Session& s, const std::string& table, const std::string& whe
 }
 
 bool session_setup(Session& s, std::string* err) {
+    /* Lock waits are bounded: the caller's own session may hold a lock on a
+     * myvector table (LOCK TABLES, an open transaction) while it waits for this
+     * thread, and the default metadata lock wait is a year. */
     return s.exec("SET SESSION sql_log_bin = 0", err) &&
            s.exec("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ", err) &&
-           s.exec("SET SESSION autocommit = 1", err);
+           s.exec("SET SESSION autocommit = 1", err) &&
+           s.exec("SET SESSION lock_wait_timeout = 120", err) &&
+           s.exec("SET SESSION innodb_lock_wait_timeout = 120", err);
 }
 
 std::string server_problem(Session& s) {
@@ -379,15 +384,16 @@ public:
 
     LoadStatus load(const std::string& name, const std::string& metric, int dim,
                     const GraphSink& sink, std::string* err) override {
-        LoadStatus status = LoadStatus::Failed;
-        bool ran = run(
+        LoadStatus status = LoadStatus::Unavailable;  // if no session opens
+        run(
             [&](Session& s, std::string* e) {
+                status = LoadStatus::Failed;  // if load_in throws on stored data
                 status = load_in(s, name, metric, dim, sink, e);
                 s.exec("COMMIT", nullptr);
-                return status != LoadStatus::Failed;
+                return status == LoadStatus::Ok || status == LoadStatus::NotSaved;
             },
             err);
-        return ran || status != LoadStatus::Failed ? status : LoadStatus::Failed;
+        return status;
     }
 
     bool drop(const std::string& name, std::string* err) override {
@@ -395,12 +401,18 @@ public:
             [&](Session& s, std::string* e) {
                 if (!session_setup(s, e))
                     return false;
-                std::string id;
-                if (!scalar(s, "SELECT index_id FROM myvector.index_meta WHERE " + by_name(name),
-                            &id, e))
+                std::string id, stored_name;
+                if (!s.query("SELECT index_id, HEX(index_name) FROM myvector.index_meta "
+                             "WHERE " + by_name(name),
+                             [&](const Row& r) {
+                                 id = r.cols[0];
+                                 stored_name = r.cols[1];
+                                 return false;
+                             },
+                             e))
                     return false;
-                if (id.empty())
-                    return true;  // nothing stored
+                if (id.empty() || stored_name != hex(name.data(), name.size()))
+                    return true;  // nothing stored under this exact name
                 // Tombstone first: the index is gone at once and keeps its
                 // generation counter (RFC-005 4.11).
                 if (!s.exec("UPDATE myvector.index_meta SET state = 'dropped' WHERE index_id = " +
@@ -615,15 +627,15 @@ private:
     static LoadStatus load_in(Session& s, const std::string& name, const std::string& metric,
                               int dim, const GraphSink& sink, std::string* e) {
         if (!session_setup(s, e))
-            return LoadStatus::Failed;
+            return LoadStatus::Unavailable;
         std::string problem = server_problem(s);
         if (!problem.empty()) {
             *e = problem;
-            return LoadStatus::Failed;
+            return LoadStatus::Unavailable;
         }
         // One snapshot for every read below (REPEATABLE READ, set above).
         if (!s.exec("START TRANSACTION WITH CONSISTENT SNAPSHOT", e))
-            return LoadStatus::Failed;
+            return LoadStatus::Unavailable;
         Row meta;
         bool found = false;
         if (!s.query("SELECT index_id, state, format_version, generation, ckpt_seq, "
@@ -636,7 +648,7 @@ private:
                          return false;
                      },
                      e))
-            return LoadStatus::Failed;
+            return LoadStatus::Unavailable;
         if (!found || meta.cols[1] != "active" ||
             meta.cols[12] != hex(name.data(), name.size()))
             return LoadStatus::NotSaved;
@@ -663,16 +675,17 @@ private:
             *e = "stored index has an invalid chunk size";
             return LoadStatus::Failed;
         }
+        bool sql_failed = false;  // a read failed, as opposed to bad stored data
         try {
             sink.begin(header, n, std::stoull(meta.cols[13]));
             if (!read_chunks(s, "index_vectors", "data", I, G, SEQ, n, vec_nodes,
-                             kVecChunkTarget, sink.vectors, e) ||
+                             kVecChunkTarget, sink.vectors, &sql_failed, e) ||
                 !read_chunks(s, "index_links", "level0", I, G, SEQ, n, lnk_nodes,
-                             kLinkChunkTarget, sink.links, e))
-                return LoadStatus::Failed;
+                             kLinkChunkTarget, sink.links, &sql_failed, e))
+                return sql_failed ? LoadStatus::Unavailable : LoadStatus::Failed;
             sink.end_level0();
-            if (!read_upper(s, I, G, SEQ, n, sink.upper, e))
-                return LoadStatus::Failed;
+            if (!read_upper(s, I, G, SEQ, n, sink.upper, &sql_failed, e))
+                return sql_failed ? LoadStatus::Unavailable : LoadStatus::Failed;
             sink.finish();
         } catch (const std::exception& ex) {
             *e = ex.what();
@@ -688,7 +701,7 @@ private:
                             const std::string& SEQ, size_t n, size_t per,
                             size_t chunk_bytes,
                             const std::function<void(size_t, const std::string&)>& feed,
-                            std::string* e) {
+                            bool* sql_failed, std::string* e) {
         const size_t total = n == 0 ? 0 : (n + per - 1) / per;
         size_t next = 0;  // the chunk id expected next
         // HEX doubles what the server returns; keep each result set near kLoadBatchBytes.
@@ -721,8 +734,10 @@ private:
                     return true;
                 },
                 e);
-            if (!ok)
+            if (!ok) {
+                *sql_failed = true;
                 return false;
+            }
             if (!fail.empty()) {
                 *e = fail;
                 return false;
@@ -738,7 +753,7 @@ private:
     static bool read_upper(Session& s, const std::string& I, const std::string& G,
                            const std::string& SEQ, size_t n,
                            const std::function<void(size_t, const std::string&)>& feed,
-                           std::string* e) {
+                           bool* sql_failed, std::string* e) {
         const size_t per_query = 20000;
         long long last = -1;
         std::string fail;
@@ -763,8 +778,10 @@ private:
                     return true;
                 },
                 e);
-            if (!ok)
+            if (!ok) {
+                *sql_failed = true;
                 return false;
+            }
             if (!fail.empty()) {
                 *e = fail;
                 return false;
@@ -779,8 +796,10 @@ private:
                          extra = true;
                          return false;
                      },
-                     e))
+                     e)) {
+            *sql_failed = true;
             return false;
+        }
         if (extra) {
             *e = "index_upper: a row names a node past the node count";
             return false;

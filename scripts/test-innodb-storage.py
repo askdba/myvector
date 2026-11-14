@@ -22,6 +22,8 @@ Component build (8.4, 9.7, 26.10):
  10. A server with innodb_page_size=4096 installs the schema and stores an index.
  11. An empty index builds, loads and searches; a rebuild after the table was
      emptied publishes the empty graph instead of keeping the old one.
+ 12. A reload keeps the index's search effort (ef): same results as after the
+     build, on data hard enough for ef to matter.
 Plugin build: storage=innodb is refused.
 
 Usage:
@@ -349,6 +351,36 @@ def main():
         record("11b. a rebuild after the table was emptied publishes the empty graph",
                o1.startswith("SUCCESS") and o2 == "SUCCESS" and o3 == "[]",
                f"build={o1[:40]} load={o2} search={o3!r}")
+
+        # --- 12. the search effort (ef) survives a reload ----------------
+        # Harder data than the other cases (dim 32, 12,000 rows), so results
+        # depend on the search effort: a reload that fell back to hnswlib's
+        # default ef of 10 returns different rows.
+        d2, n2 = 32, 12000
+        srv.sql(f"CREATE TABLE ef (id INT PRIMARY KEY, v VARBINARY({d2 * 4 + 64}) NULL "
+                f"COMMENT 'MYVECTOR COLUMN type=hnsw,dim={d2},size={n2 * 2},idcol=id,"
+                f"dist=L2,ef=200,storage=innodb');")
+        rnd2 = random.Random(12)
+        for start in range(1, n2 + 1, 1000):
+            vals = ", ".join(
+                f"({i}, myvector_construct('["
+                + ",".join(f"{rnd2.uniform(-1, 1):.4f}" for _ in range(d2)) + "]'))"
+                for i in range(start, start + 1000))
+            srv.sql(f"INSERT INTO ef VALUES {vals};")
+        q2 = ["myvector_construct('[" + ",".join(f"{rnd2.uniform(-1, 1):.4f}"
+              for _ in range(d2)) + "]')" for _ in range(30)]
+
+        def run_ef():
+            return [run(srv, f"SELECT myvector_ann_set('vtest.ef.v','id',{q},'nn=10');")[1]
+                    for q in q2]
+        o1 = build(srv, "vtest.ef.v")[1]
+        before = run_ef()
+        o2 = load(srv, "vtest.ef.v")[1]
+        after = run_ef()
+        diff = sum(a != b for a, b in zip(before, after))
+        record("12. same results after a reload on data where ef matters",
+               o1.startswith("SUCCESS") and o2 == "SUCCESS" and diff == 0,
+               f"{diff} of {len(q2)} queries differ")
 
         # --- 10. innodb_page_size = 4096 ---------------------------------
         srv4 = start_server(args.image, f"myv-innodb4k-{os.getpid()}",
