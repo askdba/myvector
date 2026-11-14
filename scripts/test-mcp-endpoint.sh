@@ -288,6 +288,16 @@ expect "70 initializes issue 70 session ids" "$(printf '%s\n' "$many" | grep -c 
 expect "the account's oldest sessions were replaced (404)" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $FIRST" -d "$CALL" | head -1)" "^HTTP/1.1 404"
 expect "its newest session works" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $LAST" -d "$CALL" | head -1)" "^HTTP/1.1 200"
 expect "another account's session survives them" "$(req tbl-app POST "${J[@]}" -H "Mcp-Session-Id: $OTHER" -d "$CALL" | head -1)" "^HTTP/1.1 200"
+# Deeply nested JSON: rapidjson is recursive, so the endpoint refuses deep nesting before parsing
+# (a body of half a million '[' crashed mysqld before the depth check).
+deep=$(docker run --rm --network "container:$C" --entrypoint sh "$CURL_IMAGE" -c '
+	printf "%0500000d" 0 | tr 0 "[" >/tmp/deep.json
+	curl -s -m 30 -w "\n%{http_code}" -X POST http://127.0.0.1:33480/mcp -H "Content-Type: application/json" \
+		-H "Accept: application/json, text/event-stream" -H "Authorization: Bearer tok-123" --data-binary @/tmp/deep.json')
+expect "500 000 nested arrays: a parse error, not a crash" "$(printf '%s\n' "$deep" | tr '\n' ' ')" '"code":-32700,"message":"parse error: JSON nested too deeply".* 200 $'
+expect "the server is still up" "$(alive)" "^up$"
+expect "64 levels are accepted, 65 refused" "$(rpc tok-123 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"x\":$(printf '%062d' 0 | tr 0 '[')$(printf '%062d' 0 | tr 0 ']')}}" | head -1) $(rpc tok-123 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"x\":$(printf '%063d' 0 | tr 0 '[')$(printf '%063d' 0 | tr 0 ']')}}" | head -1)" '^\{"jsonrpc":"2.0","id":1,"result":\{"tools".* \{"jsonrpc":"2.0","id":null,"error":\{"code":-32700'
+expect "brackets inside strings do not count" "$(call run_query "{\"sql\":\"SELECT '$(printf '%0200d' 0 | tr 0 '[')' AS b\"}" | head -1)" '"isError":false'
 expect "session timeout default" "$(sql "SELECT @@mcp_http.session_timeout_minutes")" "^30$"
 
 # The stateless revision 2026-07-28 (SEP-2575), on the same endpoint: no handshake or session;
