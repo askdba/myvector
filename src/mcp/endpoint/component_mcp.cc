@@ -1312,12 +1312,18 @@ void stateless_result(Json &out, bool cacheable) {
   result.AddMember("_meta", meta, a);
 }
 
+// Whether tools/list advertises the tool: the names are read once from list_tools, so the
+// advertised list stays the only one to keep in step with call_tool.
 bool known_tool(const std::string &name) {
-  static const char *const kNames[] = {"list_databases", "list_tables", "describe_table",
-                                       "run_query",      "ping",        "server_info"};
-  for (const char *n : kNames)
-    if (name == n) return true;
-  return false;
+  static const std::vector<std::string> kNames = [] {
+    std::vector<std::string> names;
+    Json out(rapidjson::kObjectType);
+    list_tools(out);
+    for (const auto &tool : out["result"]["tools"].GetArray())
+      names.emplace_back(tool["name"].GetString(), tool["name"].GetStringLength());
+    return names;
+  }();
+  return std::find(kNames.begin(), kNames.end(), name) != kNames.end();
 }
 
 class McpHandler : public http::base::RequestHandler {
@@ -1467,9 +1473,8 @@ class McpHandler : public http::base::RequestHandler {
                               const rapidjson::Value &params, const rapidjson::Value *meta,
                               const std::string *header_version, const std::string &account) {
     const rapidjson::Value &id = in["id"];
-    const auto fail = [&](int status, int code, const std::string &message,
-                          rapidjson::Value *data = nullptr) {
-      reply(req, &id, [&](Json &out) { rpc_error(out, code, message, data); }, status);
+    const auto fail = [&](int status, int code, const std::string &message) {
+      reply(req, &id, [&](Json &out) { rpc_error(out, code, message); }, status);
       return true;
     };
     const rapidjson::Value *meta_version =
@@ -1493,7 +1498,7 @@ class McpHandler : public http::base::RequestHandler {
     if (!in.HasMember("jsonrpc") || !in["jsonrpc"].IsString() ||
         std::strcmp(in["jsonrpc"].GetString(), "2.0") != 0)
       return fail(HttpStatusCode::BadRequest, kInvalidRequest, "jsonrpc must be \"2.0\"");
-    if (!id.IsString() && !id.IsInt64())
+    if (!id.IsString() && !id.IsInt64() && !id.IsUint64())
       return fail(HttpStatusCode::BadRequest, kInvalidRequest,
                   "the request id must be a string or an integer");
     if (!meta->HasMember(kMetaClientCapabilities) || !(*meta)[kMetaClientCapabilities].IsObject())
