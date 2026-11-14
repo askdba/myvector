@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- **`component_mcp`: one account can no longer evict other accounts' sessions** (found by the security review for RFC 0001 §10, [#256](https://github.com/askdba/myvector/issues/256)). The `Mcp-Session-Id` table (4096 entries) dropped its least recently used session when full. Repeated `initialize` calls from one token could therefore end every other account's sessions (their next request got 404). Each account now keeps at most 64 sessions, a new one replacing that account's own least recently used. When the table is full of other accounts' live sessions, `initialize` gets 503. `scripts/test-mcp-endpoint.sh` checks 70 sessions of one account against another account's session.
 - **`component_mcp`: deeply nested JSON no longer crashes `mysqld`** (found by the security review for RFC 0001 §10, [#256](https://github.com/askdba/myvector/issues/256)). rapidjson parses recursively, so a request whose body nested half a million arrays overflowed the I/O thread's stack (SIGSEGV). Only a token holder could send one, since the body is parsed after authentication. The endpoint now refuses bodies nested more than 64 levels deep with JSON-RPC -32700, before parsing. `scripts/test-mcp-endpoint.sh` checks the refusal, the server staying up, the limit, and that brackets inside strings don't count.
 
 ### Changed
