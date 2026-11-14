@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **`component_mcp`: one account can no longer evict other accounts' sessions** (found by the security review for RFC 0001 §10, [#256](https://github.com/askdba/myvector/issues/256)). The `Mcp-Session-Id` table (4096 entries) dropped its least recently used session when full. Repeated `initialize` calls from one token could therefore end every other account's sessions (their next request got 404). Each account now keeps at most 64 sessions, a new one replacing that account's own least recently used. When the table is full of other accounts' live sessions, `initialize` gets 503. `scripts/test-mcp-endpoint.sh` checks 70 sessions of one account against another account's session.
 ### Fixed
 - **Components are built with hidden symbol visibility.** `libmyvector_component.so`, `component_mcp_guard.so` and the guard's test probe exported their service placeholders (`mysql_service_<name>`) with default visibility. `mysqld` exports globals of the same names (`mysql_runtime_error`, `mysql_current_thread_reader`, `mysql_udf_metadata`), and in a `dlopen()`ed library the executable's definition wins. So the component's placeholder could resolve to `mysqld`'s own, and loading or unloading the component could overwrite it. Found by AddressSanitizer as an ODR violation while building the RFC 0001 §10 fuzzing run. MySQL builds its own components with hidden visibility; only `list_components` stays exported.
 

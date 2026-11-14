@@ -1169,7 +1169,10 @@ rapidjson::Value server_info(rapidjson::Document::AllocatorType &a) {
 
 // Mcp-Session-Id sessions: issued by initialize, bound to the token's account, expired after
 // mcp_http.session_timeout_minutes idle. A session id is not a credential: every request still
-// needs its bearer token. At most kMaxSessions are kept (the least recently used is dropped).
+// needs its bearer token. Each account keeps at most kMaxSessionsPerAccount (a new one replaces
+// that account's least recently used), and the table at most kMaxSessions: when it is full of
+// other accounts' live sessions, initialize is refused (503) rather than evicting them, so one
+// token holder cannot end everyone else's sessions.
 class Sessions {
  public:
   enum class Lookup { kOk, kUnknown, kOtherAccount };
@@ -1185,12 +1188,18 @@ class Sessions {
     }
     std::lock_guard<std::mutex> lock(mutex_);
     expire_locked();
-    if (sessions_.size() >= kMaxSessions) {
-      auto oldest = sessions_.begin();
-      for (auto it = sessions_.begin(); it != sessions_.end(); ++it)
-        if (it->second.last_used < oldest->second.last_used) oldest = it;
-      sessions_.erase(oldest);
+    size_t own = 0;
+    auto own_oldest = sessions_.end();
+    for (auto it = sessions_.begin(); it != sessions_.end(); ++it) {
+      if (it->second.account != account) continue;
+      ++own;
+      if (own_oldest == sessions_.end() || it->second.last_used < own_oldest->second.last_used)
+        own_oldest = it;
     }
+    if (own >= kMaxSessionsPerAccount)
+      sessions_.erase(own_oldest);
+    else if (sessions_.size() >= kMaxSessions)
+      return "";
     sessions_[id] = {account, Clock::now()};
     return id;
   }
@@ -1216,6 +1225,7 @@ class Sessions {
     Clock::time_point last_used;
   };
   static constexpr size_t kMaxSessions = 4096;
+  static constexpr size_t kMaxSessionsPerAccount = 64;
 
   void expire_locked() {
     const auto deadline = Clock::now() - std::chrono::minutes(opt_session_timeout_minutes);
@@ -1448,7 +1458,11 @@ class McpHandler : public http::base::RequestHandler {
     }
     if (method == "initialize" && session_id == nullptr) {
       const std::string id = sessions.create(*account);
-      if (!id.empty()) req.get_output_headers().add("Mcp-Session-Id", id.c_str());
+      if (id.empty()) {
+        plain(req, HttpStatusCode::ServiceUnavailable, "too many MCP sessions; try again later");
+        return;
+      }
+      req.get_output_headers().add("Mcp-Session-Id", id.c_str());
     }
     reply(req, &in["id"], [&](Json &out) {
       if (method == "initialize")
