@@ -288,7 +288,24 @@ expect "70 initializes issue 70 session ids" "$(printf '%s\n' "$many" | grep -c 
 expect "the account's oldest sessions were replaced (404)" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $FIRST" -d "$CALL" | head -1)" "^HTTP/1.1 404"
 expect "its newest session works" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $LAST" -d "$CALL" | head -1)" "^HTTP/1.1 200"
 expect "another account's session survives them" "$(req tbl-app POST "${J[@]}" -H "Mcp-Session-Id: $OTHER" -d "$CALL" | head -1)" "^HTTP/1.1 200"
+# Deeply nested JSON: rapidjson is recursive, so the endpoint refuses deep nesting before parsing
+# (a body of half a million '[' crashed mysqld before the depth check).
+deep=$(docker run --rm --network "container:$C" --entrypoint sh "$CURL_IMAGE" -c '
+	printf "%0500000d" 0 | tr 0 "[" >/tmp/deep.json
+	curl -s -m 30 -w "\n%{http_code}" -X POST http://127.0.0.1:33480/mcp -H "Content-Type: application/json" \
+		-H "Accept: application/json, text/event-stream" -H "Authorization: Bearer tok-123" --data-binary @/tmp/deep.json')
+expect "500 000 nested arrays: a parse error, not a crash" "$(printf '%s\n' "$deep" | tr '\n' ' ')" '"code":-32700,"message":"parse error: JSON nested too deeply".* 200 $'
+expect "the server is still up" "$(alive)" "^up$"
+expect "64 levels are accepted, 65 refused" "$(rpc tok-123 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"x\":$(printf '%062d' 0 | tr 0 '[')$(printf '%062d' 0 | tr 0 ']')}}" | head -1) $(rpc tok-123 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"x\":$(printf '%063d' 0 | tr 0 '[')$(printf '%063d' 0 | tr 0 ']')}}" | head -1)" '^\{"jsonrpc":"2.0","id":1,"result":\{"tools".* \{"jsonrpc":"2.0","id":null,"error":\{"code":-32700'
+expect "brackets inside strings do not count" "$(call run_query "{\"sql\":\"SELECT '$(printf '%0200d' 0 | tr 0 '[')' AS b\"}" | head -1)" '"isError":false'
+# A statement whose error message is longer than 255 bytes: the command service backend copies
+# the message into a 256-byte buffer (MySQL 26.10.0), which aborted mysqld before the endpoint's
+# error service capped what it hands over. The full message still comes back.
+LONGNAME=$(printf '%0250d' 0 | tr 0 a)
+expect "a 300-byte error message comes back in full" "$(call run_query "{\"sql\":\"SELECT 1 LIMIT $LONGNAME\"}")" "Error 1327: Undeclared variable: $LONGNAME\".*\"isError\":true"
+expect "... and mysqld is still up" "$(alive)" "^up$"
 expect "session timeout default" "$(sql "SELECT @@mcp_http.session_timeout_minutes")" "^30$"
+expect "query timeout default (as mysql-mcp-server)" "$(sql "SELECT @@mcp_http.query_timeout_seconds")" "^30$"
 
 # The stateless revision 2026-07-28 (SEP-2575), on the same endpoint: no handshake or session;
 # every request carries its version and client capabilities in _meta, and the MCP-Protocol-Version,
@@ -334,7 +351,14 @@ expect "a session-era version in _meta and the header is served as that era" "$(
 
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).
 sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
-expect "reinstall mapped to app, with allowed origins and masked columns" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.allowed_origins = 'http://localhost:6274, https://Inspector.example', GLOBAL mcp_http.mask_columns = ' secret, PASS ,, ÉMAIL,	пароль , token '")" "^$"
+expect "reinstall mapped to app, with allowed origins and masked columns" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.allowed_origins = 'http://localhost:6274, https://Inspector.example', GLOBAL mcp_http.mask_columns = ' secret, PASS ,, ÉMAIL,	пароль , token ', GLOBAL mcp_http.query_timeout_seconds = 3")" "^$"
+# A statement that runs past mcp_http.query_timeout_seconds is stopped (KILL QUERY), whatever it
+# is: one that never ends would hold its I/O thread and the connections queued on it.
+for q in "SELECT SLEEP(20)" "DO SLEEP(20)"; do
+	t0=$(date +%s); out=$(call run_query "{\"sql\":\"$q\"}"); took=$(( $(date +%s) - t0 ))
+	expect "$q is stopped after 3 s (took ${took}s)" "$took $out" '^[3-9] .*Error 1317: stopped after mcp_http.query_timeout_seconds \(3 s\)[^"]*".*"isError":true'
+done
+expect "the next call runs normally" "$(call run_query '{"sql":"SELECT 1 AS one"}')" 'one\\":\\"1\\".*"isError":false'
 # Column masking, as mysql-mcp-server's MYSQL_MCP_MASK_COLUMNS: by column name, substring,
 # case-insensitive; NULL stays NULL.
 expect "masked columns: values replaced, NULL kept, others untouched" "$(call run_query '{"sql":"SELECT \"a\" AS user_password, \"b\" AS SecretKey, NULL AS secret_null, \"c\" AS ok"}')" 'user_password\\":\\"\*\*\*\*\*\*\*\*\\",\\"SecretKey\\":\\"\*\*\*\*\*\*\*\*\\",\\"secret_null\\":null,\\"ok\\":\\"c\\"'
