@@ -1135,6 +1135,16 @@ long long guard_statements_total(MYSQL_H h) {
 // run unguarded. The guard counts each statement of an MCP session before it runs, so of two
 // reads of its counter in this (MCP) session the second is higher if, and only if, events
 // arrive. A broken event channel stays broken until a restart, so one success is remembered.
+// Only MCP_USER sessions are counted (and guarded), so the check runs only in those: a call
+// mapped to an account without MCP_USER is not the guard's to restrict.
+bool session_has_mcp_user(MYSQL_THD thd) {
+  Security_context_handle sctx = nullptr;
+  static constexpr char kMcpUser[] = "MCP_USER";
+  return thd != nullptr && !mysql_service_mysql_thd_security_context->get(thd, &sctx) &&
+         sctx != nullptr &&
+         mysql_service_global_grants_check->has_global_grant(sctx, kMcpUser, sizeof(kMcpUser) - 1);
+}
+
 bool guard_operational(MYSQL_H h) {
   static std::atomic<bool> verified{false};
   if (verified.load()) return true;
@@ -1208,7 +1218,7 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
                 "MCP_ADMIN (it has " + priv + ")";
     } else if (!announce()) {
       r.error = "session refused";
-    } else if (!guard_operational(h)) {
+    } else if (session_has_mcp_user(thd) && !guard_operational(h)) {
       r.sql_errno = ER_OPTION_PREVENTS_STATEMENT;
       r.error = "component_mcp_guard receives no statements, so the MCP endpoint does not run "
                 "them: event tracking is unavailable (was component_reference_cache loaded at "
