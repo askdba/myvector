@@ -8,6 +8,8 @@ Server-side components for [mysql-mcp-server](https://github.com/askdba/mysql-mc
 | `mysql_mcp` SQL tool pack ([`sql/mcp/`](https://github.com/askdba/myvector/tree/main/sql/mcp)) | 1.0.0 | MySQL 8.0 to 26.10, MariaDB 11.4, 12.3 |
 | `component_mcp` | **Phase 4 spike** (not for production): an MCP endpoint inside `mysqld` | MySQL 26.10 |
 
+**Maintainer:** [@askdba](https://github.com/askdba) owns the C++ code of these components (RFC 0001 §10). `.github/CODEOWNERS` routes reviews of `src/mcp/`, `sql/mcp/` and the MCP scripts to them.
+
 ## component_mcp_guard
 
 Enforces a policy on the sessions of mysql-mcp-server, inside `mysqld`, so a client cannot widen it. Grants stay the primary control (MCP accounts should be `SELECT`-only); the guard covers what grants cannot express: a kill switch, read-only even when an account has write grants, and schema limits for accounts with global `SELECT`.
