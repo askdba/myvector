@@ -11,6 +11,9 @@ low and high values, and checks that the same default queries return exactly
 the same results afterwards. HNSW search with the same ef is deterministic,
 so any difference means ef_search leaked into the index.
 
+It also reloads the index and checks the default queries again: a loaded index
+must search with its own ef, like a built one (#291).
+
 Usage:
   python3 scripts/test-ef-search.py --plugin-dir dist/plugin-8.4
   python3 scripts/test-ef-search.py --component-dir dist/component-9.7 --image mysql:9.7
@@ -132,6 +135,20 @@ def main():
         if changed:
             failures.append(f"{changed} default queries changed after a concurrent "
                             f"ef_search burst")
+
+        # A loaded index searches with its own ef, like a built one (#291): the
+        # loader used to leave hnswlib's default of 10, so every reload or
+        # restart lowered recall until the index was rebuilt.
+        print("index load:", srv.sql("CALL mysql.myvector_index_load('vtest.t.v');"))
+        after_load = [ann(srv, q, f"nn={K}") for q in queries]
+        changed = sum(a != b for a, b in zip(baseline, after_load))
+        print(f"default queries changed after MYVECTOR_INDEX_LOAD: "
+              f"{changed}/{len(queries)} (recall {recall(after_load):.3f}, "
+              f"was {r_base:.3f})")
+        if changed:
+            failures.append(f"{changed} default queries changed after "
+                            f"MYVECTOR_INDEX_LOAD (the index's ef is not applied "
+                            f"to a loaded graph)")
     finally:
         if args.keep:
             print("container kept:", srv.name)
