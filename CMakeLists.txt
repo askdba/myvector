@@ -139,13 +139,6 @@ endif()
 
 find_package(ZLIB REQUIRED)
 add_library(myvector_component SHARED ${MYVECTOR_COMPONENT_SRCS})
-# Components export only list_components (DLL_EXPORT sets default visibility on it). Their
-# service placeholders (mysql_service_<name>) must stay private: mysqld exports globals of the
-# same names, and in a dlopen()ed library the executable's definition wins, so with default
-# visibility the component's placeholder would resolve to mysqld's own (ASAN reports it as an
-# ODR violation). MySQL builds its components with hidden visibility too.
-set_target_properties(myvector_component PROPERTIES
-  CXX_VISIBILITY_PRESET hidden C_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 target_include_directories(myvector_component PRIVATE ${MYVECTOR_INCLUDE_DIRS})
 target_compile_definitions(myvector_component PRIVATE ${MYVECTOR_COMPONENT_DEFS} MYVECTOR_COMPONENT_BUILD)
 target_link_libraries(myvector_component PRIVATE ${MYSQLCLIENT_LIBRARY} ZLIB::ZLIB)
@@ -171,8 +164,14 @@ endif()
 option(MYVECTOR_BUILD_MCP "Build the MCP components (component_mcp_guard)" OFF)
 if(MYVECTOR_BUILD_MCP)
   add_library(component_mcp_guard SHARED src/mcp/guard/component_mcp_guard.cc)
+  # The guard exports only list_components (DLL_EXPORT sets default visibility on it). Its
+  # service placeholders (mysql_service_<name>) must stay private: mysqld exports globals of the
+  # same names, and in a dlopen()ed library the executable's definition wins, so with default
+  # visibility the placeholder would resolve to mysqld's own (ASAN reports it as an ODR
+  # violation). MySQL builds its components with hidden visibility too. (myvector_component is
+  # not changed here: its UDFs are loaded by symbol name, CREATE FUNCTION ... SONAME.)
   set_target_properties(component_mcp_guard PROPERTIES
-    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)  # see myvector_component
+    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
   target_include_directories(component_mcp_guard PRIVATE ${MYVECTOR_INCLUDE_DIRS})
   set_target_properties(component_mcp_guard PROPERTIES PREFIX "")
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
