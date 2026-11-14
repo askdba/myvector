@@ -700,13 +700,19 @@ bool session_is_account(MYSQL_THD thd, const std::string &user, const std::strin
 // it (the guard denies the mysql schema to them).
 constexpr char kTokenReaderUser[] = "mysql.mcp", kTokenReaderHost[] = "localhost";
 
-// The account (user@host) a token hash maps to in mysql.mcp_tokens, if any and not expired.
-// hash is the endpoint's own hex SHA-256, so it is safe in the statement text.
-std::optional<std::string> table_token_account(const std::string &hash) {
+// A snapshot of mysql.mcp_tokens' unexpired rows: (token hash, account).
+using TokenRows = std::vector<std::pair<std::string, std::string>>;
+
+// Reads the unexpired rows into *rows. The statement text is fixed and hashes are compared in the
+// endpoint, in constant time: a presented hash in the text would reach the general log, the
+// processlist and performance_schema statement history, whose readers need not have access to
+// the table and could take it for an offline guess of a weak token. Returns false on failure.
+bool load_token_rows(TokenRows *rows) {
+  rows->clear();
   MYSQL_H h = nullptr;
-  if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) return std::nullopt;
+  if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) return false;
   static constexpr bool kBypassMaxConnections = false;
-  std::optional<std::string> account;
+  bool ok = false;
   if (!mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_PROTOCOL, "local") &&
       !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_USER_NAME, kTokenReaderUser) &&
       !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_HOST_NAME, kTokenReaderHost) &&
@@ -714,23 +720,54 @@ std::optional<std::string> table_token_account(const std::string &hash) {
                                                 &kBypassMaxConnections) &&
       !mysql_service_mysql_command_factory->connect(h) &&
       session_is_account(session_thd(h), kTokenReaderUser, kTokenReaderHost)) {
-    const std::string sql =
-        "SELECT account FROM mysql.mcp_tokens WHERE token_sha256 = '" + hash +
-        "' AND (expires_at IS NULL OR expires_at > NOW())";
+    static constexpr char kSql[] =
+        "SELECT token_sha256, account FROM mysql.mcp_tokens "
+        "WHERE expires_at IS NULL OR expires_at > NOW() "
+        "LIMIT 18446744073709551615";  // explicit: a global sql_select_limit must not drop tokens
     MYSQL_RES_H res = nullptr;
-    MYSQL_ROW_H row = nullptr;
-    ulong *lengths = nullptr;
-    if (!mysql_service_mysql_command_query->query(h, sql.data(), sql.size()) &&
+    if (!mysql_service_mysql_command_query->query(h, kSql, sizeof(kSql) - 1) &&
         !mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr) {
-      if (!mysql_service_mysql_command_query_result->fetch_row(res, &row) && row != nullptr &&
-          row[0] != nullptr &&
-          !mysql_service_mysql_command_query_result->fetch_lengths(res, &lengths) && lengths)
-        account.emplace(row[0], lengths[0]);
+      ok = true;
+      MYSQL_ROW_H row = nullptr;
+      ulong *lengths = nullptr;
+      while (!mysql_service_mysql_command_query_result->fetch_row(res, &row) && row != nullptr) {
+        if (row[0] == nullptr || row[1] == nullptr ||
+            mysql_service_mysql_command_query_result->fetch_lengths(res, &lengths) ||
+            lengths == nullptr)
+          continue;
+        rows->emplace_back(std::string(row[0], lengths[0]), std::string(row[1], lengths[1]));
+      }
       mysql_service_mysql_command_query_result->free_result(res);
     }
   }
   mysql_service_mysql_command_factory->close(h);
-  return account;
+  if (!ok) rows->clear();
+  return ok;
+}
+
+// The account (user@host) a token hash maps to in mysql.mcp_tokens, if any and not expired.
+// Requests share a snapshot of the table, read again once it is kTokenRowsTtl old: a flood of
+// requests, unknown tokens included, costs at most one read of the table per kTokenRowsTtl, and
+// INSERT, DELETE and expiry take effect within it. A failed read leaves no snapshot (401).
+constexpr std::chrono::milliseconds kTokenRowsTtl{1000};
+
+std::optional<std::string> table_token_account(const std::string &hash) {
+  static std::mutex mutex;
+  static TokenRows rows;
+  static std::chrono::steady_clock::time_point loaded;
+  static bool have = false;
+  std::lock_guard<std::mutex> lock(mutex);
+  const auto now = std::chrono::steady_clock::now();
+  if (!have || now - loaded >= kTokenRowsTtl) {
+    load_token_rows(&rows);
+    loaded = now;
+    have = true;
+  }
+  for (const auto &[row_hash, account] : rows)
+    if (row_hash.size() == hash.size() &&
+        CRYPTO_memcmp(row_hash.data(), hash.data(), hash.size()) == 0)
+      return account;
+  return std::nullopt;
 }
 
 // The account the request's bearer token maps to: mcp_http.token_sha256 (to mcp_http.account)
