@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- **`component_mcp` stops tool calls that run too long** (found by the RFC 0001 §10 fuzzing run, [#256](https://github.com/askdba/myvector/issues/256)). Calls run on the endpoint's I/O threads. A statement that never ended (the fuzzer's `SELECT SLEEP(184467440737095516160.2)`) held its thread for good, connections assigned to that thread queued up to Router's limit of 64, and then the endpoint refused every connection until a restart. Any token holder could do this. The new `mcp_http.query_timeout_seconds` (read-only, default 30, as mysql-mcp-server's `MYSQL_QUERY_TIMEOUT_SECONDS`) bounds each call's statement: past it, a watchdog runs `KILL QUERY` from a session of the same account, and the call fails with error 1317. `scripts/test-mcp-endpoint.sh` checks the default, that `SELECT SLEEP(20)` and `DO SLEEP(20)` stop at a 3-second limit, and that the next call works.
+
+### Security
 - **`component_mcp`: one account can no longer evict other accounts' sessions** (found by the security review for RFC 0001 §10, [#256](https://github.com/askdba/myvector/issues/256)). The `Mcp-Session-Id` table (4096 entries) dropped its least recently used session when full. Repeated `initialize` calls from one token could therefore end every other account's sessions (their next request got 404). Each account now keeps at most 64 sessions, a new one replacing that account's own least recently used. When the table is full of other accounts' live sessions, `initialize` gets 503. `scripts/test-mcp-endpoint.sh` checks 70 sessions of one account against another account's session.
 
 ### Changed

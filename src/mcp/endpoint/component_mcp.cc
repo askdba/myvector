@@ -61,6 +61,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <condition_variable>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -122,6 +123,7 @@ unsigned long opt_port = 33480;
 unsigned long opt_threads = 4;                   // I/O workers: calls served at once
 unsigned long opt_max_sessions_per_account = 4;  // concurrent calls per account
 unsigned long opt_session_timeout_minutes = 30;  // idle Mcp-Session-Id lifetime
+unsigned long opt_query_timeout_seconds = 30;    // a tool call's statement is stopped after it
 char *opt_account = nullptr;       // user@host the token maps to
 char *opt_token_sha256 = nullptr;  // hex SHA-256 of the bearer token
 char *opt_allowed_origins = nullptr;  // comma-separated Origin values browsers may send
@@ -130,6 +132,7 @@ char *opt_bind_address = nullptr;     // listen address; null means 127.0.0.1
 char *opt_ssl_cert = nullptr;         // PEM certificate file; with opt_ssl_key, serve HTTPS
 char *opt_ssl_key = nullptr;          // PEM private key file
 bool session_timeout_registered = false;
+bool query_timeout_registered = false;
 bool port_registered = false, threads_registered = false, max_sessions_registered = false,
      account_registered = false, token_registered = false, origins_registered = false,
      mask_registered = false, bind_registered = false, cert_registered = false,
@@ -159,6 +162,20 @@ bool register_sysvars() {
             &timeout_arg, &opt_session_timeout_minutes))
       return true;
     session_timeout_registered = true;
+  }
+  {
+    INTEGRAL_CHECK_ARG(ulong) query_timeout_arg;
+    query_timeout_arg.def_val = 30;
+    query_timeout_arg.min_val = 1;
+    query_timeout_arg.max_val = 86400;
+    query_timeout_arg.blk_sz = 0;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "query_timeout_seconds",
+            PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED | PLUGIN_VAR_READONLY,
+            "Seconds a tool call's statement may run before it is stopped (KILL QUERY)", nullptr,
+            nullptr, &query_timeout_arg, &opt_query_timeout_seconds))
+      return true;
+    query_timeout_registered = true;
   }
   {
     INTEGRAL_CHECK_ARG(ulong) threads_arg;
@@ -285,6 +302,7 @@ bool unregister_sysvars() {
   drop(max_sessions_registered, "max_sessions_per_account");
   drop(threads_registered, "threads");
   drop(session_timeout_registered, "session_timeout_minutes");
+  drop(query_timeout_registered, "query_timeout_seconds");
   drop(port_registered, "port");
   return failed;
 }
@@ -829,6 +847,152 @@ bool bounded_query(MYSQL_H h, const std::string &sql, bool *truncated, Retained 
   return failed;
 }
 
+// ----- Call time limit ---------------------------------------------------------------------
+
+// The statements of tool calls run on the I/O threads, so one that never ends (SELECT SLEEP(1e20),
+// DO SLEEP(...), a lock wait) would hold its thread, and the connections queued on it, for good:
+// the fuzzing run of RFC 0001 §10 made the whole endpoint refuse connections that way. Each call's
+// statement is registered here with a deadline, mcp_http.query_timeout_seconds away (default 30 s,
+// as mysql-mcp-server's MYSQL_QUERY_TIMEOUT_SECONDS); past it, a session of the same account runs
+// KILL QUERY on it (an account may always kill its own statements), whatever the statement is.
+class Watchdog {
+ public:
+  using Clock = std::chrono::steady_clock;
+
+  void start() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopping_ = false;
+    thread_ = std::thread([this] { run(); });
+  }
+
+  void stop() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!thread_.joinable()) return;
+      stopping_ = true;
+    }
+    cv_.notify_all();
+    thread_.join();
+  }
+
+  uint64_t add(unsigned long long connection_id, const std::string &user,
+               const std::string &host) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const uint64_t ticket = next_++;
+    entries_[ticket] = {Clock::now() + std::chrono::seconds(opt_query_timeout_seconds),
+                        connection_id, user, host, false};
+    cv_.notify_all();
+    return ticket;
+  }
+
+  // Ends the watch; true if the statement was stopped for running past its deadline.
+  bool remove(uint64_t ticket) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = entries_.find(ticket);
+    if (it == entries_.end()) return false;
+    const bool killed = it->second.killed;
+    entries_.erase(it);
+    return killed;
+  }
+
+ private:
+  struct Entry {
+    Clock::time_point deadline;
+    unsigned long long connection_id;
+    std::string user, host;
+    bool killed;
+  };
+
+  void run() {
+    mysql_service_mysql_command_thread->init();
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (!stopping_) {
+      auto next = Clock::time_point::max();
+      for (const auto &[ticket, e] : entries_)
+        if (!e.killed && e.deadline < next) next = e.deadline;
+      if (next == Clock::time_point::max())
+        cv_.wait(lock);
+      else
+        cv_.wait_until(lock, next);
+      if (stopping_) break;
+      std::vector<Entry> due;
+      const auto now = Clock::now();
+      for (auto &[ticket, e] : entries_)
+        if (!e.killed && e.deadline <= now) {
+          e.killed = true;
+          due.push_back(e);
+        }
+      lock.unlock();
+      for (const Entry &e : due) kill_query(e);
+      lock.lock();
+    }
+    lock.unlock();
+    mysql_service_mysql_command_thread->end();
+  }
+
+  static void kill_query(const Entry &e) {
+    MYSQL_H h = nullptr;
+    if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) return;
+    const std::string sql = "KILL QUERY " + std::to_string(e.connection_id);
+    if (!mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_PROTOCOL, "local") &&
+        !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_USER_NAME, e.user.c_str()) &&
+        !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_HOST_NAME, e.host.c_str()) &&
+        !mysql_service_mysql_command_factory->connect(h))
+      mysql_service_mysql_command_query->query(h, sql.data(), sql.size());
+    mysql_service_mysql_command_factory->close(h);
+  }
+
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  std::map<uint64_t, Entry> entries_;
+  uint64_t next_ = 1;
+  bool stopping_ = false;
+  std::thread thread_;
+};
+
+Watchdog watchdog;
+
+// The session's connection id (SELECT CONNECTION_ID()), or 0 if it cannot be read.
+unsigned long long connection_id(MYSQL_H h) {
+  static constexpr char kSql[] = "SELECT CONNECTION_ID()";
+  unsigned long long id = 0;
+  MYSQL_RES_H res = nullptr;
+  if (!mysql_service_mysql_command_query->query(h, kSql, sizeof(kSql) - 1) &&
+      !mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr) {
+    MYSQL_ROW_H row = nullptr;
+    if (!mysql_service_mysql_command_query_result->fetch_row(res, &row) && row != nullptr &&
+        row[0] != nullptr)
+      id = std::strtoull(row[0], nullptr, 10);
+    mysql_service_mysql_command_query_result->free_result(res);
+  }
+  return id;
+}
+
+// A call's statement under the watchdog for the scope of this object.
+class Watch {
+ public:
+  Watch(MYSQL_H h, const std::string &user, const std::string &host) {
+    const unsigned long long id = connection_id(h);
+    if (id != 0) ticket_ = watchdog.add(id, user, host);
+  }
+  ~Watch() { timed_out(); }
+  Watch(const Watch &) = delete;
+  Watch &operator=(const Watch &) = delete;
+  bool ok() const { return ticket_ != 0; }
+  // Ends the watch (once); true if the statement was stopped at the deadline.
+  bool timed_out() {
+    if (ticket_ != 0) {
+      killed_ = watchdog.remove(ticket_);
+      ticket_ = 0;
+    }
+    return killed_;
+  }
+
+ private:
+  uint64_t ticket_ = 0;
+  bool killed_ = false;
+};
+
 // Runs one statement as account (user@host) and returns its first result set.
 SqlResult run_as(const std::string &account, const std::string &sql) {
   SqlResult r;
@@ -891,9 +1055,22 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
       r.error = "session refused";
     } else if (mysql_service_mysql_command_query->query(h, kLimit.data(), kLimit.size())) {
       read_error(h, &r);
+    } else if (Watch watch(h, user, host); !watch.ok()) {
+      read_error(h, &r);
+      if (r.error.empty()) r.error = "cannot read the session's connection id";
     } else if (Retained retained; bounded_query(h, sql, &r.truncated, &retained)) {
       publish_retained(retained);
       read_error(h, &r);
+      if (watch.timed_out())
+        r.error = "stopped after mcp_http.query_timeout_seconds (" +
+                  std::to_string(opt_query_timeout_seconds) + " s): " + r.error;
+    } else if (watch.timed_out()) {
+      // Stopped at the deadline, but some statements end without an error when killed (SLEEP()
+      // returns 1): the call still failed.
+      publish_retained(retained);
+      r.sql_errno = ER_QUERY_INTERRUPTED;
+      r.error = "stopped after mcp_http.query_timeout_seconds (" +
+                std::to_string(opt_query_timeout_seconds) + " s): Query execution was interrupted";
     } else {
       r.ok = true;
       MYSQL_RES_H res = nullptr;
@@ -1714,8 +1891,10 @@ mysql_service_status_t mcp_init() {
     return 1;
   }
   status_registered = true;
+  watchdog.start();
   if (start_server()) {
     stop_server();
+    watchdog.stop();
     unregister_status_vars();
     unregister_sysvars();
     return 1;
@@ -1725,6 +1904,7 @@ mysql_service_status_t mcp_init() {
 
 mysql_service_status_t mcp_deinit() {
   stop_server();
+  watchdog.stop();
   const bool status_failed = unregister_status_vars();
   return unregister_sysvars() || status_failed ? 1 : 0;
 }

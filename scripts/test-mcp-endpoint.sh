@@ -255,6 +255,7 @@ expect "the account's oldest sessions were replaced (404)" "$(req tok-123 POST "
 expect "its newest session works" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $LAST" -d "$CALL" | head -1)" "^HTTP/1.1 200"
 expect "another account's session survives them" "$(req tbl-app POST "${J[@]}" -H "Mcp-Session-Id: $OTHER" -d "$CALL" | head -1)" "^HTTP/1.1 200"
 expect "session timeout default" "$(sql "SELECT @@mcp_http.session_timeout_minutes")" "^30$"
+expect "query timeout default (as mysql-mcp-server)" "$(sql "SELECT @@mcp_http.query_timeout_seconds")" "^30$"
 
 # The stateless revision 2026-07-28 (SEP-2575), on the same endpoint: no handshake or session;
 # every request carries its version and client capabilities in _meta, and the MCP-Protocol-Version,
@@ -300,7 +301,14 @@ expect "a session-era version in _meta and the header is served as that era" "$(
 
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).
 sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
-expect "reinstall mapped to app, with allowed origins and masked columns" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.allowed_origins = 'http://localhost:6274, https://Inspector.example', GLOBAL mcp_http.mask_columns = ' secret, PASS ,, ÉMAIL,	пароль , token '")" "^$"
+expect "reinstall mapped to app, with allowed origins and masked columns" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.allowed_origins = 'http://localhost:6274, https://Inspector.example', GLOBAL mcp_http.mask_columns = ' secret, PASS ,, ÉMAIL,	пароль , token ', GLOBAL mcp_http.query_timeout_seconds = 3")" "^$"
+# A statement that runs past mcp_http.query_timeout_seconds is stopped (KILL QUERY), whatever it
+# is: one that never ends would hold its I/O thread and the connections queued on it.
+for q in "SELECT SLEEP(20)" "DO SLEEP(20)"; do
+	t0=$(date +%s); out=$(call run_query "{\"sql\":\"$q\"}"); took=$(( $(date +%s) - t0 ))
+	expect "$q is stopped after 3 s (took ${took}s)" "$took $out" '^[3-9] .*Error 1317: stopped after mcp_http.query_timeout_seconds \(3 s\)[^"]*".*"isError":true'
+done
+expect "the next call runs normally" "$(call run_query '{"sql":"SELECT 1 AS one"}')" 'one\\":\\"1\\".*"isError":false'
 # Column masking, as mysql-mcp-server's MYSQL_MCP_MASK_COLUMNS: by column name, substring,
 # case-insensitive; NULL stays NULL.
 expect "masked columns: values replaced, NULL kept, others untouched" "$(call run_query '{"sql":"SELECT \"a\" AS user_password, \"b\" AS SecretKey, NULL AS secret_null, \"c\" AS ok"}')" 'user_password\\":\\"\*\*\*\*\*\*\*\*\\",\\"SecretKey\\":\\"\*\*\*\*\*\*\*\*\\",\\"secret_null\\":null,\\"ok\\":\\"c\\"'
