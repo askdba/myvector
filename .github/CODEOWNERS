@@ -1,0 +1,10 @@
+# Code owners. GitHub requests their review on pull requests that touch these paths.
+#
+# The MCP components (RFC 0001: component_mcp_guard, component_mcp, the SQL tool pack) and
+# their tests. @askdba maintains this C++ code (RFC 0001 §10 go/no-go).
+/src/mcp/                       @askdba
+/sql/mcp/                       @askdba
+/scripts/*mcp*                  @askdba
+/scripts/mcp-conformance/       @askdba
+/docker/mysql-mcp/              @askdba
+/docs/MCP_COMPONENTS.md         @askdba
