@@ -359,4 +359,36 @@ Facts recorded for Phase 5:
 
 Both run in the `mcp-endpoint` CI job after the endpoint test.
 
+### Fuzzing and ASAN soak
+
+RFC 0001 §10 requires "zero `mysqld` crashes over 72h of fuzzing plus a soak test under ASAN". The **MCP fuzz and ASAN soak** workflow (`.github/workflows/mcp-fuzz-soak.yml`, run by hand) does this on GitHub's amd64 runners:
+
+1. **Build.** `scripts/build-mcp-asan-26.10-docker.sh` builds an AddressSanitizer MySQL 26.10 server (`-DWITH_ASAN=ON`, RelWithDebInfo) with `component_mcp`, `component_mcp_guard` and `component_reference_cache`. Without the cache, event tracking reaches no component and the guard would see nothing. The result is packed as a self-contained tarball with every library it needs, `libasan` included.
+2. **Shards.** Parallel jobs (default 14) each run a fresh server for 330 minutes (`scripts/fuzz-mcp-endpoint.sh`). GitHub stops a job at 6 hours, so the 72 hours are the sum over shards: 14 × 5.5 h = 77 h.
+3. **Summary.** A final job adds up the shards' hours and fails if any shard failed.
+
+Each shard sets up the guard, the tool pack, the token table and accounts for every refusal path. A preflight checks that the guard refuses an `MCP_USER` write. Then `scripts/mcp-fuzz/fuzz.py` runs, in parallel for the whole time:
+
+- **HTTP and JSON-RPC fuzzing:**
+  - random and mutated methods, headers and bodies, in both protocol eras;
+  - deep nesting, huge values, invalid UTF-8;
+  - raw socket abuse: bad `Content-Length`, chunked garbage, slow and dropped connections, pipelining, huge headers;
+- **SQL fuzzing** through `run_query`, with mutations of statements the guard must refuse;
+- **checked sessions:** known row counts, masking, bounded replies, the tool list, and refusals for locked, privileged and expired tokens;
+- **non-MCP traffic** from an ordinary account.
+
+**A shard fails on:**
+- a `mysqld` crash or exit, or an AddressSanitizer report (aborts are symbolized);
+- `mysqld` not answering SQL for 60 s;
+- the endpoint not answering within 3 minutes after the run;
+- an unclean shutdown;
+- an invariant violation:
+  - `d1.t` changing, i.e. a write the guard let through (the report lists the statements answered OK just before);
+  - a token hash in any reply;
+  - a wrong answer.
+
+Endpoint stalls while the fuzzer holds the I/O threads are counted, not failed (#269, #304). `rss.csv` records `mysqld`'s memory once a minute. Leak detection is off (`mysqld` frees little at exit); memory growth is read from `rss.csv`.
+
+Run locally: `scripts/build-mcp-asan-26.10-docker.sh mysql-26.10.0 dist/mcp-asan`, then `scripts/fuzz-mcp-endpoint.sh dist/mcp-asan/mysql-asan.tar.gz <seconds> <out-dir> [seed]`. Under ASAN the server takes several minutes to initialize and start.
+
 CI (`integration-scripts.yml`, job `mcp-endpoint`) builds and runs it on 26.10.0.
