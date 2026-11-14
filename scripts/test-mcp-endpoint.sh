@@ -245,6 +245,21 @@ expect "a non-JSON Content-Type: 415" "$(req tok-123 POST -H 'Content-Type: text
 expect "Accept without text/event-stream: 400" "$(req tok-123 POST -H 'Content-Type: application/json' -H 'Accept: application/json' -d "$CALL" | head -1)" "^HTTP/1.1 400"
 expect "Accept wildcards are accepted" "$(req tok-123 POST -H 'Content-Type: application/json; charset=utf-8' -H 'Accept: application/*;q=0.9, text/*' -d "$CALL")" '"isError":false'
 expect "GET (no SSE stream): 405, Allow: POST, DELETE" "$(req tok-123 GET -H 'Accept: text/event-stream' | grep -iE '^HTTP|^allow' | tr '\n' ' ')" "^HTTP/1.1 405.*[Aa]llow: POST, DELETE"
+# Sessions per account: at most 64; a new one replaces that account's least recently used, and
+# never another account's session (repeated initialize must not evict other accounts).
+OTHER=$(req tbl-app POST "${J[@]}" -d "$INIT" | awk -F': ' 'tolower($1) == "mcp-session-id" {print $2}')
+many=$(docker run --rm --network "container:$C" --entrypoint sh "$CURL_IMAGE" -c '
+	i=0; while [ $i -lt 70 ]; do
+		curl -s -m 10 -D - -o /dev/null -X POST http://127.0.0.1:33480/mcp -H "Authorization: Bearer tok-123" \
+			-H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" -d "$0" |
+			tr -d "\r" | awk -F": " "tolower(\$1) == \"mcp-session-id\" {print \$2}"
+		i=$((i + 1))
+	done' "$INIT")
+FIRST=$(printf '%s\n' "$many" | head -1); LAST=$(printf '%s\n' "$many" | tail -1)
+expect "70 initializes issue 70 session ids" "$(printf '%s\n' "$many" | grep -c .)" "^70$"
+expect "the account's oldest sessions were replaced (404)" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $FIRST" -d "$CALL" | head -1)" "^HTTP/1.1 404"
+expect "its newest session works" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $LAST" -d "$CALL" | head -1)" "^HTTP/1.1 200"
+expect "another account's session survives them" "$(req tbl-app POST "${J[@]}" -H "Mcp-Session-Id: $OTHER" -d "$CALL" | head -1)" "^HTTP/1.1 200"
 expect "session timeout default" "$(sql "SELECT @@mcp_http.session_timeout_minutes")" "^30$"
 
 # The stateless revision 2026-07-28 (SEP-2575), on the same endpoint: no handshake or session;

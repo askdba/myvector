@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- **`component_mcp`: one account can no longer evict other accounts' sessions** (found by the security review for RFC 0001 §10, [#256](https://github.com/askdba/myvector/issues/256)). The `Mcp-Session-Id` table (4096 entries) dropped its least recently used session when full. Repeated `initialize` calls from one token could therefore end every other account's sessions (their next request got 404). Each account now keeps at most 64 sessions, a new one replacing that account's own least recently used. When the table is full of other accounts' live sessions, `initialize` gets 503. `scripts/test-mcp-endpoint.sh` checks 70 sessions of one account against another account's session.
 - **`component_mcp`: a token runs only as its exact account** (found by the security review for RFC 0001 §10, [#256](https://github.com/askdba/myvector/issues/256)). Impersonated sessions are matched against the grant tables like a login. So a token mapped to an account that does not exist, such as a dropped `app@localhost`, ran as a wider existing entry such as `app@'%'`, with that account's grants. If that account lacked `MCP_USER`, the guard did not restrict it either; reproduced on 26.10.0 by reading `mysql.user`. The endpoint now checks the session's `priv_user` and `priv_host` against the mapped account and refuses a mismatch with error 1045, for tool calls and for the token-table reader. `scripts/test-mcp-endpoint.sh` checks both cases.
 
 ### Changed
