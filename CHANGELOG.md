@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Security
+- **`component_mcp_guard` fails closed without `component_reference_cache`.** The server delivers event tracking to components through `component_reference_cache`. Without it (an install that lacks the file, as a server build of only `mysqld` did in the RFC 0001 §10 fuzzing setup), the guard loaded and registered its settings but saw no statements, so `MCP_USER` sessions, the endpoint's included, ran unrestricted. The guard now requires the cache's `reference_caching_channel` service, so `INSTALL COMPONENT` fails with error 3534 instead, and `component_mcp`, which requires the guard, can't be installed either. Verified on MySQL 8.4.11, 9.7.2 and 26.10.0, and on 26.10.0 with the cache removed.
+
+### Security
 - **`component_mcp`: one account can no longer evict other accounts' sessions** (found by the security review for RFC 0001 §10, [#256](https://github.com/askdba/myvector/issues/256)). The `Mcp-Session-Id` table (4096 entries) dropped its least recently used session when full. Repeated `initialize` calls from one token could therefore end every other account's sessions (their next request got 404). Each account now keeps at most 64 sessions, a new one replacing that account's own least recently used. When the table is full of other accounts' live sessions, `initialize` gets 503. `scripts/test-mcp-endpoint.sh` checks 70 sessions of one account against another account's session.
 
 ### Changed
