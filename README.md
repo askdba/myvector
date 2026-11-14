@@ -183,6 +183,8 @@ that easy!
 
   If the index has no saved files, the load returns `ERROR: no saved index ...` and leaves the index in memory as it is. If the files exist but can't be read, it returns `ERROR: ... could not be loaded ...` and the index stays unloaded until a later load succeeds (once the files can be read) or it is rebuilt. Searching an index that isn't loaded fails with "Vector index is not loaded." A load or build waits for searches on that index to finish before it replaces the index's graph, and searches wait while the graph is replaced. A build then fills the new graph while searches run, so searches during a build can return partial or empty results until it finishes.
 
+- **Store an index in InnoDB:** add `storage=innodb` to an HNSW column's options to keep it in InnoDB tables instead of files (component build; see [Storing an index in InnoDB](docs/usage.md#storing-an-index-in-innodb-storageinnodb)).
+
 ### Vector Functions
 
 - **Create a Vector:**

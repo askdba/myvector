@@ -8,7 +8,10 @@
 #include <cstring>
 #include "myvector.h"
 #include "myvector_binlog_service.h"
+#include "myvector_index_store.h"
+#include "myvector_innodb_store.h"
 #include "myvector_udf_service.h"
+#include <mysql/components/services/mysql_command_services.h>
 #ifdef MYVECTOR_HAS_EVENT_TRACKING_PARSE_SERVICE
 #include <mysql/components/util/event_tracking/event_tracking_parse_consumer_helper.h>
 #endif
@@ -20,6 +23,14 @@ REQUIRES_SERVICE_PLACEHOLDER(mysql_current_thread_reader);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_thd_security_context);
 REQUIRES_SERVICE_PLACEHOLDER(global_grants_check);
 REQUIRES_SERVICE_PLACEHOLDER(mysql_runtime_error);
+/* Defined in myvector_innodb_store.cc, which uses them. */
+extern REQUIRES_SERVICE_PLACEHOLDER(mysql_command_factory);
+extern REQUIRES_SERVICE_PLACEHOLDER(mysql_command_options);
+extern REQUIRES_SERVICE_PLACEHOLDER(mysql_command_query);
+extern REQUIRES_SERVICE_PLACEHOLDER(mysql_command_query_result);
+extern REQUIRES_SERVICE_PLACEHOLDER(mysql_command_field_info);
+extern REQUIRES_SERVICE_PLACEHOLDER(mysql_command_error_info);
+extern REQUIRES_SERVICE_PLACEHOLDER(mysql_command_thread);
 
 SERVICE_TYPE(mysql_udf_metadata)* myvector_component_udf_metadata = nullptr;
 
@@ -59,9 +70,25 @@ static int myvector_component_init() {
     myvector_component_udf_metadata = nullptr;
   }
 
-  if (ret == 0) {
+  bool store_started = false;
+  if (ret == 0) {  // storage=innodb indexes (RFC-005)
+    store_started = myvector_store::start();
+    if (store_started)
+      myvector_set_index_store(myvector_store::index_store());
+    else
+      ret = 1;
+  }
+
+  if (ret == 0)
     ret = myvector_component::get_binlog_service().start_binlog_monitoring();
-    if (ret != 0 && udfs_registered) {
+
+  /* A failed init leaves nothing behind: no UDFs, no storage thread. */
+  if (ret != 0) {
+    if (store_started) {
+      myvector_set_index_store(nullptr);
+      myvector_store::stop();
+    }
+    if (udfs_registered) {
       myvector_component::s_udf_service.deregister_udfs(
           mysql_service_udf_registration);
       myvector_component_udf_metadata = nullptr;
@@ -90,6 +117,8 @@ static int myvector_component_deinit() {
     return ret;
   }
 
+  myvector_set_index_store(nullptr);
+  myvector_store::stop();
   myvector_component_udf_metadata = nullptr;
   return ret;
 }
@@ -123,6 +152,13 @@ REQUIRES_SERVICE(mysql_current_thread_reader),
 REQUIRES_SERVICE(mysql_thd_security_context),
 REQUIRES_SERVICE(global_grants_check),
 REQUIRES_SERVICE(mysql_runtime_error),
+REQUIRES_SERVICE(mysql_command_factory),
+REQUIRES_SERVICE(mysql_command_options),
+REQUIRES_SERVICE(mysql_command_query),
+REQUIRES_SERVICE(mysql_command_query_result),
+REQUIRES_SERVICE(mysql_command_field_info),
+REQUIRES_SERVICE(mysql_command_error_info),
+REQUIRES_SERVICE(mysql_command_thread),
 END_COMPONENT_REQUIRES();
 
 /* Metadata */

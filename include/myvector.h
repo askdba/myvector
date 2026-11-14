@@ -156,6 +156,14 @@ public:
      * persistence of their own (KNN) have nothing to look for: true. */
     virtual bool hasSavedIndex(const std::string& /* path */) { return true; }
 
+    /* storageProblem - why this index can't be built, saved or loaded with the
+     * storage its options ask for, or "" (RFC-005: storage=innodb needs the
+     * component, GTID mode, a writable server, and no online=Y until Phase 1b). */
+    virtual std::string storageProblem() { return ""; }
+
+    /* storageError - the last storage failure's description, or "". */
+    virtual std::string storageError() { return ""; }
+
     virtual bool initIndex() = 0;
 
     /* rebuildIndex - drop the saved files and the graph and start an empty
@@ -244,7 +252,8 @@ public:
     bool closeAndDrop(const std::string& name, const std::string& path,
                       const std::function<bool(AbstractVectorIndex*)>& pred =
                           nullptr,
-                      bool skipIfBuilding = false);
+                      bool skipIfBuilding = false,
+                      std::string* dropError = nullptr);
 
     /* beginBuild/endBuild - a MYVECTOR_INDEX_BUILD of `name` is in progress
      * (counted, so concurrent builds nest). Call beginBuild before get(). */
