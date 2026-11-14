@@ -188,26 +188,60 @@ expect "no account can proxy as the reader (DROP USER leaves proxy grants)" "$(s
 sql "INSERT INTO mysql.mcp_tokens (token_sha256, account, expires_at, comment) VALUES
   ('$(h tbl-mcp)', 'mcp@%', NULL, 'test'), ('$(h tbl-app)', 'app@%', NOW() + INTERVAL 1 DAY, 'test'),
   ('$(h tbl-old)', 'mcp@%', NOW() - INTERVAL 1 SECOND, 'expired')"
+sleep 1.2  # requests share a snapshot of the token table, read again once it is a second old
 expect "a table token runs as its account" "$(callas tbl-mcp run_query '{"sql":"SELECT CURRENT_USER() AS who"}')" 'who\\":\\"mcp@%\\".*"isError":false'
 expect "another table token, another account" "$(callas tbl-app run_query '{"sql":"SELECT CURRENT_USER() AS who"}')" 'who\\":\\"app@%\\".*"isError":false'
 expect "the mapped account's policy applies (guard, MCP_USER)" "$(callas tbl-mcp run_query '{"sql":"INSERT INTO d1.t VALUES (5)"}')" 'Error 1290: [^"]*mcp.read_only.*"isError":true'
 expect "an expired token gets 401" "$(callas tbl-old run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
 expect "an unknown token gets 401" "$(callas tbl-none run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
+# A global sql_select_limit does not cap the token snapshot (new sessions inherit it).
+sql "SET GLOBAL sql_select_limit = 1"; sleep 1.2
+expect "with sql_select_limit = 1, both table tokens still authenticate" "$(callas tbl-mcp run_query '{"sql":"SELECT 1"}' | tail -1) $(callas tbl-app run_query '{"sql":"SELECT 1"}' | tail -1)" "^200 200$"
+sql "SET GLOBAL sql_select_limit = DEFAULT"
 expect "the single token still maps to mcp_http.account" "$(call run_query '{"sql":"SELECT CURRENT_USER() AS who"}')" 'who\\":\\"mcp@%\\"'
 expect "MCP sessions cannot read the token table" "$(callas tbl-mcp run_query '{"sql":"SELECT COUNT(*) FROM mysql.mcp_tokens"}')" 'Error 1290: [^"]*mcp.deny_system_schemas.*"isError":true'
 expect "nobody can log in as the reader account, not even with its old password" "$(docker exec "$C" mysql -umysql.mcp -pguess -N -e 'SELECT 1' 2>&1 | grep -v 'Using a password')" "ERROR (1045|3118)"
 sql "DELETE FROM mysql.mcp_tokens WHERE token_sha256 = '$(h tbl-mcp)'"
-expect "a deleted token gets 401 on the next request" "$(callas tbl-mcp run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
+sleep 1.2
+expect "a deleted token gets 401 within a second" "$(callas tbl-mcp run_query '{"sql":"SELECT 1"}' | tail -1)" "^401$"
 # RFC 0001 §7.4: a token never runs as an account with SUPER, SYSTEM_USER or MCP_ADMIN, whatever
 # maps it (checked on every call; these accounts would not be restricted by the guard).
 sql "CREATE USER sysu@'%'; GRANT SELECT, INSERT ON d1.* TO sysu@'%'; GRANT SYSTEM_USER ON *.* TO sysu@'%';
 CREATE USER adm@'%'; GRANT SELECT, INSERT ON d1.* TO adm@'%'; GRANT MCP_ADMIN ON *.* TO adm@'%';
 INSERT INTO mysql.mcp_tokens (token_sha256, account) VALUES
   ('$(h tbl-root)', 'root@%'), ('$(h tbl-sysu)', 'sysu@%'), ('$(h tbl-adm)', 'adm@%')"
+sleep 1.2
 expect "a token mapped to root is refused (SUPER)" "$(callas tbl-root run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*does not run as an account with SUPER, SYSTEM_USER or MCP_ADMIN \(it has SUPER\).*"isError":true'
 expect "a token mapped to a SYSTEM_USER account is refused" "$(callas tbl-sysu run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*\(it has SYSTEM_USER\).*"isError":true'
 expect "a token mapped to an MCP_ADMIN account is refused" "$(callas tbl-adm run_query '{"sql":"INSERT INTO d1.t VALUES (8)"}')" 'Error 1227: [^"]*\(it has MCP_ADMIN\).*"isError":true'
 expect "nothing written by table tokens" "$(sql "SELECT GROUP_CONCAT(i) FROM d1.t")" "^1$"
+# The token lookup's statement text is fixed: no token hash reaches the general log (or the
+# processlist and performance_schema), valid or not.
+sql "SET GLOBAL log_output = 'TABLE'; TRUNCATE mysql.general_log; SET GLOBAL general_log = ON"
+sleep 1.2  # so the next request reads the table again
+callas tbl-app run_query '{"sql":"SELECT 1"}' >/dev/null; callas no-such-token run_query '{"sql":"SELECT 1"}' >/dev/null
+sql "SET GLOBAL general_log = OFF"
+expect "the lookup ran (the general log has it)" "$(sql "SELECT COUNT(*) FROM mysql.general_log WHERE argument LIKE '%mcp_tokens%'")" "^[1-9]"
+expect "no token hash in the general log" "$(sql "SELECT COUNT(*) FROM mysql.general_log WHERE argument LIKE '%$(h tbl-app)%' OR argument LIKE '%$(h no-such-token)%'")" "^0$"
+# Unknown tokens cost at most one read of the table per second, however many arrive.
+sql "TRUNCATE mysql.general_log; SET GLOBAL general_log = ON"
+burst=$(docker run --rm --network "container:$C" --entrypoint sh "$CURL_IMAGE" -c '
+	start=$(date +%s); i=0
+	while [ $i -lt 50 ]; do
+		curl -s -o /dev/null -m 10 -X POST http://127.0.0.1:33480/mcp -H "Authorization: Bearer guess-$i" \
+			-H "Content-Type: application/json" -d "{}"; i=$((i + 1))
+	done; echo $(( $(date +%s) - start + 1 ))')
+sql "SET GLOBAL general_log = OFF"
+reads=$(sql "SELECT COUNT(*) FROM mysql.general_log WHERE argument LIKE '%mcp_tokens%'")
+expect "50 unknown tokens in ${burst}s read the token table at most once a second ($reads reads)" "$(( reads <= burst + 1 ))" "^1$"
+sql "TRUNCATE mysql.general_log; SET GLOBAL log_output = 'FILE'"
+# A token runs only as its exact account: when the mapped user@host does not exist, a wider
+# entry (here ghost@'%', without MCP_USER, so unrestricted by the guard) must not stand in for it.
+sql "CREATE USER ghost@'%'; GRANT SELECT ON *.* TO ghost@'%';
+INSERT INTO mysql.mcp_tokens (token_sha256, account) VALUES ('$(h tbl-ghost)', 'ghost@localhost'), ('$(h tbl-ghostcase)', 'ghost@%')"
+sleep 1.2  # the token table snapshot is read again once it is a second old
+expect "a token mapped to a missing account is refused, not run as a wider one (1045)" "$(callas tbl-ghost run_query '{"sql":"SELECT CURRENT_USER() AS cu FROM mysql.user LIMIT 1"}')" 'Error 1045: Access denied for user '"'"'ghost'"'"'@'"'"'localhost'"'"': the account does not exist[^"]*".*"isError":true'
+expect "... and the same token on the existing account runs" "$(callas tbl-ghostcase run_query '{"sql":"SELECT CURRENT_USER() AS cu"}')" 'cu\\":\\"ghost@%\\".*"isError":false'
 
 # Streamable HTTP (MCP transport spec): protocol version negotiation and header, Mcp-Session-Id
 # sessions bound to the token's account, DELETE, and the request header checks.
@@ -254,6 +288,16 @@ expect "70 initializes issue 70 session ids" "$(printf '%s\n' "$many" | grep -c 
 expect "the account's oldest sessions were replaced (404)" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $FIRST" -d "$CALL" | head -1)" "^HTTP/1.1 404"
 expect "its newest session works" "$(req tok-123 POST "${J[@]}" -H "Mcp-Session-Id: $LAST" -d "$CALL" | head -1)" "^HTTP/1.1 200"
 expect "another account's session survives them" "$(req tbl-app POST "${J[@]}" -H "Mcp-Session-Id: $OTHER" -d "$CALL" | head -1)" "^HTTP/1.1 200"
+# Deeply nested JSON: rapidjson is recursive, so the endpoint refuses deep nesting before parsing
+# (a body of half a million '[' crashed mysqld before the depth check).
+deep=$(docker run --rm --network "container:$C" --entrypoint sh "$CURL_IMAGE" -c '
+	printf "%0500000d" 0 | tr 0 "[" >/tmp/deep.json
+	curl -s -m 30 -w "\n%{http_code}" -X POST http://127.0.0.1:33480/mcp -H "Content-Type: application/json" \
+		-H "Accept: application/json, text/event-stream" -H "Authorization: Bearer tok-123" --data-binary @/tmp/deep.json')
+expect "500 000 nested arrays: a parse error, not a crash" "$(printf '%s\n' "$deep" | tr '\n' ' ')" '"code":-32700,"message":"parse error: JSON nested too deeply".* 200 $'
+expect "the server is still up" "$(alive)" "^up$"
+expect "64 levels are accepted, 65 refused" "$(rpc tok-123 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"x\":$(printf '%062d' 0 | tr 0 '[')$(printf '%062d' 0 | tr 0 ']')}}" | head -1) $(rpc tok-123 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"x\":$(printf '%063d' 0 | tr 0 '[')$(printf '%063d' 0 | tr 0 ']')}}" | head -1)" '^\{"jsonrpc":"2.0","id":1,"result":\{"tools".* \{"jsonrpc":"2.0","id":null,"error":\{"code":-32700'
+expect "brackets inside strings do not count" "$(call run_query "{\"sql\":\"SELECT '$(printf '%0200d' 0 | tr 0 '[')' AS b\"}" | head -1)" '"isError":false'
 expect "session timeout default" "$(sql "SELECT @@mcp_http.session_timeout_minutes")" "^30$"
 expect "query timeout default (as mysql-mcp-server)" "$(sql "SELECT @@mcp_http.query_timeout_seconds")" "^30$"
 

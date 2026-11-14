@@ -689,42 +689,103 @@ void read_error(MYSQL_H h, SqlResult *r) {
   r->error = msg != nullptr ? msg : "";
 }
 
+// Whether the session's privileges come from exactly the account user@host. An impersonated
+// session is matched against the grant tables like a login, so when user@host does not exist a
+// wider entry such as user@'%' can match instead, with other grants and possibly without
+// MCP_USER (then the guard does not restrict it). User names compare exactly, host names
+// case-insensitively, as the grant tables do. Fails closed on an unreadable context.
+bool session_is_account(MYSQL_THD thd, const std::string &user, const std::string &host) {
+  Security_context_handle sctx = nullptr;
+  MYSQL_LEX_CSTRING priv_user{nullptr, 0}, priv_host{nullptr, 0};
+  if (thd == nullptr || mysql_service_mysql_thd_security_context->get(thd, &sctx) ||
+      sctx == nullptr ||
+      mysql_service_mysql_security_context_options->get(sctx, "priv_user", &priv_user) ||
+      mysql_service_mysql_security_context_options->get(sctx, "priv_host", &priv_host) ||
+      priv_user.str == nullptr || priv_host.str == nullptr)
+    return false;
+  if (std::string(priv_user.str, priv_user.length) != user || priv_host.length != host.size())
+    return false;
+  for (size_t i = 0; i < host.size(); ++i)
+    if (std::tolower(static_cast<unsigned char>(priv_host.str[i])) !=
+        std::tolower(static_cast<unsigned char>(host[i])))
+      return false;
+  return true;
+}
+
 // The token table, mysql.mcp_tokens (src/mcp/endpoint/mcp_tokens.sql): token hashes mapped to
 // accounts, optionally expiring. The endpoint reads it in a session impersonating the locked
 // account mysql.mcp@localhost, whose only grant is SELECT on that table; MCP sessions cannot read
 // it (the guard denies the mysql schema to them).
 constexpr char kTokenReaderUser[] = "mysql.mcp", kTokenReaderHost[] = "localhost";
 
-// The account (user@host) a token hash maps to in mysql.mcp_tokens, if any and not expired.
-// hash is the endpoint's own hex SHA-256, so it is safe in the statement text.
-std::optional<std::string> table_token_account(const std::string &hash) {
+// A snapshot of mysql.mcp_tokens' unexpired rows: (token hash, account).
+using TokenRows = std::vector<std::pair<std::string, std::string>>;
+
+// Reads the unexpired rows into *rows. The statement text is fixed and hashes are compared in the
+// endpoint, in constant time: a presented hash in the text would reach the general log, the
+// processlist and performance_schema statement history, whose readers need not have access to
+// the table and could take it for an offline guess of a weak token. Returns false on failure.
+bool load_token_rows(TokenRows *rows) {
+  rows->clear();
   MYSQL_H h = nullptr;
-  if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) return std::nullopt;
+  if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) return false;
   static constexpr bool kBypassMaxConnections = false;
-  std::optional<std::string> account;
+  bool ok = false;
   if (!mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_PROTOCOL, "local") &&
       !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_USER_NAME, kTokenReaderUser) &&
       !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_HOST_NAME, kTokenReaderHost) &&
       !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_BYPASS_MAX_CONNECTIONS,
                                                 &kBypassMaxConnections) &&
-      !mysql_service_mysql_command_factory->connect(h)) {
-    const std::string sql =
-        "SELECT account FROM mysql.mcp_tokens WHERE token_sha256 = '" + hash +
-        "' AND (expires_at IS NULL OR expires_at > NOW())";
+      !mysql_service_mysql_command_factory->connect(h) &&
+      session_is_account(session_thd(h), kTokenReaderUser, kTokenReaderHost)) {
+    static constexpr char kSql[] =
+        "SELECT token_sha256, account FROM mysql.mcp_tokens "
+        "WHERE expires_at IS NULL OR expires_at > NOW() "
+        "LIMIT 18446744073709551615";  // explicit: a global sql_select_limit must not drop tokens
     MYSQL_RES_H res = nullptr;
-    MYSQL_ROW_H row = nullptr;
-    ulong *lengths = nullptr;
-    if (!mysql_service_mysql_command_query->query(h, sql.data(), sql.size()) &&
+    if (!mysql_service_mysql_command_query->query(h, kSql, sizeof(kSql) - 1) &&
         !mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr) {
-      if (!mysql_service_mysql_command_query_result->fetch_row(res, &row) && row != nullptr &&
-          row[0] != nullptr &&
-          !mysql_service_mysql_command_query_result->fetch_lengths(res, &lengths) && lengths)
-        account.emplace(row[0], lengths[0]);
+      ok = true;
+      MYSQL_ROW_H row = nullptr;
+      ulong *lengths = nullptr;
+      while (!mysql_service_mysql_command_query_result->fetch_row(res, &row) && row != nullptr) {
+        if (row[0] == nullptr || row[1] == nullptr ||
+            mysql_service_mysql_command_query_result->fetch_lengths(res, &lengths) ||
+            lengths == nullptr)
+          continue;
+        rows->emplace_back(std::string(row[0], lengths[0]), std::string(row[1], lengths[1]));
+      }
       mysql_service_mysql_command_query_result->free_result(res);
     }
   }
   mysql_service_mysql_command_factory->close(h);
-  return account;
+  if (!ok) rows->clear();
+  return ok;
+}
+
+// The account (user@host) a token hash maps to in mysql.mcp_tokens, if any and not expired.
+// Requests share a snapshot of the table, read again once it is kTokenRowsTtl old: a flood of
+// requests, unknown tokens included, costs at most one read of the table per kTokenRowsTtl, and
+// INSERT, DELETE and expiry take effect within it. A failed read leaves no snapshot (401).
+constexpr std::chrono::milliseconds kTokenRowsTtl{1000};
+
+std::optional<std::string> table_token_account(const std::string &hash) {
+  static std::mutex mutex;
+  static TokenRows rows;
+  static std::chrono::steady_clock::time_point loaded;
+  static bool have = false;
+  std::lock_guard<std::mutex> lock(mutex);
+  const auto now = std::chrono::steady_clock::now();
+  if (!have || now - loaded >= kTokenRowsTtl) {
+    load_token_rows(&rows);
+    loaded = now;
+    have = true;
+  }
+  for (const auto &[row_hash, account] : rows)
+    if (row_hash.size() == hash.size() &&
+        CRYPTO_memcmp(row_hash.data(), hash.data(), hash.size()) == 0)
+      return account;
+  return std::nullopt;
 }
 
 // The account the request's bearer token maps to: mcp_http.token_sha256 (to mcp_http.account)
@@ -1043,6 +1104,10 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
     };
     if (thd == nullptr) {
       r.error = "session refused";
+    } else if (!session_is_account(thd, user, host)) {
+      r.sql_errno = ER_ACCESS_DENIED_ERROR;
+      r.error = "Access denied for user '" + user + "'@'" + host +
+                "': the account does not exist, so the MCP endpoint does not run as it";
     } else if (account_locked(thd)) {
       r.sql_errno = ER_ACCOUNT_HAS_BEEN_LOCKED;
       r.error = "Access denied for user '" + user + "'@'" + host + "'. Account is locked.";
@@ -1437,6 +1502,35 @@ bool accepts_json_and_stream(const std::string *accept) {
   return json && stream;
 }
 
+// The deepest JSON nesting a request may have. rapidjson parses, copies, serializes and frees
+// nested values recursively, so unbounded nesting overflows the I/O thread's stack (a body of
+// half a million '[' crashed mysqld). MCP requests need a handful of levels.
+constexpr int kMaxJsonDepth = 64;
+
+// Whether the body's arrays and objects nest at most kMaxJsonDepth deep, counted over the whole
+// text (brackets inside strings excluded), before rapidjson sees it.
+bool json_depth_ok(const std::string &body) {
+  int depth = 0;
+  bool in_string = false, escaped = false;
+  for (const char c : body) {
+    if (in_string) {
+      if (escaped)
+        escaped = false;
+      else if (c == '\\')
+        escaped = true;
+      else if (c == '"')
+        in_string = false;
+    } else if (c == '"') {
+      in_string = true;
+    } else if (c == '[' || c == '{') {
+      if (++depth > kMaxJsonDepth) return false;
+    } else if (c == ']' || c == '}') {
+      --depth;
+    }
+  }
+  return true;
+}
+
 bool json_content_type(const std::string *type) {
   if (type == nullptr) return false;
   std::string t = type->substr(0, type->find(';'));
@@ -1611,8 +1705,13 @@ class McpHandler : public http::base::RequestHandler {
             "Accept must contain both 'application/json' and 'text/event-stream'");
       return;
     }
+    const std::string &body = req.get_input_body();
+    if (!json_depth_ok(body)) {
+      reply(req, nullptr, [](Json &out) { rpc_error(out, -32700, "parse error: JSON nested too deeply"); });
+      return;
+    }
     Json in;
-    in.Parse(req.get_input_body().c_str());
+    in.Parse(body.c_str());
     if (in.HasParseError() || !in.IsObject() || !in.HasMember("method") ||
         !in["method"].IsString()) {
       reply(req, nullptr, [](Json &out) { rpc_error(out, -32700, "parse error"); });
