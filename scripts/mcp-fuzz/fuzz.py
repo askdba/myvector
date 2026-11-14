@@ -45,7 +45,7 @@ METHODS = ["initialize", "tools/list", "tools/call", "ping", "server/discover",
            "notifications/initialized", "notifications/cancelled", "resources/list",
            "prompts/list", "subscriptions/listen", "logging/setLevel", "completion/complete"]
 HEALTH_GRACE = 60
-D1_T_ROWS = 3  # rows the setup puts in d1.t; MCP sessions must never change them
+D1_T_CONTENT = "1,2,3"  # d1.t as the setup leaves it; MCP sessions must never change it
 
 stop = threading.Event()
 lock = threading.Lock()
@@ -557,15 +557,16 @@ def monitor(start, seconds, out):
             c = mysql.connector.connect(host=HOST, port=3306, user="fuzzmon", password="",
                                         database="d1", connection_timeout=10)
             cur = c.cursor()
-            cur.execute("SELECT COUNT(*) FROM t")
+            # Contents, not a count: an UPDATE let through keeps the row count.
+            cur.execute("SELECT IFNULL(GROUP_CONCAT(i ORDER BY i), '') FROM t")
             n = cur.fetchone()[0]
             c.close()
             last_sql_ok = time.time()
-            if n != D1_T_ROWS:
+            if n != D1_T_CONTENT:
                 with lock:
                     suspects = [x for x in recent_ok if x[0] > time.time() - 15]
                 violation("guard-write-through",
-                          f"d1.t has {n} rows, expected {D1_T_ROWS}; statements answered OK in the last 15s: "
+                          f"d1.t is ({n}), expected ({D1_T_CONTENT}); statements answered OK in the last 15s: "
                           + json.dumps(suspects[-40:]))
                 stop.set()  # the first occurrence is the one to read
                 break
