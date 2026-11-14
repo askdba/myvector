@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Components are built with hidden symbol visibility.** `libmyvector_component.so`, `component_mcp_guard.so` and the guard's test probe exported their service placeholders (`mysql_service_<name>`) with default visibility. `mysqld` exports globals of the same names (`mysql_runtime_error`, `mysql_current_thread_reader`, `mysql_udf_metadata`), and in a `dlopen()`ed library the executable's definition wins. So the component's placeholder could resolve to `mysqld`'s own, and loading or unloading the component could overwrite it. Found by AddressSanitizer as an ODR violation while building the RFC 0001 §10 fuzzing run. MySQL builds its own components with hidden visibility; only `list_components` stays exported.
+
 ### Changed
 - **`component_mcp_guard` no longer subscribes to command events on 9.0+** ([#256](https://github.com/askdba/myvector/issues/256), RFC 0001 §10 guard overhead). They were used only to notice `COM_RESET_CONNECTION` in MCP sessions, but every client's commands paid for the dispatch: about 1% of the instructions of a point select. On 9.0 and later the guard reads the MCP session's `max_execution_time` at each of its statements instead (`mysql_system_variable_reader`) and restores the limit when it is 0 or above it; 8.4, which has no such reader, keeps command events. `scripts/test-mcp-guard.sh` now resets an MCP session with `COM_RESET_CONNECTION` (Python connector) and checks that the limit comes back, on 8.4, 9.7 and 26.10.
 
