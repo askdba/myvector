@@ -561,7 +561,7 @@ def monitor(start, seconds, out):
             count("monitor:endpoint-stall-checks")
         try:
             c = mysql.connector.connect(host=HOST, port=3306, user="fuzzmon", password="",
-                                        database="d1", connection_timeout=10)
+                                        database="d1", connection_timeout=10, read_timeout=30)
             cur = c.cursor()
             # Contents, not a count: an UPDATE let through keeps the row count.
             cur.execute("SELECT IFNULL(GROUP_CONCAT(i ORDER BY i), '') FROM t")
@@ -576,6 +576,16 @@ def monitor(start, seconds, out):
                           + json.dumps(suspects[-40:]))
                 stop.set()  # the first occurrence is the one to read
                 break
+        except mysql.connector.Error as e:
+            if getattr(e, "errno", None) in (1146, 1054):  # d1.t (or its column) is gone
+                with lock:
+                    suspects = [x for x in recent_ok if x[0] > time.time() - 15]
+                violation("guard-write-through",
+                          f"d1.t is gone ({e}); statements answered OK in the last 15s: "
+                          + json.dumps(suspects[-40:]))
+                stop.set()
+                break
+            count("monitor:sql-error:" + type(e).__name__)
         except Exception as e:  # noqa: BLE001
             count("monitor:sql-error:" + type(e).__name__)
         if time.time() - last_sql_ok > HEALTH_GRACE:
@@ -611,6 +621,10 @@ def main():
     for t in threads:
         t.start()
     while not stop.is_set():
+        # The monitor ends the run at --seconds; this deadline ends it if the monitor died or hung.
+        if time.time() - start > a.seconds + 3 * HEALTH_GRACE:
+            violation("monitor-stuck", "the monitor did not end the run (it died, or an SQL check hung)")
+            stop.set()
         time.sleep(1)
     time.sleep(5)  # let in-flight requests finish
     summary = {"seed": a.seed, "seconds": round(time.time() - start), "stats": dict(stats),
