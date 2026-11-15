@@ -941,27 +941,43 @@ class Watchdog {
     std::lock_guard<std::mutex> lock(mutex_);
     const uint64_t ticket = next_++;
     entries_[ticket] = {Clock::now() + std::chrono::seconds(opt_query_timeout_seconds),
-                        connection_id, user, host, false};
+                        connection_id, user, host};
     cv_.notify_all();
     return ticket;
   }
 
-  // Ends the watch; true if the statement was stopped for running past its deadline.
-  bool remove(uint64_t ticket) {
-    std::lock_guard<std::mutex> lock(mutex_);
+  // What happened to a watched statement: whether it ran past its deadline, and whether a KILL
+  // QUERY reached it.
+  struct Outcome {
+    bool expired = false, killed = false;
+  };
+
+  // Ends the watch.
+  Outcome remove(uint64_t ticket) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    // A KILL in flight for this statement finishes first, so it cannot hit a later statement.
+    cv_.wait(lock, [&] {
+      auto it = entries_.find(ticket);
+      return it == entries_.end() || !it->second.busy;
+    });
     auto it = entries_.find(ticket);
-    if (it == entries_.end()) return false;
-    const bool killed = it->second.killed;
+    if (it == entries_.end()) return {};
+    const Outcome outcome{it->second.expired, it->second.killed};
     entries_.erase(it);
-    return killed;
+    return outcome;
   }
 
  private:
+  // Past its deadline a statement is killed again every kRekill while it is still watched (a
+  // KILL can miss a statement, e.g. one that starts just after it), and a KILL that could not be
+  // sent is retried after kRetry.
+  static constexpr std::chrono::seconds kRekill{5}, kRetry{1};
+
   struct Entry {
-    Clock::time_point deadline;
+    Clock::time_point next;  // the deadline, then the next KILL attempt
     unsigned long long connection_id;
     std::string user, host;
-    bool killed;
+    bool expired = false, killed = false, busy = false;
   };
 
   void run() {
@@ -970,7 +986,7 @@ class Watchdog {
     while (!stopping_) {
       auto next = Clock::time_point::max();
       for (const auto &[ticket, e] : entries_)
-        if (!e.killed && e.deadline < next) next = e.deadline;
+        if (!e.busy && e.next < next) next = e.next;
       if (next == Clock::time_point::max())
         cv_.wait(lock);
       else
@@ -979,22 +995,23 @@ class Watchdog {
       std::vector<std::pair<uint64_t, Entry>> due;
       const auto now = Clock::now();
       for (auto &[ticket, e] : entries_)
-        if (!e.killed && e.deadline <= now) {
-          e.killed = true;  // claimed; cleared again below if the KILL fails
+        if (!e.busy && e.next <= now) {
+          e.expired = true;
+          e.busy = true;
           due.emplace_back(ticket, e);
         }
+      if (due.empty()) continue;
       lock.unlock();
-      std::vector<uint64_t> failed;
-      for (const auto &[ticket, e] : due)
-        if (!kill_query(e)) failed.push_back(ticket);
+      std::vector<std::pair<uint64_t, bool>> results;
+      for (const auto &[ticket, e] : due) results.emplace_back(ticket, kill_query(e));
       lock.lock();
-      // A KILL that could not be sent (no session, say) is retried a second later, so one
-      // transient failure cannot leave the statement holding its I/O thread.
-      for (const uint64_t ticket : failed)
+      for (const auto &[ticket, sent] : results)
         if (auto it = entries_.find(ticket); it != entries_.end()) {
-          it->second.killed = false;
-          it->second.deadline = Clock::now() + std::chrono::seconds(1);
+          it->second.busy = false;
+          it->second.killed = it->second.killed || sent;
+          it->second.next = Clock::now() + (sent ? kRekill : kRetry);
         }
+      cv_.notify_all();  // remove() may be waiting for these
     }
     lock.unlock();
     mysql_service_mysql_command_thread->end();
@@ -1055,22 +1072,22 @@ class Watch {
     const unsigned long long id = connection_id(h);
     if (id != 0) ticket_ = watchdog.add(id, user, host);
   }
-  ~Watch() { timed_out(); }
+  ~Watch() { end(); }
   Watch(const Watch &) = delete;
   Watch &operator=(const Watch &) = delete;
   bool ok() const { return ticket_ != 0; }
-  // Ends the watch (once); true if the statement was stopped at the deadline.
-  bool timed_out() {
+  // Ends the watch (once) and says what happened to the statement.
+  Watchdog::Outcome end() {
     if (ticket_ != 0) {
-      killed_ = watchdog.remove(ticket_);
+      outcome_ = watchdog.remove(ticket_);
       ticket_ = 0;
     }
-    return killed_;
+    return outcome_;
   }
 
  private:
   uint64_t ticket_ = 0;
-  bool killed_ = false;
+  Watchdog::Outcome outcome_;
 };
 
 // mcp.statements_total (component_mcp_guard's count of MCP statements) as this session reads it,
@@ -1192,12 +1209,13 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
     } else if (Retained retained; bounded_query(h, sql, &r.truncated, &retained)) {
       publish_retained(retained);
       read_error(h, &r);
-      if (watch.timed_out())
+      if (watch.end().expired)
         r.error = "stopped after mcp_http.query_timeout_seconds (" +
                   std::to_string(opt_query_timeout_seconds) + " s): " + r.error;
-    } else if (watch.timed_out()) {
+    } else if (watch.end().killed) {
       // Stopped at the deadline, but some statements end without an error when killed (SLEEP()
-      // returns 1): the call still failed.
+      // returns 1): the call still failed. (One that ran past the deadline and completed before
+      // a KILL reached it returns its result: it is complete.)
       publish_retained(retained);
       r.sql_errno = ER_QUERY_INTERRUPTED;
       r.error = "stopped after mcp_http.query_timeout_seconds (" +
