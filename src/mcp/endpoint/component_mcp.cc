@@ -890,6 +890,48 @@ bool bounded_query(MYSQL_H h, const std::string &sql, bool *truncated, Retained 
   return failed;
 }
 
+// mcp.statements_total (component_mcp_guard's count of MCP statements) as this session reads it,
+// or -1 if it cannot be read.
+long long guard_statements_total(MYSQL_H h) {
+  static constexpr char kSql[] = "SHOW GLOBAL STATUS LIKE 'mcp.statements_total'";
+  long long value = -1;
+  MYSQL_RES_H res = nullptr;
+  if (!mysql_service_mysql_command_query->query(h, kSql, sizeof(kSql) - 1) &&
+      !mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr) {
+    MYSQL_ROW_H row = nullptr;
+    if (!mysql_service_mysql_command_query_result->fetch_row(res, &row) && row != nullptr &&
+        row[1] != nullptr)
+      value = std::strtoll(row[1], nullptr, 10);
+    mysql_service_mysql_command_query_result->free_result(res);
+  }
+  return value;
+}
+
+// Whether component_mcp_guard sees this server's statements. Loaded is not enough: the server
+// sets up event tracking at startup through component_reference_cache, and a cache installed
+// later (INSTALL COMPONENT) leaves the guard loaded but receiving nothing, so MCP sessions would
+// run unguarded. The guard counts each statement of an MCP session before it runs, so of two
+// reads of its counter in this (MCP) session the second is higher if, and only if, events
+// arrive. A broken event channel stays broken until a restart, so one success is remembered.
+// Only MCP_USER sessions are counted (and guarded), so the check runs only in those: a call
+// mapped to an account without MCP_USER is not the guard's to restrict.
+bool session_has_mcp_user(MYSQL_THD thd) {
+  Security_context_handle sctx = nullptr;
+  static constexpr char kMcpUser[] = "MCP_USER";
+  return thd != nullptr && !mysql_service_mysql_thd_security_context->get(thd, &sctx) &&
+         sctx != nullptr &&
+         mysql_service_global_grants_check->has_global_grant(sctx, kMcpUser, sizeof(kMcpUser) - 1);
+}
+
+bool guard_operational(MYSQL_H h) {
+  static std::atomic<bool> verified{false};
+  if (verified.load()) return true;
+  const long long before = guard_statements_total(h);
+  const long long after = guard_statements_total(h);
+  if (before >= 0 && after > before) verified.store(true);
+  return verified.load();
+}
+
 // Runs one statement as account (user@host) and returns its first result set.
 SqlResult run_as(const std::string &account, const std::string &sql) {
   SqlResult r;
@@ -954,6 +996,11 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
                 "MCP_ADMIN (it has " + priv + ")";
     } else if (!announce()) {
       r.error = "session refused";
+    } else if (session_has_mcp_user(thd) && !guard_operational(h)) {
+      r.sql_errno = ER_OPTION_PREVENTS_STATEMENT;
+      r.error = "component_mcp_guard receives no statements, so the MCP endpoint does not run "
+                "them: event tracking is unavailable (was component_reference_cache loaded at "
+                "server startup? Restart the server with it in plugin_dir)";
     } else if (mysql_service_mysql_command_query->query(h, kLimit.data(), kLimit.size())) {
       read_error(h, &r);
     } else if (Retained retained; bounded_query(h, sql, &r.truncated, &retained)) {
