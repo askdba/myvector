@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cerrno>
+#include <chrono>
 #include <cctype>
 #include <iterator>
 #include <fcntl.h>
@@ -76,7 +77,8 @@ void myvector_table_op(const std::string& dbname,
                        std::vector<unsigned char>& vec,
                        const std::string& binlogfile,
                        const size_t& pos,
-                       bool isDelete = false);
+                       bool isDelete = false,
+                       const MyVectorGtid* gtid = nullptr);
 std::string myvector_find_earliest_binlog_file();
 bool myvector_find_earliest_checkpoint(std::string& binlogfile, size_t& binlogpos);
 
@@ -90,6 +92,9 @@ typedef struct {
     std::string binlogFile_;
     size_t binlogPos_;
     bool delete_ = false;  // remove pkid_ from the index (online DELETE/UPDATE)
+    /// the transaction the row change belongs to, if its GTID was read; an
+    /// index stored in InnoDB skips transactions it already includes
+    std::shared_ptr<const MyVectorGtid> gtid_;
 } VectorIndexUpdateItem;
 
 typedef struct {
@@ -247,6 +252,10 @@ struct ConnConfig {
 static ConnConfig g_conn_config;
 /** Configurable binlog server_id for mysql_binlog_open; avoids collision with MySQL server/replica IDs. */
 static uint32_t g_binlog_server_id = 0;
+/** Seconds between checkpoints of online indexes stored in InnoDB (RFC-005 D3):
+ * myvector_checkpoint_interval in the config file. */
+static const int kDefaultCheckpointIntervalSec = 300;
+static std::atomic<int> g_checkpoint_interval_sec{kDefaultCheckpointIntervalSec};
 
 /** Compute a deterministic binlog server_id from hostname + PID when not configured. */
 static uint32_t compute_binlog_server_id_fallback() {
@@ -285,6 +294,10 @@ struct BinlogState {
     std::string server_uuid;
     std::string binlog_file;
     size_t binlog_pos = 0;
+    /// the transactions before (binlog_file, binlog_pos), if they were known
+    /// when the state was saved (RFC-005 Phase 1b)
+    bool has_gtids = false;
+    std::string gtids;
 };
 
 const char* kBinlogStateFileName = "binlog_state.json";
@@ -459,6 +472,7 @@ bool load_binlog_state(BinlogState* state) {
         return false;
     if (!extract_json_number(json, "binlog_pos", &state->binlog_pos))
         return false;
+    state->has_gtids = extract_json_string(json, "gtids", &state->gtids);
     return true;
 }
 
@@ -471,7 +485,10 @@ bool persist_binlog_state(const BinlogState& state) {
     out << "{"
         << "\"server_uuid\":\"" << EscapeJsonString(state.server_uuid) << "\","
         << "\"binlog_file\":\"" << EscapeJsonString(state.binlog_file) << "\","
-        << "\"binlog_pos\":" << state.binlog_pos << "}";
+        << "\"binlog_pos\":" << state.binlog_pos;
+    if (state.has_gtids)
+        out << ",\"gtids\":\"" << EscapeJsonString(state.gtids) << "\"";
+    out << "}";
     out.flush();
     if (!out || out.fail()) {
         out.close();
@@ -520,6 +537,48 @@ bool fetch_server_uuid(MYSQL* mysql, std::string* server_uuid) {
         *server_uuid = row[0];
     mysql_free_result(result);
     return ok;
+}
+
+/* The set of transactions in the binary logs before `file`: the Info of its
+ * Previous_gtids event, the second event of every binlog file. Needs
+ * REPLICATION SLAVE, which reading the binlog needs anyway. */
+bool fetch_previous_gtids(MYSQL* mysql, const std::string& file, MyVectorGtidSet* out) {
+    std::string esc(file.size() * 2 + 1, '\0');
+    unsigned long n = mysql_real_escape_string(mysql, &esc[0], file.data(), file.size());
+    esc.resize(n);
+    std::string q = "SHOW BINLOG EVENTS IN '" + esc + "' LIMIT 2";
+    MYSQL_RES* result = nullptr;
+    if (mysql_real_query(mysql, q.data(), q.size()) ||
+        !(result = mysql_store_result(mysql))) {
+        fprintf(stderr, "MyVector: %s failed: %s\n", q.c_str(), mysql_error(mysql));
+        return false;
+    }
+    bool ok = false;
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(result))) {
+        // Log_name, Pos, Event_type, Server_id, End_log_pos, Info
+        if (mysql_num_fields(result) >= 6 && row[2] &&
+            !strcasecmp(row[2], "Previous_gtids"))
+            ok = out->parse(row[5] ? row[5] : "");
+    }
+    mysql_free_result(result);
+    return ok;
+}
+
+/* The server's binary log files, oldest first. Needs REPLICATION CLIENT. */
+bool fetch_binary_logs(MYSQL* mysql, std::vector<std::string>* files) {
+    const char* q = "SHOW BINARY LOGS";
+    MYSQL_RES* result = nullptr;
+    if (mysql_real_query(mysql, q, strlen(q)) || !(result = mysql_store_result(mysql))) {
+        fprintf(stderr, "MyVector: %s failed: %s\n", q, mysql_error(mysql));
+        return false;
+    }
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(result)))
+        if (row[0])
+            files->push_back(row[0]);
+    mysql_free_result(result);
+    return true;
 }
 
 } // namespace
@@ -1404,6 +1463,19 @@ void readConfigFile(const char* config_file) {
     int configured = vo.getIntOption("myvector_binlog_server_id", 0, &valid);
     g_binlog_server_id = (valid && configured > 0) ? static_cast<uint32_t>(configured)
                                                       : compute_binlog_server_id_fallback();
+
+    valid = false;
+    int interval = vo.getIntOption("myvector_checkpoint_interval",
+                                   kDefaultCheckpointIntervalSec, &valid);
+    if (!valid || interval < 1) {
+        if (vo.getOption("myvector_checkpoint_interval").length())
+            fprintf(stderr,
+                    "MyVector: myvector_checkpoint_interval must be a number of seconds "
+                    "(1 or more); using %d.\n",
+                    kDefaultCheckpointIntervalSec);
+        interval = kDefaultCheckpointIntervalSec;
+    }
+    g_checkpoint_interval_sec = interval;
 }
 
 /* GetBaseTableColumnPositions() - Get the column ordinal positions of the
@@ -1945,6 +2017,12 @@ void BuildMyVectorIndexSQL(const char* db,
                 if (blrow && blrow[0] && blrow[1]) {
                     savedBinlogFile = blrow[0];
                     savedBinlogPos  = static_cast<size_t>(strtoull(blrow[1], nullptr, 10));
+                    /* The same statement, under the same table lock: exactly
+                     * the transactions the rows just read include. An index
+                     * stored in InnoDB follows the binlog from this set
+                     * (RFC-005 Phase 1b); without it the save below fails. */
+                    if (mysql_num_fields(blres) >= 5 && vi->usesGtids())
+                        vi->setBaseGtids(blrow[4] ? blrow[4] : "");
                 }
                 mysql_free_result(blres);
             }
@@ -2068,8 +2146,25 @@ void FlushOnlineVectorIndexes() {
 
 namespace myvector_component {
 
+static GtidListenerState listener_gtid_state(MyVectorGtidSet* seen);
+
 class MyVectorBinlogServiceImpl : public MyVectorBinlogService {
 public:
+    /* What a load of an index stored in InnoDB needs to know (see
+     * GtidListenerState). Any thread. */
+    GtidListenerState gtid_state(MyVectorGtidSet* seen) {
+        std::lock_guard<std::mutex> l(gtid_mutex_);
+        if (gtid_phase_ == GtidListenerState::kNotRunning ||
+            std::this_thread::get_id() == listener_thread_id_)
+            return GtidListenerState::kNotRunning;
+        if (gtid_phase_ == GtidListenerState::kStreaming) {
+            *seen = applied_;
+            if (in_trx_)
+                seen->add(open_gtid_);
+        }
+        return gtid_phase_;
+    }
+
     MyVectorBinlogServiceImpl() : binlog_thread_(nullptr) {
         shutdown_binlog_thread_.store(false);
     }
@@ -2115,6 +2210,7 @@ public:
         // connections yet, so the thread retries until it can (#186).
         shutdown_binlog_thread_.store(false);
         gqueue_.clear_shutdown();  // reset for restart (stop sets it, never clears)
+        myvector_set_gtid_listener(&listener_gtid_state);
         binlog_thread_ = new std::thread(&MyVectorBinlogServiceImpl::binlog_loop_fn, this, myvector_index_bg_threads);
         return 0;
     }
@@ -2159,6 +2255,7 @@ private:
                 t.join();
         }
         worker_threads_.clear();
+        set_gtid_phase(GtidListenerState::kNotRunning);
         {
             std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
             persist_state_snapshot(currentBinlogFile, currentBinlogPos);
@@ -2185,6 +2282,221 @@ private:
     std::string server_uuid_;
     std::string start_binlog_file_;
     size_t start_binlog_pos_ = 4;
+
+    /* ---- GTID tracking, for online indexes stored in InnoDB (RFC-005 Phase
+     * 1b). applied_ is every transaction in the binlog before the listener's
+     * position that it has read to the end; open_gtid_ the one it is inside
+     * (in_trx_). gtid_known_: applied_ is complete, i.e. the listener knew the
+     * set at the position it started from; without that nothing may be
+     * recorded as applied. Written by the listener thread under gtid_mutex_;
+     * read by loads on other threads through gtid_state(). */
+    std::mutex gtid_mutex_;
+    MyVectorGtidSet applied_;
+    MyVectorGtid open_gtid_;
+    bool in_trx_ = false;
+    bool gtid_known_ = false;
+    bool gtid_decode_warned_ = false;
+    bool first_after_gtid_ = false;  ///< the next event follows a GTID event directly
+    GtidListenerState gtid_phase_ = GtidListenerState::kNotRunning;
+    std::thread::id listener_thread_id_;
+    std::shared_ptr<const MyVectorGtid> item_gtid_;  ///< open_gtid_, for queued row changes
+    std::chrono::steady_clock::time_point last_gtid_checkpoint_;
+    /// the transactions before (start_binlog_file_, start_binlog_pos_), when
+    /// preflight knows them (saved state, or the server's current position)
+    bool start_gtids_valid_ = false;
+    MyVectorGtidSet start_gtids_;
+
+    void set_gtid_phase(GtidListenerState p) {
+        std::lock_guard<std::mutex> l(gtid_mutex_);
+        gtid_phase_ = p;
+    }
+
+    /* A GTID event: the transaction before it is complete, this one starts. */
+    void begin_transaction(int type, const unsigned char* event_buf,
+                           unsigned long event_len) {
+        MyVectorGtid g;
+        bool ok = false;
+        if (event_len > EVENT_HEADER_LENGTH) {
+            const unsigned char* body = event_buf + EVENT_HEADER_LENGTH;
+            size_t len = event_len - EVENT_HEADER_LENGTH;
+            if (type == 33)
+                ok = myvector_decode_gtid_event(body, len, &g);
+            else if (type == 42)
+                ok = myvector_decode_tagged_gtid_event(body, len, &g);
+        }
+        if (!ok) {
+            g = MyVectorGtid();
+            /* Type 34 is a transaction without a GTID (gtid_mode is not ON).
+             * Either way its row changes are applied and it is never recorded
+             * as included, so a restart applies them again, which is harmless;
+             * but an index that misses a GTID can't start from a later binlog
+             * file, so say so once. */
+            if (type != 34 && !gtid_decode_warned_) {
+                fprintf(stderr,
+                        "MyVector: a GTID event (type %d) could not be decoded; online "
+                        "indexes stored in InnoDB will replay from before it after a "
+                        "restart.\n",
+                        type);
+                gtid_decode_warned_ = true;
+            }
+        }
+        std::lock_guard<std::mutex> l(gtid_mutex_);
+        if (in_trx_)
+            applied_.add(open_gtid_);
+        open_gtid_ = g;
+        in_trx_ = true;
+        item_gtid_ = g.valid() ? std::make_shared<const MyVectorGtid>(g) : nullptr;
+    }
+
+    /* The open transaction's last event has been read. */
+    void end_transaction() {
+        std::lock_guard<std::mutex> l(gtid_mutex_);
+        if (!in_trx_)
+            return;
+        applied_.add(open_gtid_);
+        in_trx_ = false;
+    }
+
+    /* Decide where the stream starts and which transactions precede that
+     * position (RFC-005 4.10 Resume). First connection only, after the online
+     * indexes were loaded. An index stored in InnoDB includes the transactions
+     * of its base set; the stream must start at a point whose preceding
+     * transactions are all in that set, or changes would be missed. Such a
+     * point is the start of the newest binlog file whose Previous_gtids is a
+     * subset of the base set. With no such file left the index can't be
+     * brought up to date and is unloaded. */
+    void choose_gtid_start(MYSQL* hnd) {
+        MyVectorGtidSet before;
+        bool known = false, have_files = false, failed = false;
+        std::vector<std::pair<std::string, MyVectorGtidSet>> indexes;
+        myvector_gtid_indexes(&indexes);
+        /* The lookups are SQL statements on a server that may still be
+         * starting. One that fails says nothing about the binary logs, so try
+         * again for a while before giving an index up. */
+        for (int attempt = 0;; attempt++) {
+            failed = false;
+            known = start_gtids_valid_;
+            if (known)
+                before = start_gtids_;
+            std::vector<std::string> files;
+            have_files = false;
+            auto list_files = [&]() {
+                if (!have_files) {
+                    files.clear();
+                    have_files = fetch_binary_logs(hnd, &files);
+                    failed = failed || !have_files;
+                }
+                return have_files;
+            };
+            if (!known) {
+                /* A position inside a file says nothing about the transactions
+                 * before it; the start of a file does. Replaying the rest of
+                 * the file is harmless: indexes skip what they already include. */
+                std::string file = start_binlog_file_;
+                if (file.empty() && list_files() && !files.empty())
+                    file = files.front();
+                if (!file.empty()) {
+                    if (fetch_previous_gtids(hnd, file, &before)) {
+                        start_binlog_file_ = file;
+                        start_binlog_pos_ = 4;
+                        start_gtids_ = before;
+                        start_gtids_valid_ = true;
+                        known = true;
+                    } else {
+                        failed = true;
+                    }
+                }
+            }
+            std::map<std::string, MyVectorGtidSet> prev;  // Previous_gtids by file
+            auto rank = [&](const std::string& f) {
+                auto it = std::find(files.begin(), files.end(), f);
+                return it == files.end() ? files.size() : (size_t)(it - files.begin());
+            };
+            for (const auto& ix : indexes) {
+                if (known && ix.second.containsAll(before))
+                    continue;  // the chosen start is early enough for this index
+                if (!list_files())
+                    break;
+                for (size_t i = files.size(); i-- > 0;) {
+                    if (!prev.count(files[i]) &&
+                        !fetch_previous_gtids(hnd, files[i], &prev[files[i]])) {
+                        prev.erase(files[i]);
+                        failed = true;
+                        break;
+                    }
+                    if (!ix.second.containsAll(prev[files[i]]))
+                        continue;
+                    /* Also when it is the start file itself: the start chosen so
+                     * far is then a later position in it (a saved position), and
+                     * this index needs the file from its beginning. */
+                    if (!known || i <= rank(start_binlog_file_)) {
+                        fprintf(stderr,
+                                "MyVector: replaying the binlog from %s for index %s.\n",
+                                files[i].c_str(), ix.first.c_str());
+                        start_binlog_file_ = files[i];
+                        start_binlog_pos_ = 4;
+                        before = prev[files[i]];
+                        start_gtids_ = before;
+                        start_gtids_valid_ = true;
+                        known = true;
+                    }
+                    break;
+                }
+            }
+            if (!failed || attempt >= 30 || shutdown_binlog_thread_.load())
+                break;
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        for (const auto& ix : indexes)
+            if (!known || !ix.second.containsAll(before))
+                myvector_gtid_index_stale(
+                    ix.first,
+                    !failed
+                        ? "the binary logs since its last checkpoint are no longer on "
+                          "this server"
+                        : "the binary logs since its last checkpoint could not be "
+                          "located (the MyVector user needs REPLICATION CLIENT and "
+                          "REPLICATION SLAVE)");
+        if (!known)
+            fprintf(stderr,
+                    "MyVector: the GTID set at the binlog start position could not be "
+                    "read; online indexes stored in InnoDB will not be checkpointed.\n");
+        std::lock_guard<std::mutex> l(gtid_mutex_);
+        applied_ = before;
+        open_gtid_ = MyVectorGtid();
+        in_trx_ = false;
+        item_gtid_ = nullptr;
+        gtid_known_ = known;
+        last_gtid_checkpoint_ = std::chrono::steady_clock::now();
+    }
+
+    /* Checkpoint the online indexes stored in InnoDB when the interval has
+     * passed (RFC-005 4.4, D3). Only between two transactions and with the
+     * queue empty: then each graph is exactly its base set plus applied_. The
+     * listener reads no events meanwhile, so updates wait, none is lost. */
+    void maybe_checkpoint_gtid_indexes() {
+        if (!gtid_known_ || in_trx_)
+            return;
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_gtid_checkpoint_ <
+            std::chrono::seconds(g_checkpoint_interval_sec.load()))
+            return;
+        std::map<std::string, std::vector<VectorIndexColumnInfo>> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
+            snapshot = g_OnlineVectorIndexes;
+        }
+        gqueue_.wait_until_empty();
+        MyVectorGtidSet applied;
+        {
+            std::lock_guard<std::mutex> l(gtid_mutex_);
+            applied = applied_;
+        }
+        for (auto const& [key, cols] : snapshot)
+            for (auto const& ci : cols)
+                myvector_checkpoint_index_gtids(key + "." + ci.vectorColumn, applied);
+        last_gtid_checkpoint_ = std::chrono::steady_clock::now();
+    }
 
     // MySQL error codes (mysqld_error.h) for a failed login.
     static constexpr unsigned int kErAccessDenied = 1045;
@@ -2253,9 +2565,11 @@ private:
             return Preflight::kFatal;
         }
 
+        start_gtids_valid_ = false;
         if (has_state) {
             start_binlog_file_ = state.binlog_file;
             start_binlog_pos_ = state.binlog_pos;
+            start_gtids_valid_ = state.has_gtids && start_gtids_.parse(state.gtids);
         } else {
             start_binlog_file_ = myvector_find_earliest_binlog_file();
             if (start_binlog_file_.empty()) {
@@ -2273,6 +2587,10 @@ private:
                     if (r && r[0] && r[1]) {
                         start_binlog_file_ = r[0];
                         start_binlog_pos_ = (size_t)strtoull(r[1], nullptr, 10);
+                        // File, Position, ..., Executed_Gtid_Set: one statement,
+                        // so the set is exactly what precedes the position.
+                        start_gtids_valid_ = mysql_num_fields(ms) >= 5 &&
+                                             start_gtids_.parse(r[4] ? r[4] : "");
                     }
                     mysql_free_result(ms);
                 };
@@ -2332,10 +2650,30 @@ private:
         state.server_uuid = server_uuid_;
         state.binlog_file = binlog_file;
         state.binlog_pos = binlog_pos;
+        {
+            /* Between two transactions applied_ is exactly what precedes the
+             * position; inside one it is not, and the next start re-reads the
+             * file from its beginning instead. */
+            std::lock_guard<std::mutex> l(gtid_mutex_);
+            if (gtid_known_ && !in_trx_) {
+                state.has_gtids = true;
+                state.gtids = applied_.toString();
+            }
+        }
         (void)persist_binlog_state(state);
     }
 
     void binlog_loop_fn(int num_q_threads) {
+        {
+            std::lock_guard<std::mutex> l(gtid_mutex_);
+            listener_thread_id_ = std::this_thread::get_id();
+            gtid_known_ = false;
+            gtid_decode_warned_ = false;
+        }
+        struct PhaseReset {  // however the thread ends, loads stop asking it
+            MyVectorBinlogServiceImpl* self;
+            ~PhaseReset() { self->set_gtid_phase(GtidListenerState::kNotRunning); }
+        } phase_reset{this};
         if (!wait_for_preflight()) {
             secure_zero_string(g_conn_config.password);
             return;
@@ -2363,7 +2701,8 @@ private:
                                       item->vec_,
                                       item->binlogFile_,
                                       item->binlogPos_,
-                                      item->delete_);
+                                      item->delete_,
+                                      item->gtid_.get());
                     delete item;
                     queue.mark_processed();
                 }
@@ -2469,6 +2808,8 @@ private:
             // Only open indexes on first connection; lazy discovery handles
             // tables seen for the first time on subsequent reconnects.
             if (!reconnecting) {
+                /* Loads on other threads wait until the start is chosen. */
+                set_gtid_phase(GtidListenerState::kStarting);
                 OpenAllOnlineVectorIndexes(&mysql);
                 // The saved stream position (binlog_state.json) can be past what an
                 // index has on disk: indexes are saved at build and at binlog
@@ -2487,7 +2828,9 @@ private:
                             ckpt_file.c_str(), ckpt_pos);
                     start_binlog_file_ = ckpt_file;
                     start_binlog_pos_ = ckpt_pos;
+                    start_gtids_valid_ = false;  // they were for the other position
                 }
+                choose_gtid_start(&mysql);
             }
 
             std::string startbinlog = start_binlog_file_.empty()
@@ -2514,6 +2857,9 @@ private:
                 currentBinlogFile = startbinlog;
                 currentBinlogPos = rpl.start_position;
             }
+            if (!reconnecting)
+                set_gtid_phase(gtid_known_ ? GtidListenerState::kStreaming
+                                           : GtidListenerState::kNotRunning);
 
             reconnecting = false;
 
@@ -2527,6 +2873,7 @@ private:
              * garbage bytes, and the listener could not resume from it. */
             bool eventsHaveChecksum = false;
             while (!shutdown_binlog_thread_.load()) {
+                maybe_checkpoint_gtid_indexes();
                 int fetch_rc = mysql_binlog_fetch(&mysql, &rpl);
                 if (fetch_rc != 0) {
                     if (shutdown_binlog_thread_.load()) {
@@ -2576,6 +2923,49 @@ private:
                 // the end of the FDE: 0 = OFF, 1 = CRC32.
                 eventsHaveChecksum =
                     (event_len > 5 && event_buf[event_len - 5] == 1);
+            }
+            {
+                /* Transaction boundaries (RFC-005 Phase 1b). A transaction
+                 * starts at its GTID event (33; 42 with a tag; 34 without a
+                 * GTID). It has been read to the end at its XID (16) or
+                 * XA_PREPARE (38), when it is one compressed payload event
+                 * (40), at a heartbeat (27, 41: the server has nothing more to
+                 * send, and it writes a transaction to the binlog whole), at a
+                 * rotate read from the file (its timestamp is not 0; the one
+                 * the server makes up at each connection has 0 and can arrive
+                 * mid-transaction), and when the next GTID event arrives.
+                 * A statement logged as one query event (DDL) is complete with
+                 * that event: it is the first event after the GTID and neither
+                 * BEGIN nor XA START. (CREATE TABLE ... SELECT has row events
+                 * after such a query; they still carry its GTID, and no index
+                 * can exist yet on the table being created.) */
+                const int t = static_cast<int>(type);
+                if (t == 33 || t == 34 || t == 42) {
+                    begin_transaction(t, event_buf, event_len);
+                    first_after_gtid_ = true;
+                } else if (t == 16 || t == 38 || t == 40 || t == 27 || t == 41) {
+                    end_transaction();
+                } else if (type == kRotateEvent && event_len >= 4) {
+                    uint32_t when = 0;
+                    memcpy(&when, event_buf, 4);
+                    if (when != 0)
+                        end_transaction();
+                } else if (t == 2 && first_after_gtid_) {
+                    std::string qdb, qtext;
+                    if (parse_query_event(event_buf, event_len,
+                                          eventsHaveChecksum &&
+                                              hasCrc32Trailer(event_buf, event_len),
+                                          qdb, qtext) &&
+                        strcasecmp(qtext.c_str(), "BEGIN") != 0 &&
+                        strncasecmp(qtext.c_str(), "XA START", 8) != 0) {
+                        /* The DROP handling below needs the GTID: it reads
+                         * item_gtid_, which stays until the next GTID event. */
+                        end_transaction();
+                    }
+                }
+                if (t != 4 && t != 15 && t != 27 && t != 35 && t != 41 && t != 33 &&
+                    t != 34 && t != 42)
+                    first_after_gtid_ = false;
             }
             if (type == kRotateEvent) {
                 if (currentBinlogFile.length()) {
@@ -2630,7 +3020,8 @@ private:
                         pos = currentBinlogPos;
                     }
                     for (const auto& d : drops)
-                        myvector_evict_dropped(d.first, d.second, file, pos);
+                        myvector_evict_dropped(d.first, d.second, file, pos,
+                                               item_gtid_.get());
                     // Stale registrations: those whose online index is not open.
                     // Openness is read without binlog_stream_mutex_ held (the
                     // build path takes an index lock and then that mutex, so
@@ -2761,6 +3152,7 @@ private:
                                        eventsHaveChecksum,
                                        updates);
                         for (auto item : updates) {
+                            item->gtid_ = item_gtid_;
                             gqueue_.enqueue(item);
                         }
                     }
@@ -2787,9 +3179,15 @@ private:
     }
 };
 
-MyVectorBinlogService& get_binlog_service() {
+static MyVectorBinlogServiceImpl& binlog_service_impl() {
   static MyVectorBinlogServiceImpl impl;
   return impl;
+}
+
+MyVectorBinlogService& get_binlog_service() { return binlog_service_impl(); }
+
+static GtidListenerState listener_gtid_state(MyVectorGtidSet* seen) {
+  return binlog_service_impl().gtid_state(seen);
 }
 
 SERVICE_REGISTRATION(myvector_binlog_service, &get_binlog_service());

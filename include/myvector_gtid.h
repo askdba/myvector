@@ -26,14 +26,14 @@
 #include <vector>
 
 /* One transaction: source UUID (36 chars, lower case), optional tag, number. */
-struct Gtid {
+struct MyVectorGtid {
     std::string uuid;
     std::string tag;
     int64_t gno = 0;
     bool valid() const { return uuid.size() == 36 && gno > 0; }
 };
 
-class GtidSet {
+class MyVectorGtidSet {
 public:
     /* Parse MySQL's text form. Returns false on malformed input and leaves the
      * set empty. An empty string is the empty set. */
@@ -93,12 +93,12 @@ public:
 
     void clear() { m_sets.clear(); }
 
-    void add(const Gtid& g) {
+    void add(const MyVectorGtid& g) {
         if (g.valid())
             addInterval(key(g.uuid, g.tag), g.gno, g.gno);
     }
 
-    bool contains(const Gtid& g) const {
+    bool contains(const MyVectorGtid& g) const {
         auto it = m_sets.find(key(g.uuid, g.tag));
         if (it == m_sets.end())
             return false;
@@ -110,7 +110,7 @@ public:
     }
 
     /* True if every transaction of other is in this set. */
-    bool containsAll(const GtidSet& other) const {
+    bool containsAll(const MyVectorGtidSet& other) const {
         for (const auto& e : other.m_sets) {
             if (e.second.empty())
                 continue;
@@ -129,13 +129,13 @@ public:
         return true;
     }
 
-    void unionWith(const GtidSet& other) {
+    void unionWith(const MyVectorGtidSet& other) {
         for (const auto& e : other.m_sets)
             for (const auto& iv : e.second)
                 addInterval(e.first, iv.first, iv.second);
     }
 
-    bool operator==(const GtidSet& o) const { return toString() == o.toString(); }
+    bool operator==(const MyVectorGtidSet& o) const { return toString() == o.toString(); }
 
 private:
     typedef std::pair<int64_t, int64_t> Interval;  // inclusive
@@ -257,7 +257,7 @@ inline std::string myvector_uuid_text(const unsigned char* b) {
 
 /* Decode the body of a GTID_LOG_EVENT (binlog event type 33), the bytes after
  * the 19-byte event header: flags(1) uuid(16) gno(8, little-endian). */
-inline bool myvector_decode_gtid_event(const unsigned char* body, size_t len, Gtid* out) {
+inline bool myvector_decode_gtid_event(const unsigned char* body, size_t len, MyVectorGtid* out) {
     if (len < 25)
         return false;
     out->uuid = myvector_uuid_text(body + 1);
@@ -302,7 +302,7 @@ inline bool myvector_read_varuint(const unsigned char* p, size_t len, size_t* po
  * 2 gno (signed), 3 tag (length + bytes). Later fields are not needed. Returns
  * false if the layout is not exactly that. */
 inline bool myvector_decode_tagged_gtid_event(const unsigned char* body, size_t len,
-                                              Gtid* out) {
+                                              MyVectorGtid* out) {
     size_t pos = 0;
     uint64_t v = 0;
     for (int i = 0; i < 3; i++)  // version, size, last non-ignorable field id

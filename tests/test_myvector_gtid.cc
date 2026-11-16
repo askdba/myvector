@@ -1,4 +1,4 @@
-// Standalone unit test for GtidSet and the GTID event decoders
+// Standalone unit test for MyVectorGtidSet and the GTID event decoders
 // (include/myvector_gtid.h).
 //
 // Build and run from the repository root:
@@ -43,8 +43,8 @@ static int failures = 0;
 static const char* U1 = "140f207e-e1f5-11f1-9a84-5e0d48933362";
 static const char* U2 = "2744675a-e1f5-11f1-b402-86104b0255c5";
 
-static Gtid gtid(const char* uuid, int64_t gno, const char* tag = "") {
-    Gtid g;
+static MyVectorGtid gtid(const char* uuid, int64_t gno, const char* tag = "") {
+    MyVectorGtid g;
     g.uuid = uuid;
     g.tag = tag;
     g.gno = gno;
@@ -52,7 +52,7 @@ static Gtid gtid(const char* uuid, int64_t gno, const char* tag = "") {
 }
 
 static std::string roundTrip(const std::string& text) {
-    GtidSet s;
+    MyVectorGtidSet s;
     if (!s.parse(text))
         return "<parse error>";
     return s.toString();
@@ -105,14 +105,14 @@ int main() {
         "140f207e-e1f5-11f1-9a84-5e0d48933362:9999999999999999999",
     };
     for (const char* b : bad) {
-        GtidSet s;
+        MyVectorGtidSet s;
         bool ok = s.parse(b);
         CHECK_TRUE(!ok && s.empty(), b);
     }
 
     // ---- add and contains
     {
-        GtidSet s;
+        MyVectorGtidSet s;
         CHECK_TRUE(s.empty(), "new set is empty");
         CHECK_TRUE(!s.contains(gtid(U1, 1)), "empty set contains nothing");
         s.add(gtid(U1, 3));
@@ -135,7 +135,7 @@ int main() {
         CHECK_EQ(s.toString(), u1 + ":1-4:mytag:1", "tagged printed after untagged");
     }
     {
-        GtidSet s;
+        MyVectorGtidSet s;
         s.parse(u1 + ":1-5:10-20:30");
         CHECK_TRUE(s.contains(gtid(U1, 5)) && !s.contains(gtid(U1, 6)) &&
                        !s.contains(gtid(U1, 9)) && s.contains(gtid(U1, 10)) &&
@@ -146,12 +146,12 @@ int main() {
 
     // ---- union
     {
-        GtidSet a, b;
+        MyVectorGtidSet a, b;
         a.parse(u1 + ":1-5:9");
         b.parse(u1 + ":4-8," + u2 + ":1-2:t:7");
         a.unionWith(b);
         CHECK_EQ(a.toString(), u1 + ":1-9," + u2 + ":1-2:t:7", "union");
-        GtidSet e;
+        MyVectorGtidSet e;
         a.unionWith(e);
         CHECK_EQ(a.toString(), u1 + ":1-9," + u2 + ":1-2:t:7", "union with the empty set");
         e.unionWith(a);
@@ -160,7 +160,7 @@ int main() {
 
     // ---- subset: which binlog file can an index resume from
     {
-        GtidSet base, prev;
+        MyVectorGtidSet base, prev;
         base.parse(u1 + ":1-100");
         prev.parse(u1 + ":1-80");
         CHECK_TRUE(base.containsAll(prev), "file starting before the checkpoint qualifies");
@@ -179,7 +179,7 @@ int main() {
         CHECK_TRUE(!base.containsAll(prev), "an interval spanning a hole is not covered");
         prev.parse(u1 + ":2-9:21-22");
         CHECK_TRUE(base.containsAll(prev), "intervals inside two of mine are covered");
-        GtidSet none;
+        MyVectorGtidSet none;
         CHECK_TRUE(!none.containsAll(prev) && none.containsAll(none),
                    "the empty set covers only the empty set");
     }
@@ -188,7 +188,7 @@ int main() {
     {
         std::vector<unsigned char> body =
             fromHex("00140f207ee1f511f19a845e0d48933362" "0800000000000000" "02");
-        Gtid g;
+        MyVectorGtid g;
         CHECK_TRUE(myvector_decode_gtid_event(body.data(), body.size(), &g), "decode type 33");
         CHECK_EQ(g.uuid, u1, "type 33 uuid");
         CHECK_TRUE(g.gno == 8 && g.tag.empty(), "type 33 gno, no tag");
@@ -218,7 +218,7 @@ int main() {
         };
         for (const auto& c : cases) {
             std::vector<unsigned char> body = fromHex(c.hex);
-            Gtid g;
+            MyVectorGtid g;
             bool ok = myvector_decode_tagged_gtid_event(body.data(), body.size(), &g);
             std::string what = std::string("decode type 42 from ") + c.what;
             CHECK_TRUE(ok, what.c_str());
@@ -228,14 +228,14 @@ int main() {
             // every truncation is refused, none reads past the end
             bool any = false;
             for (size_t n = 0; n < 37; n++) {
-                Gtid t;
+                MyVectorGtid t;
                 if (myvector_decode_tagged_gtid_event(body.data(), n, &t))
                     any = true;
             }
             CHECK_TRUE(!any, (what + ": truncated bodies refused").c_str());
         }
         std::vector<unsigned char> junk(64, 0xff);
-        Gtid g;
+        MyVectorGtid g;
         CHECK_TRUE(!myvector_decode_tagged_gtid_event(junk.data(), junk.size(), &g),
                    "type 42 junk refused");
     }

@@ -4,8 +4,9 @@ InnoDB tables instead of files in myvector_index_dir.
 
 Component build (8.4, 9.7, 26.10):
   1. Refusals: GTID mode off, then (after turning it on online) super_read_only,
-     online=Y, a KNN index with storage=innodb, an unknown storage, and a
-     max_allowed_packet too small for one node.
+     a KNN index with storage=innodb, an unknown storage, and a
+     max_allowed_packet too small for one node. online=Y is accepted (its own
+     test is scripts/test-innodb-online.py).
   2. Build: status shows "Storage : innodb", index_meta is active at
      generation 1, chunk and upper rows exist, nothing reached the binlog.
   3. Round trip: an explicit reload and a server restart + load give the same
@@ -174,10 +175,14 @@ def main():
         srv.sql("SET GLOBAL super_read_only = OFF; SET GLOBAL read_only = OFF;", db=None)
         record("1b. super_read_only: refused",
                out.startswith("ERROR:") and "read_only" in out, out)
+        # online=Y is accepted since Phase 1b (scripts/test-innodb-online.py).
         create(srv, "o", ",storage=innodb,online=Y", data=False)
         rc, out, err = build(srv, "vtest.o.v")
-        record("1c. online=Y with storage=innodb: refused",
-               out.startswith("ERROR:") and "online=Y" in out, out)
+        rc2, out2, err2 = run(srv, "CALL mysql.myvector_index_drop('vtest.o.v');")
+        srv.sql("DROP TABLE o;")
+        record("1c. online=Y with storage=innodb: builds and drops",
+               out.startswith("SUCCESS") and not out2.startswith("ERROR"),
+               f"{out[:60]} | {out2 or err2}")
         srv.sql(f"CREATE TABLE k (id INT PRIMARY KEY, v VARBINARY({DIM * 4 + 64}) NULL "
                 f"COMMENT 'MYVECTOR COLUMN type=knn,dim={DIM},idcol=id,storage=innodb');")
         rc, out, err = build(srv, "vtest.k.v")

@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <vector>
 
 class IndexStore {
 public:
@@ -35,6 +36,8 @@ public:
         std::string metric;
         int dim = 0;
         unsigned long long update_ts = 0;  ///< refresh watermark (track= indexes)
+        /// transactions the graph includes (online indexes; "" otherwise)
+        std::string gtids;
         std::function<std::string(size_t first, size_t count)> vectors;
         std::function<std::string(size_t first, size_t count)> links;
         std::function<std::string(size_t node)> upper;
@@ -56,6 +59,25 @@ public:
         std::function<void()> finish;
     };
 
+    /* Which stored state a graph in memory corresponds to: the generation it
+     * was saved as or loaded from, and that generation's last checkpoint. */
+    struct Position {
+        unsigned long long generation = 0;
+        unsigned long long ckpt_seq = 0;
+    };
+
+    /* What changed since the stored state at a Position: ids of nodes whose
+     * (vector | label), level-0 links or upper-level links differ. Sorted, no
+     * duplicates. */
+    struct Delta {
+        std::vector<size_t> vector_nodes;
+        std::vector<size_t> link_nodes;
+        std::vector<size_t> upper_nodes;
+        bool empty() const {
+            return vector_nodes.empty() && link_nodes.empty() && upper_nodes.empty();
+        }
+    };
+
     /* Ok; NotSaved: no active stored index; Failed: the stored index is
      * invalid (bad CRC, header, links...); Unavailable: it could not be read
      * (no session, an SQL error, a lock timeout), which says nothing about the
@@ -66,14 +88,29 @@ public:
      * (GTID mode off, read_only or super_read_only on: RFC-005 D11, D13). */
     virtual std::string checkServer() = 0;
 
-    /* Write the graph as a new generation and publish it (RFC-005 4.6). */
-    virtual bool save(const std::string& name, const GraphSource& src,
+    /* Write the graph as a new generation and publish it (RFC-005 4.6). *at
+     * is the published position. */
+    virtual bool save(const std::string& name, const GraphSource& src, Position* at,
                       std::string* err) = 0;
 
     /* Read the published generation in one consistent snapshot (4.7). The
-     * stored metric and dimension must match. NotSaved: no active index. */
+     * stored metric and dimension must match. NotSaved: no active index. On Ok,
+     * *at is the position read and *gtids the set stored with it. */
     virtual LoadStatus load(const std::string& name, const std::string& metric,
-                            int dim, const GraphSink& sink, std::string* err) = 0;
+                            int dim, const GraphSink& sink, Position* at,
+                            std::string* gtids, std::string* err) = 0;
+
+    /* Checkpoint (RFC-005 4.4): the stored state is at *at; write the chunks
+     * and upper rows holding the nodes in delta as the next version, and
+     * publish them together with src's header, node count and gtids, only if
+     * the stored index is still at *at (compare-and-set). With an empty delta
+     * only the header row is updated. cleanup: first delete rows a checkpoint
+     * that never published may have left; pass true after a load and after
+     * any failed checkpoint. On success *at is the new position; on failure
+     * nothing is published and *at is unchanged. */
+    virtual bool checkpoint(const std::string& name, const GraphSource& src,
+                            const Delta& delta, bool cleanup, Position* at,
+                            std::string* err) = 0;
 
     /* Tombstone the index, then delete its rows (4.11). */
     virtual bool drop(const std::string& name, std::string* err) = 0;

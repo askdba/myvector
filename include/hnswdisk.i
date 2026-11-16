@@ -144,6 +144,23 @@
         }
     }
 
+    /* dirtyNodes() - the nodes changed since the flush lists were last
+     * cleared: whole nodes (new, or a new vector), level-0 links only, and
+     * upper-level links (RFC-005 4.4: the checkpoint's write set). */
+    void dirtyNodes(std::set<tableint> &full, std::set<tableint> &level0,
+                    std::set<tableint> &upper)
+    {
+        for (int i = 0; i < FLUSH_LIST_PARTS; i++)
+        {
+            std::unique_lock <std::mutex> locklist(m_flushListMutex[i]);
+            full.insert(m_nodeUpdates[i].begin(), m_nodeUpdates[i].end());
+            level0.insert(m_nodeLinksLevel0Updates[i].begin(),
+                          m_nodeLinksLevel0Updates[i].end());
+            upper.insert(m_nodeLinksLevelGt0Updates[i].begin(),
+                         m_nodeLinksLevelGt0Updates[i].end());
+        }
+    }
+
     typedef enum
     {
         CKPT_BEGIN_INCR_PASS1  = 10001,

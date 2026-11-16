@@ -17,6 +17,7 @@
 #include <deque>
 #include <future>
 #include <mutex>
+#include <set>
 #include <system_error>
 #include <thread>
 #include <zlib.h>
@@ -363,6 +364,112 @@ std::string server_problem(Session& s) {
     return "";
 }
 
+/* Statement and row size limits from max_allowed_packet: a dumped row (blobs
+ * doubled by --hex-blob) and an INSERT with a hex literal must fit in one
+ * statement (RFC-005 4.3). */
+struct Limits {
+    size_t map = 0;         // max_allowed_packet
+    std::string map_s;
+    size_t row_limit = 0;   // largest blob in one row
+    size_t stmt_limit = 0;  // largest statement text
+};
+
+bool read_limits(Session& s, Limits* lim, std::string* e) {
+    if (!scalar(s, "SELECT @@GLOBAL.max_allowed_packet", &lim->map_s, e))
+        return false;
+    lim->map = std::stoull(lim->map_s);
+    lim->row_limit = lim->map > kStatementOverhead ? (lim->map - kStatementOverhead) / 2 : 0;
+    lim->stmt_limit = lim->map > kStatementOverhead ? lim->map - kStatementOverhead : 0;
+    return true;
+}
+
+/* Rows written in bounded transactions (RFC-005 D9). */
+struct Writer {
+    Session& s;
+    std::string* e;
+    size_t txn = 0;   // bytes in the open transaction
+    size_t rows = 0;  // statements written
+
+    bool put(const std::string& sql, size_t bytes) {
+        if (txn == 0 && !s.exec("START TRANSACTION", e))
+            return false;
+        if (!s.exec(sql, e))
+            return false;
+        txn += bytes;
+        rows++;
+        if (txn >= kTxnBytes) {
+            txn = 0;
+            return s.exec("COMMIT", e);
+        }
+        return true;
+    }
+    bool commit() {
+        if (txn == 0)
+            return true;
+        txn = 0;
+        return s.exec("COMMIT", e);
+    }
+};
+
+/* Upper rows go in multi-row INSERTs whose whole statement text (hex literals
+ * and syntax included) stays under the statement limit. */
+struct UpperWriter {
+    Writer& w;
+    const Limits& lim;
+    std::string row_prefix;  // "(index_id, generation, "
+    std::string version;
+    std::string batch;
+    size_t batch_bytes = 0;  // raw link bytes, for the transaction size
+
+    static const std::string& insert() {
+        static const std::string k = "INSERT INTO myvector.index_upper VALUES ";
+        return k;
+    }
+    bool flush() {
+        if (batch.empty())
+            return true;
+        bool ok = w.put(insert() + batch, batch_bytes);
+        batch.clear();
+        batch_bytes = 0;
+        return ok;
+    }
+    bool add(size_t node, const std::string& d) {
+        std::string row = row_prefix + std::to_string(node) + ", " + version + ", " + lit(d) +
+                          ", " + std::to_string(crc(d)) + ")";
+        if (d.size() > lim.row_limit || insert().size() + row.size() > lim.stmt_limit) {
+            *w.e = "a node's upper-level links (" + std::to_string(d.size()) +
+                   " bytes) don't fit in max_allowed_packet (" + lim.map_s + ")";
+            return false;
+        }
+        if (!batch.empty() && insert().size() + batch.size() + 2 + row.size() > lim.stmt_limit &&
+            !flush())
+            return false;
+        if (!batch.empty())
+            batch += ", ";
+        batch += row;
+        batch_bytes += d.size();
+        return true;
+    }
+};
+
+/* Delete the versions before `version` of the rows named by ids. */
+bool delete_older(Session& s, const char* table, const char* id_col, const std::string& I,
+                  const std::string& G, const std::string& version,
+                  const std::vector<size_t>& ids, std::string* e) {
+    const size_t per = 500;
+    for (size_t a = 0; a < ids.size(); a += per) {
+        std::string in;
+        for (size_t i = a; i < std::min(ids.size(), a + per); i++)
+            in += (in.empty() ? "" : ",") + std::to_string(ids[i]);
+        if (!s.exec(std::string("DELETE FROM myvector.") + table + " WHERE index_id = " + I +
+                        " AND generation = " + G + " AND " + id_col + " IN (" + in +
+                        ") AND version < " + version,
+                    e))
+            return false;
+    }
+    return true;
+}
+
 class InnoDbIndexStore : public IndexStore {
 public:
     std::string checkServer() override {
@@ -377,18 +484,29 @@ public:
         return ok ? problem : err;
     }
 
-    bool save(const std::string& name, const GraphSource& src, std::string* err) override {
+    bool save(const std::string& name, const GraphSource& src, Position* at,
+              std::string* err) override {
         return run(
-            [&](Session& s, std::string* e) { return save_in(s, name, src, e); }, err);
+            [&](Session& s, std::string* e) { return save_in(s, name, src, at, e); }, err);
+    }
+
+    bool checkpoint(const std::string& name, const GraphSource& src, const Delta& delta,
+                    bool cleanup, Position* at, std::string* err) override {
+        return run(
+            [&](Session& s, std::string* e) {
+                return checkpoint_in(s, name, src, delta, cleanup, at, e);
+            },
+            err);
     }
 
     LoadStatus load(const std::string& name, const std::string& metric, int dim,
-                    const GraphSink& sink, std::string* err) override {
+                    const GraphSink& sink, Position* at, std::string* gtids,
+                    std::string* err) override {
         LoadStatus status = LoadStatus::Unavailable;  // if no session opens
         run(
             [&](Session& s, std::string* e) {
                 status = LoadStatus::Failed;  // if load_in throws on stored data
-                status = load_in(s, name, metric, dim, sink, e);
+                status = load_in(s, name, metric, dim, sink, at, gtids, e);
                 s.exec("COMMIT", nullptr);
                 return status == LoadStatus::Ok || status == LoadStatus::NotSaved;
             },
@@ -443,7 +561,7 @@ private:
      * storage thread, one at a time, so generation allocation, cleanup of
      * leftovers and publication can't interleave with another build's. */
     static bool save_in(Session& s, const std::string& name, const GraphSource& src,
-                        std::string* e) {
+                        Position* at, std::string* e) {
         if (!session_setup(s, e))
             return false;
         std::string problem = server_problem(s);
@@ -452,20 +570,16 @@ private:
             return false;
         }
 
-        // Chunk sizes: the RFC defaults, clamped so a dumped row (blobs doubled
-        // by --hex-blob) and an INSERT with a hex literal still fit in one
-        // statement (RFC-005 4.3).
-        std::string map_s;
-        if (!scalar(s, "SELECT @@GLOBAL.max_allowed_packet", &map_s, e))
+        // Chunk sizes: the RFC defaults, clamped to what one row may hold.
+        Limits lim;
+        if (!read_limits(s, &lim, e))
             return false;
-        size_t map = std::stoull(map_s);
-        size_t row_limit = map > kStatementOverhead ? (map - kStatementOverhead) / 2 : 0;
         size_t vec_nodes =
-            src.vector_record ? std::min(kVecChunkTarget, row_limit) / src.vector_record : 0;
+            src.vector_record ? std::min(kVecChunkTarget, lim.row_limit) / src.vector_record : 0;
         size_t lnk_nodes =
-            src.link_record ? std::min(kLinkChunkTarget, row_limit) / src.link_record : 0;
+            src.link_record ? std::min(kLinkChunkTarget, lim.row_limit) / src.link_record : 0;
         if (vec_nodes == 0 || lnk_nodes == 0) {
-            *e = "max_allowed_packet (" + map_s +
+            *e = "max_allowed_packet (" + lim.map_s +
                  ") is too small to store one node of this index; raise it to at least " +
                  std::to_string(2 * std::max(src.vector_record, src.link_record) +
                                 kStatementOverhead);
@@ -525,79 +639,36 @@ private:
 
         // 3. Write every chunk and upper row as version 1 of generation g, in
         //    bounded transactions.
-        size_t txn = 0, chunks = 0;
-        auto put = [&](const std::string& sql, size_t bytes) {
-            if (txn == 0 && !s.exec("START TRANSACTION", e))
-                return false;
-            if (!s.exec(sql, e))
-                return false;
-            txn += bytes;
-            chunks++;
-            if (txn >= kTxnBytes) {
-                txn = 0;
-                return s.exec("COMMIT", e);
-            }
-            return true;
-        };
+        Writer w{s, e};
         const size_t n = src.node_count;
         for (size_t k = 0, first = 0; first < n; k++, first += vec_nodes) {
             std::string d = src.vectors(first, std::min(vec_nodes, n - first));
-            if (!put("INSERT INTO myvector.index_vectors VALUES (" + I + ", " + G + ", " +
-                         std::to_string(k) + ", 1, " + lit(d) + ", " +
-                         std::to_string(crc(d)) + ")",
-                     d.size()))
+            if (!w.put("INSERT INTO myvector.index_vectors VALUES (" + I + ", " + G + ", " +
+                           std::to_string(k) + ", 1, " + lit(d) + ", " +
+                           std::to_string(crc(d)) + ")",
+                       d.size()))
                 return false;
         }
         for (size_t k = 0, first = 0; first < n; k++, first += lnk_nodes) {
             std::string d = src.links(first, std::min(lnk_nodes, n - first));
-            if (!put("INSERT INTO myvector.index_links VALUES (" + I + ", " + G + ", " +
-                         std::to_string(k) + ", 1, " + lit(d) + ", " +
-                         std::to_string(crc(d)) + ")",
-                     d.size()))
+            if (!w.put("INSERT INTO myvector.index_links VALUES (" + I + ", " + G + ", " +
+                           std::to_string(k) + ", 1, " + lit(d) + ", " +
+                           std::to_string(crc(d)) + ")",
+                       d.size()))
                 return false;
         }
-        /* Upper rows go in multi-row INSERTs whose whole statement text (hex
-         * literals and syntax included) stays under the statement limit. */
-        static const std::string kUpperInsert = "INSERT INTO myvector.index_upper VALUES ";
-        const size_t stmt_limit = map - kStatementOverhead;
-        std::string batch;
-        size_t batch_bytes = 0;  // raw link bytes, for the transaction size
-        auto flush_upper = [&]() {
-            if (batch.empty())
-                return true;
-            bool ok = put(kUpperInsert + batch, batch_bytes);
-            batch.clear();
-            batch_bytes = 0;
-            return ok;
-        };
+        UpperWriter up{w, lim, "(" + I + ", " + G + ", ", "1"};
         for (size_t node = 0; node < n; node++) {
             std::string d = src.upper(node);
-            if (d.empty())
-                continue;
-            std::string row = "(" + I + ", " + G + ", " + std::to_string(node) + ", 1, " +
-                              lit(d) + ", " + std::to_string(crc(d)) + ")";
-            if (d.size() > row_limit || kUpperInsert.size() + row.size() > stmt_limit) {
-                *e = "a node's upper-level links (" + std::to_string(d.size()) +
-                     " bytes) don't fit in max_allowed_packet (" + map_s + ")";
+            if (!d.empty() && !up.add(node, d))
                 return false;
-            }
-            if (!batch.empty() &&
-                kUpperInsert.size() + batch.size() + 2 + row.size() > stmt_limit &&
-                !flush_upper())
-                return false;
-            if (!batch.empty())
-                batch += ", ";
-            batch += row;
-            batch_bytes += d.size();
         }
-        if (!flush_upper())
-            return false;
-        if (txn > 0 && !s.exec("COMMIT", e))
+        if (!up.flush() || !w.commit())
             return false;
 
         // 4. Publish with a compare-and-set: exactly one row must change.
         if (!s.exec("UPDATE myvector.index_meta SET generation = " + G +
-                        ", ckpt_seq = 1, ckpt_chunks = " + std::to_string(chunks) +
+                        ", ckpt_seq = 1, ckpt_chunks = " + std::to_string(w.rows) +
                         ", state = 'active', format_version = " +
                         std::to_string(kFormatVersion) + ", header = " + lit(src.header) +
                         ", header_crc32 = " + std::to_string(crc(src.header)) +
@@ -605,7 +676,8 @@ private:
                         std::to_string(src.dim) +
                         ", vec_chunk_nodes = " + std::to_string(vec_nodes) +
                         ", lnk_chunk_nodes = " + std::to_string(lnk_nodes) +
-                        ", ckpt_gtids = '', ckpt_time = NOW(6), node_count = " +
+                        ", ckpt_gtids = CONVERT(" + lit(src.gtids) +
+                        " USING utf8mb4), ckpt_time = NOW(6), node_count = " +
                         std::to_string(n) + ", update_ts = " + std::to_string(src.update_ts) +
                         " WHERE index_id = " + I +
                         " AND generation = " + std::to_string(old_gen) +
@@ -617,15 +689,163 @@ private:
             return false;
         }
 
-        // 5. The previous generation.
-        for (const char* t : {"index_vectors", "index_links", "index_upper"})
-            if (!delete_batched(s, t, "index_id = " + I + " AND generation < " + G, e))
+        at->generation = g;
+        at->ckpt_seq = 1;
+
+        // 5. The previous generation. The new one is published: a failure here
+        //    leaves rows the next save deletes, not a failed save.
+        for (const char* t : {"index_vectors", "index_links", "index_upper"}) {
+            std::string de;
+            if (!delete_batched(s, t, "index_id = " + I + " AND generation < " + G, &de)) {
+                MYVEC_LOG_WARN("Index %s: rows of older generations were not deleted (%s);"
+                               " the next build removes them.",
+                               name.c_str(), de.c_str());
+                break;
+            }
+        }
+        return true;
+    }
+
+    /* The checkpoint of RFC-005 4.4: new versions of the rows that changed,
+     * then one compare-and-set on the header row that makes them visible. A
+     * crash before that leaves rows no load reads (version > ckpt_seq), which
+     * the next checkpoint deletes first. */
+    static bool checkpoint_in(Session& s, const std::string& name, const GraphSource& src,
+                              const Delta& delta, bool cleanup, Position* at,
+                              std::string* e) {
+        if (!session_setup(s, e))
+            return false;
+        std::string problem = server_problem(s);
+        if (!problem.empty()) {
+            *e = problem;
+            return false;
+        }
+        Limits lim;
+        if (!read_limits(s, &lim, e))
+            return false;
+
+        Row meta;
+        bool found = false;
+        if (!s.query("SELECT index_id, state, generation, ckpt_seq, vec_chunk_nodes, "
+                     "lnk_chunk_nodes, HEX(index_name), writer_uuid = @@server_uuid "
+                     "FROM myvector.index_meta WHERE " + by_name(name),
+                     [&](const Row& r) {
+                         found = true;
+                         meta = r;
+                         return false;
+                     },
+                     e))
+            return false;
+        if (!found || meta.cols[1] != "active" ||
+            meta.cols[6] != hex(name.data(), name.size())) {
+            *e = "the index has no stored rows to checkpoint into";
+            return false;
+        }
+        if (meta.cols[7] != "1") {
+            *e = "the stored index belongs to another server (writer_uuid); rebuild it here";
+            return false;
+        }
+        if (std::stoull(meta.cols[2]) != at->generation ||
+            std::stoull(meta.cols[3]) != at->ckpt_seq) {
+            *e = "the stored index (generation " + meta.cols[2] + ", checkpoint " +
+                 meta.cols[3] + ") is not the one in memory (generation " +
+                 std::to_string(at->generation) + ", checkpoint " +
+                 std::to_string(at->ckpt_seq) + ")";
+            return false;
+        }
+        const std::string I = meta.cols[0], G = meta.cols[2], SEQ = meta.cols[3];
+        const size_t vec_nodes = std::stoull(meta.cols[4]);
+        const size_t lnk_nodes = std::stoull(meta.cols[5]);
+        const size_t n = src.node_count;
+        if (!delta.empty() && (vec_nodes == 0 || lnk_nodes == 0)) {
+            *e = "stored index has an invalid chunk size";
+            return false;
+        }
+
+        if (cleanup)
+            for (const char* t : {"index_vectors", "index_links", "index_upper"})
+                if (!delete_batched(s, t,
+                                    "index_id = " + I + " AND generation = " + G +
+                                        " AND version > " + SEQ,
+                                    e))
+                    return false;
+
+        // The chunks holding changed nodes, whole, as the next version. The
+        // last chunk of a generation grows as nodes are added.
+        const unsigned long long next = delta.empty() ? at->ckpt_seq : at->ckpt_seq + 1;
+        const std::string V = std::to_string(next);
+        std::set<size_t> vset, lset;
+        for (size_t node : delta.vector_nodes)
+            if (node < n)
+                vset.insert(node / vec_nodes);
+        for (size_t node : delta.link_nodes)
+            if (node < n)
+                lset.insert(node / lnk_nodes);
+        std::vector<size_t> vchunks(vset.begin(), vset.end()), lchunks(lset.begin(), lset.end());
+        std::vector<size_t> unodes;
+        Writer w{s, e};
+        for (size_t k : vchunks) {
+            std::string d = src.vectors(k * vec_nodes, std::min(vec_nodes, n - k * vec_nodes));
+            if (!w.put("INSERT INTO myvector.index_vectors VALUES (" + I + ", " + G + ", " +
+                           std::to_string(k) + ", " + V + ", " + lit(d) + ", " +
+                           std::to_string(crc(d)) + ")",
+                       d.size()))
                 return false;
+        }
+        for (size_t k : lchunks) {
+            std::string d = src.links(k * lnk_nodes, std::min(lnk_nodes, n - k * lnk_nodes));
+            if (!w.put("INSERT INTO myvector.index_links VALUES (" + I + ", " + G + ", " +
+                           std::to_string(k) + ", " + V + ", " + lit(d) + ", " +
+                           std::to_string(crc(d)) + ")",
+                       d.size()))
+                return false;
+        }
+        UpperWriter up{w, lim, "(" + I + ", " + G + ", ", V};
+        for (size_t node : delta.upper_nodes) {
+            if (node >= n)
+                continue;
+            std::string d = src.upper(node);
+            if (d.empty())
+                continue;
+            if (!up.add(node, d))
+                return false;
+            unodes.push_back(node);
+        }
+        if (!up.flush() || !w.commit())
+            return false;
+
+        // Publish: exactly one row must change (ckpt_time always does).
+        if (!s.exec("UPDATE myvector.index_meta SET ckpt_seq = " + V +
+                        ", ckpt_chunks = " + std::to_string(w.rows) + ", header = " +
+                        lit(src.header) + ", header_crc32 = " +
+                        std::to_string(crc(src.header)) + ", ckpt_gtids = CONVERT(" +
+                        lit(src.gtids) + " USING utf8mb4), ckpt_time = NOW(6), node_count = " +
+                        std::to_string(n) + ", update_ts = " + std::to_string(src.update_ts) +
+                        " WHERE index_id = " + I + " AND generation = " + G +
+                        " AND ckpt_seq = " + SEQ +
+                        " AND state = 'active' AND writer_uuid = @@server_uuid",
+                    e))
+            return false;
+        if (s.affected_rows() != 1) {
+            *e = "the stored index changed during the checkpoint";
+            return false;
+        }
+        at->ckpt_seq = next;
+
+        // Versions this checkpoint replaced. Published already: a failure here
+        // leaves rows a later checkpoint of the same chunk deletes.
+        std::string de;
+        if (!delete_older(s, "index_vectors", "chunk_id", I, G, V, vchunks, &de) ||
+            !delete_older(s, "index_links", "chunk_id", I, G, V, lchunks, &de) ||
+            !delete_older(s, "index_upper", "node_id", I, G, V, unodes, &de))
+            MYVEC_LOG_WARN("Index %s: replaced row versions were not deleted (%s).",
+                           name.c_str(), de.c_str());
         return true;
     }
 
     static LoadStatus load_in(Session& s, const std::string& name, const std::string& metric,
-                              int dim, const GraphSink& sink, std::string* e) {
+                              int dim, const GraphSink& sink, Position* at,
+                              std::string* gtids, std::string* e) {
         if (!session_setup(s, e))
             return LoadStatus::Unavailable;
         std::string problem = server_problem(s);
@@ -640,7 +860,7 @@ private:
         bool found = false;
         if (!s.query("SELECT index_id, state, format_version, generation, ckpt_seq, "
                      "HEX(header), header_crc32, metric, dim, vec_chunk_nodes, "
-                     "lnk_chunk_nodes, node_count, HEX(index_name), update_ts "
+                     "lnk_chunk_nodes, node_count, HEX(index_name), update_ts, ckpt_gtids "
                      "FROM myvector.index_meta WHERE " + by_name(name),
                      [&](const Row& r) {
                          found = true;
@@ -691,6 +911,9 @@ private:
             *e = ex.what();
             return LoadStatus::Failed;
         }
+        at->generation = std::stoull(G);
+        at->ckpt_seq = std::stoull(SEQ);
+        *gtids = meta.cols[14];
         return LoadStatus::Ok;
     }
 
