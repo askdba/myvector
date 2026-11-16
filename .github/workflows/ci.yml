@@ -612,6 +612,12 @@ jobs:
           tests/test_myvector_options.cc -o "$RUNNER_TEMP/test_myvector_options"
         "$RUNNER_TEMP/test_myvector_options"
 
+    - name: Build and run test_myvector_gtid
+      run: |
+        g++ -std=c++17 -Wall -Wextra -I include \
+          tests/test_myvector_gtid.cc -o "$RUNNER_TEMP/test_myvector_gtid"
+        "$RUNNER_TEMP/test_myvector_gtid"
+
   # Integration test - loads plugin into running MySQL
   test:
     runs-on: ubuntu-latest
