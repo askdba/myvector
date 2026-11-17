@@ -985,10 +985,12 @@ class Watchdog {
     return ticket;
   }
 
-  // What happened to a watched statement: whether it ran past its deadline, and whether a KILL
-  // QUERY reached it.
+  // What happened to a watched statement: whether it ran past its deadline. (Whether a KILL QUERY
+  // stopped it is not knowable here: KILL QUERY also succeeds on an idle session, so it cannot be
+  // ordered against the statement's completion. A killed statement reports itself instead: with
+  // error 1317, or, for SLEEP(), by returning 1.)
   struct Outcome {
-    bool expired = false, killed = false;
+    bool expired = false;
   };
 
   // Ends the watch.
@@ -1001,7 +1003,7 @@ class Watchdog {
     });
     auto it = entries_.find(ticket);
     if (it == entries_.end()) return {};
-    const Outcome outcome{it->second.expired, it->second.killed};
+    const Outcome outcome{it->second.expired};
     entries_.erase(it);
     return outcome;
   }
@@ -1016,7 +1018,7 @@ class Watchdog {
     Clock::time_point next;  // the deadline, then the next KILL attempt
     unsigned long long connection_id;
     std::string user, host;
-    bool expired = false, killed = false, busy = false;
+    bool expired = false, busy = false;
   };
 
   void run() {
@@ -1047,7 +1049,6 @@ class Watchdog {
       for (const auto &[ticket, sent] : results)
         if (auto it = entries_.find(ticket); it != entries_.end()) {
           it->second.busy = false;
-          it->second.killed = it->second.killed || sent;
           it->second.next = Clock::now() + (sent ? kRekill : kRetry);
         }
       cv_.notify_all();  // remove() may be waiting for these
@@ -1251,15 +1252,9 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
       if (watch.end().expired)
         r.error = "stopped after mcp_http.query_timeout_seconds (" +
                   std::to_string(opt_query_timeout_seconds) + " s): " + r.error;
-    } else if (watch.end().killed) {
-      // Stopped at the deadline, but some statements end without an error when killed (SLEEP()
-      // returns 1): the call still failed. (One that ran past the deadline and completed before
-      // a KILL reached it returns its result: it is complete.)
-      publish_retained(retained);
-      r.sql_errno = ER_QUERY_INTERRUPTED;
-      r.error = "stopped after mcp_http.query_timeout_seconds (" +
-                std::to_string(opt_query_timeout_seconds) + " s): Query execution was interrupted";
     } else {
+      // A statement that returns without an error keeps its result, also past the deadline: it
+      // either completed, or, killed, says so itself (SLEEP() returns 1).
       r.ok = true;
       MYSQL_RES_H res = nullptr;
       const bool stored =
