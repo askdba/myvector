@@ -354,10 +354,16 @@ sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
 expect "reinstall mapped to app, with allowed origins and masked columns" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.allowed_origins = 'http://localhost:6274, https://Inspector.example', GLOBAL mcp_http.mask_columns = ' secret, PASS ,, ÉMAIL,	пароль , token ', GLOBAL mcp_http.query_timeout_seconds = 3")" "^$"
 # A statement that runs past mcp_http.query_timeout_seconds is stopped (KILL QUERY), whatever it
 # is: one that never ends would hold its I/O thread and the connections queued on it.
-for q in "SELECT SLEEP(20)" "DO SLEEP(20)"; do
-	t0=$(date +%s); out=$(call run_query "{\"sql\":\"$q\"}"); took=$(( $(date +%s) - t0 ))
-	expect "$q is stopped after 3 s (took ${took}s)" "$took $out" '^[3-9] .*Error 1317: stopped after mcp_http.query_timeout_seconds \(3 s\)[^"]*".*"isError":true'
-done
+# A statement interrupted with an error fails with 1317 and says why; one that ends without an
+# error when killed keeps its result (SLEEP() returns 1, DO returns nothing), since a KILL cannot be
+# ordered against the statement's completion.
+CROSS='SELECT COUNT(*) FROM information_schema.columns a, information_schema.columns b, information_schema.columns c'
+t0=$(date +%s); out=$(call run_query "{\"sql\":\"$CROSS\"}"); took=$(( $(date +%s) - t0 ))
+expect "a long query is stopped after 3 s with 1317 (took ${took}s)" "$took $out" '^[3-9] .*Error 1317: stopped after mcp_http.query_timeout_seconds \(3 s\)[^"]*".*"isError":true'
+t0=$(date +%s); out=$(call run_query '{"sql":"SELECT SLEEP(20) AS s"}'); took=$(( $(date +%s) - t0 ))
+expect "SELECT SLEEP(20) is stopped after 3 s and returns 1 (took ${took}s)" "$took $out" '^[3-9] .*s\\":\\"1\\".*"isError":false'
+t0=$(date +%s); out=$(call run_query '{"sql":"DO SLEEP(20)"}'); took=$(( $(date +%s) - t0 ))
+expect "DO SLEEP(20) is stopped after 3 s (took ${took}s)" "$took $out" '^[3-9] .*"isError":false'
 expect "the next call runs normally" "$(call run_query '{"sql":"SELECT 1 AS one"}')" 'one\\":\\"1\\".*"isError":false'
 # Column masking, as mysql-mcp-server's MYSQL_MCP_MASK_COLUMNS: by column name, substring,
 # case-insensitive; NULL stays NULL.
