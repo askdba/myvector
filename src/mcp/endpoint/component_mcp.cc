@@ -768,43 +768,49 @@ bool load_token_rows(TokenRows *rows) {
   rows->clear();
   MYSQL_H h = nullptr;
   if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) return false;
-  static constexpr bool kBypassMaxConnections = false;
-  bool ok = false;
-  if (!mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_PROTOCOL, "local") &&
-      !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_USER_NAME, kTokenReaderUser) &&
-      !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_HOST_NAME, kTokenReaderHost) &&
-      !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_BYPASS_MAX_CONNECTIONS,
-                                                &kBypassMaxConnections) &&
-      !mysql_service_mysql_command_factory->connect(h) &&
-      session_is_account(session_thd(h), kTokenReaderUser, kTokenReaderHost)) {
-    // Bounded: a table locked by DDL or LOCK TABLES must fail the read in seconds, not wait for
-    // lock_wait_timeout (a year by default) while every request needing a token waits.
-    static constexpr char kLimits[] =
-        "SET SESSION lock_wait_timeout = 2, SESSION max_execution_time = 2000";
-    static constexpr char kSql[] =
-        "SELECT token_sha256, account FROM mysql.mcp_tokens "
-        "WHERE expires_at IS NULL OR expires_at > NOW() "
-        "LIMIT 18446744073709551615";  // explicit: a global sql_select_limit must not drop tokens
+  // Released on every exit, exceptions included (a row allocation can throw).
+  struct Session {
+    MYSQL_H h;
+    ~Session() { mysql_service_mysql_command_factory->close(h); }
+  } session{h};
+  struct Result {
     MYSQL_RES_H res = nullptr;
-    if (!mysql_service_mysql_command_query->query(h, kLimits, sizeof(kLimits) - 1) &&
-        !mysql_service_mysql_command_query->query(h, kSql, sizeof(kSql) - 1) &&
-        !mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr) {
-      ok = true;
-      MYSQL_ROW_H row = nullptr;
-      ulong *lengths = nullptr;
-      while (!mysql_service_mysql_command_query_result->fetch_row(res, &row) && row != nullptr) {
-        if (row[0] == nullptr || row[1] == nullptr ||
-            mysql_service_mysql_command_query_result->fetch_lengths(res, &lengths) ||
-            lengths == nullptr)
-          continue;
-        rows->emplace_back(std::string(row[0], lengths[0]), std::string(row[1], lengths[1]));
-      }
-      mysql_service_mysql_command_query_result->free_result(res);
+    ~Result() {
+      if (res != nullptr) mysql_service_mysql_command_query_result->free_result(res);
     }
+  } result;
+  static constexpr bool kBypassMaxConnections = false;
+  if (mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_PROTOCOL, "local") ||
+      mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_USER_NAME, kTokenReaderUser) ||
+      mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_HOST_NAME, kTokenReaderHost) ||
+      mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_BYPASS_MAX_CONNECTIONS,
+                                               &kBypassMaxConnections) ||
+      mysql_service_mysql_command_factory->connect(h) ||
+      !session_is_account(session_thd(h), kTokenReaderUser, kTokenReaderHost))
+    return false;
+  // Bounded: a table locked by DDL or LOCK TABLES must fail the read in seconds, not wait for
+  // lock_wait_timeout (a year by default) while every request needing a token waits.
+  static constexpr char kLimits[] =
+      "SET SESSION lock_wait_timeout = 2, SESSION max_execution_time = 2000";
+  static constexpr char kSql[] =
+      "SELECT token_sha256, account FROM mysql.mcp_tokens "
+      "WHERE expires_at IS NULL OR expires_at > NOW() "
+      "LIMIT 18446744073709551615";  // explicit: a global sql_select_limit must not drop tokens
+  if (mysql_service_mysql_command_query->query(h, kLimits, sizeof(kLimits) - 1) ||
+      mysql_service_mysql_command_query->query(h, kSql, sizeof(kSql) - 1) ||
+      mysql_service_mysql_command_query_result->store_result(h, &result.res) ||
+      result.res == nullptr)
+    return false;
+  MYSQL_ROW_H row = nullptr;
+  ulong *lengths = nullptr;
+  while (!mysql_service_mysql_command_query_result->fetch_row(result.res, &row) && row != nullptr) {
+    if (row[0] == nullptr || row[1] == nullptr ||
+        mysql_service_mysql_command_query_result->fetch_lengths(result.res, &lengths) ||
+        lengths == nullptr)
+      continue;
+    rows->emplace_back(std::string(row[0], lengths[0]), std::string(row[1], lengths[1]));
   }
-  mysql_service_mysql_command_factory->close(h);
-  if (!ok) rows->clear();
-  return ok;
+  return true;
 }
 
 // The account (user@host) a token hash maps to in mysql.mcp_tokens, if any and not expired.
