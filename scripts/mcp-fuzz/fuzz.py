@@ -470,6 +470,8 @@ def soak_worker(seed):
                     continue
             v = version if version == "2026-07-28" else version
             for _ in range(r.randint(1, 8)):
+                if stop.is_set():  # no new calls once the run ends; the session is still ended
+                    break
                 which = r.randint(0, 4)
                 if which == 0:
                     st, _, doc, raw = rpc(TOKENS["main"], "tools/call",
@@ -504,7 +506,7 @@ def soak_worker(seed):
                         violation("soak-describe", f"{st} {raw[:300]!r}")
                 count(f"soak:{st}")
             for tok, want in (("locked", "3118"), ("admin", "1227"), ("expired", None)):
-                if r.random() < 0.05:
+                if not stop.is_set() and r.random() < 0.05:
                     st, _, doc, raw = rpc(TOKENS[tok], "tools/call",
                                           {"name": "run_query", "arguments": {"sql": "SELECT 1"}},
                                           version="2026-07-28")
@@ -567,6 +569,20 @@ def plain_worker(seed):
             time.sleep(0.2)
 
 
+def d1_fingerprint():
+    """d1's fingerprint as fuzzmon reads it, or None if it cannot be read (errors propagate)."""
+    import mysql.connector
+    c = mysql.connector.connect(host=HOST, port=3306, user="fuzzmon", password="",
+                                connection_timeout=10, read_timeout=30)
+    try:
+        cur = c.cursor()
+        cur.execute(D1_FINGERPRINT_SQL)
+        row = tuple(cur.fetchone())
+    finally:
+        c.close()
+    return (row[0], row[1], int(row[2] or 0), row[3], int(row[4] or 0))
+
+
 def endpoint_probe():
     """Counts endpoint health on its own thread, so a stalled endpoint cannot delay the SQL check."""
     while not stop.is_set():
@@ -598,14 +614,14 @@ def monitor(start, seconds, out):
     while not stop.is_set():
         time.sleep(5)
         try:
-            c = mysql.connector.connect(host=HOST, port=3306, user="fuzzmon", password="",
-                                        connection_timeout=10, read_timeout=30)
-            cur = c.cursor()
-            cur.execute(D1_FINGERPRINT_SQL)
-            row = tuple(cur.fetchone())
-            c.close()
+            got = d1_fingerprint()
+            # An outage that ended between two probes still counts: check the gap before resetting.
+            if time.time() - last_sql_ok > HEALTH_GRACE:
+                violation("server-unresponsive",
+                          f"mysqld did not answer SQL for {time.time() - last_sql_ok:.0f}s (it recovered)")
+                stop.set()
+                break
             last_sql_ok = time.time()
-            got = (row[0], row[1], int(row[2] or 0), row[3], int(row[4] or 0))
             if got != D1_FINGERPRINT:
                 write_through(f"d1 changed: {got}, expected {D1_FINGERPRINT}")
                 break
@@ -663,6 +679,18 @@ def main():
     stuck = [t.name for t in threads if t.is_alive() and t.name.startswith(("sql", "soak"))]
     if stuck:
         violation("worker-unfinished", f"checked requests still running 90s after the end: {stuck}")
+    # A last look at d1, after the drain: a write let through by a request that ended after the
+    # monitor's last check would otherwise go unseen.
+    if not any(v["kind"] == "guard-write-through" for v in violations):
+        try:
+            got = d1_fingerprint()
+        except Exception as e:  # noqa: BLE001 - mysqld being down is the harness's to report
+            got = None
+            count("final-check-error:" + type(e).__name__)
+        if got is not None and got != D1_FINGERPRINT:
+            violation("guard-write-through", f"d1 changed by the end: {got}, expected {D1_FINGERPRINT}; "
+                      "statements answered OK in the last 120s: "
+                      + json.dumps([x for x in recent_ok if x[0] > time.time() - 120][-40:]))
     summary = {"seed": a.seed, "seconds": round(time.time() - start), "stats": dict(stats),
                "violations": violations}
     with open(os.path.join(a.out, "summary.json"), "w") as f:
