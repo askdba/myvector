@@ -67,7 +67,7 @@ CREATE USER lockd@'%' ACCOUNT LOCK; GRANT SELECT ON d1.* TO lockd@'%'; GRANT MCP
 CREATE USER adm@'%'; GRANT SELECT ON d1.* TO adm@'%'; GRANT MCP_ADMIN ON *.* TO adm@'%';
 -- Non-MCP traffic and the monitor.
 CREATE USER app@'%' IDENTIFIED BY 'app-pw'; GRANT SELECT ON d1.big TO app@'%'; GRANT INSERT ON d1.app_log TO app@'%';
-CREATE USER fuzzmon@'%'; GRANT SELECT ON d1.t TO fuzzmon@'%';
+CREATE USER fuzzmon@'%'; GRANT SELECT ON d1.* TO fuzzmon@'%';
 INSERT INTO mysql.mcp_tokens (token_sha256, account, expires_at) VALUES
   ('$(h fuzz-token-table)', 'mcp2@%', NULL),
   ('$(h fuzz-token-locked)', 'lockd@%', NULL),
@@ -100,13 +100,17 @@ while [ "$(docker inspect -f '{{.State.Running}}' "$C-drv" 2>/dev/null)" = true 
   echo "$(( $(date +%s) - start )),${rss:-}" >>"$OUT/rss.csv"
   sleep 60
 done
-docker logs "$C-drv" >"$OUT/fuzz.log" 2>&1
+# The driver ends by itself (at the deadline, or after HEALTH_GRACE without mysqld): wait for it,
+# then keep its whole output.
 drv_rc=$(docker wait "$C-drv" 2>/dev/null || echo 1)
+docker logs "$C-drv" >"$OUT/fuzz.log" 2>&1
 tail -25 "$OUT/fuzz.log"
 [ "$drv_rc" = 0 ] || fail "fuzz.py reported invariant violations or failed (rc=$drv_rc); see summary.json"
 
 if [ "$(docker inspect -f '{{.State.Running}}' "$C")" = true ]; then
-  sql -e 'SELECT 1' >/dev/null || fail "server not answering SQL after the run"
+  # Bounded: a hung server must fail the shard, not hold it until the job timeout.
+  timeout 60 docker exec "$C" /m/bin/mysql -uroot -h127.0.0.1 -N -e 'SELECT 1' >/dev/null ||
+    fail "server not answering SQL after the run"
   # The endpoint may stall while the fuzzer holds its I/O threads (#269); once the fuzzer has
   # stopped it must answer again (a stall that outlives the load would be a deadlock).
   recovered=no
@@ -118,7 +122,7 @@ if [ "$(docker inspect -f '{{.State.Running}}' "$C")" = true ]; then
     sleep 5
   done
   [ "$recovered" = yes ] || fail "the endpoint did not answer within 3 minutes after the run"
-  sql -e 'SHUTDOWN' >/dev/null 2>&1
+  timeout 60 docker exec "$C" /m/bin/mysql -uroot -h127.0.0.1 -N -e 'SHUTDOWN' >/dev/null 2>&1
   rc=$(timeout 600 docker wait "$C" || echo timeout)
   [ "$rc" = 0 ] || fail "unclean shutdown (exit $rc)"
 else

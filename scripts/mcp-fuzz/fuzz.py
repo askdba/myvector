@@ -45,7 +45,14 @@ METHODS = ["initialize", "tools/list", "tools/call", "ping", "server/discover",
            "notifications/initialized", "notifications/cancelled", "resources/list",
            "prompts/list", "subscriptions/listen", "logging/setLevel", "completion/complete"]
 HEALTH_GRACE = 60
-D1_T_CONTENT = "1,2,3"  # d1.t as the setup leaves it; MCP sessions must never change it
+# d1 as the setup leaves it; MCP sessions must never change any of it (the plain workers write
+# only d1.app_log). (t's contents, d1's tables, big's row count, masked's row, dbl's row count)
+D1_FINGERPRINT = ("1,2,3", "app_log,big,dbl,masked,t", 1500, "topsecret/x", 3)
+D1_FINGERPRINT_SQL = (
+    "SELECT (SELECT IFNULL(GROUP_CONCAT(i ORDER BY i), '') FROM d1.t), "
+    "(SELECT GROUP_CONCAT(table_name ORDER BY table_name) FROM information_schema.tables "
+    "WHERE table_schema = 'd1'), (SELECT COUNT(*) FROM d1.big), "
+    "(SELECT GROUP_CONCAT(CONCAT(secret_col, '/', ok)) FROM d1.masked), (SELECT COUNT(*) FROM d1.dbl)")
 
 stop = threading.Event()
 lock = threading.Lock()
@@ -522,9 +529,16 @@ def soak_worker(seed):
             violation("worker-exception", f"soak: {e!r}")
 
 
+PLAIN_MAX_CONSECUTIVE_ERRORS = 100
+
+
 def plain_worker(seed):
+    """Non-MCP traffic from an ordinary account, which the guard must leave alone: an SQL error
+    (a refusal, say) is a violation, and so are PLAIN_MAX_CONSECUTIVE_ERRORS connection errors in a
+    row."""
     import mysql.connector  # non-MCP traffic, from an ordinary account
     r = random.Random(seed)
+    errors = 0
     while not stop.is_set():
         try:
             c = mysql.connector.connect(host=HOST, port=3306, user="app", password="app-pw", database="d1")
@@ -537,53 +551,67 @@ def plain_worker(seed):
                     cur.execute("INSERT INTO app_log (v) VALUES (%s)", (r.randint(0, 10**6),))
                     c.commit()
                 count("plain:ok")
+                errors = 0
             c.close()
-        except Exception as e:  # noqa: BLE001 - count every failure kind
+        except mysql.connector.Error as e:
+            if getattr(e, "errno", None) and e.errno < 2000:  # a server error, not a client one
+                violation("plain-refused", f"ordinary account: {e}")
             count("plain:error:" + type(e).__name__)
+            errors += 1
+            if errors >= PLAIN_MAX_CONSECUTIVE_ERRORS:
+                violation("plain-unavailable", f"{errors} failed connections in a row: {e}")
+                errors = 0
+            time.sleep(0.2)
+        except Exception as e:  # noqa: BLE001
+            violation("worker-exception", f"plain: {e!r}")
             time.sleep(0.2)
 
 
+def endpoint_probe():
+    """Counts endpoint health on its own thread, so a stalled endpoint cannot delay the SQL check."""
+    while not stop.is_set():
+        time.sleep(5)
+        try:
+            st, _, _, _ = rpc(TOKENS["main"], "tools/list", {}, version="2026-07-28")
+            count("monitor:endpoint-ok" if st == 200 else "monitor:endpoint-stall-checks")
+        except OSError:
+            count("monitor:endpoint-stall-checks")
+
+
 def monitor(start, seconds, out):
-    """Health and invariants: mysqld answers SQL, d1.t keeps its rows, progress is logged.
+    """Health and invariants: mysqld answers SQL, d1 is unchanged, progress is logged.
 
     The endpoint itself can stall while the fuzzer holds its I/O threads with unfinished requests
-    (Router's HTTP server has no handshake or idle timeout, askdba/myvector#269); stalls are
-    counted (endpoint-stall-checks), and the caller checks that the endpoint recovers after the
-    run. mysqld not answering SQL for HEALTH_GRACE seconds is a failure."""
+    (Router's HTTP server has no handshake or idle timeout, askdba/myvector#269, #304); stalls are
+    counted by endpoint_probe, and the caller checks that the endpoint recovers after the run.
+    mysqld not answering SQL for HEALTH_GRACE seconds is a failure."""
     import mysql.connector
+
+    def write_through(what):
+        with lock:
+            suspects = [x for x in recent_ok if x[0] > time.time() - 15]
+        violation("guard-write-through",
+                  f"{what}; statements answered OK in the last 15s: " + json.dumps(suspects[-40:]))
+        stop.set()  # the first occurrence is the one to read
+
     last_sql_ok = time.time()
     while not stop.is_set():
         time.sleep(5)
         try:
-            st, _, doc, _ = rpc(TOKENS["main"], "tools/list", {}, version="2026-07-28")
-            count("monitor:endpoint-ok" if st == 200 else "monitor:endpoint-stall-checks")
-        except OSError:
-            count("monitor:endpoint-stall-checks")
-        try:
             c = mysql.connector.connect(host=HOST, port=3306, user="fuzzmon", password="",
-                                        database="d1", connection_timeout=10, read_timeout=30)
+                                        connection_timeout=10, read_timeout=30)
             cur = c.cursor()
-            # Contents, not a count: an UPDATE let through keeps the row count.
-            cur.execute("SELECT IFNULL(GROUP_CONCAT(i ORDER BY i), '') FROM t")
-            n = cur.fetchone()[0]
+            cur.execute(D1_FINGERPRINT_SQL)
+            row = tuple(cur.fetchone())
             c.close()
             last_sql_ok = time.time()
-            if n != D1_T_CONTENT:
-                with lock:
-                    suspects = [x for x in recent_ok if x[0] > time.time() - 15]
-                violation("guard-write-through",
-                          f"d1.t is ({n}), expected ({D1_T_CONTENT}); statements answered OK in the last 15s: "
-                          + json.dumps(suspects[-40:]))
-                stop.set()  # the first occurrence is the one to read
+            got = (row[0], row[1], int(row[2] or 0), row[3], int(row[4] or 0))
+            if got != D1_FINGERPRINT:
+                write_through(f"d1 changed: {got}, expected {D1_FINGERPRINT}")
                 break
         except mysql.connector.Error as e:
-            if getattr(e, "errno", None) in (1146, 1054):  # d1.t (or its column) is gone
-                with lock:
-                    suspects = [x for x in recent_ok if x[0] > time.time() - 15]
-                violation("guard-write-through",
-                          f"d1.t is gone ({e}); statements answered OK in the last 15s: "
-                          + json.dumps(suspects[-40:]))
-                stop.set()
+            if getattr(e, "errno", None) in (1146, 1054):  # a seeded table (or column) is gone
+                write_through(f"a table of d1 is gone ({e})")
                 break
             count("monitor:sql-error:" + type(e).__name__)
         except Exception as e:  # noqa: BLE001
@@ -613,11 +641,12 @@ def main():
     a = ap.parse_args()
     sessions = set()
     start = time.time()
-    threads = [threading.Thread(target=monitor, args=(start, a.seconds, a.out), daemon=True)]
-    threads += [threading.Thread(target=http_worker, args=(a.seed * 1000 + i, sessions), daemon=True) for i in range(a.http)]
-    threads += [threading.Thread(target=sql_worker, args=(a.seed * 2000 + i,), daemon=True) for i in range(a.sql)]
-    threads += [threading.Thread(target=soak_worker, args=(a.seed * 3000 + i,), daemon=True) for i in range(a.soak)]
-    threads += [threading.Thread(target=plain_worker, args=(a.seed * 4000 + i,), daemon=True) for i in range(a.plain)]
+    threads = [threading.Thread(target=monitor, args=(start, a.seconds, a.out), daemon=True),
+               threading.Thread(target=endpoint_probe, daemon=True)]
+    threads += [threading.Thread(name=f"http-{i}", target=http_worker, args=(a.seed * 1000 + i, sessions), daemon=True) for i in range(a.http)]
+    threads += [threading.Thread(name=f"sql-{i}", target=sql_worker, args=(a.seed * 2000 + i,), daemon=True) for i in range(a.sql)]
+    threads += [threading.Thread(name=f"soak-{i}", target=soak_worker, args=(a.seed * 3000 + i,), daemon=True) for i in range(a.soak)]
+    threads += [threading.Thread(name=f"plain-{i}", target=plain_worker, args=(a.seed * 4000 + i,), daemon=True) for i in range(a.plain)]
     for t in threads:
         t.start()
     while not stop.is_set():
@@ -626,7 +655,14 @@ def main():
             violation("monitor-stuck", "the monitor did not end the run (it died, or an SQL check hung)")
             stop.set()
         time.sleep(1)
-    time.sleep(5)  # let in-flight requests finish
+    # Let in-flight requests finish (they can take up to a minute): a reply that arrives after the
+    # summary would go unchecked. The checked workers (sql, soak) must end within the deadline.
+    deadline = time.time() + 90
+    for t in threads:
+        t.join(max(0, deadline - time.time()))
+    stuck = [t.name for t in threads if t.is_alive() and t.name.startswith(("sql", "soak"))]
+    if stuck:
+        violation("worker-unfinished", f"checked requests still running 90s after the end: {stuck}")
     summary = {"seed": a.seed, "seconds": round(time.time() - start), "stats": dict(stats),
                "violations": violations}
     with open(os.path.join(a.out, "summary.json"), "w") as f:
