@@ -298,6 +298,12 @@ expect "500 000 nested arrays: a parse error, not a crash" "$(printf '%s\n' "$de
 expect "the server is still up" "$(alive)" "^up$"
 expect "64 levels are accepted, 65 refused" "$(rpc tok-123 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"x\":$(printf '%062d' 0 | tr 0 '[')$(printf '%062d' 0 | tr 0 ']')}}" | head -1) $(rpc tok-123 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"x\":$(printf '%063d' 0 | tr 0 '[')$(printf '%063d' 0 | tr 0 ']')}}" | head -1)" '^\{"jsonrpc":"2.0","id":1,"result":\{"tools".* \{"jsonrpc":"2.0","id":null,"error":\{"code":-32700'
 expect "brackets inside strings do not count" "$(call run_query "{\"sql\":\"SELECT '$(printf '%0200d' 0 | tr 0 '[')' AS b\"}" | head -1)" '"isError":false'
+# A statement whose error message is longer than 255 bytes: the command service backend copies
+# the message into a 256-byte buffer (MySQL 26.10.0), which aborted mysqld before the endpoint's
+# error service capped what it hands over. The full message still comes back.
+LONGNAME=$(printf '%0250d' 0 | tr 0 a)
+expect "a 300-byte error message comes back in full" "$(call run_query "{\"sql\":\"SELECT 1 LIMIT $LONGNAME\"}")" "Error 1327: Undeclared variable: $LONGNAME\".*\"isError\":true"
+expect "... and mysqld is still up" "$(alive)" "^up$"
 expect "session timeout default" "$(sql "SELECT @@mcp_http.session_timeout_minutes")" "^30$"
 expect "query timeout default (as mysql-mcp-server)" "$(sql "SELECT @@mcp_http.query_timeout_seconds")" "^30$"
 

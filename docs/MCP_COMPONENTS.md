@@ -328,6 +328,8 @@ Each `tools/call` opens a `"local"` command-service session that **impersonates*
 
 **Time limit.** Calls run on the endpoint's I/O threads, so a statement that never ends (`SELECT SLEEP(1e20)`, `DO SLEEP(...)`, a lock wait) would hold its thread, and the connections queued on it, for good. RFC 0001 §10 fuzzing made the whole endpoint refuse connections that way. Each call's statement is therefore watched. Past `mcp_http.query_timeout_seconds` a session of the same account runs `KILL QUERY` on it (an account may always kill its own statements), whatever kind of statement it is, and the call fails with error 1317. A slow call still holds its I/O thread until then, so other calls queued on that thread wait.
 
+**Long error messages.** The command service's backend in MySQL 26.10.0 copies a statement's error message into a 256-byte buffer, while server messages run to 512 bytes. A statement with a long error message (`SELECT 1 LIMIT <250-character name>`, error 1327) overflowed it, and glibc's fortify check aborted `mysqld`. The endpoint's consumer error service therefore hands that copy at most 255 bytes; the full message still reaches the reply.
+
 The guard enforces its policy on these sessions only because of two things, both checked by `scripts/test-mcp-endpoint.sh`:
 
 - The endpoint emits `MYSQL_AUDIT_CONNECTION_CONNECT` for each session. The server starts such sessions **unaudited**, so without this event no statement event would reach the guard.
