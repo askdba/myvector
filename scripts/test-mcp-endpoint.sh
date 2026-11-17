@@ -238,18 +238,23 @@ sql "TRUNCATE mysql.general_log; SET GLOBAL log_output = 'FILE'"
 # A token table locked by DDL or LOCK TABLES does not stall the endpoint: the reader gives up in
 # about 2 s (lock_wait_timeout), outside the lock the other requests use, and the single token
 # never waits for it.
-docker exec "$C" mysql -h127.0.0.1 -uroot -ptestpass -e "LOCK TABLES mysql.mcp_tokens WRITE; DO SLEEP(8)" >/dev/null 2>&1 &
+# The locking session holds the lock until it is killed, after both requests have finished.
+docker exec "$C" mysql -h127.0.0.1 -uroot -ptestpass -e "LOCK TABLES mysql.mcp_tokens WRITE; DO SLEEP(120)" >/dev/null 2>&1 &
 locker=$!
-# Wait until the lock is held: the session has moved on to its DO SLEEP(8).
+# Wait until the lock is held: the session has moved on to its DO SLEEP(120).
+lock_id=
 for _ in $(seq 1 50); do
-	[ "$(sql "SELECT COUNT(*) FROM information_schema.processlist WHERE info = 'DO SLEEP(8)'")" = 1 ] && break
+	lock_id=$(sql "SELECT id FROM information_schema.processlist WHERE info = 'DO SLEEP(120)'")
+	[ -n "$lock_id" ] && break
 	sleep 0.2
 done
+expect "the token table lock is held for the locked-table checks" "$lock_id" "^[0-9]+$"
 sleep 1.2  # and the last snapshot is older than a second, so the next request reads the table
 t0=$(date +%s); single=$(call run_query '{"sql":"SELECT 1 AS one"}' | tail -1); t1=$(date +%s)
 table=$(callas tbl-app run_query '{"sql":"SELECT 1"}' | tail -1); t2=$(date +%s)
 expect "while the token table is locked, the single token answers at once ($((t1 - t0))s)" "$single $((t1 - t0))" "^200 [0-1]$"
 expect "... and a table token fails in seconds, not at lock_wait_timeout ($((t2 - t1))s)" "$table $((t2 - t1))" "^401 [0-4]$"
+[ -n "$lock_id" ] && sql "KILL $lock_id"
 wait "$locker"; sleep 1.2
 expect "after the lock, table tokens work again" "$(callas tbl-app run_query '{"sql":"SELECT 1"}' | tail -1)" "^200$"
 # A token runs only as its exact account: when the mapped user@host does not exist, a wider
