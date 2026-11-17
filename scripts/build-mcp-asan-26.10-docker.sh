@@ -49,6 +49,16 @@ docker run --rm \
       rm -rf "$SRC"
       git clone -q --depth 1 --branch "$MYSQL_TAG" https://github.com/mysql/mysql-server.git "$SRC"
     fi
+    # picohttpparser (vendored by MySQL in extra/libcno) has an SSE4.2 fast path, compiled on
+    # x86-64 (gcc on EL9 targets x86-64-v2), that loads 16 bytes from character-range tables of
+    # 5 or so (findchar_fast; _mm_cmpestri is given the real length, so the extra bytes, in
+    # read-only data, are never used). ASAN reports that global-buffer-overflow on the first HTTP
+    # request, so no fuzzing could run on amd64. Leave that one function uninstrumented; the
+    # parser is otherwise unchanged and still checked.
+    PICO=$(ls "$SRC"/extra/libcno/*/picohttpparser/picohttpparser.c)
+    grep -q "no_sanitize_address)) static const char \*findchar_fast" "$PICO" ||
+      sed -i "s/^static const char \*findchar_fast(/__attribute__((no_sanitize_address)) static const char *findchar_fast(/" "$PICO"
+    grep -q "no_sanitize_address)) static const char \*findchar_fast" "$PICO"
     # component_mcp is built in the tree, as for the release build (components are globbed).
     rm -rf "$SRC/components/mcp"
     cp -r /workspace/src/mcp/endpoint "$SRC/components/mcp"
