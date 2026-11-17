@@ -811,8 +811,9 @@ bool load_token_rows(TokenRows *rows) {
 // Requests share a snapshot of the table, read again once it is kTokenRowsTtl old: a flood of
 // requests, unknown tokens included, costs at most one read of the table per kTokenRowsTtl, and
 // INSERT, DELETE and expiry take effect within it. A failed read leaves no snapshot (401).
-// The read runs outside the lock, by one request at a time: the others keep using the current
-// snapshot meanwhile (only before the first read completes do they wait for it).
+// The read runs outside the lock, by one request at a time, and is bounded (about 2 s). The others
+// use the current snapshot while it is fresh; one older than kTokenRowsTtl (or none yet) they do
+// not trust, and wait for the read, so a revoked or expired token never outlives kTokenRowsTtl.
 constexpr std::chrono::milliseconds kTokenRowsTtl{1000};
 
 std::optional<std::string> table_token_account(const std::string &hash) {
@@ -836,8 +837,8 @@ std::optional<std::string> table_token_account(const std::string &hash) {
       have = true;
       loading = false;
       loaded_cv.notify_all();
-    } else if (!have) {
-      loaded_cv.wait(lock, [] { return have; });
+    } else if (!have || now - loaded >= kTokenRowsTtl) {
+      loaded_cv.wait(lock, [] { return have && !loading; });
     }
     snapshot = rows;
   }

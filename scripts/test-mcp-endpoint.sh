@@ -240,7 +240,12 @@ sql "TRUNCATE mysql.general_log; SET GLOBAL log_output = 'FILE'"
 # never waits for it.
 docker exec "$C" mysql -h127.0.0.1 -uroot -ptestpass -e "LOCK TABLES mysql.mcp_tokens WRITE; DO SLEEP(8)" >/dev/null 2>&1 &
 locker=$!
-sleep 1.5
+# Wait until the lock is held: the session has moved on to its DO SLEEP(8).
+for _ in $(seq 1 50); do
+	[ "$(sql "SELECT COUNT(*) FROM information_schema.processlist WHERE info = 'DO SLEEP(8)'")" = 1 ] && break
+	sleep 0.2
+done
+sleep 1.2  # and the last snapshot is older than a second, so the next request reads the table
 t0=$(date +%s); single=$(call run_query '{"sql":"SELECT 1 AS one"}' | tail -1); t1=$(date +%s)
 table=$(callas tbl-app run_query '{"sql":"SELECT 1"}' | tail -1); t2=$(date +%s)
 expect "while the token table is locked, the single token answers at once ($((t1 - t0))s)" "$single $((t1 - t0))" "^200 [0-1]$"
