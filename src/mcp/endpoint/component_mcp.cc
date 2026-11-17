@@ -907,6 +907,7 @@ bool set_bounded_consumer(MYSQL_H h) {
 // exactly rather than through process memory. One statement's values are published together.
 struct Retained {
   long long rows = 0, bytes = 0, stored = 0;
+  std::chrono::steady_clock::time_point finished;  // when the statement returned
 };
 std::mutex retained_mutex;
 Retained last_retained;
@@ -941,6 +942,7 @@ bool bounded_query(MYSQL_H h, const std::string &sql, bool *truncated, Retained 
   RowBudget budget;
   BudgetScope scope(&budget);
   const bool failed = mysql_service_mysql_command_query->query(h, sql.data(), sql.size());
+  retained->finished = std::chrono::steady_clock::now();
   *truncated = budget.dropped;
   retained->rows = static_cast<long long>(budget.kept);
   retained->bytes = static_cast<long long>(budget.kept_bytes);
@@ -979,8 +981,11 @@ class Watchdog {
                const std::string &host) {
     std::lock_guard<std::mutex> lock(mutex_);
     const uint64_t ticket = next_++;
-    entries_[ticket] = {Clock::now() + std::chrono::seconds(opt_query_timeout_seconds),
-                        connection_id, user, host};
+    Entry &e = entries_[ticket];
+    e.next = Clock::now() + std::chrono::seconds(opt_query_timeout_seconds);
+    e.connection_id = connection_id;
+    e.user = user;
+    e.host = host;
     cv_.notify_all();
     return ticket;
   }
@@ -989,6 +994,7 @@ class Watchdog {
   // QUERY reached it.
   struct Outcome {
     bool expired = false, killed = false;
+    Clock::time_point kill_sent;  // when the first KILL that ran was sent
   };
 
   // Ends the watch.
@@ -1001,7 +1007,7 @@ class Watchdog {
     });
     auto it = entries_.find(ticket);
     if (it == entries_.end()) return {};
-    const Outcome outcome{it->second.expired, it->second.killed};
+    const Outcome outcome{it->second.expired, it->second.killed, it->second.kill_sent};
     entries_.erase(it);
     return outcome;
   }
@@ -1017,6 +1023,7 @@ class Watchdog {
     unsigned long long connection_id;
     std::string user, host;
     bool expired = false, killed = false, busy = false;
+    Clock::time_point kill_sent;
   };
 
   void run() {
@@ -1041,12 +1048,21 @@ class Watchdog {
         }
       if (due.empty()) continue;
       lock.unlock();
-      std::vector<std::pair<uint64_t, bool>> results;
-      for (const auto &[ticket, e] : due) results.emplace_back(ticket, kill_query(e));
+      struct Result {
+        uint64_t ticket;
+        bool sent;
+        Clock::time_point at;
+      };
+      std::vector<Result> results;
+      for (const auto &[ticket, e] : due) {
+        const auto at = Clock::now();
+        results.push_back({ticket, kill_query(e), at});
+      }
       lock.lock();
-      for (const auto &[ticket, sent] : results)
+      for (const auto &[ticket, sent, at] : results)
         if (auto it = entries_.find(ticket); it != entries_.end()) {
           it->second.busy = false;
+          if (sent && !it->second.killed) it->second.kill_sent = at;
           it->second.killed = it->second.killed || sent;
           it->second.next = Clock::now() + (sent ? kRekill : kRetry);
         }
@@ -1251,10 +1267,13 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
       if (watch.end().expired)
         r.error = "stopped after mcp_http.query_timeout_seconds (" +
                   std::to_string(opt_query_timeout_seconds) + " s): " + r.error;
-    } else if (watch.end().killed) {
+    } else if (const auto outcome = watch.end();
+               outcome.killed && retained.finished >= outcome.kill_sent) {
       // Stopped at the deadline, but some statements end without an error when killed (SLEEP()
-      // returns 1): the call still failed. (One that ran past the deadline and completed before
-      // a KILL reached it returns its result: it is complete.)
+      // returns 1): the call still failed. A statement that returned before the first KILL was
+      // sent keeps its result: KILL QUERY succeeds on an idle session too, and turning a
+      // completed (possibly writing) statement into an error would invite a retry that repeats
+      // it.
       publish_retained(retained);
       r.sql_errno = ER_QUERY_INTERRUPTED;
       r.error = "stopped after mcp_http.query_timeout_seconds (" +
