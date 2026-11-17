@@ -130,7 +130,8 @@ else
 fi
 # mysqld (root, in the container) writes its error log and ASAN reports owner-only: make them
 # readable, so the report is printed below and the results upload does not fail on them.
-docker run --rm -v "$OUT:/out" oraclelinux:9 chmod -R a+rX /out >/dev/null 2>&1 || true
+docker run --rm -v "$OUT:/out" oraclelinux:9 chmod -R a+rX /out >/dev/null 2>&1 ||
+  fail "cannot make the results readable (the error log and ASAN reports would go unchecked)"
 if ls "$OUT"/asan.* >/dev/null 2>&1; then
   fail "AddressSanitizer reports: $(ls "$OUT"/asan.* | tr '\n' ' ')"
   head -60 "$OUT"/asan.*
