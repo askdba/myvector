@@ -827,10 +827,14 @@ std::optional<std::string> table_token_account(const std::string &hash) {
     std::unique_lock<std::mutex> lock(mutex);
     const auto now = std::chrono::steady_clock::now();
     if (!loading && (!have || now - loaded >= kTokenRowsTtl)) {
+      auto fresh = std::make_shared<TokenRows>();  // before claiming the read: may throw
       loading = true;
       lock.unlock();
-      auto fresh = std::make_shared<TokenRows>();
-      load_token_rows(fresh.get());  // on failure: empty
+      try {
+        load_token_rows(fresh.get());  // on failure: empty
+      } catch (...) {
+        fresh->clear();  // a read that throws (bad_alloc, say) is a failed read
+      }
       lock.lock();
       rows = std::move(fresh);
       loaded = std::chrono::steady_clock::now();
