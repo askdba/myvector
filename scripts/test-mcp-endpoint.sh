@@ -235,6 +235,18 @@ sql "SET GLOBAL general_log = OFF"
 reads=$(sql "SELECT COUNT(*) FROM mysql.general_log WHERE argument LIKE '%mcp_tokens%'")
 expect "50 unknown tokens in ${burst}s read the token table at most once a second ($reads reads)" "$(( reads <= burst + 1 ))" "^1$"
 sql "TRUNCATE mysql.general_log; SET GLOBAL log_output = 'FILE'"
+# A token table locked by DDL or LOCK TABLES does not stall the endpoint: the reader gives up in
+# about 2 s (lock_wait_timeout), outside the lock the other requests use, and the single token
+# never waits for it.
+docker exec "$C" mysql -h127.0.0.1 -uroot -ptestpass -e "LOCK TABLES mysql.mcp_tokens WRITE; DO SLEEP(8)" >/dev/null 2>&1 &
+locker=$!
+sleep 1.5
+t0=$(date +%s); single=$(call run_query '{"sql":"SELECT 1 AS one"}' | tail -1); t1=$(date +%s)
+table=$(callas tbl-app run_query '{"sql":"SELECT 1"}' | tail -1); t2=$(date +%s)
+expect "while the token table is locked, the single token answers at once ($((t1 - t0))s)" "$single $((t1 - t0))" "^200 [0-1]$"
+expect "... and a table token fails in seconds, not at lock_wait_timeout ($((t2 - t1))s)" "$table $((t2 - t1))" "^401 [0-4]$"
+wait "$locker"; sleep 1.2
+expect "after the lock, table tokens work again" "$(callas tbl-app run_query '{"sql":"SELECT 1"}' | tail -1)" "^200$"
 # A token runs only as its exact account: when the mapped user@host does not exist, a wider
 # entry (here ghost@'%', without MCP_USER, so unrestricted by the guard) must not stand in for it.
 sql "CREATE USER ghost@'%'; GRANT SELECT ON *.* TO ghost@'%';

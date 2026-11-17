@@ -777,12 +777,17 @@ bool load_token_rows(TokenRows *rows) {
                                                 &kBypassMaxConnections) &&
       !mysql_service_mysql_command_factory->connect(h) &&
       session_is_account(session_thd(h), kTokenReaderUser, kTokenReaderHost)) {
+    // Bounded: a table locked by DDL or LOCK TABLES must fail the read in seconds, not wait for
+    // lock_wait_timeout (a year by default) while every request needing a token waits.
+    static constexpr char kLimits[] =
+        "SET SESSION lock_wait_timeout = 2, SESSION max_execution_time = 2000";
     static constexpr char kSql[] =
         "SELECT token_sha256, account FROM mysql.mcp_tokens "
         "WHERE expires_at IS NULL OR expires_at > NOW() "
         "LIMIT 18446744073709551615";  // explicit: a global sql_select_limit must not drop tokens
     MYSQL_RES_H res = nullptr;
-    if (!mysql_service_mysql_command_query->query(h, kSql, sizeof(kSql) - 1) &&
+    if (!mysql_service_mysql_command_query->query(h, kLimits, sizeof(kLimits) - 1) &&
+        !mysql_service_mysql_command_query->query(h, kSql, sizeof(kSql) - 1) &&
         !mysql_service_mysql_command_query_result->store_result(h, &res) && res != nullptr) {
       ok = true;
       MYSQL_ROW_H row = nullptr;
@@ -806,21 +811,37 @@ bool load_token_rows(TokenRows *rows) {
 // Requests share a snapshot of the table, read again once it is kTokenRowsTtl old: a flood of
 // requests, unknown tokens included, costs at most one read of the table per kTokenRowsTtl, and
 // INSERT, DELETE and expiry take effect within it. A failed read leaves no snapshot (401).
+// The read runs outside the lock, by one request at a time: the others keep using the current
+// snapshot meanwhile (only before the first read completes do they wait for it).
 constexpr std::chrono::milliseconds kTokenRowsTtl{1000};
 
 std::optional<std::string> table_token_account(const std::string &hash) {
   static std::mutex mutex;
-  static TokenRows rows;
+  static std::condition_variable loaded_cv;
+  static auto rows = std::make_shared<const TokenRows>();
   static std::chrono::steady_clock::time_point loaded;
-  static bool have = false;
-  std::lock_guard<std::mutex> lock(mutex);
-  const auto now = std::chrono::steady_clock::now();
-  if (!have || now - loaded >= kTokenRowsTtl) {
-    load_token_rows(&rows);
-    loaded = now;
-    have = true;
+  static bool have = false, loading = false;
+  std::shared_ptr<const TokenRows> snapshot;
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    const auto now = std::chrono::steady_clock::now();
+    if (!loading && (!have || now - loaded >= kTokenRowsTtl)) {
+      loading = true;
+      lock.unlock();
+      auto fresh = std::make_shared<TokenRows>();
+      load_token_rows(fresh.get());  // on failure: empty
+      lock.lock();
+      rows = std::move(fresh);
+      loaded = std::chrono::steady_clock::now();
+      have = true;
+      loading = false;
+      loaded_cv.notify_all();
+    } else if (!have) {
+      loaded_cv.wait(lock, [] { return have; });
+    }
+    snapshot = rows;
   }
-  for (const auto &[row_hash, account] : rows)
+  for (const auto &[row_hash, account] : *snapshot)
     if (row_hash.size() == hash.size() &&
         CRYPTO_memcmp(row_hash.data(), hash.data(), hash.size()) == 0)
       return account;
