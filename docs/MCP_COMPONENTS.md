@@ -399,6 +399,8 @@ Each shard sets up the guard, the tool pack, the token table and accounts for ev
 
 Endpoint stalls while the fuzzer holds the I/O threads are counted, not failed (#269, #304). `rss.csv` records `mysqld`'s memory once a minute. Leak detection is off (`mysqld` frees little at exit); memory growth is read from `rss.csv`.
 
+On amd64 the build leaves one function of MySQL's vendored HTTP parser uninstrumented: picohttpparser's SSE4.2 `findchar_fast` loads 16 bytes from shorter character-range tables (the extra bytes are never used), which ASAN reports on the first request.
+
 Run locally: `scripts/build-mcp-asan-26.10-docker.sh mysql-26.10.0 dist/mcp-asan`, then `scripts/fuzz-mcp-endpoint.sh dist/mcp-asan/mysql-asan.tar.gz <seconds> <out-dir> [seed]`. Under ASAN the server takes several minutes to initialize and start.
 
 CI (`integration-scripts.yml`, job `mcp-endpoint`) builds and runs it on 26.10.0.
