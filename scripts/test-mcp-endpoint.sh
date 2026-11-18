@@ -386,8 +386,9 @@ req_text() { local body="{\"jsonrpc\":\"2.0\",\"id\":$1,\"method\":\"tools/call\
 # mcp_session_open: until an endpoint session of mcp@% is open (its call has reached SQL); 10 s
 # at most. Component sessions are not in the processlist; the guard counts them.
 mcp_session_open() {
-	for _ in $(seq 1 50); do
-		[ "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'" | cut -f2)" -ge 1 ] 2>/dev/null && return 0
+	local deadline=$((SECONDS + 10))
+	while [ "$SECONDS" -lt "$deadline" ]; do
+		[ "$(timeout 5 docker exec -i "$C" mysql -h127.0.0.1 -uroot -ptestpass -N -e "SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'" 2>/dev/null | cut -f2)" -ge 1 ] 2>/dev/null && return 0
 		sleep 0.2
 	done
 	return 1
