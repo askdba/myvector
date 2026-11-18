@@ -1098,7 +1098,8 @@ class Watchdog {
 
   // True if the KILL ran (or found the statement already gone: error 1094, unknown thread).
   static bool kill_query(const Entry &e) {
-    if (e.killer != nullptr) return send_kill(e.killer, e.connection_id);
+    // The session kept for the call first; if it fails (say, it was disconnected), a new one.
+    if (e.killer != nullptr && send_kill(e.killer, e.connection_id)) return true;
     MYSQL_H h = open_session(e.user, e.host);
     if (h == nullptr) return false;
     const bool done = send_kill(h, e.connection_id);

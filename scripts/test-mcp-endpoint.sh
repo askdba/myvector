@@ -389,16 +389,21 @@ expect "DO SLEEP(20) is stopped after 3 s (took ${took}s)" "$took $out" '^[3-9] 
 expect "the next call runs normally" "$(call run_query '{"sql":"SELECT 1 AS one"}')" 'one\\":\\"1\\".*"isError":false'
 # The time limit still applies when the call's account is dropped while the call runs (#310): no
 # new session can open as it then, so the KILL goes through a session opened with the call's.
-sql "CREATE USER dropme@'%'; INSERT INTO mysql.mcp_tokens (token_sha256, account) VALUES ('$(h tbl-dropme)', 'dropme@%')"
+sql "CREATE USER dropme@'%'; GRANT MCP_USER ON *.* TO dropme@'%'; INSERT INTO mysql.mcp_tokens (token_sha256, account) VALUES ('$(h tbl-dropme)', 'dropme@%')"
 sleep 1.2  # the token table snapshot is read again once it is a second old
 t0=$(date +%s)
 dropme_out=$(mktemp)
 callas tbl-dropme run_query '{"sql":"SELECT SLEEP(20) AS s"}' >"$dropme_out" &
 dropper=$!
-# Component sessions are not in the processlist: the call is known to be running by its client
-# (it takes 3 s, until the KILL).
-sleep 1
-running=no; kill -0 "$dropper" 2>/dev/null && running=yes
+# Component sessions are not in the processlist; the guard counts them (dropme has MCP_USER).
+# Wait until the call's session is open, then until its statement has started.
+running=no
+for _ in $(seq 1 50); do
+	[ "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'" | cut -f2)" -ge 1 ] 2>/dev/null && { running=yes; break; }
+	sleep 0.2
+done
+sleep 0.3
+kill -0 "$dropper" 2>/dev/null || running=no
 sql "DROP USER dropme@'%'"
 expect "the call was running when its account was dropped" "$running" "^yes$"
 wait "$dropper"; took=$(( $(date +%s) - t0 ))
