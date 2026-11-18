@@ -991,6 +991,9 @@ bool bounded_query(MYSQL_H h, const std::string &sql, bool *truncated, Retained 
 // on the thread fails) and kept until the call ends: once the account is dropped (DROP USER) no
 // new session can open as it, while sessions already open keep running, and can still kill their
 // own account's statements (#310). If it cannot be opened then, one is opened at the deadline.
+// A session stays attached to the last thread that ran a statement on it, and a thread that ends
+// with a session attached to it has it detached forcefully (a crash once the session is closed
+// elsewhere): a kept session the watchdog has used is therefore closed by the watchdog itself.
 class Watchdog {
  public:
   using Clock = std::chrono::steady_clock;
@@ -1029,6 +1032,7 @@ class Watchdog {
   // error 1317, or, for SLEEP(), by returning 1.)
   struct Outcome {
     bool expired = false;
+    bool killer_taken = false;  // the watchdog used the kept session, and closes it
   };
 
   // Ends the watch.
@@ -1041,7 +1045,11 @@ class Watchdog {
     });
     auto it = entries_.find(ticket);
     if (it == entries_.end()) return {};
-    const Outcome outcome{it->second.expired};
+    const Outcome outcome{it->second.expired, it->second.killer_used};
+    if (outcome.killer_taken) {
+      to_close_.push_back(it->second.killer);
+      cv_.notify_all();
+    }
     entries_.erase(it);
     return outcome;
   }
@@ -1057,13 +1065,14 @@ class Watchdog {
     unsigned long long connection_id;
     std::string user, host;
     MYSQL_H killer = nullptr;
-    bool expired = false, busy = false;
+    bool expired = false, busy = false, killer_used = false;
   };
 
   void run() {
     mysql_service_mysql_command_thread->init();
     std::unique_lock<std::mutex> lock(mutex_);
     while (!stopping_) {
+      close_taken(lock);
       auto next = Clock::time_point::max();
       for (const auto &[ticket, e] : entries_)
         if (!e.busy && e.next < next) next = e.next;
@@ -1078,6 +1087,7 @@ class Watchdog {
         if (!e.busy && e.next <= now) {
           e.expired = true;
           e.busy = true;
+          if (e.killer != nullptr) e.killer_used = true;  // attached to this thread from now on
           due.emplace_back(ticket, e);
         }
       if (due.empty()) continue;
@@ -1092,8 +1102,20 @@ class Watchdog {
         }
       cv_.notify_all();  // remove() may be waiting for these
     }
+    close_taken(lock);
     lock.unlock();
     mysql_service_mysql_command_thread->end();
+  }
+
+  // Closes, on this thread, the kept sessions handed over by remove().
+  void close_taken(std::unique_lock<std::mutex> &lock) {
+    while (!to_close_.empty()) {
+      std::vector<MYSQL_H> handles;
+      handles.swap(to_close_);
+      lock.unlock();
+      for (MYSQL_H h : handles) mysql_service_mysql_command_factory->close(h);
+      lock.lock();
+    }
   }
 
   // True if the KILL ran (or found the statement already gone: error 1094, unknown thread).
@@ -1135,6 +1157,7 @@ class Watchdog {
   std::mutex mutex_;
   std::condition_variable cv_;
   std::map<uint64_t, Entry> entries_;
+  std::vector<MYSQL_H> to_close_;
   uint64_t next_ = 1;
   bool stopping_ = false;
   std::thread thread_;
@@ -1158,13 +1181,15 @@ unsigned long long connection_id(MYSQL_H h) {
   return id;
 }
 
-// A call's statement under the watchdog for the scope of this object. `killer` (may be null) is
-// the session to send its KILL from, open as the same account; it must outlive this object.
+// A call's statement under the watchdog for the scope of this object. `*killer` (may be null) is
+// the session to send its KILL from, open as the same account; it must outlive this object. If
+// the watchdog takes it over (it used it), end() sets *killer to null: the watchdog closes it.
 class Watch {
  public:
-  Watch(MYSQL_H h, const std::string &user, const std::string &host, MYSQL_H killer) {
+  Watch(MYSQL_H h, const std::string &user, const std::string &host, MYSQL_H *killer)
+      : killer_(killer) {
     const unsigned long long id = connection_id(h);
-    if (id != 0) ticket_ = watchdog.add(id, user, host, killer);
+    if (id != 0) ticket_ = watchdog.add(id, user, host, *killer);
   }
   ~Watch() { end(); }
   Watch(const Watch &) = delete;
@@ -1174,12 +1199,14 @@ class Watch {
   Watchdog::Outcome end() {
     if (ticket_ != 0) {
       outcome_ = watchdog.remove(ticket_);  // after it, the watchdog no longer uses the killer
+      if (outcome_.killer_taken) *killer_ = nullptr;
       ticket_ = 0;
     }
     return outcome_;
   }
 
  private:
+  MYSQL_H *killer_;
   uint64_t ticket_ = 0;
   Watchdog::Outcome outcome_;
 };
@@ -1304,7 +1331,7 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
                 "server startup? Restart the server with it in plugin_dir)";
     } else if (mysql_service_mysql_command_query->query(h, kLimit.data(), kLimit.size())) {
       read_error(h, &r);
-    } else if (Watch watch(h, user, host, killer.h); !watch.ok()) {
+    } else if (Watch watch(h, user, host, &killer.h); !watch.ok()) {
       read_error(h, &r);
       if (r.error.empty()) r.error = "cannot read the session's connection id";
     } else if (Retained retained; bounded_query(h, sql, &r.truncated, &retained)) {

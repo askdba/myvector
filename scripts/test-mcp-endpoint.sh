@@ -435,6 +435,10 @@ expect "another Origin is still refused" "$(rpc_origin http://evil.example '{"js
 expect "guard: an account without MCP_USER is not restricted" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (7)"}')" '"isError":false'
 expect "the guard cannot be uninstalled while the endpoint is installed" "$(sql "UNINSTALL COMPONENT 'file://component_mcp_guard'")" "ERROR"
 expect "uninstall component_mcp" "$(sql "UNINSTALL COMPONENT 'file://component_mcp'")" "^$"
+# Its threads end at the uninstall; one that ended with a session attached to it would crash the
+# server (a KILL session the watchdog used, #310).
+sleep 1
+expect "mysqld is still up after the uninstall" "$(alive)" "^up$"
 
 # TLS (RFC 0001 §5.3): plain HTTP only on loopback. The server's auto-generated certificate
 # in the datadir serves as the endpoint's.
