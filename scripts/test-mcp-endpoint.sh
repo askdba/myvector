@@ -388,7 +388,7 @@ req_text() { local body="{\"jsonrpc\":\"2.0\",\"id\":$1,\"method\":\"tools/call\
 mcp_session_open() {
 	local deadline=$((SECONDS + 10))
 	while [ "$SECONDS" -lt "$deadline" ]; do
-		[ "$(timeout 5 docker exec -i "$C" mysql -h127.0.0.1 -uroot -ptestpass -N -e "SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'" 2>/dev/null | cut -f2)" -ge 1 ] 2>/dev/null && return 0
+		[ "$(docker exec -i "$C" timeout 5 mysql -h127.0.0.1 -uroot -ptestpass -N -e "SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'" 2>/dev/null | cut -f2)" -ge 1 ] 2>/dev/null && return 0
 		sleep 0.2
 	done
 	return 1
