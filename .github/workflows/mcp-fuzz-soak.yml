@@ -9,6 +9,10 @@ name: MCP fuzz and ASAN soak
 # of the shards' fuzzing time: the defaults, 14 shards of 330 minutes, give 77 hours. The
 # summary job adds them up and fails if any shard found a crash, a sanitizer report or an
 # invariant violation.
+#
+# For memory investigations (#315): `sanitizer: none` builds the same server without ASAN, and
+# `workloads` gives shard i the i-th entry of a space-separated list (cycled) of all, http, sql,
+# soak and plain (fuzz.py's worker kinds; one name runs that kind alone).
 
 on:
   workflow_dispatch:
@@ -22,6 +26,14 @@ on:
       mysql-tag:
         description: "MySQL source tag"
         default: "mysql-26.10.0"
+      sanitizer:
+        description: "asan, or none for a release build (memory comparisons)"
+        type: choice
+        options: [asan, none]
+        default: asan
+      workloads:
+        description: "Per-shard workload, cycled: space-separated list of all, http, sql, soak, plain"
+        default: "all"
 
 permissions:
   contents: read
@@ -48,12 +60,17 @@ jobs:
         env:
           SHARDS: ${{ inputs.shards }}
           MINUTES: ${{ inputs.minutes }}
+          WORKLOADS: ${{ inputs.workloads }}
         run: |
           for v in "$SHARDS" "$MINUTES"; do
             case "$v" in ''|*[!0-9]*|0*) echo "::error::shards and minutes must be positive decimal numbers"; exit 1 ;; esac
           done
           if [ "$SHARDS" -lt 1 ] || [ "$SHARDS" -gt 20 ]; then echo "::error::shards must be 1 to 20"; exit 1; fi
           if [ "$MINUTES" -lt 1 ] || [ "$MINUTES" -gt 330 ]; then echo "::error::minutes must be 1 to 330"; exit 1; fi
+          for w in $WORKLOADS; do
+            case "$w" in all|http|sql|soak|plain) ;; *) echo "::error::unknown workload: $w"; exit 1 ;; esac
+          done
+          [ -n "${WORKLOADS// /}" ] || { echo "::error::workloads is empty"; exit 1; }
           echo "list=$(seq -s, 1 "$SHARDS" | sed 's/^/[/; s/$/]/')" >>"$GITHUB_OUTPUT"
 
       - name: Free disk space
@@ -64,6 +81,7 @@ jobs:
       - name: Build
         env:
           MYSQL_TAG: ${{ inputs.mysql-tag }}
+          SANITIZER: ${{ inputs.sanitizer }}
         run: |
           scripts/build-mcp-asan-26.10-docker.sh "$MYSQL_TAG" dist/mcp-asan
           ls -la dist/mcp-asan
@@ -101,7 +119,21 @@ jobs:
           MINUTES: ${{ inputs.minutes }}
           SHARD: ${{ matrix.shard }}
           RUN: ${{ github.run_id }}
+          WORKLOADS: ${{ inputs.workloads }}
+          SANITIZER: ${{ inputs.sanitizer }}
         run: |
+          read -ra list <<<"$WORKLOADS"
+          workload=${list[$(( (SHARD - 1) % ${#list[@]} ))]}
+          case "$workload" in
+            all) FUZZ_ARGS= ;;
+            http) FUZZ_ARGS="--sql 0 --soak 0 --plain 0" ;;
+            sql) FUZZ_ARGS="--http 0 --soak 0 --plain 0" ;;
+            soak) FUZZ_ARGS="--http 0 --sql 0 --plain 0" ;;
+            plain) FUZZ_ARGS="--http 0 --sql 0 --soak 0" ;;
+          esac
+          export FUZZ_ARGS
+          mkdir -p "out/shard-$SHARD"
+          echo "$SANITIZER $workload" >"out/shard-$SHARD/workload.txt"
           scripts/fuzz-mcp-endpoint.sh dist/mysql-asan.tar.gz "$((MINUTES * 60))" "out/shard-$SHARD" "$((RUN % 100000 * 100 + SHARD))"
 
       - name: Upload results
@@ -138,6 +170,7 @@ jobs:
               s = json.load(open(f"{d}/summary.json")) if os.path.exists(f"{d}/summary.json") else {}
               secs = s.get("seconds", 0)
               reqs = sum(v for k, v in s.get("stats", {}).items() if not k.startswith("violation"))
+              workload = open(f"{d}/workload.txt").read().strip() if os.path.exists(f"{d}/workload.txt") else ""
               ok = "PASS:" in verdict and "FAIL" not in verdict
               total += secs if ok else 0
               bad += not ok
@@ -145,10 +178,10 @@ jobs:
               # The first failure is the reason; a passing shard's PASS line is its last.
               shown = next((l for l in lines if l.startswith("FAIL")), lines[-1] if lines else "")
               shown = shown.replace("|", "\\|")
-              rows.append(f"| {d.rsplit('/', 1)[1]} | {'pass' if ok else '**FAIL**'} | {secs / 3600:.2f} | {reqs} | {len(s.get('violations', []))} | {shown} |")
+              rows.append(f"| {d.rsplit('/', 1)[1]} | {workload} | {'pass' if ok else '**FAIL**'} | {secs / 3600:.2f} | {reqs} | {len(s.get('violations', []))} | {shown} |")
           print("## MCP fuzz and ASAN soak\n")
           print(f"**{total / 3600:.1f} hours** of fuzzing without a crash, sanitizer report or invariant violation; **{bad}** shard(s) failed.\n")
-          print("| Shard | Result | Hours | Requests | Violations | Verdict |\n|---|---|---|---|---|---|")
+          print("| Shard | Build, workload | Result | Hours | Requests | Violations | Verdict |\n|---|---|---|---|---|---|---|")
           print("\n".join(rows))
           EOF
           [ "$FUZZ_RESULT" = success ]

@@ -12,11 +12,15 @@
 # assertion, an unclean shutdown, or any invariant fuzz.py checks (server unresponsive, a write
 # let through, a token hash in a reply, a wrong answer).
 #
-# Usage: scripts/fuzz-mcp-endpoint.sh <mysql-asan.tar.gz> <seconds> <out-dir> [seed]
+# Usage: [FUZZ_ARGS='--sql 0 ...'] scripts/fuzz-mcp-endpoint.sh <mysql-asan.tar.gz> <seconds> <out-dir> [seed]
+# FUZZ_ARGS (worker counts: --http, --sql, --soak, --plain) is passed to fuzz.py, to run one
+# workload alone.
 # Requires Docker. Artifacts in out-dir: summary.json, fuzz.log, mysqld.err, rss.csv, asan.*,
-# verdict.txt.
+# mem-start.tsv and mem-end.tsv (performance_schema memory by instrument), verdict.txt.
 set -uo pipefail
 TARBALL=${1:?mysql-asan.tar.gz}; SECONDS_TO_RUN=${2:?seconds}; OUT=${3:?out dir}; SEED=${4:-1}
+FUZZ_ARGS=${FUZZ_ARGS:-}
+case "$FUZZ_ARGS" in *[!a-z0-9\ -]*) echo "FUZZ_ARGS: only worker options" >&2; exit 1 ;; esac
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 WORK=$(mktemp -d); C=mcp-fuzz-$$
@@ -84,11 +88,16 @@ pre=$(docker exec -i "$C" /m/bin/mysql -umcp -h127.0.0.1 -N -e 'DELETE FROM d1.t
 printf '%s\n' "$pre" | grep -q "ERROR 1290" || { fail "guard inactive: an MCP DELETE was not refused ($pre)"; exit 1; }
 
 cp "$REPO/scripts/mcp-fuzz/fuzz.py" "$WORK/fuzz.py"
+# Memory by instrument, at the start and the end of the run: what the server itself accounts
+# for, to compare with the growth in rss.csv (#315).
+MEM_SQL="SELECT event_name, current_number_of_bytes_used FROM performance_schema.memory_summary_global_by_event_name
+  WHERE current_number_of_bytes_used > 0 ORDER BY current_number_of_bytes_used DESC"
+sql -e "$MEM_SQL" >"$OUT/mem-start.tsv" 2>&1
 
 echo "==> fuzzing for ${SECONDS_TO_RUN}s (seed $SEED)"
 docker run -d --name "$C-drv" --network "container:$C" -v "$WORK:/w:ro" -v "$OUT:/out" python:3.12-slim \
   sh -c "pip install -q --disable-pip-version-check --root-user-action=ignore mysql-connector-python==26.7.0 \
-    && python -u /w/fuzz.py --seconds $SECONDS_TO_RUN --seed $SEED --out /out" >/dev/null || exit 1
+    && python -u /w/fuzz.py --seconds $SECONDS_TO_RUN --seed $SEED --out /out $FUZZ_ARGS" >/dev/null || exit 1
 echo "elapsed_s,rss_kb" >"$OUT/rss.csv"
 start=$(date +%s)
 while [ "$(docker inspect -f '{{.State.Running}}' "$C-drv" 2>/dev/null)" = true ]; do
@@ -122,6 +131,7 @@ if [ "$(docker inspect -f '{{.State.Running}}' "$C")" = true ]; then
     sleep 5
   done
   [ "$recovered" = yes ] || fail "the endpoint did not answer within 3 minutes after the run"
+  timeout 120 docker exec -i "$C" /m/bin/mysql -uroot -h127.0.0.1 -N -e "$MEM_SQL" >"$OUT/mem-end.tsv" 2>&1
   timeout 60 docker exec "$C" /m/bin/mysql -uroot -h127.0.0.1 -N -e 'SHUTDOWN' >/dev/null 2>&1
   rc=$(timeout 600 docker wait "$C" || echo timeout)
   [ "$rc" = 0 ] || fail "unclean shutdown (exit $rc)"
@@ -139,6 +149,8 @@ fi
 if grep -nE "AddressSanitizer|got signal|Assertion failure|stack_bottom" "$OUT/mysqld.err" >"$OUT/err-matches.txt"; then
   fail "error log: $(head -5 "$OUT/err-matches.txt" | tr '\n' ' ')"
 fi
+awk -F'\t' 'FNR==NR{a+=$2; next} {b+=$2} END{if (a && b) printf "performance_schema memory: %d MB at start, %d MB at end\n", a/1048576, b/1048576}' \
+  "$OUT/mem-start.tsv" "$OUT/mem-end.tsv" 2>/dev/null | tee -a "$OUT/verdict.txt"
 awk -F, 'NR==2{a=$2} NR>1&&$2!=""{b=$2} END{if (a) printf "rss: %d MB at start, %d MB at end\n", a/1024, b/1024}' "$OUT/rss.csv" | tee -a "$OUT/verdict.txt"
 if [ "$FAILED" = 0 ]; then
   echo "PASS: ${SECONDS_TO_RUN}s, seed $SEED, no crash, no sanitizer report, no invariant violation" | tee -a "$OUT/verdict.txt"
