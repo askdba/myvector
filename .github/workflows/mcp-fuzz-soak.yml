@@ -67,10 +67,11 @@ jobs:
           done
           if [ "$SHARDS" -lt 1 ] || [ "$SHARDS" -gt 20 ]; then echo "::error::shards must be 1 to 20"; exit 1; fi
           if [ "$MINUTES" -lt 1 ] || [ "$MINUTES" -gt 330 ]; then echo "::error::minutes must be 1 to 330"; exit 1; fi
-          for w in $WORKLOADS; do
+          read -ra list <<<"$WORKLOADS"  # as the fuzz jobs split it
+          [ "${#list[@]}" -gt 0 ] || { echo "::error::workloads is empty"; exit 1; }
+          for w in "${list[@]}"; do
             case "$w" in all|http|sql|soak|plain) ;; *) echo "::error::unknown workload: $w"; exit 1 ;; esac
           done
-          [ -n "${WORKLOADS// /}" ] || { echo "::error::workloads is empty"; exit 1; }
           echo "list=$(seq -s, 1 "$SHARDS" | sed 's/^/[/; s/$/]/')" >>"$GITHUB_OUTPUT"
 
       - name: Free disk space
