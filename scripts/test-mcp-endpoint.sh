@@ -383,10 +383,19 @@ tcp() { docker exec -i "$C" bash -c 'start=$(date +%s%N); exec 3<>/dev/tcp/127.0
 # req_text ID SQL [EXTRA-HEADER]: an HTTP/1.1 tools/call request for run_query.
 req_text() { local body="{\"jsonrpc\":\"2.0\",\"id\":$1,\"method\":\"tools/call\",\"params\":{\"name\":\"run_query\",\"arguments\":{\"sql\":\"$2\"}}}"
 	printf 'POST /mcp HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer tok-123\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\n%sContent-Length: %s\r\n\r\n%s' "${3:+$3$'\r\n'}" "${#body}" "$body"; }
+# mcp_session_open: until an endpoint session of mcp@% is open (its call has reached SQL); 10 s
+# at most. Component sessions are not in the processlist; the guard counts them.
+mcp_session_open() {
+	for _ in $(seq 1 50); do
+		[ "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'" | cut -f2)" -ge 1 ] 2>/dev/null && return 0
+		sleep 0.2
+	done
+	return 1
+}
 slow_out=$(mktemp)
 call run_query '{"sql":"SELECT SLEEP(4) AS s"}' >"$slow_out" &
 slow=$!
-sleep 1
+mcp_session_open || bad "the slow call reached SQL" "no endpoint session seen in 10 s"
 t0=$(date +%s); quick=$(call run_query '{"sql":"SELECT 1 AS one"}'); took=$(( $(date +%s) - t0 ))
 expect "a slow call does not hold up another connection on its I/O thread (${took}s)" "$took $quick" '^[0-1] .*one\\":\\"1\\".*"isError":false'
 wait "$slow"
@@ -398,8 +407,12 @@ closing=$(tcp "printf '%s' '$(req_text 3 'SELECT 3 AS c' 'Connection: close')' >
 expect "Connection: close: replied, then closed at once" "$(printf '%s' "$closing" | tr -d '\r' | grep -o '"id":3\|elapsed=[0-9]*ms' | tr '\n' ' ')" '^"id":3 elapsed=[0-9]{1,3}ms $'
 # Three connections that send nothing hold all of mcp_http.max_connections until the timeout.
 idle_out=$(mktemp)
-for _ in 1 2 3; do tcp "timeout 10 cat <&3" >>"$idle_out" & done
-sleep 0.7
+docker exec "$C" rm -f /tmp/idle.1 /tmp/idle.2 /tmp/idle.3
+for i in 1 2 3; do tcp "touch /tmp/idle.$i; timeout 10 cat <&3" >>"$idle_out" & done
+# Until all three are connected (each marks itself once its socket is open), then a moment for
+# the server to accept them; well within the 2 s timeout.
+for _ in $(seq 1 25); do docker exec "$C" sh -c 'ls /tmp/idle.1 /tmp/idle.2 /tmp/idle.3' >/dev/null 2>&1 && break; sleep 0.04; done
+sleep 0.3
 expect "while 3 idle connections are open, a 4th is refused" "$(rpc tok-123 '{"jsonrpc":"2.0","id":1,"method":"ping"}' | tail -1)" "^000$"
 wait
 expect "idle connections are closed after 2 s" "$(grep -c '^elapsed=2[0-9][0-9][0-9]ms' "$idle_out")" "^3$"
@@ -411,7 +424,7 @@ expect "a request never completed (slow headers) is closed after 2 s" "$(tcp "pr
 inflight_out=$(mktemp)
 call run_query '{"sql":"SELECT SLEEP(2) AS s"}' >"$inflight_out" &
 inflight=$!
-sleep 0.7
+mcp_session_open || bad "the in-flight call reached SQL" "no endpoint session seen in 10 s"
 expect "uninstall with a call in flight is refused" "$(sql "UNINSTALL COMPONENT 'file://component_mcp'")" "ERROR 3540"
 wait "$inflight"
 expect "... the call gets its reply" "$(cat "$inflight_out")" 's\\":\\"0\\".*"isError":false'

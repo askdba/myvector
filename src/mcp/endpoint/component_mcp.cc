@@ -2366,7 +2366,12 @@ bool start_server() {
   init_router_logging();
   http::server::idle_timeout_ms.store(uint64_t{opt_connection_timeout_seconds} * 1000);
   http::server::stopping.store(false);
-  workers.start(opt_workers);
+  try {
+    workers.start(opt_workers);
+  } catch (const std::system_error &e) {  // a thread that cannot be created; stop_server joins
+    log_error(std::string("cannot start the worker threads: ") + e.what());
+    return true;
+  }
   auto &io = IoComponent::get_instance();
   // Requests run on the workers; the io threads run SQL only when a request cannot be handed
   // to them (McpHandler), so they are set up for the command services too.
