@@ -597,9 +597,9 @@ def endpoint_probe():
 def monitor(start, seconds, out):
     """Health and invariants: mysqld answers SQL, d1 is unchanged, progress is logged.
 
-    The endpoint itself can stall while the fuzzer holds its I/O threads with unfinished requests
-    (Router's HTTP server has no handshake or idle timeout, askdba/myvector#269, #304); stalls are
-    counted by endpoint_probe, and the caller checks that the endpoint recovers after the run.
+    The endpoint itself can stall while the fuzzer's slow calls hold every worker
+    (mcp_http.workers) or its connections fill mcp_http.max_connections; stalls are counted by
+    endpoint_probe, and the caller checks that the endpoint recovers after the run.
     mysqld not answering SQL for HEALTH_GRACE seconds is a failure."""
     import mysql.connector
 

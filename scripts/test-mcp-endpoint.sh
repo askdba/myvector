@@ -140,8 +140,9 @@ sql "ALTER USER mcp@'%' ACCOUNT UNLOCK"
 expect "the account works again once unlocked" "$(call run_query '{"sql":"SELECT 1 AS one"}')" 'one\\":\\"1\\".*"isError":false'
 expect "no MCP session left" "$(sql "SHOW GLOBAL STATUS LIKE 'mcp.sessions_connected'")" "	0$"
 
-# Concurrency: mcp_http.threads (default 4) I/O workers serve calls at once.
-expect "threads and session cap defaults" "$(sql "SELECT @@mcp_http.threads, @@mcp_http.max_sessions_per_account")" "^4	4$"
+# Concurrency: requests run on mcp_http.workers (default 8), off the mcp_http.threads I/O
+# threads (default 4); one account runs at most mcp_http.max_sessions_per_account calls at once.
+expect "threads, workers, session cap and connection defaults" "$(sql "SELECT @@mcp_http.threads, @@mcp_http.workers, @@mcp_http.max_sessions_per_account, @@mcp_http.max_connections, @@mcp_http.connection_timeout_seconds")" "^4	8	4	64	30$"
 four=$(par 4 "SELECT SLEEP(2) AS s")
 expect "4 concurrent calls all succeed" "$(printf '%s\n' "$four" | grep -o '"isError":false' | wc -l | tr -d ' ')" "^4$"
 expect "4 concurrent calls overlap (4 x 2 s in under 4 s)" "$(printf '%s\n' "$four" | grep elapsed=)" "^elapsed=[0-3]$"
@@ -372,6 +373,51 @@ expect "a notification with the 2026-07-28 header: 202" "$(req tok-123 POST "${J
 expect "a session-era version in _meta and the header is served as that era" "$(req tok-123 POST "${J[@]}" -H 'MCP-Protocol-Version: 2025-11-25' -d '{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2025-11-25"}}}' | tail -1)" '^\{"jsonrpc":"2.0","id":7,"result":\{"tools":.*\]\}\}$'
 
 # An account without MCP_USER is not treated as an MCP session (the token maps to app).
+# Requests run on worker threads, not on the I/O threads (#304), and a connection may stay open
+# only mcp_http.connection_timeout_seconds without completing a request (#269). One I/O thread
+# here, so that any call held on it would hold up every other connection.
+sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
+expect "reinstall with 1 I/O thread, 4 workers, 3 connections, a 2 s connection timeout" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'mcp@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.threads = 1, GLOBAL mcp_http.workers = 4, GLOBAL mcp_http.max_connections = 3, GLOBAL mcp_http.connection_timeout_seconds = 2")" "^$"
+# tcp SCRIPT: bash in the server container, with fd 3 open to the endpoint; prints elapsed=S at the end.
+tcp() { docker exec -i "$C" bash -c 'start=$(date +%s%N); exec 3<>/dev/tcp/127.0.0.1/33480 || exit 1; '"$1"'; echo "elapsed=$(( ($(date +%s%N) - start) / 1000000 ))ms"'; }
+# req_text ID SQL [EXTRA-HEADER]: an HTTP/1.1 tools/call request for run_query.
+req_text() { local body="{\"jsonrpc\":\"2.0\",\"id\":$1,\"method\":\"tools/call\",\"params\":{\"name\":\"run_query\",\"arguments\":{\"sql\":\"$2\"}}}"
+	printf 'POST /mcp HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer tok-123\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\n%sContent-Length: %s\r\n\r\n%s' "${3:+$3$'\r\n'}" "${#body}" "$body"; }
+slow_out=$(mktemp)
+call run_query '{"sql":"SELECT SLEEP(4) AS s"}' >"$slow_out" &
+slow=$!
+sleep 1
+t0=$(date +%s); quick=$(call run_query '{"sql":"SELECT 1 AS one"}'); took=$(( $(date +%s) - t0 ))
+expect "a slow call does not hold up another connection on its I/O thread (${took}s)" "$took $quick" '^[0-1] .*one\\":\\"1\\".*"isError":false'
+wait "$slow"
+expect "... and the slow call completes" "$(cat "$slow_out")" 's\\":\\"0\\".*"isError":false'
+rm -f "$slow_out"
+pipelined=$(tcp "printf '%s%s' '$(req_text 1 'SELECT SLEEP(1) AS a')' '$(req_text 2 'SELECT 2 AS b')' >&3; timeout 10 cat <&3")
+expect "pipelined requests on one connection are answered in order" "$(printf '%s' "$pipelined" | tr -d '\r\n' | grep -o '"id":[12]' | tr '\n' ' ')" '^"id":1 "id":2 $'
+closing=$(tcp "printf '%s' '$(req_text 3 'SELECT 3 AS c' 'Connection: close')' >&3; timeout 10 cat <&3")
+expect "Connection: close: replied, then closed at once" "$(printf '%s' "$closing" | tr -d '\r' | grep -o '"id":3\|elapsed=[0-9]*ms' | tr '\n' ' ')" '^"id":3 elapsed=[0-9]{1,3}ms $'
+# Three connections that send nothing hold all of mcp_http.max_connections until the timeout.
+idle_out=$(mktemp)
+for _ in 1 2 3; do tcp "timeout 10 cat <&3" >>"$idle_out" & done
+sleep 0.7
+expect "while 3 idle connections are open, a 4th is refused" "$(rpc tok-123 '{"jsonrpc":"2.0","id":1,"method":"ping"}' | tail -1)" "^000$"
+wait
+expect "idle connections are closed after 2 s" "$(grep -c '^elapsed=2[0-9][0-9][0-9]ms' "$idle_out")" "^3$"
+rm -f "$idle_out"
+expect "then the endpoint serves again" "$(rpc tok-123 '{"jsonrpc":"2.0","id":1,"method":"ping"}')" '"result":\{\}'
+expect "a request never completed (slow headers) is closed after 2 s" "$(tcp "printf 'POST /mcp HTTP/1.1\r\nHost: x\r\n' >&3; timeout 10 cat <&3")" '^elapsed=2[0-9]{3}ms$'
+# A running call holds the component's services, so UNINSTALL is refused until it ends (3540,
+# as before #304); the endpoint keeps serving and the call gets its reply.
+inflight_out=$(mktemp)
+call run_query '{"sql":"SELECT SLEEP(2) AS s"}' >"$inflight_out" &
+inflight=$!
+sleep 0.7
+expect "uninstall with a call in flight is refused" "$(sql "UNINSTALL COMPONENT 'file://component_mcp'")" "ERROR 3540"
+wait "$inflight"
+expect "... the call gets its reply" "$(cat "$inflight_out")" 's\\":\\"0\\".*"isError":false'
+rm -f "$inflight_out"
+expect "... and the endpoint still serves" "$(rpc tok-123 '{"jsonrpc":"2.0","id":1,"method":"ping"}')" '"result":\{\}'
+
 sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
 expect "reinstall mapped to app, with allowed origins and masked columns" "$(sql "INSTALL COMPONENT 'file://component_mcp' SET GLOBAL mcp_http.port = 33480, GLOBAL mcp_http.account = 'app@%', GLOBAL mcp_http.token_sha256 = '$TOKEN_HEX', GLOBAL mcp_http.allowed_origins = 'http://localhost:6274, https://Inspector.example', GLOBAL mcp_http.mask_columns = ' secret, PASS ,, ÉMAIL,	пароль , token ', GLOBAL mcp_http.query_timeout_seconds = 3")" "^$"
 # A statement that runs past mcp_http.query_timeout_seconds is stopped (KILL QUERY), whatever it
@@ -430,6 +476,9 @@ https_ping() { docker run --rm ${2:+--network "$2"} "$CURL_IMAGE" -sk -m 20 -w '
 expect "HTTPS on loopback" "$(https_ping https://127.0.0.1:33480/mcp "container:$C")" '"result":\{\}'
 expect "plain HTTP to the TLS port gets no reply" "$(https_ping http://127.0.0.1:33480/mcp "container:$C" | tail -1)" "^(000|400)$"
 expect "HTTPS from another host (container $IP)" "$(https_ping "https://$IP:33480/mcp")" '"result":\{\}'
+sql "UNINSTALL COMPONENT 'file://component_mcp'" >/dev/null
+expect "TLS install with a 2 s connection timeout" "$(sql "$INSTALL_MCP, GLOBAL mcp_http.bind_address = '0.0.0.0', GLOBAL mcp_http.ssl_cert = '/var/lib/mysql/server-cert.pem', GLOBAL mcp_http.ssl_key = '/var/lib/mysql/server-key.pem', GLOBAL mcp_http.connection_timeout_seconds = 2")" "^$"
+expect "a connection that never starts the TLS handshake is closed after 2 s" "$(tcp "timeout 10 cat <&3")" '^elapsed=2[0-9]{3}ms$'
 expect "uninstall the TLS endpoint" "$(sql "UNINSTALL COMPONENT 'file://component_mcp'")" "^$"
 expect "then the guard can be uninstalled" "$(sql "UNINSTALL COMPONENT 'file://component_mcp_guard'")" "^$"
 expect "server alive at the end" "$(alive)" "^up$"
