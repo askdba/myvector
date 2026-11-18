@@ -987,6 +987,10 @@ bool bounded_query(MYSQL_H h, const std::string &sql, bool *truncated, Retained 
 // statement is registered here with a deadline, mcp_http.query_timeout_seconds away (default 30 s,
 // as mysql-mcp-server's MYSQL_QUERY_TIMEOUT_SECONDS); past it, a session of the same account runs
 // KILL QUERY on it (an account may always kill its own statements), whatever the statement is.
+// That session is opened just before the call's (opening one while the call's session is in use
+// on the thread fails) and kept until the call ends: once the account is dropped (DROP USER) no
+// new session can open as it, while sessions already open keep running, and can still kill their
+// own account's statements (#310). If it cannot be opened then, one is opened at the deadline.
 class Watchdog {
  public:
   using Clock = std::chrono::steady_clock;
@@ -1007,12 +1011,14 @@ class Watchdog {
     thread_.join();
   }
 
+  // `killer` (may be null): an open session as `user`@`host` to send the KILL from. The caller
+  // owns it, and may close it once remove() has returned.
   uint64_t add(unsigned long long connection_id, const std::string &user,
-               const std::string &host) {
+               const std::string &host, MYSQL_H killer) {
     std::lock_guard<std::mutex> lock(mutex_);
     const uint64_t ticket = next_++;
     entries_[ticket] = {Clock::now() + std::chrono::seconds(opt_query_timeout_seconds),
-                        connection_id, user, host};
+                        connection_id, user, host, killer};
     cv_.notify_all();
     return ticket;
   }
@@ -1050,6 +1056,7 @@ class Watchdog {
     Clock::time_point next;  // the deadline, then the next KILL attempt
     unsigned long long connection_id;
     std::string user, host;
+    MYSQL_H killer = nullptr;
     bool expired = false, busy = false;
   };
 
@@ -1091,26 +1098,39 @@ class Watchdog {
 
   // True if the KILL ran (or found the statement already gone: error 1094, unknown thread).
   static bool kill_query(const Entry &e) {
-    MYSQL_H h = nullptr;
-    if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) return false;
-    const std::string sql = "KILL QUERY " + std::to_string(e.connection_id);
-    bool done = false;
-    if (!mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_PROTOCOL, "local") &&
-        !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_USER_NAME, e.user.c_str()) &&
-        !mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_HOST_NAME, e.host.c_str()) &&
-        !mysql_service_mysql_command_factory->connect(h)) {
-      if (!mysql_service_mysql_command_query->query(h, sql.data(), sql.size())) {
-        done = true;
-      } else {
-        unsigned int err = 0;
-        mysql_service_mysql_command_error_info->sql_errno(h, &err);
-        done = err == ER_NO_SUCH_THREAD;
-      }
-    }
+    if (e.killer != nullptr) return send_kill(e.killer, e.connection_id);
+    MYSQL_H h = open_session(e.user, e.host);
+    if (h == nullptr) return false;
+    const bool done = send_kill(h, e.connection_id);
     mysql_service_mysql_command_factory->close(h);
     return done;
   }
 
+  static bool send_kill(MYSQL_H h, unsigned long long connection_id) {
+    const std::string sql = "KILL QUERY " + std::to_string(connection_id);
+    if (!mysql_service_mysql_command_query->query(h, sql.data(), sql.size())) return true;
+    unsigned int err = 0;
+    mysql_service_mysql_command_error_info->sql_errno(h, &err);
+    return err == ER_NO_SUCH_THREAD;
+  }
+
+ public:
+  // A new session as user@host, or null. It keeps the command service's default of bypassing
+  // max_connections, so a full server can still stop a statement.
+  static MYSQL_H open_session(const std::string &user, const std::string &host) {
+    MYSQL_H h = nullptr;
+    if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) return nullptr;
+    if (mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_PROTOCOL, "local") ||
+        mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_USER_NAME, user.c_str()) ||
+        mysql_service_mysql_command_options->set(h, MYSQL_COMMAND_HOST_NAME, host.c_str()) ||
+        mysql_service_mysql_command_factory->connect(h)) {
+      mysql_service_mysql_command_factory->close(h);
+      return nullptr;
+    }
+    return h;
+  }
+
+ private:
   std::mutex mutex_;
   std::condition_variable cv_;
   std::map<uint64_t, Entry> entries_;
@@ -1137,12 +1157,13 @@ unsigned long long connection_id(MYSQL_H h) {
   return id;
 }
 
-// A call's statement under the watchdog for the scope of this object.
+// A call's statement under the watchdog for the scope of this object. `killer` (may be null) is
+// the session to send its KILL from, open as the same account; it must outlive this object.
 class Watch {
  public:
-  Watch(MYSQL_H h, const std::string &user, const std::string &host) {
+  Watch(MYSQL_H h, const std::string &user, const std::string &host, MYSQL_H killer) {
     const unsigned long long id = connection_id(h);
-    if (id != 0) ticket_ = watchdog.add(id, user, host);
+    if (id != 0) ticket_ = watchdog.add(id, user, host, killer);
   }
   ~Watch() { end(); }
   Watch(const Watch &) = delete;
@@ -1151,7 +1172,7 @@ class Watch {
   // Ends the watch (once) and says what happened to the statement.
   Watchdog::Outcome end() {
     if (ticket_ != 0) {
-      outcome_ = watchdog.remove(ticket_);
+      outcome_ = watchdog.remove(ticket_);  // after it, the watchdog no longer uses the killer
       ticket_ = 0;
     }
     return outcome_;
@@ -1220,6 +1241,13 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
               " active endpoint sessions (mcp_http.max_sessions_per_account)";
     return r;
   }
+  // The session the call's KILL is sent from (Watchdog), opened first; closed after the call's.
+  struct Killer {
+    MYSQL_H h;
+    ~Killer() {
+      if (h != nullptr) mysql_service_mysql_command_factory->close(h);
+    }
+  } killer{Watchdog::open_session(user, host)};
   MYSQL_H h = nullptr;
   if (mysql_service_mysql_command_factory->init(&h) || h == nullptr) {
     r.error = "cannot create a session";
@@ -1275,7 +1303,7 @@ SqlResult run_as(const std::string &account, const std::string &sql) {
                 "server startup? Restart the server with it in plugin_dir)";
     } else if (mysql_service_mysql_command_query->query(h, kLimit.data(), kLimit.size())) {
       read_error(h, &r);
-    } else if (Watch watch(h, user, host); !watch.ok()) {
+    } else if (Watch watch(h, user, host, killer.h); !watch.ok()) {
       read_error(h, &r);
       if (r.error.empty()) r.error = "cannot read the session's connection id";
     } else if (Retained retained; bounded_query(h, sql, &r.truncated, &retained)) {

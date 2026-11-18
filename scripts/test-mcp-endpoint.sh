@@ -387,6 +387,23 @@ expect "SELECT SLEEP(20) is stopped after 3 s and returns 1 (took ${took}s)" "$t
 t0=$(date +%s); out=$(call run_query '{"sql":"DO SLEEP(20)"}'); took=$(( $(date +%s) - t0 ))
 expect "DO SLEEP(20) is stopped after 3 s (took ${took}s)" "$took $out" '^[3-9] .*"isError":false'
 expect "the next call runs normally" "$(call run_query '{"sql":"SELECT 1 AS one"}')" 'one\\":\\"1\\".*"isError":false'
+# The time limit still applies when the call's account is dropped while the call runs (#310): no
+# new session can open as it then, so the KILL goes through a session opened with the call's.
+sql "CREATE USER dropme@'%'; INSERT INTO mysql.mcp_tokens (token_sha256, account) VALUES ('$(h tbl-dropme)', 'dropme@%')"
+sleep 1.2  # the token table snapshot is read again once it is a second old
+t0=$(date +%s)
+dropme_out=$(mktemp)
+callas tbl-dropme run_query '{"sql":"SELECT SLEEP(20) AS s"}' >"$dropme_out" &
+dropper=$!
+# Component sessions are not in the processlist: the call is known to be running by its client
+# (it takes 3 s, until the KILL).
+sleep 1
+running=no; kill -0 "$dropper" 2>/dev/null && running=yes
+sql "DROP USER dropme@'%'"
+expect "the call was running when its account was dropped" "$running" "^yes$"
+wait "$dropper"; took=$(( $(date +%s) - t0 ))
+expect "a call whose account is dropped mid-call is still stopped after 3 s (took ${took}s)" "$took $(cat "$dropme_out")" '^[3-9] .*s\\":\\"1\\".*"isError":false'
+sql "DELETE FROM mysql.mcp_tokens WHERE account = 'dropme@%'"; rm -f "$dropme_out"
 # Column masking, as mysql-mcp-server's MYSQL_MCP_MASK_COLUMNS: by column name, substring,
 # case-insensitive; NULL stays NULL.
 expect "masked columns: values replaced, NULL kept, others untouched" "$(call run_query '{"sql":"SELECT \"a\" AS user_password, \"b\" AS SecretKey, NULL AS secret_null, \"c\" AS ok"}')" 'user_password\\":\\"\*\*\*\*\*\*\*\*\\",\\"SecretKey\\":\\"\*\*\*\*\*\*\*\*\\",\\"secret_null\\":null,\\"ok\\":\\"c\\"'
