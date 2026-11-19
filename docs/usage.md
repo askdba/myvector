@@ -167,10 +167,19 @@ Build, load, status and drop work as for `storage=file`. Requirements (component
 
 - `gtid_mode = ON`;
 - a writable server: not `read_only` or `super_read_only` (replicas: keep `storage=file` for now);
-- no `online=Y` yet (planned);
 - `max_allowed_packet` large enough for one node.
 
 Each server keeps its own index rows; they are not written to the binlog. Uninstalling the component keeps them. See [RFC-005](RFC-005-INNODB-INDEX-STORAGE.md) for the design.
+
+### Online indexes (online=Y)
+
+`online=Y` works with `storage=innodb`. The binlog listener applies row changes to the index in memory, as for a file-backed index, and saves what changed to InnoDB every `myvector_checkpoint_interval` seconds (default 300, set in `myvector.cnf`; see [Configuration](CONFIGURATION.md)). Only the parts of the index that changed are written, and an index with no changes is not rewritten. While a checkpoint is written the listener applies no updates; they follow when it is done.
+
+With each checkpoint the index stores the set of transactions (GTIDs) it includes. After a restart or a crash, the index is loaded from its last checkpoint and the listener applies the transactions that came after it from the binary log. A build stores the index and its set the same way.
+
+This needs the binary logs written since the last checkpoint. If they have been purged, the index is not loaded after the restart, the error log says so, and the index has to be rebuilt with `MYVECTOR_INDEX_BUILD`; a `MYVECTOR_INDEX_LOAD` is refused. Keep `binlog_expire_logs_seconds` well above the checkpoint interval plus the longest time the server may be down. The same applies to index rows restored from a backup: they are usable only if the binary logs since that backup's last checkpoint are still on the server.
+
+The listener's account needs `REPLICATION SLAVE` and `REPLICATION CLIENT` (it runs `SHOW BINLOG EVENTS` and `SHOW BINARY LOGS` to find where to resume).
 
 Changing `storage=` on an existing index doesn't move it: run `MYVECTOR_INDEX_BUILD` after the change, or a load finds no saved index in the new backend.
 
