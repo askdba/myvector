@@ -1,0 +1,27 @@
+{
+  "tab_title": "glove-100-angular — big cosine dataset",
+  "title": "Big dataset — glove-100-angular (cosine, 1.2M)",
+  "subtitle": "MyVector · vsql_vector · pgvector — 1.18M × 100-d word embeddings, cosine, published ground truth",
+  "nav": "<a href=\"/\">← cross-engine (fashion-mnist)</a> · <a href=\"/real/\">real-dataset</a> · <a href=\"/village/\">village</a>",
+  "order": [
+    "MyVector",
+    "vsql_vector",
+    "pgvector"
+  ],
+  "col": {
+    "MyVector": "#4f9dff",
+    "vsql_vector": "#f0a93b",
+    "pgvector": "#36c98d"
+  },
+  "headline_ef": 200,
+  "description": "The big-dataset round: <b>glove-100-angular</b> — 1.18 million 100-d GloVe word embeddings with a <b>cosine</b> metric (vs the 60k×784 L2 fashion-mnist on the other pages). Recall@10 is scored against the dataset's <b>published</b> exact neighbors. GloVe is a genuinely hard ANN benchmark, so recall sits well below the ~0.99 of fashion-mnist — the interesting comparison is the recall/throughput <i>tradeoff</i> each engine strikes at this scale. Full metrics via MyVector's harness.",
+  "caveats": [
+    "<b>⚡ MyVector here is current <code>main</code> (<a href=\"https://github.com/askdba/myvector/pull/278\">PR #278</a> + <a href=\"https://github.com/askdba/myvector/pull/280\">#280</a>), re-measured on glove 2026-11-10:</b> the current-main build (NEON cosine kernel + keepPrunedConnections, plus #280 which removed the ANN-rewrite overhead), engine-isolated on A2 like the other engines. <b>PR #280 lifts glove QPS +35–48% across the sweep</b> (e.g. ef=50 601→872, ef=200 287→424) at unchanged recall, on top of #278. pgvector and vsql are unaffected by #280 and keep their engine-isolated numbers, so MyVector’s matched-recall lead here <b>widens</b> (e.g. ~872 QPS vs pgvector ~281 / vsql ~360 at recall ~0.73). (Both are merged to <code>main</code>.)",
+    "<b>Dataset:</b> <code>glove-100-angular</code> (ann-benchmarks) — 1.18M train × 100-d GloVe word vectors, 10k test, <b>cosine</b>. HNSW M=16, ef_construction=200. Recall is intrinsically lower than on fashion-mnist — GloVe is a hard, high-overlap embedding space.",
+    "<b>Reading the sweep:</b> MyVector tunes for throughput, so it reaches each recall at a <i>lower</i> ef_search — its per-point dots sit lower-and-righter, but at <b>matched recall</b> (the table above) it serves the most QPS across the mid-to-high recall range. This re-measured optimized run sweeps ef=10→800 (the prior scalar run also went to ef=1600/3200, reaching recall 0.985, confirming MyVector doesn't plateau — the optimized build would reach those recalls even faster).",
+    "<b>Engine-isolated:</b> each engine was benchmarked with the <b>other engines stopped</b>, so its 1.2M index build had the full A2 host (24 GB) to itself — building four 1.2M HNSW indexes with all servers resident OOMs the box. pgvector also needed <code>--shm-size=4g</code> for its parallel build.",
+    "<b>Full metrics</b> via MyVector's harness: build, insert QPS, exact brute-force KNN (QPS + p50/p99), ANN (QPS + p50/p99), recall@10 vs published ground truth. Headline cards are the warm ef_search=200 point.",
+    "<b>Build time — super-linear, not a threading gap (verified):</b> the same 1.2M HNSW index build took MyVector ~46&nbsp;min and pgvector ~33&nbsp;min but vsql_vector ~7&nbsp;hours (the index build specifically; vsql's insert was ~3&nbsp;min). We checked whether vsql was single-threaded — it isn't: its build runs ~4 threads (measured ~410% CPU, matching <code>innodb_ddl_threads=4</code>). The real cause is that vsql's build <b>scales super-linearly</b>: a 40k-row build takes ~100&nbsp;s, but 1.18M took ~7&nbsp;h — ~256× the time for ~30× the rows (≈ O(N^1.6)), far beyond the ~1&nbsp;h a near-linear extrapolation predicts. So its graph construction degrades at scale (likely memory/cache-bound) while MyVector's and pgvector's stay efficient at 1.2M. Each engine used its default build path on the same 8-core host. <b>MariaDB is excluded (re-confirmed 2026-11-06, quantified):</b> a fresh MHNSW build on glove-100 (1.18M) — with a generous 4&nbsp;GB InnoDB pool + 2&nbsp;GB <code>mhnsw_max_cache_size</code>, so not a cache-thrashing artifact — <b>did not complete within a 4&nbsp;h hard cap</b> (reached ~819k/1.18M, ~69%), and a second attempt with a <b>10&nbsp;h cap also did not complete</b>. Its online insert/build rate <b>decays as the graph grows</b> (311k rows at 36&nbsp;min → 529k at 1.6&nbsp;h → 819k at 3.6&nbsp;h on the first run; ~500k at 1.5&nbsp;h on the second), so the full 1.18M build needs <b>&gt;10&nbsp;h</b> — impractical at this scale. So MariaDB is genuinely unable to build the 1.2M cosine index in a usable window; it appears on the 60k×784 fashion-mnist pages where its build does complete.",
+    "<b>Hardware:</b> Ampere A2 host (8 vCPU / 24 GB), one engine resident at a time."
+  ]
+}
