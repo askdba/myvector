@@ -181,7 +181,8 @@ def main():
         rc2, out2, err2 = run(srv, "CALL mysql.myvector_index_drop('vtest.o.v');")
         srv.sql("DROP TABLE o;")
         record("1c. online=Y with storage=innodb: builds and drops",
-               out.startswith("SUCCESS") and not out2.startswith("ERROR"),
+               rc == 0 and rc2 == 0 and out.startswith("SUCCESS") and
+               not out2.startswith("ERROR"),
                f"{out[:60]} | {out2 or err2}")
         srv.sql(f"CREATE TABLE k (id INT PRIMARY KEY, v VARBINARY({DIM * 4 + 64}) NULL "
                 f"COMMENT 'MYVECTOR COLUMN type=knn,dim={DIM},idcol=id,storage=innodb');")

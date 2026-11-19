@@ -88,6 +88,10 @@ int main() {
              "upper-case uuid");
     CHECK_EQ(roundTrip(u1 + ":1-10," + u1 + ":mytag:1"), u1 + ":1-10:mytag:1",
              "same uuid in two parts");
+    CHECK_EQ(roundTrip(" " + u1 + ":1-3 ,\n " + u2 + ":4 \n"), u1 + ":1-3," + u2 + ":4",
+             "whitespace around commas and at the ends");
+    CHECK_EQ(roundTrip(u1 + ":1000000000000000000-9223372036854775806"),
+             u1 + ":1000000000000000000-9223372036854775806", "19-digit numbers, up to the largest");
 
     // ---- malformed input is refused, never half-read
     const char* bad[] = {
@@ -103,6 +107,10 @@ int main() {
         "140f207e-e1f5-11f1-9a84-5e0d48933362:bad-tag:1",
         "140f207e-e1f5-11f1-9a84-5e0d48933362:1,zzz",
         "140f207e-e1f5-11f1-9a84-5e0d48933362:9999999999999999999",
+        "140f207e-e1f5-11f1-9a84-5e0d48933362:9223372036854775807",
+        "140f207e-e1f5-11f1-9a84-5e0d48933362:1 2",
+        "140f207e-e1f5-11f1-9a84-5e0d48933362:1- 2",
+        "140f207e-e1f5-11f1-9a84-5e0d48933362:1tag:1",
     };
     for (const char* b : bad) {
         MyVectorGtidSet s;
@@ -156,6 +164,8 @@ int main() {
         CHECK_EQ(a.toString(), u1 + ":1-9," + u2 + ":1-2:t:7", "union with the empty set");
         e.unionWith(a);
         CHECK_TRUE(e == a, "union into the empty set");
+        a.unionWith(a);
+        CHECK_EQ(a.toString(), u1 + ":1-9," + u2 + ":1-2:t:7", "union with itself");
     }
 
     // ---- subset: which binlog file can an index resume from
@@ -202,19 +212,20 @@ int main() {
             const char* what;
             const char* hex;
             const char* uuid;
+            size_t need;  // bytes up to the end of the tag
         } cases[] = {
             {"9.7",
              "027200000002281e40fc8503d50322c50369021102bc1a904d0266c40404060a6d79746167"
              "080c0a100c7f109266e7696006103d041283120b212cd9bb",
-             "140f207e-e1f5-11f1-9a84-5e0d48933362"},
+             "140f207e-e1f5-11f1-9a84-5e0d48933362", 37},
             {"8.4",
              "0274000000023c786c968503d50322c5034502bd033c6903b85503e2d60404060a6d7974"
              "6167080c0a100c7fc2d64ce869600610410412ebd00936efb240",
-             "1e3c364b-e1f5-11f1-91ef-1eda5cd5716b"},
+             "1e3c364b-e1f5-11f1-91ef-1eda5cd5716b", 38},
             {"26.10",
              "0272000000024e88ceb48503d50322c503d102041902209604aa15030404060a6d79746167"
              "080c0a100c7f46ad33e9696006103d041243dc1f5733c8cc",
-             "2744675a-e1f5-11f1-b402-86104b0255c5"},
+             "2744675a-e1f5-11f1-b402-86104b0255c5", 37},
         };
         for (const auto& c : cases) {
             std::vector<unsigned char> body = fromHex(c.hex);
@@ -227,12 +238,22 @@ int main() {
             CHECK_TRUE(g.gno == 1, (what + ": gno").c_str());
             // every truncation is refused, none reads past the end
             bool any = false;
-            for (size_t n = 0; n < 37; n++) {
+            for (size_t n = 0; n < c.need; n++) {
                 MyVectorGtid t;
                 if (myvector_decode_tagged_gtid_event(body.data(), n, &t))
                     any = true;
             }
-            CHECK_TRUE(!any, (what + ": truncated bodies refused").c_str());
+            MyVectorGtid whole;
+            CHECK_TRUE(!any && myvector_decode_tagged_gtid_event(body.data(), c.need, &whole),
+                       (what + ": every shorter body refused, the shortest whole one read").c_str());
+        }
+        {
+            // a tag starting with a digit could be printed but not parsed back
+            std::vector<unsigned char> body = fromHex(cases[0].hex);
+            body[32] = '1';
+            MyVectorGtid t;
+            CHECK_TRUE(!myvector_decode_tagged_gtid_event(body.data(), body.size(), &t),
+                       "type 42 with a tag starting with a digit refused");
         }
         std::vector<unsigned char> junk(64, 0xff);
         MyVectorGtid g;

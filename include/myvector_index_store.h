@@ -64,6 +64,9 @@ public:
     struct Position {
         unsigned long long generation = 0;
         unsigned long long ckpt_seq = 0;
+        /// a checkpoint published but could not delete the row versions it
+        /// replaced: the next one must be asked to clean up
+        bool leftovers = false;
     };
 
     /* What changed since the stored state at a Position: ids of nodes whose
@@ -105,8 +108,9 @@ public:
      * publish them together with src's header, node count and gtids, only if
      * the stored index is still at *at (compare-and-set). With an empty delta
      * only the header row is updated. cleanup: first delete rows a checkpoint
-     * that never published may have left; pass true after a load and after
-     * any failed checkpoint. On success *at is the new position; on failure
+     * that never published may have left, and replaced row versions one that
+     * was interrupted after publishing did not delete; pass true after a
+     * load, after any failed checkpoint and when at->leftovers is set. On success *at is the new position; on failure
      * nothing is published and *at is unchanged. */
     virtual bool checkpoint(const std::string& name, const GraphSource& src,
                             const Delta& delta, bool cleanup, Position* at,

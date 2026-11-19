@@ -341,7 +341,10 @@ bool session_setup(Session& s, std::string* err) {
     /* Lock waits are bounded: the caller's own session may hold a lock on a
      * myvector table (LOCK TABLES, an open transaction) while it waits for this
      * thread, and the default metadata lock wait is a year. */
-    return s.exec("SET SESSION sql_log_bin = 0", err) &&
+    /* A default schema: the multi-table DELETE of a checkpoint's cleanup
+     * names its target by alias, which is resolved in the default schema. */
+    return s.exec("USE myvector", err) &&
+           s.exec("SET SESSION sql_log_bin = 0", err) &&
            s.exec("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ", err) &&
            s.exec("SET SESSION autocommit = 1", err) &&
            s.exec("SET SESSION lock_wait_timeout = 120", err) &&
@@ -391,6 +394,10 @@ struct Writer {
     size_t rows = 0;  // statements written
 
     bool put(const std::string& sql, size_t bytes) {
+        /* Commit first if this write would take the transaction past the
+         * limit (a single write larger than the limit goes alone). */
+        if (txn > 0 && txn + bytes > kTxnBytes && !commit())
+            return false;
         if (txn == 0 && !s.exec("START TRANSACTION", e))
             return false;
         if (!s.exec(sql, e))
@@ -441,7 +448,9 @@ struct UpperWriter {
                    " bytes) don't fit in max_allowed_packet (" + lim.map_s + ")";
             return false;
         }
-        if (!batch.empty() && insert().size() + batch.size() + 2 + row.size() > lim.stmt_limit &&
+        if (!batch.empty() &&
+            (insert().size() + batch.size() + 2 + row.size() > lim.stmt_limit ||
+             batch_bytes + d.size() > kTxnBytes) &&
             !flush())
             return false;
         if (!batch.empty())
@@ -508,6 +517,20 @@ public:
                 status = LoadStatus::Failed;  // if load_in throws on stored data
                 status = load_in(s, name, metric, dim, sink, at, gtids, e);
                 s.exec("COMMIT", nullptr);
+                /* Standalone mode (RFC-005 4.8): the server that loads an
+                 * index is its writer from then on. Rows that came with a
+                 * copied datadir or a restore name another server, and a
+                 * checkpoint would refuse them. */
+                std::string we;
+                if (status == LoadStatus::Ok &&
+                    !s.exec("UPDATE myvector.index_meta SET writer_uuid = @@server_uuid "
+                            "WHERE " + by_name(name) + " AND generation = " +
+                                std::to_string(at->generation) +
+                                " AND writer_uuid <> @@server_uuid",
+                            &we))
+                    MYVEC_LOG_WARN("Index %s: could not take over the stored index as its "
+                                   "writer (%s); checkpoints will fail until it is rebuilt.",
+                                   name.c_str(), we.c_str());
                 return status == LoadStatus::Ok || status == LoadStatus::NotSaved;
             },
             err);
@@ -761,14 +784,42 @@ private:
             *e = "stored index has an invalid chunk size";
             return false;
         }
+        /* The chunk sizes are the generation's. If max_allowed_packet was
+         * lowered since its build, a chunk may no longer fit in a statement
+         * (RFC-005 4.3). */
+        size_t largest = std::max(vec_nodes * src.vector_record, lnk_nodes * src.link_record);
+        if (!delta.empty() && largest > lim.row_limit) {
+            *e = "max_allowed_packet (" + lim.map_s + ") is too small for this index's "
+                 "chunks (" + std::to_string(largest) + " bytes); raise it to at least " +
+                 std::to_string(2 * largest + kStatementOverhead) +
+                 ", or rebuild the index to store smaller chunks";
+            return false;
+        }
 
-        if (cleanup)
+        if (cleanup) {
+            // Rows of a checkpoint that never published.
             for (const char* t : {"index_vectors", "index_links", "index_upper"})
                 if (!delete_batched(s, t,
                                     "index_id = " + I + " AND generation = " + G +
                                         " AND version > " + SEQ,
                                     e))
                     return false;
+            // Versions a checkpoint replaced but was interrupted before deleting:
+            // every row that has a newer version.
+            const char* keyed[][2] = {{"index_vectors", "chunk_id"},
+                                      {"index_links", "chunk_id"},
+                                      {"index_upper", "node_id"}};
+            for (const auto& t : keyed) {
+                const std::string tab = std::string("myvector.") + t[0], key = t[1];
+                if (!s.exec("DELETE o FROM " + tab + " o JOIN " + tab +
+                                " n ON n.index_id = o.index_id AND n.generation = "
+                                "o.generation AND n." + key + " = o." + key +
+                                " AND n.version > o.version WHERE o.index_id = " + I +
+                                " AND o.generation = " + G,
+                            e))
+                    return false;
+            }
+        }
 
         // The chunks holding changed nodes, whole, as the next version. The
         // last chunk of a generation grows as nodes are added.
@@ -831,15 +882,19 @@ private:
             return false;
         }
         at->ckpt_seq = next;
+        at->leftovers = false;
 
         // Versions this checkpoint replaced. Published already: a failure here
-        // leaves rows a later checkpoint of the same chunk deletes.
+        // leaves rows the next checkpoint's cleanup deletes.
         std::string de;
         if (!delete_older(s, "index_vectors", "chunk_id", I, G, V, vchunks, &de) ||
             !delete_older(s, "index_links", "chunk_id", I, G, V, lchunks, &de) ||
-            !delete_older(s, "index_upper", "node_id", I, G, V, unodes, &de))
-            MYVEC_LOG_WARN("Index %s: replaced row versions were not deleted (%s).",
+            !delete_older(s, "index_upper", "node_id", I, G, V, unodes, &de)) {
+            at->leftovers = true;
+            MYVEC_LOG_WARN("Index %s: replaced row versions were not deleted (%s); the "
+                           "next checkpoint deletes them.",
                            name.c_str(), de.c_str());
+        }
         return true;
     }
 

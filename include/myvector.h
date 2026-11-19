@@ -243,8 +243,11 @@ public:
     virtual bool checkpointGtids(const MyVectorGtidSet& /* applied */) { return true; }
 
     /* markStale - the stored index can't be brought up to date (binlogs gone):
-     * free the graph, so searches fail until the index is rebuilt. */
-    virtual void markStale(const std::string& /* why */) {}
+     * free the graph, so searches fail until the index is rebuilt. Only if
+     * the index's base set is still `observed`, the one that was judged: an
+     * index rebuilt or reloaded meanwhile is another graph and stays. */
+    virtual void markStale(const std::string& /* why */,
+                           const MyVectorGtidSet& /* observed */) {}
 
     virtual void getLastUpdateCoordinates(std::string& /* file */,
                                           size_t& /* pos */) {}
@@ -423,6 +426,8 @@ bool myvector_online_index_is_open(const std::string& vecid);
 enum class GtidListenerState {
     kNotRunning,  ///< no listener, or the caller is the listener: no check
     kStarting,    ///< it is choosing where to start: try again shortly
+    kUnknown,     ///< it is reading the binlog but doesn't know which
+                  ///< transactions precede its position: nothing can be checked
     kStreaming    ///< *seen = every transaction it has read, the open one included
 };
 typedef GtidListenerState (*GtidListenerFn)(MyVectorGtidSet* seen);
@@ -431,7 +436,8 @@ void myvector_set_gtid_listener(GtidListenerFn fn);
 /* The loaded indexes that follow the binlog by GTID, with their base sets. */
 void myvector_gtid_indexes(std::vector<std::pair<std::string, MyVectorGtidSet>>* out);
 /* The index named db.table.column can't be brought up to date: unload it. */
-void myvector_gtid_index_stale(const std::string& vecid, const std::string& why);
+void myvector_gtid_index_stale(const std::string& vecid, const std::string& why,
+                               const MyVectorGtidSet& observed);
 /* Checkpoint the index if it follows the binlog by GTID (see
  * AbstractVectorIndex::checkpointGtids). */
 void myvector_checkpoint_index_gtids(const std::string& vecid, const MyVectorGtidSet& applied);

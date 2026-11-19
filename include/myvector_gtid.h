@@ -20,17 +20,37 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
-/* One transaction: source UUID (36 chars, lower case), optional tag, number. */
+/* A tag: a letter or underscore, then letters, digits or underscores, at most
+ * 32 characters (MySQL's rule). The same rule for a tag read from a binlog
+ * event and one read from text, so a set that was printed can be parsed. */
+inline bool myvector_gtid_tag_ok(const std::string& s) {
+    if (s.empty() || s.size() > 32)
+        return false;
+    if (!(std::isalpha(static_cast<unsigned char>(s[0])) || s[0] == '_'))
+        return false;
+    for (char c : s)
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_'))
+            return false;
+    return true;
+}
+
+/* One transaction: source UUID (36 chars, lower case), optional tag, number.
+ * Numbers run from 1 to 2^63 - 2, as in MySQL (GNO_END is exclusive). */
 struct MyVectorGtid {
     std::string uuid;
     std::string tag;
     int64_t gno = 0;
-    bool valid() const { return uuid.size() == 36 && gno > 0; }
+    bool valid() const {
+        return uuid.size() == 36 && gno > 0 &&
+               gno < std::numeric_limits<int64_t>::max() &&
+               (tag.empty() || myvector_gtid_tag_ok(tag));
+    }
 };
 
 class MyVectorGtidSet {
@@ -39,10 +59,20 @@ public:
      * set empty. An empty string is the empty set. */
     bool parse(const std::string& text) {
         m_sets.clear();
+        /* The server wraps long sets after a comma. Whitespace is dropped
+         * next to a comma and at the ends only: "1 2" is not "12". */
         std::string s;
-        for (char c : text)  // the server wraps long sets over several lines
-            if (!std::isspace(static_cast<unsigned char>(c)))
-                s.push_back(c);
+        bool gap = false;  // whitespace seen since the last kept character
+        for (char c : text) {
+            if (std::isspace(static_cast<unsigned char>(c))) {
+                gap = true;
+                continue;
+            }
+            if (gap && !s.empty() && s.back() != ',' && c != ',')
+                return false;
+            gap = false;
+            s.push_back(c);
+        }
         size_t pos = 0;
         while (pos < s.size()) {
             size_t comma = s.find(',', pos);
@@ -130,6 +160,8 @@ public:
     }
 
     void unionWith(const MyVectorGtidSet& other) {
+        if (&other == this)
+            return;
         for (const auto& e : other.m_sets)
             for (const auto& iv : e.second)
                 addInterval(e.first, iv.first, iv.second);
@@ -177,28 +209,21 @@ private:
         return true;
     }
 
-    /* A tag: a letter or underscore, then letters, digits or underscores, at
-     * most 32 characters (MySQL's rule). */
-    static bool isTag(const std::string& s) {
-        if (s.empty() || s.size() > 32)
-            return false;
-        if (!(std::isalpha(static_cast<unsigned char>(s[0])) || s[0] == '_'))
-            return false;
-        for (char c : s)
-            if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_'))
-                return false;
-        return true;
-    }
-
     static bool parseNumber(const std::string& s, int64_t* out) {
-        if (s.empty() || s.size() > 18)
+        if (s.empty())
             return false;
+        const int64_t limit = std::numeric_limits<int64_t>::max();  // exclusive
         int64_t v = 0;
         for (char c : s) {
             if (!std::isdigit(static_cast<unsigned char>(c)))
                 return false;
-            v = v * 10 + (c - '0');
+            int d = c - '0';
+            if (v > (limit - d) / 10)
+                return false;
+            v = v * 10 + d;
         }
+        if (v >= limit)
+            return false;
         *out = v;
         return true;
     }
@@ -222,7 +247,7 @@ private:
             if (t.empty())
                 return false;
             if (!std::isdigit(static_cast<unsigned char>(t[0]))) {
-                if (!isTag(t))
+                if (!myvector_gtid_tag_ok(t))
                     return false;
                 tag = t;
                 continue;
@@ -334,10 +359,7 @@ inline bool myvector_decode_tagged_gtid_event(const unsigned char* body, size_t 
     out->uuid = myvector_uuid_text(uuid);
     out->tag.assign(reinterpret_cast<const char*>(body + pos), tag_len);
     out->gno = gno;
-    for (char c : out->tag)
-        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_'))
-            return false;
-    return out->valid();
+    return myvector_gtid_tag_ok(out->tag) && out->valid();
 }
 
 #endif  // MYVECTOR_GTID_H

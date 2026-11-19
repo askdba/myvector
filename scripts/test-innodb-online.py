@@ -11,7 +11,9 @@ with a row's own vector returns that row, and a deleted row is never returned.
 Component build (8.4, 9.7, 26.10). Part A runs with the checkpoint timer off
 (myvector_checkpoint_interval=3600), part B with a 2 second timer:
   A1. Build: the stored index records the transactions it includes.
-  A2. Online INSERT / UPDATE / DELETE reach the index.
+  A2. Online INSERT / UPDATE / DELETE reach the index. An explicit load of the
+      stored index, now older than the index in memory, is refused and leaves
+      the index in memory alone.
   A3. A binlog rotation does not checkpoint it (that is the file backend's
       trigger); nothing is written until the timer says so.
   A4. A 10,000-row transaction reaches the index.
@@ -325,6 +327,13 @@ def main():
         ok, detail = verify(a)
         record("A2. online INSERT / UPDATE / DELETE reach the index", ok, detail)
 
+        rc, out, err = run(f"CALL mysql.myvector_index_load('{a.idx}');")
+        ok, detail = verify(a)
+        record("A2. a load of the older stored index is refused and leaves the index "
+               "in memory as it is",
+               out.startswith("ERROR") and "older than the binlog listener" in out and ok,
+               f"{(out or err)[:150]} | {detail}")
+
         srv.sql("FLUSH BINARY LOGS;", db=None)
         a.insert(50)
         srv.sql("FLUSH BINARY LOGS;", db=None)
@@ -357,17 +366,13 @@ def main():
 
         rc, out, err = run("SET gtid_next = 'AUTOMATIC:mvtag';"
                            + a.insert_sql(40)[1] + "SET gtid_next = 'AUTOMATIC';")
-        tagged = rc == 0
-        if tagged:
-            for i in range(a.next_id - 40, a.next_id):
-                a.version[i] = 0
-            a.touched = list(range(a.next_id - 40, a.next_id))
-            ok, detail = verify(a)
-            record("A6. a transaction with a tagged GTID reaches the index", ok, detail)
-        else:
-            a.next_id -= 40
-            record("A6. tagged GTIDs (not supported by this server; not checked)", True,
-                   err[:100])
+        tagged = rc == 0  # every supported server (8.4+) has tagged GTIDs
+        for i in range(a.next_id - 40, a.next_id):
+            a.version[i] = 0
+        a.touched = list(range(a.next_id - 40, a.next_id))
+        ok, detail = verify(a)
+        record("A6. a transaction with a tagged GTID reaches the index", tagged and ok,
+               err[:100] or detail)
 
         # The binary logs up to here go away. Index a's stored set is still
         # the one from its build; index b is built after the purge.
@@ -450,17 +455,14 @@ def main():
                m5 is not None and m5["seq"] == m2["seq"],
                f"set {m5['gtids'][-40:] if m5 else None}")
 
-        if tagged:
-            mt = meta(a)
-            run("SET gtid_next = 'AUTOMATIC:mvtag';" + a.insert_sql(5)[1])
-            for i in range(a.next_id - 5, a.next_id):
-                a.version[i] = 0
-            m4 = wait_checkpoint(a, mt)
-            record("B3. a tagged GTID is recorded in the stored set",
-                   m4 is not None and ":mvtag:" in m4["gtids"],
-                   (m4["gtids"][-60:] if m4 else "no checkpoint"))
-        else:
-            record("B3. tagged GTIDs (not supported by this server; not checked)", True)
+        mt = meta(a)
+        rc, out, err = run("SET gtid_next = 'AUTOMATIC:mvtag';" + a.insert_sql(5)[1])
+        for i in range(a.next_id - 5, a.next_id):
+            a.version[i] = 0
+        m4 = wait_checkpoint(a, mt)
+        record("B3. a tagged GTID is recorded in the stored set",
+               rc == 0 and m4 is not None and ":mvtag:" in m4["gtids"],
+               err[:100] or (m4["gtids"][-60:] if m4 else "no checkpoint"))
 
         mb = meta(a)
         a.insert(400)

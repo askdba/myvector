@@ -544,7 +544,12 @@ bool fetch_server_uuid(MYSQL* mysql, std::string* server_uuid) {
  * REPLICATION SLAVE, which reading the binlog needs anyway. */
 bool fetch_previous_gtids(MYSQL* mysql, const std::string& file, MyVectorGtidSet* out) {
     std::string esc(file.size() * 2 + 1, '\0');
-    unsigned long n = mysql_real_escape_string(mysql, &esc[0], file.data(), file.size());
+    unsigned long n =
+        mysql_real_escape_string_quote(mysql, &esc[0], file.data(), file.size(), '\'');
+    if (n == (unsigned long)-1 || n > file.size() * 2) {
+        fprintf(stderr, "MyVector: binlog file name could not be escaped.\n");
+        return false;
+    }
     esc.resize(n);
     std::string q = "SHOW BINLOG EVENTS IN '" + esc + "' LIMIT 2";
     MYSQL_RES* result = nullptr;
@@ -2020,8 +2025,12 @@ void BuildMyVectorIndexSQL(const char* db,
                     /* The same statement, under the same table lock: exactly
                      * the transactions the rows just read include. An index
                      * stored in InnoDB follows the binlog from this set
-                     * (RFC-005 Phase 1b); without it the save below fails. */
-                    if (mysql_num_fields(blres) >= 5 && vi->usesGtids())
+                     * (RFC-005 Phase 1b); without it the save below fails.
+                     * Only a build: a refresh adds the rows its tracking
+                     * column selects, not everything these transactions
+                     * changed, so the set the index has stays as it is. */
+                    if (mysql_num_fields(blres) >= 5 && vi->usesGtids() &&
+                        !strcmp(action, "build"))
                         vi->setBaseGtids(blrow[4] ? blrow[4] : "");
                 }
                 mysql_free_result(blres);
@@ -2296,6 +2305,7 @@ private:
     bool in_trx_ = false;
     bool gtid_known_ = false;
     bool gtid_decode_warned_ = false;
+    bool compressed_warned_ = false;
     bool first_after_gtid_ = false;  ///< the next event follows a GTID event directly
     GtidListenerState gtid_phase_ = GtidListenerState::kNotRunning;
     std::thread::id listener_thread_id_;
@@ -2348,6 +2358,23 @@ private:
         item_gtid_ = g.valid() ? std::make_shared<const MyVectorGtid>(g) : nullptr;
     }
 
+    /* The open transaction's row changes could not be read: it ends without
+     * being recorded as applied. */
+    void skip_transaction() {
+        if (!compressed_warned_) {
+            fprintf(stderr,
+                    "MyVector: the binlog has compressed transactions "
+                    "(binlog_transaction_compression); the listener can't read their "
+                    "row changes, so online indexes miss them. Turn it off and "
+                    "rebuild the indexes.\n");
+            compressed_warned_ = true;
+        }
+        std::lock_guard<std::mutex> l(gtid_mutex_);
+        in_trx_ = false;
+        open_gtid_ = MyVectorGtid();
+        item_gtid_ = nullptr;
+    }
+
     /* The open transaction's last event has been read. */
     void end_transaction() {
         std::lock_guard<std::mutex> l(gtid_mutex_);
@@ -2367,7 +2394,7 @@ private:
      * brought up to date and is unloaded. */
     void choose_gtid_start(MYSQL* hnd) {
         MyVectorGtidSet before;
-        bool known = false, have_files = false, failed = false;
+        bool known = false, have_files = false, failed = false, start_gone = false;
         std::vector<std::pair<std::string, MyVectorGtidSet>> indexes;
         myvector_gtid_indexes(&indexes);
         /* The lookups are SQL statements on a server that may still be
@@ -2412,8 +2439,12 @@ private:
                 auto it = std::find(files.begin(), files.end(), f);
                 return it == files.end() ? files.size() : (size_t)(it - files.begin());
             };
+            /* A saved start file that has been purged can't be opened, however
+             * well its GTID set suits the indexes: they need a retained file. */
+            start_gone = known && !indexes.empty() && list_files() &&
+                         rank(start_binlog_file_) == files.size();
             for (const auto& ix : indexes) {
-                if (known && ix.second.containsAll(before))
+                if (known && !start_gone && ix.second.containsAll(before))
                     continue;  // the chosen start is early enough for this index
                 if (!list_files())
                     break;
@@ -2429,7 +2460,8 @@ private:
                     /* Also when it is the start file itself: the start chosen so
                      * far is then a later position in it (a saved position), and
                      * this index needs the file from its beginning. */
-                    if (!known || i <= rank(start_binlog_file_)) {
+                    if (!known || start_gone || i <= rank(start_binlog_file_)) {
+                        start_gone = false;
                         fprintf(stderr,
                                 "MyVector: replaying the binlog from %s for index %s.\n",
                                 files[i].c_str(), ix.first.c_str());
@@ -2448,7 +2480,7 @@ private:
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
         for (const auto& ix : indexes)
-            if (!known || !ix.second.containsAll(before))
+            if (!known || start_gone || !ix.second.containsAll(before))
                 myvector_gtid_index_stale(
                     ix.first,
                     !failed
@@ -2456,7 +2488,8 @@ private:
                           "this server"
                         : "the binary logs since its last checkpoint could not be "
                           "located (the MyVector user needs REPLICATION CLIENT and "
-                          "REPLICATION SLAVE)");
+                          "REPLICATION SLAVE)",
+                    ix.second);
         if (!known)
             fprintf(stderr,
                     "MyVector: the GTID set at the binlog start position could not be "
@@ -2709,6 +2742,11 @@ private:
             });
         }
 
+        /* Kept across reconnections: a connection that drops between a table
+         * map and its row events resumes at the row events, and without the
+         * map they could not be read, while the transaction's GTID would still
+         * be recorded as applied. */
+        TableMapEvent tev;
         bool password_cleared = false;
         bool reconnecting = false;
         int connect_attempts = 0;
@@ -2859,11 +2897,10 @@ private:
             }
             if (!reconnecting)
                 set_gtid_phase(gtid_known_ ? GtidListenerState::kStreaming
-                                           : GtidListenerState::kNotRunning);
+                                           : GtidListenerState::kUnknown);
 
             reconnecting = false;
 
-            TableMapEvent tev;
             /* Whether the events now being sent carry a 4-byte CRC32 trailer.
              * @source_binlog_checksum='NONE' only covers events the dump thread
              * makes itself, like the first (fake) rotate of a connection. Rotate
@@ -2928,8 +2965,7 @@ private:
                 /* Transaction boundaries (RFC-005 Phase 1b). A transaction
                  * starts at its GTID event (33; 42 with a tag; 34 without a
                  * GTID). It has been read to the end at its XID (16) or
-                 * XA_PREPARE (38), when it is one compressed payload event
-                 * (40), at a heartbeat (27, 41: the server has nothing more to
+                 * XA_PREPARE (38), at a heartbeat (27, 41: the server has nothing more to
                  * send, and it writes a transaction to the binlog whole), at a
                  * rotate read from the file (its timestamp is not 0; the one
                  * the server makes up at each connection has 0 and can arrive
@@ -2943,7 +2979,13 @@ private:
                 if (t == 33 || t == 34 || t == 42) {
                     begin_transaction(t, event_buf, event_len);
                     first_after_gtid_ = true;
-                } else if (t == 16 || t == 38 || t == 40 || t == 27 || t == 41) {
+                } else if (t == 40) {
+                    /* A compressed transaction (binlog_transaction_compression):
+                     * its row events are inside this one event, which the
+                     * listener can't read. Never record it as applied: an
+                     * index that needs it must not resume past it. */
+                    skip_transaction();
+                } else if (t == 16 || t == 38 || t == 27 || t == 41) {
                     end_transaction();
                 } else if (type == kRotateEvent && event_len >= 4) {
                     uint32_t when = 0;

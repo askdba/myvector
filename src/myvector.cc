@@ -776,7 +776,7 @@ public:
                       KeyTypeInteger id) override;
     bool onlineDelete(const MyVectorGtid* gtid, KeyTypeInteger id) override;
     bool checkpointGtids(const MyVectorGtidSet& applied) override;
-    void markStale(const std::string& why) override;
+    void markStale(const std::string& why, const MyVectorGtidSet& observed) override;
 
     bool searchVectorNN(VectorPtr qvec,
                         int dim,
@@ -897,7 +897,8 @@ private:
     /* Temporary store for multi-threaded, parallel index build */
     vector<char> m_batch;
     vector<KeyTypeInteger> m_batchkeys;
-    bool m_isParallelBuild{false};
+    /// atomic: the listener's checkpoint reads it while a build sets it
+    std::atomic<bool> m_isParallelBuild{false};
 
     bool flushBatchParallel();
     bool flushBatchSerial();
@@ -1439,6 +1440,7 @@ bool HNSWMemoryIndex::loadFromStore(bool requireSaved) {
     IndexStore::LoadStatus status = st->load(
         m_name, (m_type == "HNSW_BV" ? "Hamming" : m_dist), m_dim, sink, &pos, &gtids, &err);
     MyVectorGtidSet base;
+    bool refused = false;  // the stored index is sound but can't be used now
     if (status == IndexStore::LoadStatus::Ok && usesGtids()) {
         /* The stored graph includes the transactions in gtids; the listener
          * applies the others from the binlog. That only works if it has not
@@ -1450,13 +1452,28 @@ bool HNSWMemoryIndex::loadFromStore(bool requireSaved) {
             status = IndexStore::LoadStatus::Failed;
             err = "the stored index has an unreadable GTID set";
         } else if (ls == GtidListenerState::kStarting) {
-            status = IndexStore::LoadStatus::Unavailable;
+            refused = true;
             err = "the binlog listener is starting; load the index again in a moment";
+        } else if (ls == GtidListenerState::kUnknown) {
+            refused = true;
+            err = "the binlog listener does not know which transactions precede its "
+                  "position (see the server log)";
         } else if (ls == GtidListenerState::kStreaming && !base.containsAll(seen)) {
-            status = IndexStore::LoadStatus::Failed;
-            err = "the stored index is older than the binlog listener's position, so "
-                  "changes made since its last checkpoint can't be applied to it";
+            refused = true;
+            err = "its checkpoint is older than the binlog listener's position; later "
+                  "changes can't be applied to it";
         }
+    }
+    if (refused) {
+        /* Nothing is wrong with the stored rows or with the graph in memory
+         * (which, if there is one, is newer than they are): keep both. */
+        delete fresh;
+        delete space;
+        setStorageError(err);
+        MYVEC_LOG_ERROR("Index %s: not loaded from InnoDB (the index in memory is "
+                        "unchanged): %s",
+                        m_name.c_str(), err.c_str());
+        return false;
     }
     if (status == IndexStore::LoadStatus::Ok) {
         delete m_alg_hnsw;
@@ -1900,13 +1917,15 @@ bool HNSWMemoryIndex::onlineDelete(const MyVectorGtid* gtid, KeyTypeInteger id) 
  * set; with nothing changed only the stored set moves forward. */
 bool HNSWMemoryIndex::checkpointGtids(const MyVectorGtidSet& applied) {
     std::shared_lock<std::shared_mutex> g(m_graphLock);
-    if (!usesGtids() || m_isParallelBuild)
+    if (!usesGtids())
         return true;
     IndexStore* st = myvector_index_store();
     auto* disk = dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw);
     if (st == nullptr || disk == nullptr)
         return true;  // not loaded: nothing to write
     std::unique_lock<std::shared_mutex> gate(m_writeGate);
+    if (m_isParallelBuild)
+        return true;  // a build holds rows it has not added yet; its save follows
     MyVectorGtidSet base;
     {
         std::lock_guard<std::mutex> l(m_gtidMutex);
@@ -1945,7 +1964,7 @@ bool HNSWMemoryIndex::checkpointGtids(const MyVectorGtidSet& applied) {
         IndexStore::GraphSource src = storeSource(disk);
         src.gtids = next.toString();
         IndexStore::Position pos = m_storePos;
-        ok = st->checkpoint(m_name, src, delta, m_storeCleanup, &pos, &err);
+        ok = st->checkpoint(m_name, src, delta, m_storeCleanup || pos.leftovers, &pos, &err);
         if (ok) {
             m_storePos = pos;
             m_storeCleanup = false;
@@ -1974,8 +1993,13 @@ bool HNSWMemoryIndex::checkpointGtids(const MyVectorGtidSet& applied) {
     return true;
 }
 
-void HNSWMemoryIndex::markStale(const std::string& why) {
+void HNSWMemoryIndex::markStale(const std::string& why, const MyVectorGtidSet& observed) {
     std::unique_lock<std::shared_mutex> g(m_graphLock);
+    {
+        std::lock_guard<std::mutex> l(m_gtidMutex);
+        if (!m_baseKnown || !(m_baseGtids == observed))
+            return;  // rebuilt or reloaded since it was judged
+    }
     delete m_alg_hnsw;
     delete m_space;
     m_alg_hnsw = nullptr;
@@ -3740,6 +3764,9 @@ void myvector_open_index_impl(char* vecid,
                          "ERROR: no saved index for %.80s. Build it with"
                          " MYVECTOR_INDEX_BUILD.",
                          vecid);
+            else if (vi->storageError().find("again in a moment") != string::npos)
+                snprintf(result, 255, "ERROR: index %.60s was not loaded: %.160s.",
+                         vecid, vi->storageError().c_str());
             else if (!vi->storageError().empty())
                 snprintf(result,
                          255,
@@ -4334,13 +4361,14 @@ void myvector_gtid_indexes(std::vector<std::pair<string, MyVectorGtidSet>>* out)
     }
 }
 
-void myvector_gtid_index_stale(const string& vecid, const string& why) {
+void myvector_gtid_index_stale(const string& vecid, const string& why,
+                               const MyVectorGtidSet& observed) {
     AbstractVectorIndex* vi = g_indexes.has(vecid) ? g_indexes.get(vecid) : nullptr;
     if (!vi)
         return;
     SharedLockGuard l(vi);
     if (vi->usesGtids())
-        vi->markStale(why);
+        vi->markStale(why, observed);
 }
 
 void myvector_checkpoint_index_gtids(const string& vecid, const MyVectorGtidSet& applied) {
