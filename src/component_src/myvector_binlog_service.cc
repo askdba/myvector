@@ -2306,6 +2306,11 @@ private:
     bool gtid_known_ = false;
     bool gtid_decode_warned_ = false;
     bool compressed_warned_ = false;
+    /// a transaction was read whose GTID or row changes could not be: applied_
+    /// then lacks something that precedes the position, and a saved position
+    /// must not be paired with it (a restart starts from a file's beginning,
+    /// whose Previous_gtids is complete)
+    bool applied_incomplete_ = false;
     bool first_after_gtid_ = false;  ///< the next event follows a GTID event directly
     GtidListenerState gtid_phase_ = GtidListenerState::kNotRunning;
     std::thread::id listener_thread_id_;
@@ -2353,6 +2358,8 @@ private:
         std::lock_guard<std::mutex> l(gtid_mutex_);
         if (in_trx_)
             applied_.add(open_gtid_);
+        if (!ok)
+            applied_incomplete_ = true;
         open_gtid_ = g;
         in_trx_ = true;
         item_gtid_ = g.valid() ? std::make_shared<const MyVectorGtid>(g) : nullptr;
@@ -2373,6 +2380,7 @@ private:
         in_trx_ = false;
         open_gtid_ = MyVectorGtid();
         item_gtid_ = nullptr;
+        applied_incomplete_ = true;
     }
 
     /* The open transaction's last event has been read. */
@@ -2688,7 +2696,7 @@ private:
              * position; inside one it is not, and the next start re-reads the
              * file from its beginning instead. */
             std::lock_guard<std::mutex> l(gtid_mutex_);
-            if (gtid_known_ && !in_trx_) {
+            if (gtid_known_ && !in_trx_ && !applied_incomplete_) {
                 state.has_gtids = true;
                 state.gtids = applied_.toString();
             }
@@ -2701,6 +2709,7 @@ private:
             std::lock_guard<std::mutex> l(gtid_mutex_);
             listener_thread_id_ = std::this_thread::get_id();
             gtid_known_ = false;
+            applied_incomplete_ = false;
             gtid_decode_warned_ = false;
         }
         struct PhaseReset {  // however the thread ends, loads stop asking it

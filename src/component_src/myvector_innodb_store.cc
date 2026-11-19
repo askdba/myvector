@@ -811,13 +811,20 @@ private:
                                       {"index_upper", "node_id"}};
             for (const auto& t : keyed) {
                 const std::string tab = std::string("myvector.") + t[0], key = t[1];
-                if (!s.exec("DELETE o FROM " + tab + " o JOIN " + tab +
-                                " n ON n.index_id = o.index_id AND n.generation = "
-                                "o.generation AND n." + key + " = o." + key +
-                                " AND n.version > o.version WHERE o.index_id = " + I +
-                                " AND o.generation = " + G,
-                            e))
-                    return false;
+                const std::string scope = "index_id = " + I + " AND generation = " + G;
+                // In batches, each its own transaction, like delete_batched().
+                do {
+                    if (!s.exec("DELETE FROM " + tab + " WHERE " + scope + " AND (" + key +
+                                    ", version) IN (SELECT k, v FROM (SELECT o." + key +
+                                    " AS k, o.version AS v FROM " + tab + " o JOIN " + tab +
+                                    " n ON n.index_id = o.index_id AND n.generation = "
+                                    "o.generation AND n." + key + " = o." + key +
+                                    " AND n.version > o.version WHERE o.index_id = " + I +
+                                    " AND o.generation = " + G + " LIMIT " +
+                                    std::to_string(kDeleteBatch) + ") x)",
+                                e))
+                        return false;
+                } while (s.affected_rows() == (unsigned long long)kDeleteBatch);
             }
         }
 

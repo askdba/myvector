@@ -495,6 +495,13 @@ def main():
                 break
             time.sleep(0.5)
         mk = meta(a)  # still the checkpoint from before: the new rows are not published
+        # And what a checkpoint interrupted after publishing leaves: an older
+        # version of rows that have a newer one.
+        srv.sql("SET sql_log_bin = 0; INSERT INTO myvector.index_links SELECT index_id, "
+                "generation, chunk_id, 0, level0, crc32 FROM myvector.index_links WHERE "
+                f"index_id = {mk['id']} AND generation = {mk['gen']} AND version <= "
+                f"{mk['seq']} LIMIT 5;", db=None)
+        replaced = versions(a, "index_links", "chunk_id")
         crash()
         holder.wait(timeout=30)
         ok, detail = verify(a)
@@ -508,9 +515,12 @@ def main():
         me = wait_checkpoint(a, md)
         v = versions(a, "index_vectors", "chunk_id") if me else (0, 1, 0, 1)
         l = versions(a, "index_links", "chunk_id") if me else (0, 1, 0, 1)
-        record("B5. the next checkpoint removes the unpublished rows",
-               me is not None and v[0] == v[1] and l[0] == l[1] and v[3] == 0 and l[3] == 0,
-               f"vector rows {v[0]} for {v[1]} chunks; link rows {l[0]} for {l[1]} chunks")
+        record("B5. the next checkpoint removes the unpublished rows and the replaced "
+               "versions an interrupted one left",
+               me is not None and replaced[0] > replaced[1] and v[0] == v[1] and
+               l[0] == l[1] and v[3] == 0 and l[3] == 0,
+               f"vector rows {v[0]} for {v[1]} chunks; link rows {l[0]} for {l[1]} chunks "
+               f"({replaced[0]} for {replaced[1]} at the kill)")
 
         f = Table(srv, "f", "")
         f.insert(500)
