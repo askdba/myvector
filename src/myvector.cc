@@ -1317,6 +1317,11 @@ std::string HNSWMemoryIndex::storageProblem() {
     if (st == nullptr)
         return "storage=innodb needs the MyVector component (INSTALL COMPONENT), not the "
                "plugin";
+    /* A build with track= reads only the rows its tracking column selects,
+     * while an online index stored in InnoDB records every transaction up to
+     * the build as included: a row the filter left out would never arrive. */
+    if (m_incrUpdates && m_incrRefresh)
+        return "online=Y can't be combined with track= for storage=innodb; use one of them";
     return st->checkServer();
 }
 

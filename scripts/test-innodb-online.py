@@ -460,9 +460,19 @@ def main():
         for i in range(a.next_id - 5, a.next_id):
             a.version[i] = 0
         m4 = wait_checkpoint(a, mt)
+        # The stored set must hold this transaction, not only an earlier one
+        # with the same tag: everything the server executed is in it.
+        covered = "0"
+        for _ in range(30):
+            m4 = meta(a)
+            covered = srv.sql("SELECT GTID_SUBSET(@@GLOBAL.gtid_executed, "
+                              f"'{m4['gtids']}');", db=None)[0][0]
+            if covered == "1":
+                break
+            time.sleep(1)
         record("B3. a tagged GTID is recorded in the stored set",
-               rc == 0 and m4 is not None and ":mvtag:" in m4["gtids"],
-               err[:100] or (m4["gtids"][-60:] if m4 else "no checkpoint"))
+               rc == 0 and covered == "1" and ":mvtag:" in m4["gtids"],
+               err[:100] or m4["gtids"][-60:])
 
         mb = meta(a)
         a.insert(400)
@@ -497,11 +507,13 @@ def main():
         mk = meta(a)  # still the checkpoint from before: the new rows are not published
         # And what a checkpoint interrupted after publishing leaves: an older
         # version of rows that have a newer one.
-        srv.sql("SET sql_log_bin = 0; INSERT INTO myvector.index_links SELECT index_id, "
-                "generation, chunk_id, 0, level0, crc32 FROM myvector.index_links WHERE "
+        # A copy of every vector chunk: the few updates of this step rewrite a
+        # handful of them, the rest only the cleanup can remove.
+        srv.sql("SET sql_log_bin = 0; INSERT INTO myvector.index_vectors SELECT index_id, "
+                "generation, chunk_id, 0, data, crc32 FROM myvector.index_vectors WHERE "
                 f"index_id = {mk['id']} AND generation = {mk['gen']} AND version <= "
-                f"{mk['seq']} LIMIT 5;", db=None)
-        replaced = versions(a, "index_links", "chunk_id")
+                f"{mk['seq']};", db=None)
+        replaced = versions(a, "index_vectors", "chunk_id")
         crash()
         holder.wait(timeout=30)
         ok, detail = verify(a)
@@ -517,10 +529,11 @@ def main():
         l = versions(a, "index_links", "chunk_id") if me else (0, 1, 0, 1)
         record("B5. the next checkpoint removes the unpublished rows and the replaced "
                "versions an interrupted one left",
-               me is not None and replaced[0] > replaced[1] and v[0] == v[1] and
+               me is not None and replaced[0] >= 2 * replaced[1] and replaced[1] > 100 and
+               v[0] == v[1] and
                l[0] == l[1] and v[3] == 0 and l[3] == 0,
                f"vector rows {v[0]} for {v[1]} chunks; link rows {l[0]} for {l[1]} chunks "
-               f"({replaced[0]} for {replaced[1]} at the kill)")
+               f"({replaced[0]} vector rows for {replaced[1]} chunks at the kill)")
 
         f = Table(srv, "f", "")
         f.insert(500)

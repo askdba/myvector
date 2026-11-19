@@ -90,6 +90,7 @@ int main() {
              "same uuid in two parts");
     CHECK_EQ(roundTrip(" " + u1 + ":1-3 ,\n " + u2 + ":4 \n"), u1 + ":1-3," + u2 + ":4",
              "whitespace around commas and at the ends");
+    CHECK_EQ(roundTrip(u1 + " : 1 - 2 : 5"), u1 + ":1-2:5", "whitespace around : and -");
     CHECK_EQ(roundTrip(u1 + ":1000000000000000000-9223372036854775806"),
              u1 + ":1000000000000000000-9223372036854775806", "19-digit numbers, up to the largest");
 
@@ -109,7 +110,6 @@ int main() {
         "140f207e-e1f5-11f1-9a84-5e0d48933362:9999999999999999999",
         "140f207e-e1f5-11f1-9a84-5e0d48933362:9223372036854775807",
         "140f207e-e1f5-11f1-9a84-5e0d48933362:1 2",
-        "140f207e-e1f5-11f1-9a84-5e0d48933362:1- 2",
         "140f207e-e1f5-11f1-9a84-5e0d48933362:1tag:1",
     };
     for (const char* b : bad) {

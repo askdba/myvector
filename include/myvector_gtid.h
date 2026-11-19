@@ -59,8 +59,9 @@ public:
      * set empty. An empty string is the empty set. */
     bool parse(const std::string& text) {
         m_sets.clear();
-        /* The server wraps long sets after a comma. Whitespace is dropped
-         * next to a comma and at the ends only: "1 2" is not "12". */
+        /* The server wraps long sets after a comma, and MySQL accepts
+         * whitespace around the separators (",", ":" and "-"). Whitespace is
+         * dropped there and at the ends only: "1 2" is not "12". */
         std::string s;
         bool gap = false;  // whitespace seen since the last kept character
         for (char c : text) {
@@ -68,7 +69,8 @@ public:
                 gap = true;
                 continue;
             }
-            if (gap && !s.empty() && s.back() != ',' && c != ',')
+            auto sep = [](char x) { return x == ',' || x == ':' || x == '-'; };
+            if (gap && !s.empty() && !sep(s.back()) && !sep(c))
                 return false;
             gap = false;
             s.push_back(c);

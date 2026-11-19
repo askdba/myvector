@@ -814,13 +814,17 @@ private:
                 const std::string scope = "index_id = " + I + " AND generation = " + G;
                 // In batches, each its own transaction, like delete_batched().
                 do {
+                    /* EXISTS, not a join: each row to delete is listed once
+                         * however many newer versions it has, so a full batch
+                         * deletes exactly kDeleteBatch rows. */
                     if (!s.exec("DELETE FROM " + tab + " WHERE " + scope + " AND (" + key +
                                     ", version) IN (SELECT k, v FROM (SELECT o." + key +
-                                    " AS k, o.version AS v FROM " + tab + " o JOIN " + tab +
-                                    " n ON n.index_id = o.index_id AND n.generation = "
+                                    " AS k, o.version AS v FROM " + tab +
+                                    " o WHERE o.index_id = " + I + " AND o.generation = " +
+                                    G + " AND EXISTS (SELECT 1 FROM " + tab +
+                                    " n WHERE n.index_id = o.index_id AND n.generation = "
                                     "o.generation AND n." + key + " = o." + key +
-                                    " AND n.version > o.version WHERE o.index_id = " + I +
-                                    " AND o.generation = " + G + " LIMIT " +
+                                    " AND n.version > o.version) LIMIT " +
                                     std::to_string(kDeleteBatch) + ") x)",
                                 e))
                         return false;

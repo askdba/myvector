@@ -2756,6 +2756,8 @@ private:
          * map they could not be read, while the transaction's GTID would still
          * be recorded as applied. */
         TableMapEvent tev;
+        std::map<uint64_t, TableMapEvent> table_maps;  // by table id, see below
+        uint64_t tev_id = ~0ULL;                       // the id tev is the map of
         bool password_cleared = false;
         bool reconnecting = false;
         int connect_attempts = 0;
@@ -3174,10 +3176,28 @@ private:
                 std::lock_guard<std::mutex> lock(binlog_stream_mutex_);
                 if (type == kTableMapEvent) {
                     parseTableMapEvent(event_buf, event_len, tev);
+                    /* A statement that changes several tables logs all their
+                     * maps before the first row event, so the last map read is
+                     * not always the one a row event belongs to: keep them by
+                     * table id. */
+                    if (event_len >= EVENT_HEADER_LENGTH + 6) {
+                        if (table_maps.size() >= 256)
+                            table_maps.clear();
+                        tev_id = read_table_id_6(&event_buf[EVENT_HEADER_LENGTH]);
+                        table_maps[tev_id] = tev;
+                    }
                 } else if (type == kWriteRowsEvent || type == kUpdateRowsEvent ||
                            type == kDeleteRowsEvent) {
                     if (g_OnlineVectorIndexes.empty())
                         continue;
+                    if (event_len >= EVENT_HEADER_LENGTH + 6) {
+                        uint64_t id = read_table_id_6(&event_buf[EVENT_HEADER_LENGTH]);
+                        auto mit = table_maps.find(id);
+                        if (id != tev_id && mit != table_maps.end()) {
+                            tev = mit->second;
+                            tev_id = id;
+                        }
+                    }
                     const RowsEventKind kind =
                         type == kWriteRowsEvent    ? RowsEventKind::kWrite
                         : type == kUpdateRowsEvent ? RowsEventKind::kUpdate
