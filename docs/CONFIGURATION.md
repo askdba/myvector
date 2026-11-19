@@ -54,6 +54,7 @@ All options use `key=value` format, one per line. Lines starting with `#` are co
 | `myvector_host` | No | (empty) | Host for TCP connection. Use empty for socket-only. |
 | `myvector_port` | No | 0 | Port for TCP connection. Ignored if using socket. |
 | `myvector_socket` | No | (empty) | Unix socket path for local connection. |
+| `myvector_checkpoint_interval` | No | 300 | Seconds between checkpoints of online indexes stored in InnoDB (`online=Y` with `storage=innodb`; component build). 1 or more. See [Online indexes](usage.md#online-indexes-onliney). |
 
 \*Required when using online updates. If empty, the binlog thread will fail to connect.
 

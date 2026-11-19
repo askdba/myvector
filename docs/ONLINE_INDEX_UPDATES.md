@@ -156,7 +156,7 @@ On plugin startup, MyVector discovers all columns with `online=Y` from the `myve
         `myvector_index_status` counts them, see
         [Troubleshooting](#troubleshooting).
 
-5. **Checkpointing:** Progress is tracked via binlog file and position so the index can be recovered after restart.
+5. **Checkpointing:** Progress is tracked via binlog file and position so the index can be recovered after restart. An index stored in InnoDB (`storage=innodb`) is tracked by GTID set instead and checkpointed on a timer; see [Online indexes](usage.md#online-indexes-onliney).
 
 ## Complete Example
 
