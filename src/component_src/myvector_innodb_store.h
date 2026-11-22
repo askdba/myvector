@@ -53,6 +53,15 @@ void stop();
  * not be opened. */
 bool run(const std::function<bool(Session&, std::string*)>& fn, std::string* err);
 
+/* Target sizes, in bytes, of the vector and level-0 link chunks of generations
+ * built from now on (RFC-005 D5; myvector_index_vec_chunk_bytes and
+ * myvector_index_lnk_chunk_bytes in myvector.cnf). A build still limits them
+ * to what max_allowed_packet allows. False if a value is out of range; the
+ * targets are then unchanged. */
+constexpr size_t kMinChunkBytes = 4096;
+constexpr size_t kMaxChunkBytes = 256u << 20;
+bool set_chunk_targets(size_t vec_bytes, size_t lnk_bytes);
+
 /* Hex-encode bytes for an X'...' SQL literal. */
 std::string hex(const char* data, size_t len);
 

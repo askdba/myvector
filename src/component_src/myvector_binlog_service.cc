@@ -44,6 +44,7 @@
 #include "my_inttypes.h"
 #include "my_thread.h"
 #include "myvector.h"
+#include "myvector_innodb_store.h"
 #include "myvectorutils.h"
 #if MYSQL_VERSION_ID >= 80400
 #include "mysql/binlog/event/binlog_event.h"
@@ -1481,6 +1482,26 @@ void readConfigFile(const char* config_file) {
         interval = kDefaultCheckpointIntervalSec;
     }
     g_checkpoint_interval_sec = interval;
+
+    /* Chunk sizes of indexes stored in InnoDB (RFC-005 D5). */
+    const size_t def_vec = 4u << 20, def_lnk = 256u << 10;
+    auto chunk_bytes = [&](const char* key, size_t def) -> size_t {
+        if (!vo.getOption(key).length())
+            return def;
+        bool ok = false;
+        long long v = vo.getIntOption(key, 0, &ok);
+        if (!ok || v < (long long)myvector_store::kMinChunkBytes ||
+            v > (long long)myvector_store::kMaxChunkBytes) {
+            fprintf(stderr,
+                    "MyVector: %s must be a number of bytes from %zu to %zu; using %zu.\n",
+                    key, myvector_store::kMinChunkBytes, myvector_store::kMaxChunkBytes, def);
+            return def;
+        }
+        return (size_t)v;
+    };
+    myvector_store::set_chunk_targets(
+        chunk_bytes("myvector_index_vec_chunk_bytes", def_vec),
+        chunk_bytes("myvector_index_lnk_chunk_bytes", def_lnk));
 }
 
 /* GetBaseTableColumnPositions() - Get the column ordinal positions of the
