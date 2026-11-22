@@ -37,7 +37,10 @@ from collections import Counter
 
 HOST, PORT = "127.0.0.1", 33480
 TOKENS = {"main": "fuzz-token-main", "table": "fuzz-token-table", "locked": "fuzz-token-locked",
-          "expired": "fuzz-token-expired", "admin": "fuzz-token-admin"}
+          "expired": "fuzz-token-expired", "admin": "fuzz-token-admin", "soak": "fuzz-token-soak"}
+# The checked soak workers run as their own account (mcp3@%): the fuzzers' slow calls fill the
+# other accounts' mcp_http.max_sessions_per_account, and a call over it is refused (1203) by design.
+FUZZ_TOKENS = [v for k, v in TOKENS.items() if k != "soak"]
 TOKEN_HASHES = {k: hashlib.sha256(v.encode()).hexdigest() for k, v in TOKENS.items()}
 VERSIONS = ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 TOOLS = ["list_databases", "list_tables", "describe_table", "run_query", "ping", "server_info"]
@@ -298,7 +301,7 @@ def random_rpc_body(r):
 
 def random_headers(r, sessions):
     h = []
-    tok = r.choice(list(TOKENS.values()) + ["", "x", rand_str(r, r.choice([8, 300, 70000]))])
+    tok = r.choice(FUZZ_TOKENS + ["", "x", rand_str(r, r.choice([8, 300, 70000]))])
     if r.random() < 0.9:
         h.append(("Authorization", r.choice([f"Bearer {tok}", f"bearer {tok}", tok, f"Basic {tok}", "Bearer"])))
     if r.random() < 0.9:
@@ -458,13 +461,13 @@ def soak_worker(seed):
             version = r.choice(VERSIONS)
             session = None
             if version != "2026-07-28":
-                st, hdrs, doc, raw = rpc(TOKENS["main"], "initialize", {"protocolVersion": version})
+                st, hdrs, doc, raw = rpc(TOKENS["soak"], "initialize", {"protocolVersion": version})
                 session = hdrs.get("mcp-session-id")
                 if st != 200 or not session or (doc or {}).get("result", {}).get("protocolVersion") != version:
                     violation("soak-initialize", f"{st} {hdrs} {raw[:300]!r}")
                     continue
             else:
-                st, _, doc, raw = rpc(TOKENS["main"], "server/discover", {}, version=version)
+                st, _, doc, raw = rpc(TOKENS["soak"], "server/discover", {}, version=version)
                 if st != 200 or "2026-07-28" not in json.dumps(doc):
                     violation("soak-discover", f"{st} {raw[:300]!r}")
                     continue
@@ -474,32 +477,32 @@ def soak_worker(seed):
                     break
                 which = r.randint(0, 4)
                 if which == 0:
-                    st, _, doc, raw = rpc(TOKENS["main"], "tools/call",
+                    st, _, doc, raw = rpc(TOKENS["soak"], "tools/call",
                                           {"name": "run_query", "arguments": {"sql": "SELECT COUNT(*) AS c FROM d1.big"}},
                                           version=v, session=session)
                     if '\\"c\\":\\"1500\\"' not in raw.decode("utf-8", "replace") and '"c":"1500"' not in (tool_text(doc) or ""):
                         violation("soak-count", f"{st} {raw[:300]!r}")
                 elif which == 1:
-                    st, _, doc, raw = rpc(TOKENS["main"], "tools/call",
+                    st, _, doc, raw = rpc(TOKENS["soak"], "tools/call",
                                           {"name": "run_query", "arguments": {"sql": "SELECT secret_col, ok FROM d1.masked"}},
                                           version=v, session=session)
                     text = tool_text(doc) or ""
                     if "topsecret" in text or "********" not in text:
                         violation("soak-masking", f"{st} {raw[:300]!r}")
                 elif which == 2:
-                    st, _, doc, raw = rpc(TOKENS["main"], "tools/call",
+                    st, _, doc, raw = rpc(TOKENS["soak"], "tools/call",
                                           {"name": "run_query", "arguments": {"sql": "SELECT n FROM d1.big ORDER BY n"}},
                                           version=v, session=session)
                     text = tool_text(doc) or ""
                     if '"truncated":true' not in text:
                         violation("soak-bounded", f"{st} {raw[:300]!r}")
                 elif which == 3:
-                    st, _, doc, raw = rpc(TOKENS["main"], "tools/list", {}, version=v, session=session)
+                    st, _, doc, raw = rpc(TOKENS["soak"], "tools/list", {}, version=v, session=session)
                     names = [t.get("name") for t in ((doc or {}).get("result") or {}).get("tools", [])]
                     if names != TOOLS:
                         violation("soak-tools", f"{st} {raw[:300]!r}")
                 else:
-                    st, _, doc, raw = rpc(TOKENS["main"], "tools/call",
+                    st, _, doc, raw = rpc(TOKENS["soak"], "tools/call",
                                           {"name": "describe_table", "arguments": {"database": "d1", "table": "t"}},
                                           version=v, session=session)
                     if '"isError":false' not in raw.decode("utf-8", "replace").replace(" ", ""):
@@ -515,7 +518,7 @@ def soak_worker(seed):
                     if not ok:
                         violation(f"soak-refusal-{tok}", f"{st} {text[:300]}")
             if session:
-                st, _, _ = http_request("DELETE", [("Authorization", f"Bearer {TOKENS['main']}"),
+                st, _, _ = http_request("DELETE", [("Authorization", f"Bearer {TOKENS['soak']}"),
                                                    ("Mcp-Session-Id", session)])
                 if st == 0:
                     raise Stalled()
@@ -597,9 +600,9 @@ def endpoint_probe():
 def monitor(start, seconds, out):
     """Health and invariants: mysqld answers SQL, d1 is unchanged, progress is logged.
 
-    The endpoint itself can stall while the fuzzer holds its I/O threads with unfinished requests
-    (Router's HTTP server has no handshake or idle timeout, askdba/myvector#269, #304); stalls are
-    counted by endpoint_probe, and the caller checks that the endpoint recovers after the run.
+    The endpoint itself can stall while the fuzzer's slow calls hold every worker
+    (mcp_http.workers) or its connections fill mcp_http.max_connections; stalls are counted by
+    endpoint_probe, and the caller checks that the endpoint recovers after the run.
     mysqld not answering SQL for HEALTH_GRACE seconds is a failure."""
     import mysql.connector
 

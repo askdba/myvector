@@ -59,6 +59,8 @@
 #include <cctype>
 #include <chrono>
 #include <cstring>
+#include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <condition_variable>
@@ -73,6 +75,7 @@
 #include "http/base/request_handler.h"
 #include "http/base/uri_path_matcher.h"
 #include "http/http_server_context.h"
+#include "http/server/connection.h"  // patched: DeferrableConnection (CMakeLists.txt)
 #include "dim.h"
 #include "mysql/harness/logging/logging.h"
 #include "mysql/harness/logging/registry.h"
@@ -121,7 +124,10 @@ namespace {
 // ----- settings -------------------------------------------------------------------------
 
 unsigned long opt_port = 33480;
-unsigned long opt_threads = 4;                   // I/O workers: calls served at once
+unsigned long opt_threads = 4;                   // I/O threads (network)
+unsigned long opt_workers = 8;                   // tool calls run at once, off the I/O threads
+unsigned long opt_max_connections = 64;          // open HTTP connections
+unsigned long opt_connection_timeout_seconds = 30;  // to complete a request, handshake included
 unsigned long opt_max_sessions_per_account = 4;  // concurrent calls per account
 unsigned long opt_session_timeout_minutes = 30;  // idle Mcp-Session-Id lifetime
 unsigned long opt_query_timeout_seconds = 30;    // a tool call's statement is stopped after it
@@ -133,6 +139,8 @@ char *opt_bind_address = nullptr;     // listen address; null means 127.0.0.1
 char *opt_ssl_cert = nullptr;         // PEM certificate file; with opt_ssl_key, serve HTTPS
 char *opt_ssl_key = nullptr;          // PEM private key file
 bool session_timeout_registered = false;
+bool workers_registered = false, max_connections_registered = false,
+     connection_timeout_registered = false;
 bool query_timeout_registered = false;
 bool port_registered = false, threads_registered = false, max_sessions_registered = false,
      account_registered = false, token_registered = false, origins_registered = false,
@@ -186,10 +194,52 @@ bool register_sysvars() {
     threads_arg.blk_sz = 0;
     if (mysql_service_component_sys_variable_register->register_variable(
             "mcp_http", "threads", PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED | PLUGIN_VAR_READONLY,
-            "I/O worker threads; each serves one call at a time", nullptr, nullptr, &threads_arg,
-            &opt_threads))
+            "I/O threads (network); tool calls run on mcp_http.workers", nullptr, nullptr,
+            &threads_arg, &opt_threads))
       return true;
     threads_registered = true;
+  }
+  {
+    INTEGRAL_CHECK_ARG(ulong) workers_arg;
+    workers_arg.def_val = 8;
+    workers_arg.min_val = 1;
+    workers_arg.max_val = 256;
+    workers_arg.blk_sz = 0;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "workers", PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED | PLUGIN_VAR_READONLY,
+            "Worker threads: requests run on them, off the I/O threads (tool calls at once)",
+            nullptr, nullptr, &workers_arg, &opt_workers))
+      return true;
+    workers_registered = true;
+  }
+  {
+    INTEGRAL_CHECK_ARG(ulong) max_connections_arg;
+    max_connections_arg.def_val = 64;
+    max_connections_arg.min_val = 1;
+    max_connections_arg.max_val = 65535;
+    max_connections_arg.blk_sz = 0;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "max_connections",
+            PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED | PLUGIN_VAR_READONLY,
+            "Open HTTP connections to the endpoint; more are refused", nullptr, nullptr,
+            &max_connections_arg, &opt_max_connections))
+      return true;
+    max_connections_registered = true;
+  }
+  {
+    INTEGRAL_CHECK_ARG(ulong) connection_timeout_arg;
+    connection_timeout_arg.def_val = 30;
+    connection_timeout_arg.min_val = 0;
+    connection_timeout_arg.max_val = 86400;
+    connection_timeout_arg.blk_sz = 0;
+    if (mysql_service_component_sys_variable_register->register_variable(
+            "mcp_http", "connection_timeout_seconds",
+            PLUGIN_VAR_LONG | PLUGIN_VAR_UNSIGNED | PLUGIN_VAR_READONLY,
+            "Seconds a connection may stay open without completing a request, from its start "
+            "(TLS handshake included) and from each reply; 0: no limit",
+            nullptr, nullptr, &connection_timeout_arg, &opt_connection_timeout_seconds))
+      return true;
+    connection_timeout_registered = true;
   }
   {
     INTEGRAL_CHECK_ARG(ulong) max_sessions_arg;
@@ -302,6 +352,9 @@ bool unregister_sysvars() {
   drop(account_registered, "account");
   drop(max_sessions_registered, "max_sessions_per_account");
   drop(threads_registered, "threads");
+  drop(workers_registered, "workers");
+  drop(max_connections_registered, "max_connections");
+  drop(connection_timeout_registered, "connection_timeout_seconds");
   drop(session_timeout_registered, "session_timeout_minutes");
   drop(query_timeout_registered, "query_timeout_seconds");
   drop(port_registered, "port");
@@ -1813,9 +1866,244 @@ bool known_tool(const std::string &name) {
   return std::find(kNames.begin(), kNames.end(), name) != kNames.end();
 }
 
+// ----- Requests off the I/O threads (#304) -----------------------------------------------
+
+// A request's input, copied on its I/O thread, and the reply the handler gives it on a worker
+// thread; the reply is then sent on the I/O thread (reply_on). The handler reads the input
+// headers, the body and the method, and replies through send_reply.
+class BufferedRequest : public http::base::Request {
+ public:
+  explicit BufferedRequest(http::base::Request &req)
+      : body_(req.get_input_body()), method_(req.get_method()) {
+    for (const auto &[name, value] : req.get_input_headers())
+      in_headers_.add(name, std::string(value));
+  }
+
+  const Headers &get_input_headers() const override { return in_headers_; }
+  IOBuffer &get_input_buffer() const override { return in_buffer_; }
+  const std::string &get_input_body() const override { return body_; }
+  Headers &get_output_headers() override { return out_headers_; }
+  IOBuffer &get_output_buffer() override { return out_buffer_; }
+  MethodType get_method() const override { return method_; }
+  const Uri &get_uri() const override { return uri_; }  // the route is /mcp; not read
+  ConnectionInterface *get_connection() const override { return nullptr; }
+
+  void send_reply(StatusType status) override { record(Kind::kStatus, status, {}, nullptr); }
+  void send_reply(StatusType status, const std::string &text) override {
+    record(Kind::kText, status, text, nullptr);
+  }
+  void send_reply(StatusType status, const std::string &text, const IOBuffer &body) override {
+    record(Kind::kBody, status, text, &body);
+  }
+  void send_error(StatusType status) override { record(Kind::kError, status, {}, nullptr); }
+  void send_error(StatusType status, const std::string &text) override {
+    record(Kind::kErrorText, status, text, nullptr);
+  }
+
+  // On the request's I/O thread: sends the recorded reply (500 if the handler gave none).
+  void reply_on(http::base::Request &req) {
+    for (auto &[name, value] : out_headers_) req.get_output_headers().add(name, std::move(value));
+    switch (kind_) {
+      case Kind::kNone:
+        req.send_reply(HttpStatusCode::InternalError);
+        break;
+      case Kind::kStatus:
+        req.send_reply(status_);
+        break;
+      case Kind::kText:
+        req.send_reply(status_, text_);
+        break;
+      case Kind::kBody:
+        req.send_reply(status_, text_, out_buffer_);
+        break;
+      case Kind::kError:
+        req.send_error(status_);
+        break;
+      case Kind::kErrorText:
+        req.send_error(status_, text_);
+        break;
+    }
+  }
+
+ private:
+  enum class Kind { kNone, kStatus, kText, kBody, kError, kErrorText };
+  void record(Kind kind, StatusType status, const std::string &text, const IOBuffer *body) {
+    kind_ = kind;
+    status_ = status;
+    text_ = text;
+    if (body != nullptr && body != &out_buffer_) {
+      const std::string copy(body->begin(), body->end());
+      out_buffer_.clear();
+      out_buffer_.add(copy.data(), copy.size());
+    }
+  }
+
+  Headers in_headers_, out_headers_;
+  mutable IOBuffer in_buffer_;
+  IOBuffer out_buffer_;
+  std::string body_;
+  MethodType method_;
+  Uri uri_;
+  Kind kind_ = Kind::kNone;
+  StatusType status_ = HttpStatusCode::InternalError;
+  std::string text_;
+};
+
+// mcp_http.workers threads that run requests: the I/O threads only read requests and write
+// replies, so a slow call does not hold up the connections served by its I/O thread. Each
+// connection's requests run in order, one at a time, and the connection reads no further
+// requests until its last reply is sent (DeferrableConnection). The queue holds at most one
+// entry per connection, so it is bounded by mcp_http.max_connections.
+class Workers {
+ public:
+  void start(size_t n) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopping_ = false;
+    for (size_t i = 0; i < n; ++i) threads_.emplace_back([this] { run(); });
+  }
+
+  // Requests queued and not started are answered 503; running ones finish (each statement is
+  // bounded by mcp_http.query_timeout_seconds). Their replies are posted to the I/O threads,
+  // which must still run.
+  void stop() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stopping_ = true;
+    }
+    cv_.notify_all();
+    for (auto &t : threads_) t.join();
+    threads_.clear();
+  }
+
+  bool stopping() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return stopping_;
+  }
+
+  // From an I/O thread: false if stopped (the caller then answers itself).
+  bool submit(std::function<void(bool aborting)> job) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (stopping_ || threads_.empty()) return false;
+      queue_.push_back(std::move(job));
+    }
+    cv_.notify_one();
+    return true;
+  }
+
+ private:
+  void run() {
+    mysql_service_mysql_command_thread->init();
+    for (;;) {
+      std::function<void(bool)> job;
+      bool aborting = false;
+      {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
+        if (queue_.empty()) break;  // stopping, and nothing left
+        job = std::move(queue_.front());
+        queue_.pop_front();
+        aborting = stopping_;
+      }
+      job(aborting);
+    }
+    mysql_service_mysql_command_thread->end();
+  }
+
+  mutable std::mutex mutex_;
+  std::condition_variable cv_;
+  std::deque<std::function<void(bool)>> queue_;
+  std::vector<std::thread> threads_;
+  bool stopping_ = true;
+};
+
+Workers workers;
+
 class McpHandler : public http::base::RequestHandler {
  public:
+  // On an I/O thread. The request is handed to the workers; it is handled here only when it
+  // cannot be (the server stops, or a connection type without deferred replies).
   void handle_request(http::base::Request &req) override {
+    auto *conn = dynamic_cast<http::server::DeferrableConnection *>(req.get_connection());
+    if (conn == nullptr) {
+      handle(req);
+      return;
+    }
+    auto job = std::shared_ptr<Job>(new Job{&req, BufferedRequest(req)});
+    std::shared_ptr<Queue> queue;
+    bool start = false;
+    {
+      std::lock_guard<std::mutex> lock(queues_mutex_);
+      auto &q = queues_[conn->connection_id()];
+      if (!q) q = std::make_shared<Queue>(Queue{conn->poster(), {}, false});
+      q->jobs.push_back(job);
+      if (!q->running) start = q->running = true;
+      queue = q;
+    }
+    conn->pause_reading();
+    if (!start) return;  // a worker is already running this connection's requests
+    const uint64_t id = conn->connection_id();
+    if (!workers.submit([this, id, queue](bool aborting) { drain(id, queue, aborting); })) {
+      // Stopping: answer here, in order (this is the connection's only request in flight).
+      {
+        std::lock_guard<std::mutex> lock(queues_mutex_);
+        queue->jobs.clear();
+        queue->running = false;
+        if (auto it = queues_.find(id); it != queues_.end() && it->second == queue)
+          queues_.erase(it);
+      }
+      plain(req, HttpStatusCode::ServiceUnavailable, "the MCP endpoint is stopping");
+      conn->resume_reading();
+    }
+  }
+
+ private:
+  struct Job {
+    http::base::Request *req;  // valid on the I/O thread while the connection exists
+    BufferedRequest buffered;
+  };
+  struct Queue {
+    std::function<void(http::server::DeferrableConnection::Task)> post;
+    std::deque<std::shared_ptr<Job>> jobs;
+    bool running;
+  };
+
+  // On a worker: runs a connection's requests in order, posting each reply to its I/O thread;
+  // the last reply resumes reading.
+  void drain(uint64_t id, const std::shared_ptr<Queue> &queue, bool aborting) {
+    for (;;) {
+      std::shared_ptr<Job> job;
+      {
+        std::lock_guard<std::mutex> lock(queues_mutex_);
+        job = queue->jobs.front();
+        queue->jobs.pop_front();
+      }
+      if (aborting || workers.stopping())
+        plain(job->buffered, HttpStatusCode::ServiceUnavailable, "the MCP endpoint is stopping");
+      else
+        handle(job->buffered);
+      bool last;
+      {
+        std::lock_guard<std::mutex> lock(queues_mutex_);
+        last = queue->jobs.empty();
+        if (last) {
+          queue->running = false;
+          if (auto it = queues_.find(id); it != queues_.end() && it->second == queue)
+            queues_.erase(it);
+        }
+      }
+      queue->post([job, last](http::server::DeferrableConnection *c) {
+        job->buffered.reply_on(*job->req);
+        if (last) c->resume_reading();
+      });
+      if (last) return;
+    }
+  }
+
+  std::mutex queues_mutex_;
+  std::map<uint64_t, std::shared_ptr<Queue>> queues_;  // by DeferrableConnection::connection_id()
+
+  void handle(http::base::Request &req) {
     const std::string *origin = req.get_input_headers().find("Origin");
     if (!origin_ok(origin)) {
       req.send_reply(HttpStatusCode::Forbidden);
@@ -2132,15 +2420,25 @@ bool start_server() {
     return true;
   }
   init_router_logging();
+  http::server::idle_timeout_ms.store(uint64_t{opt_connection_timeout_seconds} * 1000);
+  http::server::stopping.store(false);
+  try {
+    workers.start(opt_workers);
+  } catch (const std::system_error &e) {  // a thread that cannot be created; stop_server joins
+    log_error(std::string("cannot start the worker threads: ") + e.what());
+    return true;
+  }
   auto &io = IoComponent::get_instance();
-  // HTTP work runs on the io threads, which run SQL through the command services.
+  // Requests run on the workers; the io threads run SQL only when a request cannot be handed
+  // to them (McpHandler), so they are set up for the command services too.
   io.set_thread_lifecycle({[](size_t) { mysql_service_mysql_command_thread->init(); },
                            [](size_t) { mysql_service_mysql_command_thread->end(); }});
   if (!io.init(opt_threads, IoBackend::preferred())) return true;
   io_initialized = true;
   try {
     const auto port = static_cast<uint16_t>(opt_port);
-    constexpr uint64_t kMaxConnections = 64, kMaxRequest = 1 << 20, kMaxResponse = 16 << 20;
+    const uint64_t kMaxConnections = opt_max_connections;
+    constexpr uint64_t kMaxRequest = 1 << 20, kMaxResponse = 16 << 20;
     if (tls)
       server = std::make_shared<http::HttpServerContext>(
           &io.io_context(), &io.io_threads(), make_tls_context(), address, port, kMaxConnections,
@@ -2165,6 +2463,10 @@ bool start_server() {
 }
 
 void stop_server() {
+  // The workers first, while the io threads still run: their last replies are posted there, and
+  // a connection waiting for one would otherwise never close (Server::stop() waits for all).
+  http::server::stopping.store(true);
+  workers.stop();
   if (server) server->stop();
   workguard.reset();
   if (io_initialized) IoComponent::get_instance().stop();
