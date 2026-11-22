@@ -135,6 +135,19 @@ int main() {
                  "index dir with trailing slash");
     }
 
+    {
+        // getIntOption: a value that does not fit an int is invalid, not its
+        // low 32 bits (4294975488 = 2^32 + 8192 used to come back as 8192).
+        MyVectorOptions o("a=8192,b=4294975488,c=-4294975488,d=12x,e=2147483647");
+        bool ok = false;
+        CHECK_TRUE(o.getIntOption("a", 7, &ok) == 8192 && ok, "getIntOption: plain value");
+        CHECK_TRUE(o.getIntOption("b", 7, &ok) == 7 && !ok, "getIntOption: above INT_MAX is invalid");
+        CHECK_TRUE(o.getIntOption("c", 7, &ok) == 7 && !ok, "getIntOption: below INT_MIN is invalid");
+        CHECK_TRUE(o.getIntOption("d", 7, &ok) == 7 && !ok, "getIntOption: trailing text is invalid");
+        CHECK_TRUE(o.getIntOption("e", 7, &ok) == 2147483647 && ok, "getIntOption: INT_MAX");
+        CHECK_TRUE(o.getIntOption("zz", 7, &ok) == 7 && ok, "getIntOption: missing uses the default");
+    }
+
     if (failures) {
         std::printf("\n%d check(s) failed\n", failures);
         return 1;

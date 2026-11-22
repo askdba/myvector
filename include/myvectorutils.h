@@ -1,5 +1,8 @@
 #pragma once
 #include <cctype>
+#include <cerrno>
+#include <climits>
+#include <cstdlib>
 #include <cstring>
 #include <regex>
 #include <string>
@@ -152,10 +155,19 @@ public:
         }
 
         char* end = nullptr;
+        errno = 0;
         long result = strtol(val.c_str(), &end, 10);
 
         // Check if entire string was consumed (valid integer)
         if (end == val.c_str() || *end != '\0') {
+            if (valid)
+                *valid = false;
+            return defaultVal;
+        }
+
+        /* A value that doesn't fit an int is invalid, not its low 32 bits:
+         * 4294975488 must not come back as 8192. */
+        if (errno == ERANGE || result < INT_MIN || result > INT_MAX) {
             if (valid)
                 *valid = false;
             return defaultVal;

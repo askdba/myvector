@@ -602,14 +602,16 @@ private:
         Limits lim;
         if (!read_limits(s, &lim, e))
             return false;
-        size_t vec_nodes =
-            src.vector_record
-                ? std::min(g_vec_chunk_target.load(), lim.row_limit) / src.vector_record
-                : 0;
-        size_t lnk_nodes =
-            src.link_record
-                ? std::min(g_lnk_chunk_target.load(), lim.row_limit) / src.link_record
-                : 0;
+        /* The targets are targets: a record larger than one (a vector of
+         * dimension 1536 against a 4 KB target) still gets a chunk of its own,
+         * as long as it fits in a row at all. */
+        auto per_chunk = [&](size_t target, size_t record) -> size_t {
+            if (record == 0 || record > lim.row_limit)
+                return 0;
+            return std::max<size_t>(1, std::min(target, lim.row_limit) / record);
+        };
+        size_t vec_nodes = per_chunk(g_vec_chunk_target.load(), src.vector_record);
+        size_t lnk_nodes = per_chunk(g_lnk_chunk_target.load(), src.link_record);
         if (vec_nodes == 0 || lnk_nodes == 0) {
             *e = "max_allowed_packet (" + lim.map_s +
                  ") is too small to store one node of this index; raise it to at least " +

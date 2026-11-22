@@ -257,6 +257,8 @@ static uint32_t g_binlog_server_id = 0;
  * myvector_checkpoint_interval in the config file. */
 static const int kDefaultCheckpointIntervalSec = 300;
 static std::atomic<int> g_checkpoint_interval_sec{kDefaultCheckpointIntervalSec};
+/** The chunk-size settings as the config file gave them (may be empty). */
+static std::string g_cfg_vec_chunk, g_cfg_lnk_chunk;
 
 /** Compute a deterministic binlog server_id from hostname + PID when not configured. */
 static uint32_t compute_binlog_server_id_fallback() {
@@ -1483,13 +1485,25 @@ void readConfigFile(const char* config_file) {
     }
     g_checkpoint_interval_sec = interval;
 
-    /* Chunk sizes of indexes stored in InnoDB (RFC-005 D5). */
+    /* Chunk sizes of indexes stored in InnoDB (RFC-005 D5): kept as read;
+     * applyChunkSettings() applies them, at component start only. */
+    g_cfg_vec_chunk = vo.getOption("myvector_index_vec_chunk_bytes");
+    g_cfg_lnk_chunk = vo.getOption("myvector_index_lnk_chunk_bytes");
+}
+
+/* applyChunkSettings - set the chunk-size targets from what the config file
+ * said when the component started. readConfigFile() runs again later (for the
+ * credentials, when a build or a new table needs a connection); the targets
+ * must not change then, or an edited file would take effect without the
+ * restart the documentation asks for. */
+static void applyChunkSettings() {
     const size_t def_vec = 4u << 20, def_lnk = 256u << 10;
-    auto chunk_bytes = [&](const char* key, size_t def) -> size_t {
-        if (!vo.getOption(key).length())
+    auto chunk_bytes = [](const char* key, const std::string& text, size_t def) -> size_t {
+        if (text.empty())
             return def;
         bool ok = false;
-        long long v = vo.getIntOption(key, 0, &ok);
+        MyVectorOptions one(std::string("v=") + text);
+        long long v = one.getIntOption("v", 0, &ok);
         if (!ok || v < (long long)myvector_store::kMinChunkBytes ||
             v > (long long)myvector_store::kMaxChunkBytes) {
             fprintf(stderr,
@@ -1500,8 +1514,8 @@ void readConfigFile(const char* config_file) {
         return (size_t)v;
     };
     myvector_store::set_chunk_targets(
-        chunk_bytes("myvector_index_vec_chunk_bytes", def_vec),
-        chunk_bytes("myvector_index_lnk_chunk_bytes", def_lnk));
+        chunk_bytes("myvector_index_vec_chunk_bytes", g_cfg_vec_chunk, def_vec),
+        chunk_bytes("myvector_index_lnk_chunk_bytes", g_cfg_lnk_chunk, def_lnk));
 }
 
 /* GetBaseTableColumnPositions() - Get the column ordinal positions of the
@@ -2214,6 +2228,7 @@ public:
         // For now, we reuse the existing global approach to minimize changes during migration.
         // myvector_config_file and other configs should come from component services/configs.
         readConfigFile(myvector_config_file);
+        applyChunkSettings();
 
         if (myvector_feature_level & 1) {
             // info_print("Binlog event thread is disabled!");
