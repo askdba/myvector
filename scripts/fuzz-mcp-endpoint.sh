@@ -58,11 +58,13 @@ CREATE TABLE d1.masked (secret_col VARCHAR(20), ok VARCHAR(5)); INSERT INTO d1.m
 CREATE TABLE d1.dbl (d DOUBLE); INSERT INTO d1.dbl VALUES (1e300), (-0.0), (NULL);
 CREATE TABLE d1.app_log (id BIGINT AUTO_INCREMENT PRIMARY KEY, v INT);
 -- MCP accounts: grants wider than the guard allows, so the guard is what refuses.
-CREATE USER mcp@'%', mcp2@'%';
-GRANT SELECT, INSERT, UPDATE, DELETE, DROP, CREATE ON d1.* TO mcp@'%', mcp2@'%';
-GRANT SELECT ON mysql.* TO mcp@'%', mcp2@'%';
-GRANT EXECUTE ON mysql_mcp.* TO mcp@'%', mcp2@'%';
-GRANT MCP_USER ON *.* TO mcp@'%', mcp2@'%';
+-- mcp3 is the checked soak workers' own account (fuzz.py), so the fuzzers' calls never fill its
+-- mcp_http.max_sessions_per_account.
+CREATE USER mcp@'%', mcp2@'%', mcp3@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE, DROP, CREATE ON d1.* TO mcp@'%', mcp2@'%', mcp3@'%';
+GRANT SELECT ON mysql.* TO mcp@'%', mcp2@'%', mcp3@'%';
+GRANT EXECUTE ON mysql_mcp.* TO mcp@'%', mcp2@'%', mcp3@'%';
+GRANT MCP_USER ON *.* TO mcp@'%', mcp2@'%', mcp3@'%';
 CREATE USER lockd@'%' ACCOUNT LOCK; GRANT SELECT ON d1.* TO lockd@'%'; GRANT MCP_USER ON *.* TO lockd@'%';
 CREATE USER adm@'%'; GRANT SELECT ON d1.* TO adm@'%'; GRANT MCP_ADMIN ON *.* TO adm@'%';
 -- Non-MCP traffic and the monitor.
@@ -70,6 +72,7 @@ CREATE USER app@'%' IDENTIFIED BY 'app-pw'; GRANT SELECT ON d1.big TO app@'%'; G
 CREATE USER fuzzmon@'%'; GRANT SELECT ON d1.* TO fuzzmon@'%';
 INSERT INTO mysql.mcp_tokens (token_sha256, account, expires_at) VALUES
   ('$(h fuzz-token-table)', 'mcp2@%', NULL),
+  ('$(h fuzz-token-soak)', 'mcp3@%', NULL),
   ('$(h fuzz-token-locked)', 'lockd@%', NULL),
   ('$(h fuzz-token-admin)', 'adm@%', NULL),
   ('$(h fuzz-token-expired)', 'mcp@%', NOW() - INTERVAL 1 DAY);
