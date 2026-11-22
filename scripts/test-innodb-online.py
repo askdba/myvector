@@ -662,21 +662,38 @@ def main():
         sf = state_file()
         logs = [r[0] for r in srv.sql("SHOW BINARY LOGS;", db=None)]
         gone = "binlog.000001"
-        # Edited while the server runs: the listener rewrites the file only at
-        # a rotation or a clean stop, and the kill below is neither.
-        idle.sh(["docker", "exec", srv.name, "bash", "-c",
-                 f"sed -i 's/\"binlog_file\":\"[^\"]*\"/\"binlog_file\":\"{gone}\"/' {sf}; "
-                 f"cat {sf}"])
-        has_gtids = "gtids" in idle.sh(["docker", "exec", srv.name, "cat", sf]).stdout
-        idle.sh(["docker", "kill", "-s", "KILL", srv.name])
-        idle.sh(["docker", "start", srv.name])
-        srv.wait_ready()
+        # The listener rewrites the file at a rotation, a clean stop and each
+        # reconnection, so the edit can be overwritten before the kill. The
+        # restart shows whether it was in effect: only a start file that is
+        # gone makes the listener choose a retained one for an index whose
+        # stored set already covered the saved position.
+        chosen = lambda: len(re.findall(r"replaying the binlog from \S+ for index",
+                                        srv.log()))
+        has_gtids, used = False, False
+        for _ in range(5):
+            before_lines = chosen()
+            r = idle.sh(["docker", "exec", srv.name, "bash", "-c",
+                         f"sed -i 's/\"binlog_file\":\"[^\"]*\"/\"binlog_file\":\"{gone}\"/' "
+                         f"{sf} && cat {sf}"])
+            idle.sh(["docker", "kill", "-s", "KILL", srv.name])
+            has_gtids = "gtids" in r.stdout and gone in r.stdout
+            idle.sh(["docker", "start", srv.name])
+            srv.wait_ready()
+            for _ in range(30):
+                if index_rows(a) >= 0 and chosen() > before_lines:
+                    used = True
+                    break
+                time.sleep(1)
+            if used:
+                break
+            settle(a)
+            settle(b)
         a.insert(50)
         a.update(10)
         ok, detail = verify(a)
         log = srv.log()
         record("C4. a purged saved start file: the listener starts from a retained file",
-               sf is not None and gone not in logs and has_gtids and ok and
+               sf is not None and gone not in logs and has_gtids and used and ok and
                "binlog listener stopped" not in log,
                f"state file {sf}, saved file set to {gone}; {detail}")
 
