@@ -675,6 +675,7 @@
 
       // Restarting after crash - read & load the offsets map for links gt 0
       size_t current_data_pos = 0;
+      size_t dirEntries = 0;
       std::map<tableint, size_t> gt0linksOffsetsInFile; // temporary
       std::ifstream inputLinksDir(linksLocation, std::ios::binary);
       while (inputLinksDir.good()) {
@@ -686,6 +687,7 @@
             
             gt0linksOffsetsInFile[nodeID] = current_data_pos;
             current_data_pos = current_data_pos + linkListSize;
+            dirEntries++;
       }
       inputLinksDir.close();
 
@@ -693,6 +695,19 @@
     
       int linksDirOutput  = Open(linksLocation.c_str(), O_RDWR);
       int linksDataOutput = Open(linksDataLocation.c_str(), O_RDWR);
+
+      /* The interrupted pass 2 appended a directory entry and then a list
+       * for each new node, and synced both files only at its end. After a
+       * host crash either file can end with a part of that: a list with no
+       * directory entry, or half an entry. This replay appends the new nodes
+       * again, so first cut both files back to what the directory's whole
+       * entries account for; otherwise the data file ends up longer than its
+       * directory says, which the loader refuses. */
+      if (ftruncate(linksDirOutput,
+                    (off_t)(dirEntries * 2 * sizeof(unsigned int))) != 0 ||
+          ftruncate(linksDataOutput, (off_t)current_data_pos) != 0)
+          throw std::runtime_error("Index recovery failed: cannot truncate the "
+                                   "links files to their last complete entry");
 
       /* ordered map is important for levelGt0NodesLists */
 
