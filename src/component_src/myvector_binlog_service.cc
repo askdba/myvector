@@ -257,7 +257,10 @@ static uint32_t g_binlog_server_id = 0;
  * myvector_checkpoint_interval in the config file. */
 static const int kDefaultCheckpointIntervalSec = 300;
 static std::atomic<int> g_checkpoint_interval_sec{kDefaultCheckpointIntervalSec};
-/** The chunk-size settings as the config file gave them (may be empty). */
+/** The chunk-size settings as the config file gave them (may be empty).
+ * readConfigFile() runs on several threads (the listener, sessions that build
+ * or validate an index), so they are written and read under g_cfg_chunk_mutex. */
+static std::mutex g_cfg_chunk_mutex;
 static std::string g_cfg_vec_chunk, g_cfg_lnk_chunk;
 
 /** Compute a deterministic binlog server_id from hostname + PID when not configured. */
@@ -1487,6 +1490,7 @@ void readConfigFile(const char* config_file) {
 
     /* Chunk sizes of indexes stored in InnoDB (RFC-005 D5): kept as read;
      * applyChunkSettings() applies them, at component start only. */
+    std::lock_guard<std::mutex> l(g_cfg_chunk_mutex);
     g_cfg_vec_chunk = vo.getOption("myvector_index_vec_chunk_bytes");
     g_cfg_lnk_chunk = vo.getOption("myvector_index_lnk_chunk_bytes");
 }
@@ -1513,9 +1517,15 @@ static void applyChunkSettings() {
         }
         return (size_t)v;
     };
+    std::string vec, lnk;
+    {
+        std::lock_guard<std::mutex> l(g_cfg_chunk_mutex);
+        vec = g_cfg_vec_chunk;
+        lnk = g_cfg_lnk_chunk;
+    }
     myvector_store::set_chunk_targets(
-        chunk_bytes("myvector_index_vec_chunk_bytes", g_cfg_vec_chunk, def_vec),
-        chunk_bytes("myvector_index_lnk_chunk_bytes", g_cfg_lnk_chunk, def_lnk));
+        chunk_bytes("myvector_index_vec_chunk_bytes", vec, def_vec),
+        chunk_bytes("myvector_index_lnk_chunk_bytes", lnk, def_lnk));
 }
 
 /* GetBaseTableColumnPositions() - Get the column ordinal positions of the
