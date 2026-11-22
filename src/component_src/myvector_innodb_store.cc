@@ -1015,13 +1015,15 @@ private:
         const size_t total = n == 0 ? 0 : (n + per - 1) / per;
         size_t next = 0;  // the chunk id expected next
         // HEX doubles what the server returns; keep each result set near
-        // kLoadBatchBytes. The chunk size is the generation's, read from its
-        // first chunk; the current target is only a fallback.
+        // kLoadBatchBytes. The chunk size is the generation's, read from the
+        // published version of its first chunk (an older, shorter version may
+        // still be there); the current target is only a fallback.
         std::string len;
         if (total > 0 &&
             scalar(s, std::string("SELECT LENGTH(") + col + ") FROM myvector." + table +
                           " WHERE index_id = " + I + " AND generation = " + G +
-                          " AND chunk_id = 0 AND version <= " + SEQ + " LIMIT 1",
+                          " AND chunk_id = 0 AND version <= " + SEQ +
+                          " ORDER BY version DESC LIMIT 1",
                    &len, e) &&
             !len.empty())
             chunk_bytes = std::stoull(len);
