@@ -35,7 +35,8 @@ SHOW VARIABLES LIKE 'log_bin';
 
 The plugin opens a separate MySQL connection to read the binlog. This connection requires:
 
-- **`REPLICATION CLIENT`** (or `REPLICATION SLAVE` on older MySQL) — to read binlog events
+- **`REPLICATION SLAVE`** — to read binlog events
+- **`REPLICATION CLIENT`** — to read the binlog position and list the binary logs
 - **`SELECT`** on the base table — to read vector data when building/rebuilding the index
 
 > **Note:** Root access is not mandatory. A dedicated user with these privileges is sufficient (see [GitHub issue #81](https://github.com/askdba/myvector/issues/81)).
@@ -46,7 +47,7 @@ Example user setup:
 CREATE USER 'myvector_binlog'@'localhost' IDENTIFIED BY 'your_password';
 
 -- For reading binlogs
-GRANT REPLICATION CLIENT ON *.* TO 'myvector_binlog'@'localhost';
+GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'myvector_binlog'@'localhost';
 
 -- For building/refreshing indexes (read base table)
 GRANT SELECT ON your_database.* TO 'myvector_binlog'@'localhost';

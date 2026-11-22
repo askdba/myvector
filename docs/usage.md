@@ -179,6 +179,8 @@ With each checkpoint the index stores the set of transactions (GTIDs) it include
 
 This needs the binary logs written since the last checkpoint. If they have been purged, the index is not loaded after the restart, the error log says so, and the index has to be rebuilt with `MYVECTOR_INDEX_BUILD`; a `MYVECTOR_INDEX_LOAD` is refused. Keep `binlog_expire_logs_seconds` well above the checkpoint interval plus the longest time the server may be down. The same applies to index rows restored from a backup: they are usable only if the binary logs since that backup's last checkpoint are still on the server.
 
+The listener can't read compressed transactions. Keep `binlog_transaction_compression` off: with it on, their row changes don't reach online indexes (file-backed ones too), and an index stored in InnoDB can't resume past such a transaction, so after a restart it ends up needing a rebuild.
+
 The listener's account needs `REPLICATION SLAVE` and `REPLICATION CLIENT` (it runs `SHOW BINLOG EVENTS` and `SHOW BINARY LOGS` to find where to resume).
 
 Changing `storage=` on an existing index doesn't move it: run `MYVECTOR_INDEX_BUILD` after the change, or a load finds no saved index in the new backend.
