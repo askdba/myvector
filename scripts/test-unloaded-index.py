@@ -34,6 +34,10 @@ Checks:
      so creating the empty graph takes long enough for a search to land in it.
   I. The same for a brute-force KNN index: a build clears its rows under the
      index's search/insert lock, so a search never iterates rows being freed.
+  J. Searches while the first rows of a rebuilt graph are inserted: eight
+     sessions search without pause through 150 rebuilds. A search that saw the
+     new graph's first element counted, but not yet linked as its entry point,
+     read far outside the graph's memory and crashed mysqld.
   H. An explicit load whose saved files are gone keeps the index in memory:
      build, delete the saved files, MYVECTOR_INDEX_LOAD reports "no saved
      index", and searches still return the same rows.
@@ -75,8 +79,8 @@ def main():
     ap.add_argument("--image", default="mysql:8.4")
     ap.add_argument("--keep", action="store_true",
                     help="keep the container for debugging")
-    ap.add_argument("--cases", default="ABCDEFGHI",
-                    help="which checks to run (default ABCDEFGHI; D is plugin"
+    ap.add_argument("--cases", default="ABCDEFGHIJ",
+                    help="which checks to run (default ABCDEFGHIJ; D is plugin"
                          " only). Without the fix, A crashes the server, so use"
                          " --cases BC to see B")
     args = ap.parse_args()
@@ -313,6 +317,38 @@ def main():
         record(f"{tag}2. no search failed during the rebuilds",
                len(errs) == 4 and all(e == 0 for e in errs), "; ".join(lines))
 
+    def case_j():
+        """Searches while a rebuilt graph gets its first rows."""
+        create_table("j", size=2000000)
+        fill("j")
+        idx = "vtest.j.v"
+        run(f"CALL mysql.myvector_index_build('{idx}','id');")
+        q = f"SELECT myvector_ann_set('{idx}','id',{QUERY_VEC},'nn=3');"
+        script = f"""
+            M="mysql -uroot -p{idle.PW} -N -B vtest"
+            for i in $(seq 1 400); do echo "{q}"; done > /tmp/j.sql
+            ok=0
+            for r in $(seq 1 15); do
+              for w in 1 2 3 4 5 6 7 8; do
+                ( $M --force < /tmp/j.sql 2>&1 >/dev/null | grep -c ERROR \
+                    > /tmp/j.$r.$w ) &
+              done
+              for i in $(seq 1 10); do
+                o=$($M -e "CALL mysql.myvector_index_build('{idx}','id');" \
+                    2>/dev/null) && case "$o" in SUCCESS*) ok=$((ok+1));; esac
+              done
+              wait
+            done
+            echo "builds ok=$ok"
+            echo "errors $(cat /tmp/j.*.* | awk '{{s += $1}} END {{print s + 0}}')"
+            """
+        r = idle.sh(["docker", "exec", srv.name, "bash", "-c", script],
+                    check=False, timeout=1200)
+        out = r.stdout.splitlines()
+        record("J1. the server survives 150 rebuilds under eight searching sessions",
+               "builds ok=150" in out and alive(), f"{out[-2:]}")
+        record("J2. no search failed", "errors 0" in out, f"{out[-1:]}")
+
     def case_h():
         """Explicit load with the saved files gone keeps the graph."""
         create_table("h")
@@ -359,6 +395,8 @@ def main():
             case_g()
         if "H" in args.cases:
             case_h()
+        if "J" in args.cases:
+            case_j()
         if "I" in args.cases:
             case_i()
     except Exception as e:  # noqa: BLE001 - report and fail
