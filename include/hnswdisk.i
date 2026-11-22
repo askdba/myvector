@@ -531,27 +531,26 @@
         unsigned int linkListSize =
           element_levels_[nodeId] > 0 ? size_links_per_element_ * element_levels_[nodeId] : 0;
         if (linkListSize) {
-            size_t datafileOfs = 0;
-            if (m_linksOffsetsInFile.find(nodeId) == m_linksOffsetsInFile.end()) {
-              // first time addition of this node
+            /* A node already in the files is rewritten in place; a new one
+             * gets a directory entry and its links at the end of the data
+             * file. "Already in the files" is whether the node is in the
+             * offsets map, not whether its offset is non-zero: the first node
+             * of the data file is at offset 0, and treating that as "new"
+             * appended a second copy of its links with no directory entry,
+             * after which every node added later was read from the wrong
+             * place at the next load. */
+            auto known = m_linksOffsetsInFile.find(nodeId);
+            if (known == m_linksOffsetsInFile.end()) {
               Lseek(linksDirOutput, 0, SEEK_END, linksLocation);
               Write(linksDirOutput, &nodeId, sizeof(nodeId),
                     linksLocation, __LINE__);
               Write(linksDirOutput, &linkListSize, sizeof(linkListSize), 
                     linksLocation, __LINE__);
-              /// MYVEC_LOG_DEBUG("Flushing new gt0 node %lu.", nodeId);
+              m_linksOffsetsInFile[nodeId] =
+                  Lseek(linksDataOutput, 0, SEEK_END, linksDataLocation);
             }
             else {
-              datafileOfs = m_linksOffsetsInFile[nodeId];
-            }
-            if (datafileOfs)
-               Lseek(linksDataOutput, datafileOfs, SEEK_SET, linksDataLocation);
-            else
-            {
-               Lseek(linksDataOutput, 0, SEEK_END, linksDataLocation);
-               m_linksOffsetsInFile[nodeId] = Lseek(linksDataOutput, 0, SEEK_CUR, linksDataLocation);
-               /// MYVEC_LOG_DEBUG("Writing Gt0 links of node %lu, size %lu, file offset %lu.",
-               ///            nodeId, linkListSize, m_linksOffsetsInFile[nodeId]);
+              Lseek(linksDataOutput, known->second, SEEK_SET, linksDataLocation);
             }
             Write(linksDataOutput, linkLists_[nodeId], linkListSize, linksDataLocation, __LINE__);
         }
@@ -670,6 +669,8 @@
             unsigned int nodeID = 0,linkListSize = 0;
             readBinaryPOD(inputLinksDir, nodeID);
             readBinaryPOD(inputLinksDir, linkListSize);
+            if (!inputLinksDir.good() || !linkListSize)
+              break;  // end of the directory, not an entry for node 0
             
             gt0linksOffsetsInFile[nodeID] = current_data_pos;
             current_data_pos = current_data_pos + linkListSize;
@@ -688,24 +689,21 @@
         tableint nodeId = iter.first;
         unsigned int linkListSize = iter.second.size();
         if (linkListSize) {
-            size_t datafileOfs = 0;
-            if (gt0linksOffsetsInFile.find(nodeId) == gt0linksOffsetsInFile.end()) {
+            /* As in doCheckPoint(): in the map means in the files, whatever
+             * the offset (the first node's is 0). */
+            auto known = gt0linksOffsetsInFile.find(nodeId);
+            if (known == gt0linksOffsetsInFile.end()) {
               // First time addition of this node - ordered map is key
               Lseek(linksDirOutput, 0, SEEK_END, linksLocation);
               Write(linksDirOutput, &nodeId, sizeof(nodeId),
                     linksLocation, __LINE__);
               Write(linksDirOutput, &linkListSize, sizeof(linkListSize), 
                     linksLocation, __LINE__);
+              gt0linksOffsetsInFile[nodeId] =
+                  Lseek(linksDataOutput, 0, SEEK_END, linksDataLocation);
             }
             else {
-              datafileOfs = gt0linksOffsetsInFile[nodeId];
-            }
-            if (datafileOfs)
-               Lseek(linksDataOutput, datafileOfs, SEEK_SET, linksDataLocation);
-            else
-            {
-               Lseek(linksDataOutput, 0, SEEK_END, linksDataLocation);
-               gt0linksOffsetsInFile[nodeId] = Lseek(linksDataOutput, 0, SEEK_CUR, linksDataLocation);
+              Lseek(linksDataOutput, known->second, SEEK_SET, linksDataLocation);
             }
             std::vector<unsigned char> li = iter.second;
             Write(linksDataOutput, li.data(), linkListSize, linksDataLocation, __LINE__);
@@ -870,6 +868,12 @@
         std::string linksDataLocation = hnswFileName + ".links.data";
         int gt0LinksDataF = Open(linksDataLocation.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
 
+        /* The files now hold exactly these nodes, at these offsets: later
+         * checkpoints rewrite them in place. (The map used to be filled only
+         * by a load, so the first checkpoint after a build added every changed
+         * node to the files a second time.) */
+        m_linksOffsetsInFile.clear();
+        size_t dataPos = 0;
         for (size_t i = 0; i < cur_element_count; i++) {
             unsigned int linkListSize = element_levels_[i] > 0 ? 
               (size_links_per_element_ * element_levels_[i]) : 0;
@@ -881,6 +885,8 @@
               Write(gt0LinksF, &linkListSize, sizeof(linkListSize), linksLocation, __LINE__);
 
               Write(gt0LinksDataF, linkLists_[i], linkListSize, linksDataLocation, __LINE__);
+              m_linksOffsetsInFile[nodeID] = dataPos;
+              dataPos += linkListSize;
             }
         }
         Fsync(gt0LinksF, linksLocation);
@@ -1099,6 +1105,7 @@
     void setUpperLinks(size_t nodeID, const char *links, size_t len) {
         checkUpperLinks(nodeID, len);
         element_levels_[nodeID] = (int)(len / size_links_per_element_);
+        free(linkLists_[nodeID]);  // files written before the fix can list a node twice
         linkLists_[nodeID] = (char *) malloc(len);
         if (linkLists_[nodeID] == nullptr)
             throw std::runtime_error("Not enough memory: loadIndex failed to allocate linklist");
@@ -1265,6 +1272,16 @@
         }
 
         finishLoad();
+        /* Files damaged by the offset bug fixed in doCheckPoint() hold link
+         * lists read from the wrong place. Searches and inserts follow
+         * neighbor ids without checking them, so refuse such a graph here
+         * (the caller frees it) instead of serving it. */
+        try {
+            validateAdjacency();
+        } catch (...) {
+            clear();
+            throw;
+        }
 
         input.close();
 
