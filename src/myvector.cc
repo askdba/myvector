@@ -768,6 +768,16 @@ public:
     /// storage=innodb (RFC-005): the graph is kept in myvector.* tables
     bool isInnoDB() const { return m_storage == "innodb"; }
 
+    /// online=Y with storage=innodb: follows the binlog by GTID (Phase 1b)
+    bool usesGtids() override { return m_incrUpdates && isInnoDB(); }
+    bool setBaseGtids(const std::string& text) override;
+    bool getBaseGtids(MyVectorGtidSet* out) override;
+    bool onlineInsert(const MyVectorGtid* gtid, VectorPtr vec, int dim,
+                      KeyTypeInteger id) override;
+    bool onlineDelete(const MyVectorGtid* gtid, KeyTypeInteger id) override;
+    bool checkpointGtids(const MyVectorGtidSet& applied) override;
+    void markStale(const std::string& why, const MyVectorGtidSet& observed) override;
+
     bool searchVectorNN(VectorPtr qvec,
                         int dim,
                         vector<KeyTypeInteger>& keys,
@@ -854,7 +864,32 @@ private:
     std::mutex m_storageErrorMutex;  ///< saves run under the shared graph lock
     bool m_storedOnce{false};  ///< a storage=innodb save or load succeeded
     bool saveToStore();
+    bool saveToStoreAs(const std::string& gtids);
     bool loadFromStore(bool requireSaved);
+    bool insertVectorLocked(VectorPtr vec, int dim, KeyTypeInteger id);
+    bool deleteVectorLocked(KeyTypeInteger id);
+    IndexStore::GraphSource storeSource(hnswlib::HierarchicalDiskNSW<FP32>* disk);
+
+    /* ---- online + storage=innodb (RFC-005 Phase 1b) ----
+     * m_baseGtids: the transactions the graph includes, as of its build, load
+     * or last checkpoint; row changes of other transactions are applied on top.
+     * Unknown (m_baseKnown false) until the index is built or loaded: binlog
+     * workers then skip it, as file-backed indexes do with the "never"
+     * coordinates below. Both change only under m_graphLock held exclusively
+     * (load, build start) or under m_writeGate held exclusively (checkpoint,
+     * build end), and are read under m_graphLock shared + m_gtidMutex. */
+    std::mutex m_gtidMutex;
+    MyVectorGtidSet m_baseGtids;
+    bool m_baseKnown{false};
+    bool skipsGtid(const MyVectorGtid* gtid);
+    /* m_writeGate - online row changes hold it shared, a save or checkpoint
+     * into InnoDB exclusively, so the rows written are one state of the graph.
+     * Taken after m_graphLock (shared), never before. */
+    std::shared_mutex m_writeGate;
+    IndexStore::Position m_storePos;  ///< the stored state the graph extends
+    bool m_storeCleanup{true};   ///< a checkpoint may have left unpublished rows
+    bool m_needFullSave{false};  ///< the graph was rebuilt and is not stored yet
+    std::string m_lastCkptError;  ///< logged once, not at every interval
 
     bool m_incrUpdates;
     bool m_incrRefresh;
@@ -862,7 +897,8 @@ private:
     /* Temporary store for multi-threaded, parallel index build */
     vector<char> m_batch;
     vector<KeyTypeInteger> m_batchkeys;
-    bool m_isParallelBuild{false};
+    /// atomic: the listener's checkpoint reads it while a build sets it
+    std::atomic<bool> m_isParallelBuild{false};
 
     bool flushBatchParallel();
     bool flushBatchSerial();
@@ -967,6 +1003,15 @@ bool HNSWMemoryIndex::initGraph() {
 
     setLastUpdateCoordinates("zzzzzz.bin", 99999999999);
     setUpdateTs(0);
+    {
+        /* An empty graph includes no known set of transactions until a build
+         * says so: binlog workers skip it meanwhile. */
+        std::lock_guard<std::mutex> l(m_gtidMutex);
+        m_baseGtids.clear();
+        m_baseKnown = false;
+    }
+    m_storePos = IndexStore::Position();
+    m_needFullSave = false;
 
     return true;
 }
@@ -1205,7 +1250,9 @@ bool HNSWMemoryIndex::rebuildIndex(const string& path) {
     /* A new graph must be saved even if no row is added to it (an emptied
      * table): with storage=innodb an unchanged-looking index skips its save. */
     m_isDirty = true;
-    return initGraph();
+    bool ok = initGraph();
+    m_needFullSave = true;  // whatever is stored is the previous graph
+    return ok;
 }
 
 /* dropGraph - delete the saved files and free the graph. m_graphLock held
@@ -1253,6 +1300,14 @@ static IndexStore* g_index_store = nullptr;
 IndexStore* myvector_index_store() { return g_index_store; }
 void myvector_set_index_store(IndexStore* store) { g_index_store = store; }
 
+/* The binlog listener, as far as loads need it (Phase 1b). */
+static std::atomic<GtidListenerFn> g_gtid_listener{nullptr};
+void myvector_set_gtid_listener(GtidListenerFn fn) { g_gtid_listener = fn; }
+static GtidListenerState myvector_gtid_listener_state(MyVectorGtidSet* seen) {
+    GtidListenerFn fn = g_gtid_listener.load();
+    return fn ? fn(seen) : GtidListenerState::kNotRunning;
+}
+
 std::string HNSWMemoryIndex::storageProblem() {
     if (m_storage == "file")
         return "";
@@ -1262,31 +1317,16 @@ std::string HNSWMemoryIndex::storageProblem() {
     if (st == nullptr)
         return "storage=innodb needs the MyVector component (INSTALL COMPONENT), not the "
                "plugin";
-    string online = m_optionsMap.getOption("online");
-    if (online == "Y" || online == "y")
-        return "storage=innodb doesn't support online=Y yet (RFC-005 Phase 1b); use "
-               "storage=file for an online index";
+    /* A build with track= reads only the rows its tracking column selects,
+     * while an online index stored in InnoDB records every transaction up to
+     * the build as included: a row the filter left out would never arrive. */
+    if (m_incrUpdates && m_incrRefresh)
+        return "online=Y can't be combined with track= for storage=innodb; use one of them";
     return st->checkServer();
 }
 
-/* saveToStore - publish the graph as a new generation. m_graphLock held shared;
- * the parallel-build flush and the #285 check in saveIndex() have run. */
-bool HNSWMemoryIndex::saveToStore() {
-    setStorageError("");
-    IndexStore* st = myvector_index_store();
-    auto* disk = dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw);
-    if (st == nullptr || disk == nullptr) {
-        std::string why = st == nullptr ? "storage=innodb needs the MyVector component"
-                                        : "the index has no graph to save";
-        setStorageError(why);
-        MYVEC_LOG_ERROR("Index %s: %s", m_name.c_str(), why.c_str());
-        return false;
-    }
-    /* The component's build saves twice (inside BuildMyVectorIndexSQL and
-     * after it); with no change in between, the second would only write the
-     * same generation again. */
-    if (m_storedOnce && !m_isDirty)
-        return true;
+IndexStore::GraphSource HNSWMemoryIndex::storeSource(
+    hnswlib::HierarchicalDiskNSW<FP32>* disk) {
     IndexStore::GraphSource src;
     src.header = disk->headerBytes();
     src.node_count = disk->getCurrentElementCount();
@@ -1302,8 +1342,58 @@ bool HNSWMemoryIndex::saveToStore() {
         return disk->exportLinkChunk(first, count);
     };
     src.upper = [disk](size_t node) { return disk->upperLinksBytes(node); };
+    return src;
+}
+
+/* saveToStore - publish the graph as a new generation. m_graphLock held shared;
+ * the parallel-build flush and the #285 check in saveIndex() have run. */
+bool HNSWMemoryIndex::saveToStore() {
+    setStorageError("");
+    if (myvector_index_store() == nullptr || m_alg_hnsw == nullptr) {
+        std::string why = myvector_index_store() == nullptr
+                              ? "storage=innodb needs the MyVector component"
+                              : "the index has no graph to save";
+        setStorageError(why);
+        MYVEC_LOG_ERROR("Index %s: %s", m_name.c_str(), why.c_str());
+        return false;
+    }
+    if (usesGtids()) {
+        /* An online index is saved whole once, by its build; after that the
+         * binlog listener checkpoints what changes, at points where it knows
+         * which transactions the graph includes. A whole save from here is
+         * needed only while the build's own save has not succeeded. */
+        std::unique_lock<std::shared_mutex> gate(m_writeGate);
+        if (m_storedOnce && !m_needFullSave)
+            return true;
+        std::string gtids;
+        {
+            std::lock_guard<std::mutex> l(m_gtidMutex);
+            if (!m_baseKnown) {
+                setStorageError("the index has not been built: nothing to save");
+                return false;
+            }
+            gtids = m_baseGtids.toString();
+        }
+        return saveToStoreAs(gtids);
+    }
+    /* The component's build saves twice (inside BuildMyVectorIndexSQL and
+     * after it); with no change in between, the second would only write the
+     * same generation again. */
+    if (m_storedOnce && !m_isDirty)
+        return true;
+    return saveToStoreAs("");
+}
+
+/* saveToStoreAs - write the whole graph as a new generation that includes the
+ * transactions in gtids. For an online index m_writeGate is held exclusively. */
+bool HNSWMemoryIndex::saveToStoreAs(const std::string& gtids) {
+    IndexStore* st = myvector_index_store();
+    auto* disk = dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw);
+    IndexStore::GraphSource src = storeSource(disk);
+    src.gtids = gtids;
     std::string err;
-    if (!st->save(m_name, src, &err)) {
+    IndexStore::Position pos;
+    if (!st->save(m_name, src, &pos, &err)) {
         setStorageError(err);
         MYVEC_LOG_ERROR("Index %s: saving to InnoDB failed: %s", m_name.c_str(),
                         err.c_str());
@@ -1311,6 +1401,11 @@ bool HNSWMemoryIndex::saveToStore() {
     }
     m_isDirty = false;
     m_storedOnce = true;
+    m_storePos = pos;
+    m_storeCleanup = false;  // a save leaves nothing unpublished in its generation
+    m_needFullSave = false;
+    if (usesGtids())
+        disk->clearFlushList();  // everything is stored: the next checkpoint's delta starts here
     return true;
 }
 
@@ -1345,9 +1440,46 @@ bool HNSWMemoryIndex::loadFromStore(bool requireSaved) {
     sink.upper = [&](size_t node, const std::string& d) { fresh->importUpper(node, d); };
     sink.finish = [&]() { fresh->finishImport(); };
 
-    std::string err;
-    IndexStore::LoadStatus status =
-        st->load(m_name, (m_type == "HNSW_BV" ? "Hamming" : m_dist), m_dim, sink, &err);
+    std::string err, gtids;
+    IndexStore::Position pos;
+    IndexStore::LoadStatus status = st->load(
+        m_name, (m_type == "HNSW_BV" ? "Hamming" : m_dist), m_dim, sink, &pos, &gtids, &err);
+    MyVectorGtidSet base;
+    bool refused = false;  // the stored index is sound but can't be used now
+    if (status == IndexStore::LoadStatus::Ok && usesGtids()) {
+        /* The stored graph includes the transactions in gtids; the listener
+         * applies the others from the binlog. That only works if it has not
+         * already read past one of them: a row change it read while this index
+         * was not loaded is gone (RFC-005 4.10). */
+        MyVectorGtidSet seen;
+        GtidListenerState ls = myvector_gtid_listener_state(&seen);
+        if (!base.parse(gtids)) {
+            status = IndexStore::LoadStatus::Failed;
+            err = "the stored index has an unreadable GTID set";
+        } else if (ls == GtidListenerState::kStarting) {
+            refused = true;
+            err = "the binlog listener is starting; load the index again in a moment";
+        } else if (ls == GtidListenerState::kUnknown) {
+            refused = true;
+            err = "the binlog listener does not know which transactions precede its "
+                  "position (see the server log)";
+        } else if (ls == GtidListenerState::kStreaming && !base.containsAll(seen)) {
+            refused = true;
+            err = "its checkpoint is older than the binlog listener's position; later "
+                  "changes can't be applied to it";
+        }
+    }
+    if (refused) {
+        /* Nothing is wrong with the stored rows or with the graph in memory
+         * (which, if there is one, is newer than they are): keep both. */
+        delete fresh;
+        delete space;
+        setStorageError(err);
+        MYVEC_LOG_ERROR("Index %s: not loaded from InnoDB (the index in memory is "
+                        "unchanged): %s",
+                        m_name.c_str(), err.c_str());
+        return false;
+    }
     if (status == IndexStore::LoadStatus::Ok) {
         delete m_alg_hnsw;
         delete m_space;
@@ -1359,6 +1491,14 @@ bool HNSWMemoryIndex::loadFromStore(bool requireSaved) {
         setUpdateTs(stored_ts);  // the refresh watermark saved with this graph
         m_isDirty = false;
         m_storedOnce = true;
+        m_storePos = pos;
+        m_storeCleanup = true;  // an earlier process may have died mid-checkpoint
+        m_needFullSave = false;
+        {
+            std::lock_guard<std::mutex> l(m_gtidMutex);
+            m_baseGtids = base;
+            m_baseKnown = usesGtids();
+        }
         return true;
     }
     delete fresh;
@@ -1668,6 +1808,13 @@ bool HNSWMemoryIndex::flushBatchParallel() {
 
 bool HNSWMemoryIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
     std::shared_lock<std::shared_mutex> g(m_graphLock);
+    std::shared_lock<std::shared_mutex> gate(m_writeGate);
+    return insertVectorLocked(vec, dim, id);
+}
+
+/* m_graphLock and m_writeGate held shared. */
+bool HNSWMemoryIndex::insertVectorLocked(VectorPtr vec, int dim, KeyTypeInteger id) {
+    (void)dim;
     FP32* fvec = static_cast<FP32*>(vec);
     if (m_isParallelBuild) {
         // m_batch.insert(m_batch.end(), fvec, fvec + m_dim);
@@ -1696,6 +1843,12 @@ bool HNSWMemoryIndex::insertVector(VectorPtr vec, int dim, KeyTypeInteger id) {
  */
 bool HNSWMemoryIndex::deleteVector(KeyTypeInteger id) {
     std::shared_lock<std::shared_mutex> g(m_graphLock);
+    std::shared_lock<std::shared_mutex> gate(m_writeGate);
+    return deleteVectorLocked(id);
+}
+
+/* m_graphLock and m_writeGate held shared. */
+bool HNSWMemoryIndex::deleteVectorLocked(KeyTypeInteger id) {
     auto* disk = dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw);
     if (!disk || m_isParallelBuild)
         return false;
@@ -1708,6 +1861,162 @@ bool HNSWMemoryIndex::deleteVector(KeyTypeInteger id) {
         m_n_rows--;
     m_isDirty = true;
     return true;
+}
+
+/* ---- online + storage=innodb: following the binlog by GTID (Phase 1b) ---- */
+
+bool HNSWMemoryIndex::setBaseGtids(const std::string& text) {
+    MyVectorGtidSet set;
+    if (!set.parse(text))
+        return false;
+    std::shared_lock<std::shared_mutex> g(m_graphLock);
+    std::unique_lock<std::shared_mutex> gate(m_writeGate);
+    std::lock_guard<std::mutex> l(m_gtidMutex);
+    m_baseGtids = set;
+    m_baseKnown = true;
+    return true;
+}
+
+bool HNSWMemoryIndex::getBaseGtids(MyVectorGtidSet* out) {
+    std::lock_guard<std::mutex> l(m_gtidMutex);
+    if (!m_baseKnown)
+        return false;
+    *out = m_baseGtids;
+    return true;
+}
+
+/* skipsGtid - true if a row change of this transaction must not be applied:
+ * the graph already includes it, or includes nobody-knows-what (not built).
+ * A change with no usable GTID is applied: applying one twice is harmless
+ * (the last change of a key wins), losing one is not. */
+bool HNSWMemoryIndex::skipsGtid(const MyVectorGtid* gtid) {
+    if (!usesGtids())
+        return false;
+    std::lock_guard<std::mutex> l(m_gtidMutex);
+    if (!m_baseKnown)
+        return true;
+    return gtid != nullptr && gtid->valid() && m_baseGtids.contains(*gtid);
+}
+
+bool HNSWMemoryIndex::onlineInsert(const MyVectorGtid* gtid, VectorPtr vec, int dim,
+                                   KeyTypeInteger id) {
+    std::shared_lock<std::shared_mutex> g(m_graphLock);
+    std::shared_lock<std::shared_mutex> gate(m_writeGate);
+    if (skipsGtid(gtid))
+        return true;
+    return insertVectorLocked(vec, dim, id);
+}
+
+bool HNSWMemoryIndex::onlineDelete(const MyVectorGtid* gtid, KeyTypeInteger id) {
+    std::shared_lock<std::shared_mutex> g(m_graphLock);
+    std::shared_lock<std::shared_mutex> gate(m_writeGate);
+    if (skipsGtid(gtid))
+        return true;
+    return deleteVectorLocked(id);
+}
+
+/* checkpointGtids - RFC-005 4.4. Called by the binlog listener between two
+ * transactions with its queue empty, so the graph is exactly its base set
+ * plus `applied`. Writes the chunks holding changed nodes (or the whole graph,
+ * if the build's save never succeeded) and makes base + applied the new base
+ * set; with nothing changed only the stored set moves forward. */
+bool HNSWMemoryIndex::checkpointGtids(const MyVectorGtidSet& applied) {
+    std::shared_lock<std::shared_mutex> g(m_graphLock);
+    if (!usesGtids())
+        return true;
+    IndexStore* st = myvector_index_store();
+    auto* disk = dynamic_cast<hnswlib::HierarchicalDiskNSW<FP32>*>(m_alg_hnsw);
+    if (st == nullptr || disk == nullptr)
+        return true;  // not loaded: nothing to write
+    std::unique_lock<std::shared_mutex> gate(m_writeGate);
+    if (m_isParallelBuild)
+        return true;  // a build holds rows it has not added yet; its save follows
+    MyVectorGtidSet base;
+    {
+        std::lock_guard<std::mutex> l(m_gtidMutex);
+        if (!m_baseKnown)
+            return true;  // never built, or a build is running
+        base = m_baseGtids;
+    }
+    MyVectorGtidSet next = base;
+    next.unionWith(applied);
+
+    std::string err;
+    bool ok = true;
+    if (m_graphFailed) {
+        /* As saveIndex(): a graph an insert left inconsistent is never stored. */
+        ok = false;
+        err = "an insert failed part-way; rebuild the index with MYVECTOR_INDEX_BUILD";
+    } else if (m_needFullSave || !m_storedOnce) {
+        ok = saveToStoreAs(next.toString());
+        if (!ok)
+            err = storageError();
+    } else {
+        std::set<hnswlib::tableint> full, level0, upper;
+        disk->dirtyNodes(full, level0, upper);
+        IndexStore::Delta delta;
+        /* A whole node: its vector and label, its level-0 links and, if it has
+         * upper levels, those too (the store skips nodes without any). */
+        std::set<size_t> links(level0.begin(), level0.end());
+        std::set<size_t> uppers(upper.begin(), upper.end());
+        links.insert(full.begin(), full.end());
+        uppers.insert(full.begin(), full.end());
+        delta.vector_nodes.assign(full.begin(), full.end());
+        delta.link_nodes.assign(links.begin(), links.end());
+        delta.upper_nodes.assign(uppers.begin(), uppers.end());
+        if (delta.empty() && next == base)
+            return true;  // nothing happened since the last checkpoint
+        IndexStore::GraphSource src = storeSource(disk);
+        src.gtids = next.toString();
+        IndexStore::Position pos = m_storePos;
+        ok = st->checkpoint(m_name, src, delta, m_storeCleanup || pos.leftovers, &pos, &err);
+        if (ok) {
+            m_storePos = pos;
+            m_storeCleanup = false;
+            m_isDirty = false;
+            disk->clearFlushList();
+        } else {
+            m_storeCleanup = true;
+        }
+    }
+    if (!ok) {
+        setStorageError(err);
+        if (err != m_lastCkptError) {
+            MYVEC_LOG_ERROR("Index %s: checkpoint into InnoDB failed: %s. The index in "
+                            "memory is unaffected; the checkpoint is retried.",
+                            m_name.c_str(), err.c_str());
+            m_lastCkptError = err;
+        }
+        return false;
+    }
+    if (!m_lastCkptError.empty()) {
+        MYVEC_LOG_INFO("Index %s: checkpoints into InnoDB work again.", m_name.c_str());
+        m_lastCkptError.clear();
+    }
+    std::lock_guard<std::mutex> l(m_gtidMutex);
+    m_baseGtids = next;
+    return true;
+}
+
+void HNSWMemoryIndex::markStale(const std::string& why, const MyVectorGtidSet& observed) {
+    std::unique_lock<std::shared_mutex> g(m_graphLock);
+    {
+        std::lock_guard<std::mutex> l(m_gtidMutex);
+        if (!m_baseKnown || !(m_baseGtids == observed))
+            return;  // rebuilt or reloaded since it was judged
+    }
+    delete m_alg_hnsw;
+    delete m_space;
+    m_alg_hnsw = nullptr;
+    m_space = nullptr;
+    {
+        std::lock_guard<std::mutex> l(m_gtidMutex);
+        m_baseGtids.clear();
+        m_baseKnown = false;
+    }
+    setStorageError(why);
+    MYVEC_LOG_ERROR("Index %s: %s. It is not loaded; rebuild it with MYVECTOR_INDEX_BUILD.",
+                    m_name.c_str(), why.c_str());
 }
 
 AbstractVectorIndex* VectorIndexCollection::open(const string& name,
@@ -1869,7 +2178,7 @@ string VectorIndexCollection::FindEarliestBinlogFile() {
     for (auto entry : m_indexes) {
         string binlogfile;
         size_t binlogpos;
-        if (entry.second->supportsIncrUpdates()) {
+        if (entry.second->supportsIncrUpdates() && !entry.second->usesGtids()) {
             entry.second->getLastUpdateCoordinates(binlogfile, binlogpos);
             if (ret == "")
                 ret = binlogfile;
@@ -1892,7 +2201,7 @@ bool VectorIndexCollection::FindEarliestCheckpoint(string& binlogfile,
     lock_guard<mutex> l(m_mutex);
     bool found = false;
     for (auto& entry : m_indexes) {
-        if (!entry.second->supportsIncrUpdates())
+        if (!entry.second->supportsIncrUpdates() || entry.second->usesGtids())
             continue;
         string file;
         size_t pos = 0;
@@ -3460,6 +3769,9 @@ void myvector_open_index_impl(char* vecid,
                          "ERROR: no saved index for %.80s. Build it with"
                          " MYVECTOR_INDEX_BUILD.",
                          vecid);
+            else if (vi->storageError().find("again in a moment") != string::npos)
+                snprintf(result, 255, "ERROR: index %.60s was not loaded: %.160s.",
+                         vecid, vi->storageError().c_str());
             else if (!vi->storageError().empty())
                 snprintf(result,
                          255,
@@ -3824,7 +4136,8 @@ void myvector_table_op(const string& dbname,
                        vector<unsigned char>& vec,
                        const string& binlogfile,
                        const size_t& binlogpos,
-                       bool isDelete) {
+                       bool isDelete,
+                       const MyVectorGtid* gtid) {
     string vecid = dbname + "." + tbname + "." + cname;
     AbstractVectorIndex* vi = g_indexes.get(vecid);
 
@@ -3839,9 +4152,12 @@ void myvector_table_op(const string& dbname,
         if (!vi->supportsIncrUpdates())
             return;
         vi->getLastUpdateCoordinates(binlogfileold, binlogposold);
-        if (isAfter(binlogfile, binlogpos, binlogfileold, binlogposold)) {
+        /* An index stored in InnoDB decides by the event's transaction (inside
+         * onlineInsert/onlineDelete), the others by its binlog position. */
+        if (vi->usesGtids() ||
+            isAfter(binlogfile, binlogpos, binlogfileold, binlogposold)) {
             if (isDelete) {
-                vi->deleteVector(pkid);  /// false if the key was not indexed
+                vi->onlineDelete(gtid, pkid);  /// false if the key was not indexed
             } else if (vec.size() < MyVectorExpectedVectorBytes(vi)) {
                 /* A plain INSERT/UPDATE with ordinary privilege can write any
                  * byte length to the tracked column; insertVector() has no way
@@ -3858,7 +4174,7 @@ void myvector_table_op(const string& dbname,
                 MYVEC_LOG_WARN("Skipping zero-magnitude vector for cosine index"
                                " (pkid=%zu), row is in table but not in index.",
                                (size_t)pkid);
-            } else if (!vi->insertVector(vec.data(), vi->getDimension(), pkid) &&
+            } else if (!vi->onlineInsert(gtid, vec.data(), vi->getDimension(), pkid) &&
                        vi->isReady()) {
                 /* The graph is full (#285): the row is in the table but not in
                  * the index. Counted and warned like other skipped events. */
@@ -3963,6 +4279,10 @@ void myvector_checkpoint_index(const string& dbtable,
         string binlogfileold;
         size_t binlogposold;
 
+        /* An index stored in InnoDB is checkpointed on a timer, with the set
+         * of transactions it includes: myvector_checkpoint_index_gtids(). */
+        if (vi->usesGtids())
+            return;
         vi->getLastUpdateCoordinates(binlogfileold, binlogposold);
         MYVEC_LOG_DEBUG("Checkpoint index %s at (%s %lu)\n",
                     vecid.c_str(),
@@ -3988,7 +4308,8 @@ void myvector_checkpoint_index(const string& dbtable,
 std::vector<string> myvector_evict_dropped(const string& db,
                                            const string& table,
                                            const string& binlogfile,
-                                           size_t binlogpos) {
+                                           size_t binlogpos,
+                                           const MyVectorGtid* gtid) {
     /* table empty (DROP DATABASE): every db.<table>.<column> */
     const string prefix = table.empty() ? db + "." : db + "." + table + ".";
     /* Only online indexes track binlog coordinates. An index built after this
@@ -3996,6 +4317,13 @@ std::vector<string> myvector_evict_dropped(const string& db,
      * old binlog events after a restart harmless). Checked atomically with the
      * removal, so a concurrent rebuild is never dropped. */
     auto builtBeforeDrop = [&](AbstractVectorIndex* vi) {
+        if (vi->usesGtids()) {
+            /* Built before the DROP unless its base set includes the DROP. An
+             * index with no base set is being built now, on the new table. */
+            MyVectorGtidSet base;
+            return vi->getBaseGtids(&base) &&
+                   !(gtid != nullptr && gtid->valid() && base.contains(*gtid));
+        }
         string builtFile;
         size_t builtPos = 0;
         vi->getLastUpdateCoordinates(builtFile, builtPos);
@@ -4024,6 +4352,37 @@ bool myvector_online_index_is_open(const string& vecid) {
     bool online = vi->supportsIncrUpdates();
     vi->unlockShared();  /// taken by get()
     return online;
+}
+
+void myvector_gtid_indexes(std::vector<std::pair<string, MyVectorGtidSet>>* out) {
+    for (const string& name : g_indexes.names()) {
+        AbstractVectorIndex* vi = g_indexes.has(name) ? g_indexes.get(name) : nullptr;
+        if (!vi)
+            continue;
+        SharedLockGuard l(vi);
+        MyVectorGtidSet base;
+        if (vi->usesGtids() && vi->isReady() && vi->getBaseGtids(&base))
+            out->emplace_back(name, base);
+    }
+}
+
+void myvector_gtid_index_stale(const string& vecid, const string& why,
+                               const MyVectorGtidSet& observed) {
+    AbstractVectorIndex* vi = g_indexes.has(vecid) ? g_indexes.get(vecid) : nullptr;
+    if (!vi)
+        return;
+    SharedLockGuard l(vi);
+    if (vi->usesGtids())
+        vi->markStale(why, observed);
+}
+
+void myvector_checkpoint_index_gtids(const string& vecid, const MyVectorGtidSet& applied) {
+    AbstractVectorIndex* vi = g_indexes.has(vecid) ? g_indexes.get(vecid) : nullptr;
+    if (!vi)
+        return;
+    SharedLockGuard l(vi);
+    if (vi->usesGtids())
+        vi->checkpointGtids(applied);
 }
 
 string myvector_find_earliest_binlog_file() {

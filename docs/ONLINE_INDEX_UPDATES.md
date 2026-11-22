@@ -35,7 +35,8 @@ SHOW VARIABLES LIKE 'log_bin';
 
 The plugin opens a separate MySQL connection to read the binlog. This connection requires:
 
-- **`REPLICATION CLIENT`** (or `REPLICATION SLAVE` on older MySQL) — to read binlog events
+- **`REPLICATION SLAVE`** — to read binlog events
+- **`REPLICATION CLIENT`** — to read the binlog position and list the binary logs
 - **`SELECT`** on the base table — to read vector data when building/rebuilding the index
 
 > **Note:** Root access is not mandatory. A dedicated user with these privileges is sufficient (see [GitHub issue #81](https://github.com/askdba/myvector/issues/81)).
@@ -46,7 +47,7 @@ Example user setup:
 CREATE USER 'myvector_binlog'@'localhost' IDENTIFIED BY 'your_password';
 
 -- For reading binlogs
-GRANT REPLICATION CLIENT ON *.* TO 'myvector_binlog'@'localhost';
+GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'myvector_binlog'@'localhost';
 
 -- For building/refreshing indexes (read base table)
 GRANT SELECT ON your_database.* TO 'myvector_binlog'@'localhost';
@@ -156,7 +157,7 @@ On plugin startup, MyVector discovers all columns with `online=Y` from the `myve
         `myvector_index_status` counts them, see
         [Troubleshooting](#troubleshooting).
 
-5. **Checkpointing:** Progress is tracked via binlog file and position so the index can be recovered after restart.
+5. **Checkpointing:** Progress is tracked via binlog file and position so the index can be recovered after restart. An index stored in InnoDB (`storage=innodb`) is tracked by GTID set instead and checkpointed on a timer; see [Online indexes](usage.md#online-indexes-onliney).
 
 ## Complete Example
 

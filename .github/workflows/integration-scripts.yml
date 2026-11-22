@@ -42,6 +42,11 @@
 #                                       InnoDB tables (RFC-005 Phase 1a): build,
 #                                       reload, restart, corruption, drop and the
 #                                       refusals; the plugin refuses storage=innodb
+#   scripts/test-innodb-online.py      online=Y indexes with storage=innodb
+#                                       (RFC-005 Phase 1b): binlog updates, timer
+#                                       checkpoints of changed chunks, restart and
+#                                       kill -9 recovery from the stored GTID set,
+#                                       purged binlogs
 # Artifacts are built with the Docker build scripts (Oracle Linux 9, like the
 # mysql images), so they load in the containers; the ci.yml builds are made on
 # the Ubuntu runner and target the runner's own MySQL instead.
@@ -151,7 +156,7 @@ jobs:
                    "test-index-governance.py" "test-udf-input-validation.py" \
                    "test-hnsw-loader-hardening.py" "test-ef-search-clamp.py" \
                    "test-unloaded-index.py" "test-stale-index-overflow.py" \
-                   "test-innodb-storage.py"; do
+                   "test-innodb-storage.py" "test-innodb-online.py"; do
             read -r -a T <<< "$t"
             echo "::group::${t} (${KIND} ${MYSQL_VERSION})"
             if python3 "scripts/${T[0]}" "${ARGS[@]}" "${T[@]:1}"; then

@@ -37,6 +37,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "myvector_gtid.h"
+
 bool myvector_query_rewrite(const std::string& query,
                             std::string* rewritten_query);
 
@@ -209,6 +211,44 @@ public:
     /* getRowCount - get number of vectors present in the index */
     virtual unsigned long getRowCount() = 0;
 
+    /* ---- online indexes stored in InnoDB (RFC-005 Phase 1b) ----
+     * Such an index follows the binlog by GTID, not by file and position: it
+     * knows the set of transactions its graph includes (its base set). */
+
+    /* usesGtids - true for an online=Y index with storage=innodb. */
+    virtual bool usesGtids() { return false; }
+
+    /* setBaseGtids - the graph now includes exactly these transactions (text
+     * form of a GTID set); false if the text can't be parsed. */
+    virtual bool setBaseGtids(const std::string& /* text */) { return false; }
+
+    /* getBaseGtids - false if the index has no base set (not built or loaded). */
+    virtual bool getBaseGtids(MyVectorGtidSet* /* out */) { return false; }
+
+    /* onlineInsert / onlineDelete - apply a row change from the binlog. With a
+     * GTID, a usesGtids() index applies it only if that transaction is not in
+     * its base set; the decision is made under the same lock a load or build
+     * replaces the graph and its base set under. */
+    virtual bool onlineInsert(const MyVectorGtid* /* gtid */, VectorPtr vec, int dim,
+                              KeyTypeInteger id) {
+        return insertVector(vec, dim, id);
+    }
+    virtual bool onlineDelete(const MyVectorGtid* /* gtid */, KeyTypeInteger id) {
+        return deleteVector(id);
+    }
+
+    /* checkpointGtids - the binlog listener has applied every transaction in
+     * `applied` and nothing is in flight: write what changed and record base
+     * set + applied as the new base set. */
+    virtual bool checkpointGtids(const MyVectorGtidSet& /* applied */) { return true; }
+
+    /* markStale - the stored index can't be brought up to date (binlogs gone):
+     * free the graph, so searches fail until the index is rebuilt. Only if
+     * the index's base set is still `observed`, the one that was judged: an
+     * index rebuilt or reloaded meanwhile is another graph and stays. */
+    virtual void markStale(const std::string& /* why */,
+                           const MyVectorGtidSet& /* observed */) {}
+
     virtual void getLastUpdateCoordinates(std::string& /* file */,
                                           size_t& /* pos */) {}
 
@@ -369,12 +409,37 @@ void myvector_online_skip_rearm(const std::string& dbtable);
  * its columns that were built before that position, in memory and on disk, so a
  * table recreated under the same name doesn't feed the old graph (#283, #285).
  * Indexes built after the DROP (on a recreated table) are kept. Returns the
- * names (db.table.column) of the indexes dropped. */
+ * names (db.table.column) of the indexes dropped.
+ * For an index that follows the binlog by GTID (storage=innodb), "built
+ * before" means the DROP's transaction, gtid, is not in its base set. */
 std::vector<std::string> myvector_evict_dropped(const std::string& db,
                                                 const std::string& table,
                                                 const std::string& binlogfile,
-                                                size_t binlogpos);
+                                                size_t binlogpos,
+                                                const MyVectorGtid* gtid = nullptr);
 /* true if an online (online=Y) index named db.table.column is open. */
 bool myvector_online_index_is_open(const std::string& vecid);
+
+/* ---- online indexes stored in InnoDB (RFC-005 Phase 1b) ---- */
+
+/* What the binlog listener tells a load about the transactions it has read. */
+enum class GtidListenerState {
+    kNotRunning,  ///< no listener, or the caller is the listener: no check
+    kStarting,    ///< it is choosing where to start: try again shortly
+    kUnknown,     ///< it is reading the binlog but doesn't know which
+                  ///< transactions precede its position: nothing can be checked
+    kStreaming    ///< *seen = every transaction it has read, the open one included
+};
+typedef GtidListenerState (*GtidListenerFn)(MyVectorGtidSet* seen);
+void myvector_set_gtid_listener(GtidListenerFn fn);
+
+/* The loaded indexes that follow the binlog by GTID, with their base sets. */
+void myvector_gtid_indexes(std::vector<std::pair<std::string, MyVectorGtidSet>>* out);
+/* The index named db.table.column can't be brought up to date: unload it. */
+void myvector_gtid_index_stale(const std::string& vecid, const std::string& why,
+                               const MyVectorGtidSet& observed);
+/* Checkpoint the index if it follows the binlog by GTID (see
+ * AbstractVectorIndex::checkpointGtids). */
+void myvector_checkpoint_index_gtids(const std::string& vecid, const MyVectorGtidSet& applied);
 
 #endif  // PLUGIN_MYVECTOR_H
