@@ -11,7 +11,10 @@
 # lib/ with every shared library the binaries need, libasan included), runnable in a plain
 # oraclelinux:9 container with LD_LIBRARY_PATH=<basedir>/lib.
 #
-# Usage: scripts/build-mcp-asan-26.10-docker.sh [mysql-tag] [out-dir]
+# SANITIZER=none builds the same server without ASAN (the archive keeps its name), to tell ASAN's
+# own memory use from the server's in a soak (#315).
+#
+# Usage: [SANITIZER=asan|none] scripts/build-mcp-asan-26.10-docker.sh [mysql-tag] [out-dir]
 #   e.g. scripts/build-mcp-asan-26.10-docker.sh mysql-26.10.0 dist/mcp-asan
 # Requires Docker. The MySQL source and build trees are kept in mysql-asan/ for reuse.
 set -euo pipefail
@@ -20,10 +23,17 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MYSQL_TAG="${1:-mysql-26.10.0}"
 OUT_DIR="${2:-dist/mcp-asan}"
 JOBS="${JOBS:-$(nproc)}"
+SANITIZER="${SANITIZER:-asan}"
+case "$SANITIZER" in
+  asan) ASAN_CMAKE=ON; GUARD_SAN="-fsanitize=address" ;;
+  none) ASAN_CMAKE=OFF; GUARD_SAN="" ;;
+  *) echo "SANITIZER must be asan or none" >&2; exit 1 ;;
+esac
 
 docker run --rm \
   -v "$REPO_ROOT:/workspace:rw" -w /workspace \
   -e MYSQL_TAG="$MYSQL_TAG" -e OUT_DIR="$OUT_DIR" -e JOBS="$JOBS" \
+  -e SANITIZER="$SANITIZER" -e ASAN_CMAKE="$ASAN_CMAKE" -e GUARD_SAN="$GUARD_SAN" \
   -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
   oraclelinux:9 bash -c '
     set -euo pipefail
@@ -42,7 +52,7 @@ docker run --rm \
 
     W=/workspace/mysql-asan
     SRC="$W/src-$MYSQL_TAG"
-    BLD="$W/bld-$(uname -m)"
+    BLD="$W/bld-$(uname -m)-$SANITIZER"
     git config --global --add safe.directory "$SRC"
     if [ ! -f "$SRC/include/mysql/components/component_implementation.h" ]; then
       echo "==> Cloning $MYSQL_TAG"
@@ -63,11 +73,11 @@ docker run --rm \
     rm -rf "$SRC/components/mcp"
     cp -r /workspace/src/mcp/endpoint "$SRC/components/mcp"
 
-    echo "==> Configuring with ASAN"
+    echo "==> Configuring (sanitizer: $SANITIZER)"
     mkdir -p "$BLD"
     cmake -S "$SRC" -B "$BLD" \
       -DCMAKE_C_COMPILER=$TS/gcc -DCMAKE_CXX_COMPILER=$TS/g++ \
-      -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_ASAN=ON \
+      -DCMAKE_BUILD_TYPE=RelWithDebInfo -DWITH_ASAN=$ASAN_CMAKE \
       -DDOWNLOAD_BOOST=1 -DWITH_BOOST=/workspace/mysql-asan/boost \
       -DWITH_UNIT_TESTS=OFF -DWITH_ROUTER=OFF -DWITH_RAPID=OFF -DWITH_NDB=OFF \
       -DWITH_NDBCLUSTER=OFF -DWITH_GROUP_REPLICATION=OFF -DWITH_AUTHENTICATION_WEBAUTHN=OFF \
@@ -78,8 +88,8 @@ docker run --rm \
     echo "==> Building mysqld, mysql, component_reference_cache and component_mcp ($JOBS jobs)"
     cmake --build "$BLD" --target mysqld mysql component_reference_cache component_mcp -j"$JOBS"
 
-    echo "==> Building component_mcp_guard with ASAN"
-    $TS/g++ -std=c++20 -O1 -g -fno-omit-frame-pointer -fsanitize=address -fPIC -shared -pthread \
+    echo "==> Building component_mcp_guard (sanitizer: $SANITIZER)"
+    $TS/g++ -std=c++20 -O1 -g -fno-omit-frame-pointer $GUARD_SAN -fPIC -shared -pthread \
       -fvisibility=hidden -fvisibility-inlines-hidden \
       -I"$SRC/include" -I"$SRC" -I"$SRC/libs" -I"$BLD/include" \
       -o "$BLD/plugin_output_directory/component_mcp_guard.so" \

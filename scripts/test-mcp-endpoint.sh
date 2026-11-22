@@ -447,6 +447,31 @@ expect "SELECT SLEEP(20) is stopped after 3 s and returns 1 (took ${took}s)" "$t
 t0=$(date +%s); out=$(call run_query '{"sql":"DO SLEEP(20)"}'); took=$(( $(date +%s) - t0 ))
 expect "DO SLEEP(20) is stopped after 3 s (took ${took}s)" "$took $out" '^[3-9] .*"isError":false'
 expect "the next call runs normally" "$(call run_query '{"sql":"SELECT 1 AS one"}')" 'one\\":\\"1\\".*"isError":false'
+# The time limit still applies when the call's account is dropped while the call runs (#310): no
+# new session can open as it then, so the KILL goes through a session opened with the call's.
+sql "CREATE USER dropme@'%'; GRANT MCP_USER ON *.* TO dropme@'%'; INSERT INTO mysql.mcp_tokens (token_sha256, account) VALUES ('$(h tbl-dropme)', 'dropme@%')"
+sleep 1.2  # the token table snapshot is read again once it is a second old
+# mcp.statements_total (the guard's count of MCP statements, counted as each starts): the call
+# runs three, SET sql_select_limit, SELECT CONNECTION_ID() (its watch, with the KILL session
+# already open) and the SLEEP; the account is dropped once the third has started.
+stmts() { sql "SHOW GLOBAL STATUS LIKE 'mcp.statements_total'" | cut -f2; }
+base=$(stmts)
+t0=$(date +%s)
+dropme_out=$(mktemp)
+callas tbl-dropme run_query '{"sql":"SELECT SLEEP(20) AS s"}' >"$dropme_out" &
+dropper=$!
+running=no
+deadline=$((SECONDS + 10))
+while [ "$SECONDS" -lt "$deadline" ]; do
+	[ "$(stmts)" -ge $((base + 3)) ] 2>/dev/null && { running=yes; break; }
+	sleep 0.1
+done
+kill -0 "$dropper" 2>/dev/null || running=no
+sql "DROP USER dropme@'%'"
+expect "the call was running when its account was dropped" "$running" "^yes$"
+wait "$dropper"; took=$(( $(date +%s) - t0 ))
+expect "a call whose account is dropped mid-call is still stopped after 3 s (took ${took}s)" "$took $(cat "$dropme_out")" '^[3-9] .*s\\":\\"1\\".*"isError":false'
+sql "DELETE FROM mysql.mcp_tokens WHERE account = 'dropme@%'"; rm -f "$dropme_out"
 # Column masking, as mysql-mcp-server's MYSQL_MCP_MASK_COLUMNS: by column name, substring,
 # case-insensitive; NULL stays NULL.
 expect "masked columns: values replaced, NULL kept, others untouched" "$(call run_query '{"sql":"SELECT \"a\" AS user_password, \"b\" AS SecretKey, NULL AS secret_null, \"c\" AS ok"}')" 'user_password\\":\\"\*\*\*\*\*\*\*\*\\",\\"SecretKey\\":\\"\*\*\*\*\*\*\*\*\\",\\"secret_null\\":null,\\"ok\\":\\"c\\"'
@@ -473,6 +498,10 @@ expect "another Origin is still refused" "$(rpc_origin http://evil.example '{"js
 expect "guard: an account without MCP_USER is not restricted" "$(call run_query '{"sql":"INSERT INTO d1.t VALUES (7)"}')" '"isError":false'
 expect "the guard cannot be uninstalled while the endpoint is installed" "$(sql "UNINSTALL COMPONENT 'file://component_mcp_guard'")" "ERROR"
 expect "uninstall component_mcp" "$(sql "UNINSTALL COMPONENT 'file://component_mcp'")" "^$"
+# Its threads end at the uninstall; one that ended with a session attached to it would crash the
+# server (a KILL session the watchdog used, #310).
+sleep 1
+expect "mysqld is still up after the uninstall" "$(alive)" "^up$"
 
 # TLS (RFC 0001 §5.3): plain HTTP only on loopback. The server's auto-generated certificate
 # in the datadir serves as the endpoint's.
