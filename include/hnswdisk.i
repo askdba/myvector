@@ -224,6 +224,9 @@
 
         setCheckPointId(ckptid2);
         setCheckPointComplete(hnswFile);
+        /* setCheckPointComplete() forgets the id once it is written. The
+         * loader needs it: it is where the index follows the binlog from. */
+        setCheckPointId(ckptid2);
     }
 
     void makeIndexConsistent(const std::string & hnswFile, bool & consistent,
@@ -286,6 +289,7 @@
                       "recovery is required.", hnswFile.c_str());
         setCheckPointId(ckptid);
         doRecovery(hnswFile);
+        setCheckPointId(ckptid);  // doRecovery() ends by forgetting it, see below
         consistent = true;
       }
 
@@ -294,9 +298,17 @@
                       "not required.", hnswFile.c_str());
         setCheckPointId(ckptid);
         setCheckPointComplete(hnswFile);
+        setCheckPointId(ckptid);
         consistent = true;
       }
 
+      /* Every branch that leaves the index consistent must also leave its
+       * checkpoint id set: the caller reads the binlog position (or refresh
+       * timestamp) the index stands at from it. The recovery branches used
+       * to return with the id reset by setCheckPointComplete(), so after a
+       * checkpoint interrupted by a crash the index was loaded with no
+       * position, and every later row change was skipped as "older" until
+       * the next restart (#327). */
       return;
       
     } // makeIndexConsistent()

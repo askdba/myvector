@@ -17,6 +17,9 @@ load, and the graph had link lists full of other data: inserts failed with
   5.   the server log has no failed insert and no corrupted-index message.
   6.   a links data file with bytes its directory does not account for (what
        the bug left behind) is refused at load, and a rebuild repairs it.
+  7.   after a checkpoint interrupted in its first pass, the index is loaded
+       from the previous checkpoint and keeps following the binlog (it used to
+       load and then ignore every later change until the next restart).
 
 Usage:
   python3 scripts/test-online-restart-cycles.py --plugin-dir dist/plugin-8.4
@@ -153,6 +156,29 @@ def main():
                "repairs the index",
                bool(r.stdout.strip()) and refused and out.startswith("SUCCESS") and
                caught_up(), f"{s.stderr.strip().splitlines()[-1][:120] if s.stderr.strip() else s.stdout[:60]} | {out[:40]}")
+
+        # 7. A checkpoint that was interrupted in its first pass (mysqld
+        # killed): the status file's current record says "pass 1 begun", the
+        # previous one is the last consistent checkpoint. The load rolls back
+        # to that one, and the index must go on following the binlog from it.
+        time.sleep(4)
+        r = idle.sh(["docker", "exec", srv.name, "bash", "-c",
+                     "f=$(find /var/lib/mysql -name 'vtest.t.v.hnsw.index.status' | head -1)"
+                     " && head -c 256 \"$f\" > /tmp/r1 && grep -c 'status=11000|' /tmp/r1"
+                     " && sed 's/status=11000|/status=10001|/' /tmp/r1 > /tmp/r1p"
+                     " && cat /tmp/r1p /tmp/r1 > \"$f\" && wc -c < \"$f\""], check=False)
+        idle.sh(["docker", "kill", "-s", "KILL", srv.name])
+        idle.sh(["docker", "start", srv.name])
+        srv.wait_ready()
+        ok1 = caught_up(30)
+        insert(500)
+        ok2 = caught_up(60)
+        record("7. after an interrupted checkpoint the index is loaded and keeps "
+               "following the binlog",
+               r.stdout.split() == ["1", "512"] and ok1 and ok2 and
+               "rolling back" in srv.log(),
+               f"status file edit {r.stdout.split()}; index {index_rows()} rows, "
+               f"table {len(vectors)}")
     except Exception as e:  # noqa: BLE001
         record("test ran to completion", False, repr(e)[:300])
 
