@@ -15,6 +15,8 @@ load, and the graph had link lists full of other data: inserts failed with
   1-3. three cycles: row counts match after the restart and after the inserts.
   4.   every sampled row is found by a search with its own vector.
   5.   the server log has no failed insert and no corrupted-index message.
+  6.   a links data file with bytes its directory does not account for (what
+       the bug left behind) is refused at load, and a rebuild repairs it.
 
 Usage:
   python3 scripts/test-online-restart-cycles.py --plugin-dir dist/plugin-8.4
@@ -130,6 +132,27 @@ def main():
                if "failed (" in ln or "cand error" in ln or "seems to be corrupted" in ln]
         record("5. no failed insert or corrupted index in the server log", not bad,
                bad[0][:200] if bad else "")
+
+        # 6. What the bug left behind: link data that no directory entry covers
+        # (here 16 bytes appended). The load must refuse the file, and a
+        # rebuild must repair the index.
+        r = idle.sh(["docker", "exec", srv.name, "bash", "-c",
+                     "f=$(find /var/lib/mysql -name 'vtest.t.v.hnsw.index.links.data' | head -1)"
+                     " && head -c 16 /dev/zero >> \"$f\" && echo \"$f\""], check=False)
+        idle.sh(["docker", "restart", srv.name])
+        srv.wait_ready()
+        time.sleep(8)
+        cmd = ["docker", "exec", "-i", srv.name, "mysql", "-uroot", f"-p{idle.PW}", "-N",
+               "-B", "vtest"]
+        s = idle.sh(cmd, inp="SELECT myvector_ann_set('vtest.t.v','id',myvector_construct("
+                    f"'{vectors[1]}'),'nn=1');", check=False)
+        refused = (s.returncode != 0 and "not loaded" in s.stderr and
+                   "more data than its directory lists" in srv.log())
+        out = srv.sql("CALL mysql.myvector_index_build('vtest.t.v','id');")[0][0]
+        record("6. a links data file longer than its directory is refused; a rebuild "
+               "repairs the index",
+               bool(r.stdout.strip()) and refused and out.startswith("SUCCESS") and
+               caught_up(), f"{s.stderr.strip().splitlines()[-1][:120] if s.stderr.strip() else s.stdout[:60]} | {out[:40]}")
     except Exception as e:  # noqa: BLE001
         record("test ran to completion", False, repr(e)[:300])
 

@@ -1264,6 +1264,17 @@
                 m_linksOffsetsInFile[nodeID] = current_data_pos;
                 current_data_pos = current_data_pos + linkListSize;
             } // while
+            /* The data file must end where the directory says: every list is
+             * found by adding up the directory's sizes. Files written before
+             * the offset fix in doCheckPoint() can hold a second copy of the
+             * first node's list that no directory entry covers; the lists
+             * after it were then read from the wrong place, and can still
+             * look like valid neighbor lists. Such a file is longer than its
+             * directory accounts for. */
+            if (inputLinksData.peek() != std::ifstream::traits_type::eof())
+                throw std::runtime_error(
+                    "Index links data file seems to be corrupted "
+                    "(more data than its directory lists)");
             inputLinksDir.close();
             inputLinksData.close();
         } catch (...) {
@@ -1272,10 +1283,10 @@
         }
 
         finishLoad();
-        /* Files damaged by the offset bug fixed in doCheckPoint() hold link
-         * lists read from the wrong place. Searches and inserts follow
-         * neighbor ids without checking them, so refuse such a graph here
-         * (the caller frees it) instead of serving it. */
+        /* Searches and inserts follow neighbor ids without checking them, so
+         * a graph with a bad neighbor list is refused here (the caller frees
+         * it) instead of served. The length check above catches the files the
+         * offset bug damaged; this catches lists that are wrong in themselves. */
         try {
             validateAdjacency();
         } catch (...) {
