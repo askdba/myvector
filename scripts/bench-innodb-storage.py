@@ -471,6 +471,7 @@ class Bench:
         row from its commit to its first appearance in a search."""
         if self.storage == "innodb":
             self.configure(self.args.stall_interval)
+            self.wait_up()  # the restart reloads the index: measure after that
             self.wait_settled()
         stop = threading.Event()
         rate = self.args.stall_rate
