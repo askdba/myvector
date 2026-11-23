@@ -25,6 +25,8 @@ Component build (8.4, 9.7, 26.10):
      emptied publishes the empty graph instead of keeping the old one.
  12. A reload keeps the index's search effort (ef): same results as after the
      build, on data hard enough for ef to matter.
+ 13. Chunk sizes set in myvector.cnf apply to a new build and not to a stored
+     index; the save is logged; out-of-range values fall back to the defaults.
 Plugin build: storage=innodb is refused.
 
 Usage:
@@ -407,6 +409,74 @@ def main():
         rc, out, err = build(srv4, idx)
         ok4 = out.startswith("SUCCESS") and load(srv4, idx)[1] == "SUCCESS"
         record("10. innodb_page_size=4096: install, build and load", ok4, out or err)
+
+        # --- 13. chunk-size settings -------------------------------------
+        # myvector.cnf is read when the component starts. A vector record is
+        # dim * 4 + 8 bytes, a level-0 link record 2 * M * 4 + 4 (M = 16).
+        def set_cnf(lines, restart=True):
+            for path in ("/var/lib/mysql/myvector.cnf", "/myvector.cnf"):
+                idle.sh(["docker", "exec", srv4.name, "bash", "-c",
+                         f"sed -i '/_chunk_bytes/d' {path} && printf '{lines}' >> {path}"])
+            if restart:
+                idle.sh(["docker", "restart", srv4.name])
+                srv4.wait_ready()
+
+        def chunk_nodes():
+            return srv4.sql("SELECT vec_chunk_nodes, lnk_chunk_nodes FROM "
+                            f"myvector.index_meta WHERE index_name = '{idx}';", db=None)[0]
+
+        base4 = searches(srv4, idx)
+        default_nodes = chunk_nodes()
+        set_cnf("myvector_index_vec_chunk_bytes=8192\\nmyvector_index_lnk_chunk_bytes=4096\\n")
+        kept = load(srv4, idx)[1] == "SUCCESS" and chunk_nodes() == default_nodes
+        rc, out, err = build(srv4, idx)
+        nodes = chunk_nodes()
+        c4 = counts(srv4, meta(srv4, idx)[3])
+        record("13a. chunk sizes from myvector.cnf apply to a new build, not to a "
+               "stored index",
+               kept and out.startswith("SUCCESS") and
+               nodes == [str(8192 // (DIM * 4 + 8)), str(4096 // 132)] and
+               c4[0] == -(-ROWS // int(nodes[0])) and c4[1] == -(-ROWS // int(nodes[1])),
+               f"default {default_nodes} -> {nodes}; rows {c4}")
+        ok = load(srv4, idx)[1] == "SUCCESS" and searches(srv4, idx) == base4
+        record("13b. the index loads with the same results", ok, "")
+        log4 = srv4.log()
+        record("13c. the save is logged with what it wrote",
+               "saved to InnoDB as generation" in log4 and
+               f"{c4[0]} vector chunks, {c4[1]} link chunks" in log4, "")
+        # The file is read again later (a build opens a connection with its
+        # credentials); an edit must not take effect before a restart.
+        set_cnf("myvector_index_vec_chunk_bytes=16384\\nmyvector_index_lnk_chunk_bytes=8192\\n",
+                restart=False)
+        rc, out, err = build(srv4, idx)
+        record("13e. an edited setting waits for the restart",
+               out.startswith("SUCCESS") and chunk_nodes() == nodes, f"{chunk_nodes()}")
+        # A record larger than the target still gets a chunk of its own: here
+        # dim 2048 (8200 bytes) against the 4096-byte minimum.
+        set_cnf("myvector_index_vec_chunk_bytes=4096\\nmyvector_index_lnk_chunk_bytes=4096\\n")
+        srv4.sql("CREATE TABLE big (id INT PRIMARY KEY, v VARBINARY(8300) NULL COMMENT "
+                 "'MYVECTOR COLUMN type=hnsw,dim=2048,size=1000,idcol=id,dist=L2,"
+                 "storage=innodb');")
+        bq = "myvector_construct('[" + ",".join(["0.5"] * 2048) + "]')"
+        for i in range(1, 21):
+            srv4.sql(f"INSERT INTO big VALUES ({i}, {bq});")
+        rc, out, err = build(srv4, "vtest.big.v")
+        bn = srv4.sql("SELECT vec_chunk_nodes FROM myvector.index_meta WHERE index_name = "
+                      "'vtest.big.v';", db=None)
+        record("13f. a vector larger than the target chunk size is stored one per chunk",
+               out.startswith("SUCCESS") and bn == [["1"]] and
+               load(srv4, "vtest.big.v")[1] == "SUCCESS", f"{out[:50]} {bn}")
+        set_cnf("myvector_index_vec_chunk_bytes=12\\nmyvector_index_lnk_chunk_bytes=abc\\n")
+        rc, out, err = build(srv4, idx)
+        d1 = chunk_nodes()
+        set_cnf("myvector_index_vec_chunk_bytes=4294975488\\n")  # 2^32 + 8192
+        rc, out2, err = build(srv4, idx)
+        record("13d. out-of-range settings are reported and the defaults used",
+               out.startswith("SUCCESS") and d1 == default_nodes and
+               out2.startswith("SUCCESS") and chunk_nodes() == default_nodes and
+               "myvector_index_vec_chunk_bytes must be" in srv4.log() and
+               "myvector_index_lnk_chunk_bytes must be" in srv4.log(),
+               f"{d1} {chunk_nodes()}")
     except Exception as e:  # noqa: BLE001
         record("test ran to completion", False, repr(e))
     return finish(results, servers, args.keep)

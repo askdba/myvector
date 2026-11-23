@@ -12,6 +12,7 @@
 #include <mysql/components/component_implementation.h>
 #include <mysql/components/services/mysql_command_services.h>
 
+#include <atomic>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -285,8 +286,10 @@ bool unhex(const std::string& s, std::string* out) {
 namespace {
 
 constexpr int kFormatVersion = 1;
-constexpr size_t kVecChunkTarget = 4u << 20;    // RFC-005 D5
+constexpr size_t kVecChunkTarget = 4u << 20;    // RFC-005 D5: the defaults
 constexpr size_t kLinkChunkTarget = 256u << 10;
+std::atomic<size_t> g_vec_chunk_target{kVecChunkTarget};
+std::atomic<size_t> g_lnk_chunk_target{kLinkChunkTarget};
 constexpr size_t kTxnBytes = 64u << 20;         // RFC-005 D9
 constexpr size_t kStatementOverhead = 64u << 10;
 constexpr size_t kLoadBatchBytes = 64u << 20;   // per SELECT while loading
@@ -390,8 +393,9 @@ bool read_limits(Session& s, Limits* lim, std::string* e) {
 struct Writer {
     Session& s;
     std::string* e;
-    size_t txn = 0;   // bytes in the open transaction
-    size_t rows = 0;  // statements written
+    size_t txn = 0;    // bytes in the open transaction
+    size_t rows = 0;   // statements written
+    size_t bytes = 0;  // bytes written in all
 
     bool put(const std::string& sql, size_t bytes) {
         /* Commit first if this write would take the transaction past the
@@ -403,6 +407,7 @@ struct Writer {
         if (!s.exec(sql, e))
             return false;
         txn += bytes;
+        this->bytes += bytes;
         rows++;
         if (txn >= kTxnBytes) {
             txn = 0;
@@ -597,10 +602,16 @@ private:
         Limits lim;
         if (!read_limits(s, &lim, e))
             return false;
-        size_t vec_nodes =
-            src.vector_record ? std::min(kVecChunkTarget, lim.row_limit) / src.vector_record : 0;
-        size_t lnk_nodes =
-            src.link_record ? std::min(kLinkChunkTarget, lim.row_limit) / src.link_record : 0;
+        /* The targets are targets: a record larger than one (a vector of
+         * dimension 1536 against a 4 KB target) still gets a chunk of its own,
+         * as long as it fits in a row at all. */
+        auto per_chunk = [&](size_t target, size_t record) -> size_t {
+            if (record == 0 || record > lim.row_limit)
+                return 0;
+            return std::max<size_t>(1, std::min(target, lim.row_limit) / record);
+        };
+        size_t vec_nodes = per_chunk(g_vec_chunk_target.load(), src.vector_record);
+        size_t lnk_nodes = per_chunk(g_lnk_chunk_target.load(), src.link_record);
         if (vec_nodes == 0 || lnk_nodes == 0) {
             *e = "max_allowed_packet (" + lim.map_s +
                  ") is too small to store one node of this index; raise it to at least " +
@@ -681,10 +692,14 @@ private:
                 return false;
         }
         UpperWriter up{w, lim, "(" + I + ", " + G + ", ", "1"};
+        size_t upper_rows = 0;
         for (size_t node = 0; node < n; node++) {
             std::string d = src.upper(node);
-            if (!d.empty() && !up.add(node, d))
+            if (d.empty())
+                continue;
+            if (!up.add(node, d))
                 return false;
+            upper_rows++;
         }
         if (!up.flush() || !w.commit())
             return false;
@@ -714,6 +729,10 @@ private:
 
         at->generation = g;
         at->ckpt_seq = 1;
+        at->vector_chunks = n == 0 ? 0 : (n + vec_nodes - 1) / vec_nodes;
+        at->link_chunks = n == 0 ? 0 : (n + lnk_nodes - 1) / lnk_nodes;
+        at->upper_rows = upper_rows;
+        at->bytes = w.bytes;
 
         // 5. The previous generation. The new one is published: a failure here
         //    leaves rows the next save deletes, not a failed save.
@@ -894,6 +913,10 @@ private:
         }
         at->ckpt_seq = next;
         at->leftovers = false;
+        at->vector_chunks = vchunks.size();
+        at->link_chunks = lchunks.size();
+        at->upper_rows = unodes.size();
+        at->bytes = w.bytes;
 
         // Versions this checkpoint replaced. Published already: a failure here
         // leaves rows the next checkpoint's cleanup deletes.
@@ -965,9 +988,9 @@ private:
         try {
             sink.begin(header, n, std::stoull(meta.cols[13]));
             if (!read_chunks(s, "index_vectors", "data", I, G, SEQ, n, vec_nodes,
-                             kVecChunkTarget, sink.vectors, &sql_failed, e) ||
+                             g_vec_chunk_target.load(), sink.vectors, &sql_failed, e) ||
                 !read_chunks(s, "index_links", "level0", I, G, SEQ, n, lnk_nodes,
-                             kLinkChunkTarget, sink.links, &sql_failed, e))
+                             g_lnk_chunk_target.load(), sink.links, &sql_failed, e))
                 return sql_failed ? LoadStatus::Unavailable : LoadStatus::Failed;
             sink.end_level0();
             if (!read_upper(s, I, G, SEQ, n, sink.upper, &sql_failed, e))
@@ -993,7 +1016,19 @@ private:
                             bool* sql_failed, std::string* e) {
         const size_t total = n == 0 ? 0 : (n + per - 1) / per;
         size_t next = 0;  // the chunk id expected next
-        // HEX doubles what the server returns; keep each result set near kLoadBatchBytes.
+        // HEX doubles what the server returns; keep each result set near
+        // kLoadBatchBytes. The chunk size is the generation's, read from the
+        // published version of its first chunk (an older, shorter version may
+        // still be there); the current target is only a fallback.
+        std::string len;
+        if (total > 0 &&
+            scalar(s, std::string("SELECT LENGTH(") + col + ") FROM myvector." + table +
+                          " WHERE index_id = " + I + " AND generation = " + G +
+                          " AND chunk_id = 0 AND version <= " + SEQ +
+                          " ORDER BY version DESC LIMIT 1",
+                   &len, e) &&
+            !len.empty())
+            chunk_bytes = std::stoull(len);
         const size_t per_query =
             std::max<size_t>(1, kLoadBatchBytes / (2 * std::max<size_t>(1, chunk_bytes)));
         std::string fail;
@@ -1102,5 +1137,14 @@ InnoDbIndexStore g_store;
 }  // namespace
 
 IndexStore* index_store() { return &g_store; }
+
+bool set_chunk_targets(size_t vec_bytes, size_t lnk_bytes) {
+    if (vec_bytes < kMinChunkBytes || vec_bytes > kMaxChunkBytes ||
+        lnk_bytes < kMinChunkBytes || lnk_bytes > kMaxChunkBytes)
+        return false;
+    g_vec_chunk_target = vec_bytes;
+    g_lnk_chunk_target = lnk_bytes;
+    return true;
+}
 
 }  // namespace myvector_store

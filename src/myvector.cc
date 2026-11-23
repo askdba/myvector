@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <iomanip>
 #include <list>
 #include <memory>
@@ -1393,12 +1394,19 @@ bool HNSWMemoryIndex::saveToStoreAs(const std::string& gtids) {
     src.gtids = gtids;
     std::string err;
     IndexStore::Position pos;
+    auto started = std::chrono::steady_clock::now();
     if (!st->save(m_name, src, &pos, &err)) {
         setStorageError(err);
         MYVEC_LOG_ERROR("Index %s: saving to InnoDB failed: %s", m_name.c_str(),
                         err.c_str());
         return false;
     }
+    MYVEC_LOG_INFO("Index %s: saved to InnoDB as generation %llu in %lld ms: %zu vector "
+                   "chunks, %zu link chunks, %zu upper rows, %zu bytes.",
+                   m_name.c_str(), pos.generation,
+                   (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - started).count(),
+                   pos.vector_chunks, pos.link_chunks, pos.upper_rows, pos.bytes);
     m_isDirty = false;
     m_storedOnce = true;
     m_storePos = pos;
@@ -1969,7 +1977,15 @@ bool HNSWMemoryIndex::checkpointGtids(const MyVectorGtidSet& applied) {
         IndexStore::GraphSource src = storeSource(disk);
         src.gtids = next.toString();
         IndexStore::Position pos = m_storePos;
+        auto started = std::chrono::steady_clock::now();
         ok = st->checkpoint(m_name, src, delta, m_storeCleanup || pos.leftovers, &pos, &err);
+        if (ok && !delta.empty())
+            MYVEC_LOG_INFO("Index %s: checkpoint %llu written to InnoDB in %lld ms: %zu "
+                           "vector chunks, %zu link chunks, %zu upper rows, %zu bytes.",
+                           m_name.c_str(), pos.ckpt_seq,
+                           (long long)std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::steady_clock::now() - started).count(),
+                           pos.vector_chunks, pos.link_chunks, pos.upper_rows, pos.bytes);
         if (ok) {
             m_storePos = pos;
             m_storeCleanup = false;

@@ -67,6 +67,8 @@ public:
         /// a checkpoint published but could not delete the row versions it
         /// replaced: the next one must be asked to clean up
         bool leftovers = false;
+        /// what the save or checkpoint that led here wrote, for the log
+        size_t vector_chunks = 0, link_chunks = 0, upper_rows = 0, bytes = 0;
     };
 
     /* What changed since the stored state at a Position: ids of nodes whose

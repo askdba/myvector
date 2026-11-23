@@ -55,6 +55,8 @@ All options use `key=value` format, one per line. Lines starting with `#` are co
 | `myvector_port` | No | 0 | Port for TCP connection. Ignored if using socket. |
 | `myvector_socket` | No | (empty) | Unix socket path for local connection. |
 | `myvector_checkpoint_interval` | No | 300 | Seconds between checkpoints of online indexes stored in InnoDB (`online=Y` with `storage=innodb`; component build). 1 or more. See [Online indexes](usage.md#online-indexes-onliney). |
+| `myvector_index_vec_chunk_bytes` | No | 4194304 | Target size of a stored vector chunk for indexes built with `storage=innodb`. Limited by `max_allowed_packet`. Applies to builds after a restart of the component. |
+| `myvector_index_lnk_chunk_bytes` | No | 262144 | Same, for level-0 link chunks. |
 
 \*Required when using online updates. If empty, the binlog thread will fail to connect.
 
