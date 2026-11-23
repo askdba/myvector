@@ -463,7 +463,7 @@ caller's session.
 
 **Decision (D4, revised):** use the component's in-process command service
 (`mysql_command_factory`), which the MCP endpoint already uses
-(`src/mcp/endpoint/component_mcp.cc:71`). No network connection and no password
+(`src/mcp/endpoint/component_mcp.cc` in [askdba/mysql-mcp-components](https://github.com/askdba/mysql-mcp-components)). No network connection and no password
 file.
 
 - **Account.** Sessions run as an internal account the install SQL creates, for

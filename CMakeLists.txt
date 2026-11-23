@@ -156,51 +156,6 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     " -static-libstdc++ -static-libgcc")
 endif()
 
-# ---------------------------------------------------------------------------
-# MCP components (RFC 0001 in askdba/mysql-mcp-server). Opt-in, so the MyVector
-# build is unchanged: cmake -DMYVECTOR_BUILD_MCP=ON ...
-# component_mcp_guard needs only server headers (no libmysqlclient).
-# ---------------------------------------------------------------------------
-option(MYVECTOR_BUILD_MCP "Build the MCP components (component_mcp_guard)" OFF)
-if(MYVECTOR_BUILD_MCP)
-  add_library(component_mcp_guard SHARED src/mcp/guard/component_mcp_guard.cc)
-  # The guard exports only list_components (DLL_EXPORT sets default visibility on it). Its
-  # service placeholders (mysql_service_<name>) must stay private: mysqld exports globals of the
-  # same names, and in a dlopen()ed library the executable's definition wins, so with default
-  # visibility the placeholder would resolve to mysqld's own (ASAN reports it as an ODR
-  # violation). MySQL builds its components with hidden visibility too. (myvector_component is
-  # not changed here: its UDFs are loaded by symbol name, CREATE FUNCTION ... SONAME.)
-  set_target_properties(component_mcp_guard PROPERTIES
-    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
-  target_include_directories(component_mcp_guard PRIVATE ${MYVECTOR_INCLUDE_DIRS})
-  set_target_properties(component_mcp_guard PROPERTIES PREFIX "")
-  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    set_property(TARGET component_mcp_guard APPEND_STRING PROPERTY LINK_FLAGS
-      " -static-libstdc++ -static-libgcc")
-  endif()
-  install(TARGETS component_mcp_guard
-    LIBRARY DESTINATION lib/plugin
-    RUNTIME DESTINATION lib/plugin
-  )
-  install(FILES src/mcp/guard/mcp_guard.json
-    DESTINATION share/mysql/component
-  )
-
-  # Test only, not installed: runs SQL in impersonated command-service sessions, as
-  # component_mcp does, for scripts/test-mcp-guard.sh.
-  find_package(Threads REQUIRED)
-  add_library(component_mcp_session_probe SHARED src/mcp/guard/test/component_mcp_session_probe.cc)
-  set_target_properties(component_mcp_session_probe PROPERTIES
-    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
-  target_include_directories(component_mcp_session_probe PRIVATE ${MYVECTOR_INCLUDE_DIRS})
-  target_link_libraries(component_mcp_session_probe PRIVATE Threads::Threads)
-  set_target_properties(component_mcp_session_probe PROPERTIES PREFIX "")
-  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    set_property(TARGET component_mcp_session_probe APPEND_STRING PROPERTY LINK_FLAGS
-      " -static-libstdc++ -static-libgcc")
-  endif()
-endif()
-
 # Install: shared library and component manifest
 install(TARGETS myvector_component
   LIBRARY DESTINATION lib/plugin

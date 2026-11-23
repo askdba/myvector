@@ -22,8 +22,6 @@ docker run --rm \
   -e HOST_UID="$HOST_UID" \
   -e HOST_GID="$HOST_GID" \
   -e OUTPUT_DIR="$OUTPUT_DIR" \
-  -e MYVECTOR_BUILD_MCP="${MYVECTOR_BUILD_MCP:-OFF}" \
-  -e MYVECTOR_BUILD_MCP_ENDPOINT="${MYVECTOR_BUILD_MCP_ENDPOINT:-OFF}" \
   oraclelinux:9 \
   bash -c '
     set -e
@@ -115,13 +113,7 @@ docker run --rm \
       echo "==> Reusing existing MySQL bld/ (configured earlier)"
     fi
 
-    # Normalize MYVECTOR_BUILD_MCP to ON/OFF using the CMake truthy values, so building
-    # and packaging agree (e.g. Y or True build the guard and package it).
-    case "$(printf "%s" "$MYVECTOR_BUILD_MCP" | tr "[:lower:]" "[:upper:]")" in
-    1 | ON | YES | TRUE | Y) MYVECTOR_BUILD_MCP=ON ;;
-    *) MYVECTOR_BUILD_MCP=OFF ;;
-    esac
-    echo "==> Building MyVector component (MYVECTOR_BUILD_MCP=$MYVECTOR_BUILD_MCP)..."
+    echo "==> Building MyVector component..."
     cd /workspace
     # Arch-specific component build dir. OUTPUT_DIR is build/component-${arch};
     # a shared "build" dir would be wiped by the next architecture in the
@@ -152,45 +144,15 @@ docker run --rm \
       -DMYSQL_SOURCE_DIR="$MYSQL_SRC" \
       -DMYSQL_BUILD_DIR="$MYSQL_BLD" \
       -DMYSQL_DIR="$MYSQL_LIBDIR" \
-      -DMYSQLCLIENT_LIBRARY="$MYSQLCLIENT_LIB" \
-      -DMYVECTOR_BUILD_MCP="$MYVECTOR_BUILD_MCP"
+      -DMYSQLCLIENT_LIBRARY="$MYSQLCLIENT_LIB"
     make -C "$COMPONENT_BUILD" -j$(nproc) VERBOSE=1
 
     echo "==> Packaging artifact..."
     mkdir -p "/workspace/$OUTPUT_DIR"
     cp "$COMPONENT_BUILD/libmyvector_component.so" "/workspace/$OUTPUT_DIR/"
     cp src/component_src/myvector.json "/workspace/$OUTPUT_DIR/"
-    # MCP guard component (RFC 0001), built when MYVECTOR_BUILD_MCP=ON. Clear any
-    # copy from an earlier build first, so an OFF build never ships a stale guard.
-    rm -f "/workspace/$OUTPUT_DIR/component_mcp_guard.so" "/workspace/$OUTPUT_DIR/mcp_guard.json" "/workspace/$OUTPUT_DIR/component_mcp_session_probe.so"
-    if [ "$MYVECTOR_BUILD_MCP" = ON ]; then
-      if [ ! -f "$COMPONENT_BUILD/component_mcp_guard.so" ]; then
-        echo "ERROR: MYVECTOR_BUILD_MCP=ON but component_mcp_guard.so was not built" >&2
-        exit 1
-      fi
-      cp "$COMPONENT_BUILD/component_mcp_guard.so" src/mcp/guard/mcp_guard.json "/workspace/$OUTPUT_DIR/"
-      # Test-only component for scripts/test-mcp-guard.sh (not packaged).
-      cp "$COMPONENT_BUILD/component_mcp_session_probe.so" "/workspace/$OUTPUT_DIR/"
-      echo "==> Built: /workspace/$OUTPUT_DIR/component_mcp_guard.so"
-    fi
     echo "==> Built: /workspace/$OUTPUT_DIR/libmyvector_component.so"
 
-    # component_mcp (RFC 0001 Phase 4 spike), built when MYVECTOR_BUILD_MCP_ENDPOINT=ON. It
-    # links MySQL Router'"'"'s HTTP libraries, so it is built in the server tree like
-    # component_mysql_rest_service: copy src/mcp/endpoint to components/mcp, re-run cmake
-    # (components are globbed), build that one target.
-    rm -f "/workspace/$OUTPUT_DIR/component_mcp.so"
-    case "$(printf "%s" "$MYVECTOR_BUILD_MCP_ENDPOINT" | tr "[:lower:]" "[:upper:]")" in
-    1 | ON | YES | TRUE | Y)
-      echo "==> Building component_mcp in the server tree..."
-      rm -rf "$MYSQL_SRC/components/mcp"
-      cp -r /workspace/src/mcp/endpoint "$MYSQL_SRC/components/mcp"
-      cmake -S "$MYSQL_SRC" -B "$MYSQL_BLD" >/dev/null
-      cmake --build "$MYSQL_BLD" --target component_mcp -j"$(nproc)"
-      cp "$MYSQL_BLD/plugin_output_directory/component_mcp.so" "/workspace/$OUTPUT_DIR/"
-      echo "==> Built: /workspace/$OUTPUT_DIR/component_mcp.so"
-      ;;
-    esac
 
     # Restore host ownership of the MySQL source workspace so the runner user
     # can save it via actions/cache@v4 (container runs as root).
