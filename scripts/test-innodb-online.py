@@ -38,6 +38,17 @@ Component build (8.4, 9.7, 26.10). Part A runs with the checkpoint timer off
       kill -9.
   B7. Repeated kill -9 under a write load: every restart loads a consistent
       index that catches up.
+Part C, recovery edge cases:
+  C1. Statements that change two tables (both table maps precede the rows).
+  C2. max_allowed_packet lowered below the index's chunk size: the checkpoint
+      fails with a clear error and resumes when the limit is raised.
+  C3. Index rows that name another server as their writer are taken over by
+      the load, and checkpoints continue.
+  C4. The listener's saved start file was purged: it starts from a retained
+      file instead of stopping.
+  C5. A compressed transaction is reported, never recorded as included, and
+      the listener stops saving a GTID set with its position; a rebuild
+      recovers.
 Plugin build: nothing to test (storage=innodb needs the component).
 
 Usage:
@@ -570,6 +581,158 @@ def main():
         errors = [ln for ln in srv.log().splitlines()
                   if "checkpoint into InnoDB failed" in ln]
         record("B8. no checkpoint failed", not errors, errors[0][:200] if errors else "")
+        # ================= Part C: recovery edge cases =================
+        def state_file():
+            rc, out, err = run("SELECT 1;")  # server up
+            r = idle.sh(["docker", "exec", srv.name, "bash", "-c",
+                         "find / -name binlog_state.json -not -path '/proc/*' 2>/dev/null"],
+                        check=False)
+            return r.stdout.split()[0] if r.stdout.split() else None
+
+        def settle(t):
+            """Wait until the stored set holds everything the server executed."""
+            for _ in range(40):
+                m = meta(t)
+                if m and srv.sql("SELECT GTID_SUBSET(@@GLOBAL.gtid_executed, "
+                                 f"'{m['gtids']}');", db=None)[0][0] == "1":
+                    return m
+                time.sleep(1)
+            return None
+
+        # C1: a statement that changes two tables logs both table maps before
+        # the rows; the tracked table's rows must be read with its own map,
+        # whichever comes last.
+        ids = random.sample(sorted(a.version), 6)
+        srv.sql("INSERT IGNORE INTO other (id, n) VALUES "
+                + ", ".join(f"({i}, 0)" for i in ids) + ";")
+        for k, i in enumerate(ids):
+            v = f"myvector_construct('{vec_text(i, a.version[i] + 1)}')"
+            if k % 2:
+                srv.sql(f"UPDATE a JOIN other o ON o.id = a.id SET a.v = {v}, "
+                        f"o.n = o.n + 1 WHERE a.id = {i};")
+            else:
+                srv.sql(f"UPDATE other o JOIN a ON o.id = a.id SET o.n = o.n + 1, "
+                        f"a.v = {v} WHERE a.id = {i};")
+            a.version[i] += 1
+        a.touched = ids
+        ok, detail = verify(a)
+        record("C1. updates by statements that change two tables reach the index",
+               ok, detail)
+
+        # C2: max_allowed_packet lowered below the index's chunk size: the
+        # checkpoint fails with a clear error, and works again when it is raised.
+        m0 = settle(a)
+        srv.sql("SET GLOBAL max_allowed_packet = 66560;", db=None)
+        a.update(1)
+        time.sleep(8)
+        m1 = meta(a)
+        log = srv.log()
+        srv.sql("SET GLOBAL max_allowed_packet = 67108864;", db=None)
+        record("C2. a checkpoint refuses chunks that no longer fit max_allowed_packet",
+               m0 is not None and m1["seq"] == m0["seq"] and
+               "is too small for this index's chunks" in log,
+               f"checkpoint {m0['seq'] if m0 else None} -> {m1['seq']}")
+        m2 = wait_checkpoint(a, m1)
+        ok, detail = verify(a)
+        record("C2. checkpoints resume when the limit is raised",
+               m2 is not None and ok and "checkpoints into InnoDB work again" in srv.log(),
+               f"checkpoint {m1['seq']} -> {m2['seq'] if m2 else None}; {detail}")
+
+        # C3: index rows that name another server as their writer (a restore, a
+        # copied datadir): the load takes them over, checkpoints continue.
+        settle(a)
+        srv.sql("SET sql_log_bin = 0; UPDATE myvector.index_meta SET writer_uuid = "
+                "'11111111-2222-3333-4444-555555555555' WHERE index_name = "
+                f"'{a.idx}';", db=None)
+        crash()
+        ok, detail = verify(a)
+        m0 = meta(a)
+        a.update(3)
+        m1 = wait_checkpoint(a, m0)
+        writer = srv.sql("SELECT writer_uuid = @@server_uuid FROM myvector.index_meta "
+                         f"WHERE index_name = '{a.idx}';", db=None)[0][0]
+        record("C3. a load takes over rows written by another server; checkpoints work",
+               ok and m1 is not None and writer == "1",
+               f"checkpoint {m0['seq']} -> {m1['seq'] if m1 else None}; {detail}")
+
+        # C4: the listener's saved start file is gone, though its GTID set suits
+        # every index: the listener must start from a retained file, not stop.
+        settle(a)
+        settle(b)
+        sf = state_file()
+        logs = [r[0] for r in srv.sql("SHOW BINARY LOGS;", db=None)]
+        gone = "binlog.000001"
+        # The listener rewrites the file at a rotation, a clean stop and each
+        # reconnection, so the edit can be overwritten before the kill. The
+        # restart shows whether it was in effect: only a start file that is
+        # gone makes the listener choose a retained one for an index whose
+        # stored set already covered the saved position.
+        chosen = lambda: len(re.findall(r"replaying the binlog from \S+ for index",
+                                        srv.log()))
+        has_gtids, used = False, False
+        for _ in range(5):
+            before_lines = chosen()
+            r = idle.sh(["docker", "exec", srv.name, "bash", "-c",
+                         f"sed -i 's/\"binlog_file\":\"[^\"]*\"/\"binlog_file\":\"{gone}\"/' "
+                         f"{sf} && cat {sf}"])
+            idle.sh(["docker", "kill", "-s", "KILL", srv.name])
+            has_gtids = "gtids" in r.stdout and gone in r.stdout
+            idle.sh(["docker", "start", srv.name])
+            srv.wait_ready()
+            for _ in range(30):
+                if index_rows(a) >= 0 and chosen() > before_lines:
+                    used = True
+                    break
+                time.sleep(1)
+            if used:
+                break
+            settle(a)
+            settle(b)
+        a.insert(50)
+        a.update(10)
+        ok, detail = verify(a)
+        log = srv.log()
+        record("C4. a purged saved start file: the listener starts from a retained file",
+               sf is not None and gone not in logs and has_gtids and used and ok and
+               "binlog listener stopped" not in log,
+               f"state file {sf}, saved file set to {gone}; {detail}")
+
+        # C5: a compressed transaction. The listener can't read it (its rows
+        # don't reach the index): it must say so, never record the transaction
+        # as included, and stop saving a GTID set with its position.
+        settle(a)
+        before = srv.sql("SELECT @@GLOBAL.gtid_executed;", db=None)[0][0].replace("\\n", "")
+        ids, q = a.insert_sql(5)
+        rc, out, err = run("SET SESSION binlog_transaction_compression = ON;" + q)
+        missed = srv.sql(f"SELECT GTID_SUBTRACT(@@GLOBAL.gtid_executed, '{before}');",
+                         db=None)[0][0].replace("\\n", "")
+        m0 = meta(a)
+        a.update(2)  # an ordinary transaction, so a checkpoint follows
+        m1 = wait_checkpoint(a, m0)
+        left = srv.sql("SELECT GTID_SUBTRACT(@@GLOBAL.gtid_executed, "
+                       f"'{m1['gtids'] if m1 else ''}');", db=None)[0][0].replace("\\n", "")
+        for _ in range(20):  # the checkpoint may precede the update's own GTID
+            if left == missed:
+                break
+            time.sleep(1)
+            left = srv.sql("SELECT GTID_SUBTRACT(@@GLOBAL.gtid_executed, "
+                           f"'{meta(a)['gtids']}');", db=None)[0][0].replace("\\n", "")
+        srv.sql("FLUSH BINARY LOGS;", db=None)  # a rotation saves the listener's state
+        time.sleep(3)
+        state = idle.sh(["docker", "exec", srv.name, "cat", sf]).stdout
+        record("C5. a compressed transaction is reported and never recorded as included",
+               rc == 0 and missed != "" and left == missed and
+               "compressed transactions" in srv.log(),
+               f"compressed {missed[-12:]}; missing from the stored set: {left[-12:]}")
+        record("C5. the listener stops saving a GTID set with its position",
+               "binlog_file" in state and "gtids" not in state, state[:160])
+        out = build(a, small=True)
+        for i in ids:
+            a.version[i] = 0
+        a.touched = ids
+        ok, detail = verify(a)
+        record("C5. a rebuild brings the index back in line with the table",
+               out.startswith("SUCCESS") and ok, f"{out[:50]} | {detail}")
     except Exception as e:  # a crashed step: report it and show the log
         record("test run", False, f"{type(e).__name__}: {e}")
 

@@ -250,18 +250,22 @@ def main():
         check("4. after FLUSH BINARY LOGS")
 
         # idle window: count checkpoints and new connections while idle
-        ck_before = srv.log().count("CheckPoint line")
+        # A checkpoint logs several "CheckPoint line" entries; count the
+        # checkpoints (their first entry, status 10001). One is allowed: the
+        # listener may reconnect once in the window, and a reconnection
+        # checkpoints the rows applied since the last one (#255).
+        ck_before = srv.log().count("status=10001|")
         conn_before = int(srv.sql("SHOW GLOBAL STATUS LIKE 'Connections';",
                                   db=None)[0][1])
         time.sleep(10)
         conn_after = int(srv.sql("SHOW GLOBAL STATUS LIKE 'Connections';",
                                  db=None)[0][1])
-        ck_idle = srv.log().count("CheckPoint line") - ck_before
+        ck_idle = srv.log().count("status=10001|") - ck_before
         # one of these connections is the second SHOW STATUS client itself
         idle_conns = conn_after - conn_before - 1
-        print(f"idle 10s: {ck_idle} checkpoint lines, "
+        print(f"idle 10s: {ck_idle} checkpoints, "
               f"{idle_conns} listener (re)connections", flush=True)
-        results.append(("idle 10s: checkpoint lines", "<= 1", ck_idle,
+        results.append(("idle 10s: checkpoints", "<= 1", ck_idle,
                         ck_idle <= 1))
         results.append(("idle 10s: listener reconnections", "info",
                         idle_conns, True))
