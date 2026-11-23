@@ -54,7 +54,7 @@ namespace hnswlib {
         // Locks operations with element by label value
         mutable std::vector<std::mutex> label_op_locks_;
 
-        std::mutex global;
+        mutable std::mutex global;
         std::vector<std::mutex> link_list_locks_;
 
         tableint enterpoint_node_{0};
@@ -1025,8 +1025,13 @@ namespace hnswlib {
             // checkpoint (#188).
             addNodeToFlushList(internalId);
 
-            int maxLevelCopy = maxlevel_;
-            tableint entryPointCopy = enterpoint_node_;
+            int maxLevelCopy;
+            tableint entryPointCopy;
+            {
+                std::lock_guard<std::mutex> lock(global);  // one pair, see searchEntry()
+                maxLevelCopy = maxlevel_;
+                entryPointCopy = enterpoint_node_;
+            }
             // If point to be updated is entry point and graph just contains
             // single element then just return.
             if (entryPointCopy == internalId && cur_element_count == 1)
@@ -1369,6 +1374,25 @@ namespace hnswlib {
             return cur_c;
         }
 
+        /* searchEntry - MyVector: the entry point and the top level, read as
+         * one pair, for a search that runs while rows are being added (a
+         * build, online updates). addPoint() changes the two together under
+         * `global`, at the end of an insert, long after it has counted the new
+         * element. Read without that lock, a search could see:
+         *  - one element counted but no entry point yet (-1), while the first
+         *    row of a new graph is inserted, and compute a distance to
+         *    "element 4294967295", far outside the graph's memory;
+         *  - the old entry point with the new, higher top level, and read
+         *    link lists the old entry point does not have.
+         * Both crashed mysqld (found by scripts/test-unloaded-index.py, step G).
+         * Returns false if no element is linked yet: the search has no rows. */
+        bool searchEntry(tableint& entry, int& level) const {
+            std::lock_guard<std::mutex> lock(global);
+            entry = enterpoint_node_;
+            level = maxlevel_;
+            return entry != (tableint)-1 && level >= 0;
+        }
+
         std::priority_queue<std::pair<dist_t, labeltype>> searchKnn(
             const void* query_data,
             size_t k,
@@ -1389,12 +1413,15 @@ namespace hnswlib {
             if (cur_element_count == 0)
                 return result;
 
-            tableint currObj = enterpoint_node_;
+            tableint currObj;
+            int topLevel;
+            if (!searchEntry(currObj, topLevel))
+                return result;
             dist_t curdist = fstdistfunc_(query_data,
-                                          getDataByInternalId(enterpoint_node_),
+                                          getDataByInternalId(currObj),
                                           dist_func_param_);
 
-            for (int level = maxlevel_; level > 0; level--) {
+            for (int level = topLevel; level > 0; level--) {
                 bool changed = true;
                 while (changed) {
                     changed = false;
@@ -1456,12 +1483,15 @@ namespace hnswlib {
             if (cur_element_count == 0)
                 return result;
 
-            tableint currObj = enterpoint_node_;
+            tableint currObj;
+            int topLevel;
+            if (!searchEntry(currObj, topLevel))
+                return result;
             dist_t curdist = fstdistfunc_(query_data,
-                                          getDataByInternalId(enterpoint_node_),
+                                          getDataByInternalId(currObj),
                                           dist_func_param_);
 
-            for (int level = maxlevel_; level > 0; level--) {
+            for (int level = topLevel; level > 0; level--) {
                 bool changed = true;
                 while (changed) {
                     changed = false;
