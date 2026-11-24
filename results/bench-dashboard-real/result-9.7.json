@@ -1,0 +1,83 @@
+{
+  "version": "9.7",
+  "container": "bench-mysql97",
+  "host_label": "myvector-dev (A1 16/96)",
+  "arch": "aarch64",
+  "timestamp": "2026-11-01T19:46:20.279633+00:00",
+  "dataset": "fashion-mnist-784",
+  "rows_indexed": 60000,
+  "query_set": "held-out test set (published)",
+  "recall_ground_truth": "published",
+  "workload": {
+    "rows": 60000,
+    "dim": 784,
+    "M": 16,
+    "ef_construction": 200,
+    "distance": "L2",
+    "holdout_queries": 1000
+  },
+  "wall_seconds": 405.4,
+  "metrics": {
+    "index_build_time_s": 83.08989143371582,
+    "insert_qps": 1164.1237567036865,
+    "knn_qps": 0.27672222392929086,
+    "knn_p50_ms": 3633.8540000000003,
+    "knn_p99_ms": 4229.154,
+    "knn_ann_qps": 107.68081897723681,
+    "knn_ann_p50_ms": 9.333,
+    "knn_ann_p99_ms": 14.553,
+    "ann_rewrite_active": true,
+    "recall_at_10": 0.9989,
+    "ef_search_sweep": [
+      {
+        "ef_search": 10,
+        "recall_at_10": 0.9342,
+        "qps": 588.700713976226,
+        "p50_ms": 1.677,
+        "p99_ms": 1.842
+      },
+      {
+        "ef_search": 20,
+        "recall_at_10": 0.9783999999999999,
+        "qps": 553.9454208655729,
+        "p50_ms": 1.789,
+        "p99_ms": 1.9780000000000002
+      },
+      {
+        "ef_search": 50,
+        "recall_at_10": 0.9967999999999999,
+        "qps": 490.7190309673152,
+        "p50_ms": 2.0175,
+        "p99_ms": 2.312
+      },
+      {
+        "ef_search": 100,
+        "recall_at_10": 0.9982000000000001,
+        "qps": 423.17295078498586,
+        "p50_ms": 2.3395,
+        "p99_ms": 2.73
+      },
+      {
+        "ef_search": 200,
+        "recall_at_10": 0.999,
+        "qps": 355.18628810438497,
+        "p50_ms": 2.7725,
+        "p99_ms": 3.428
+      },
+      {
+        "ef_search": 400,
+        "recall_at_10": 1.0,
+        "qps": 274.43289813764346,
+        "p50_ms": 3.5795000000000003,
+        "p99_ms": 4.664
+      },
+      {
+        "ef_search": 800,
+        "recall_at_10": 1.0,
+        "qps": 201.01480313213227,
+        "p50_ms": 4.924,
+        "p99_ms": 6.557
+      }
+    ]
+  }
+}

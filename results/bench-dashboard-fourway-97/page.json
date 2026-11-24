@@ -1,0 +1,27 @@
+{
+  "tab_title": "9.7 family — vector search",
+  "title": "9.7 family — full-metric cross-engine",
+  "subtitle": "MyVector 9.7 · vsql_vector (VillageSQL 9.7) · pgvector · MariaDB — fashion-mnist-784",
+  "nav": "<a href=\"../8.4/\">← 8.4 family</a> · <a href=\"/real/\">real-dataset (MySQL versions)</a> · <a href=\"/village/\">village (recall/QPS)</a> · <a href=\"/\">cross-engine</a>",
+  "order": [
+    "MyVector",
+    "vsql_vector",
+    "pgvector",
+    "MariaDB"
+  ],
+  "col": {
+    "MyVector": "#4f9dff",
+    "vsql_vector": "#f0a93b",
+    "pgvector": "#36c98d",
+    "MariaDB": "#a56bd8"
+  },
+  "headline_ef": 200,
+  "description": "<b>Controlled same-host 4-way</b>, re-run 2026-11-10: current-<code>main</code> MyVector (MySQL&nbsp;9.7, <a href=\"https://github.com/askdba/myvector/pull/278\">PR&nbsp;#278</a> + <a href=\"https://github.com/askdba/myvector/pull/280\">#280</a>) vs vsql_vector, pgvector (Postgres&nbsp;17) and MariaDB&nbsp;12.3 — all on one A1 host, each pinned to the same cores with its working set cached above the ~188&nbsp;MB index, run one-at-a-time, on fashion-mnist-784 vs <b>published</b> ground truth. At matched recall@10 <b>MyVector leads ~2–3×</b>. The pgvector/vsql/MariaDB baselines are the same controlled measurements as the <a href=\"/fair/\">/fair/</a> page — only MyVector’s MySQL version differs here.",
+  "caveats": [
+    "<b>Fresh controlled re-run (2026-11-10) — supersedes the earlier numbers on this page</b>, which showed MyVector’s <b>scalar</b> build (pre-#278, recall 0.934 at ef=10) measured under host load. Now: current <code>main</code> (#278 vectorized kernels + keepPrunedConnections, #280 ANN-rewrite overhead removed), all engines pinned to the same cores, each cache-sized above the index, run sequentially.",
+    "<b>The honest read (matched recall@10):</b> MyVector (MySQL&nbsp;9.7) serves the most QPS at every matched-recall point (~2.7k vs pgvector ~1.3k / vsql ~1.2k at recall&nbsp;0.975). The old “MyVector trails” was the scalar, pre-#280 build under load; #278 fixed recall-per-ef and #280 removed the per-query overhead. Residual engine overhead (JSON_TABLE round-trip) is designed out in <a href=\"https://github.com/askdba/myvector/pull/281\">RFC-006</a>.",
+    "<b>Cache parity:</b> MyVector holds its HNSW graph in its own memory; pgvector <code>shared_buffers</code>=2&nbsp;GB; vsql InnoDB pool 4&nbsp;GB; MariaDB InnoDB pool 2&nbsp;GB + <code>mhnsw_max_cache_size</code>=1&nbsp;GiB. All pinned to cores&nbsp;12–15 and run one-at-a-time.",
+    "<b>Dataset / params:</b> fashion-mnist-784-euclidean (60k×784, L2), HNSW M=16, ef_construction=200 (MariaDB fixes it at 10). Recall@10 vs published neighbors. 500 queries/point; headline cards = warm ef_search=200.",
+    "<b>Honest limits:</b> same-host run on a <b>shared</b> A1 box (controlled via core-pinning + cache-parity + sequential runs, not a dedicated quiet machine); each engine uses its own server-side-timed harness. Method disclosed — read ~2–3× as ‘clearly ahead’, not a precise ratio."
+  ]
+}
