@@ -31,11 +31,22 @@ def med(values):
 
 
 def runs_of(files, storage):
+    """The runs of one storage backend. A file named <run>-stall.json holds a
+    separate measurement of the stall step only; it replaces that step in
+    <run>.json."""
     out = []
     for f in files:
+        if f.endswith("-stall.json"):
+            continue
+        extra = f[:-5] + "-stall.json"
         for r in json.load(open(f))["runs"]:
-            if r["storage"] == storage:
-                out.append(r)
+            if r["storage"] != storage:
+                continue
+            if os.path.exists(extra):
+                for x in json.load(open(extra))["runs"]:
+                    if x["storage"] == storage and "stall" in x:
+                        r = dict(r, stall=x["stall"])
+            out.append(r)
     return out
 
 
@@ -55,7 +66,9 @@ def ckpt(run, change, n, key):
 
 
 def comparison(title, files):
-    first = json.load(open(files[0]))
+    files = sorted(files)
+    main_files = [f for f in files if not f.endswith("-stall.json")]
+    first = json.load(open(main_files[0]))
     f_runs, i_runs = runs_of(files, "file"), runs_of(files, "innodb")
     if not f_runs or not i_runs:
         return
@@ -156,7 +169,7 @@ def main():
         if name.startswith("sweep-"):
             groups.setdefault("sweep-" + name.split("-")[1], []).append(f)
         else:
-            groups.setdefault(re.sub(r"-r\d+$", "", name), []).append(f)
+            groups.setdefault(re.sub(r"-r\d+(-stall)?$|-stall$", "", name), []).append(f)
     for name in sorted(groups):
         if name.startswith("sweep-"):
             sweep(f"Chunk-size sweep, tier {name[6:]}", groups[name])

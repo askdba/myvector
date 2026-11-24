@@ -476,7 +476,8 @@ class Bench:
 
     def m_stall(self):
         """Insert at a steady rate; about twenty times a second, time a marker
-        row from its commit to its first appearance in a search."""
+        row from its commit to its first appearance among the ten nearest
+        results of a search with its own vector."""
         if self.storage == "innodb":
             self.configure(self.args.stall_interval)
             self.wait_up()  # the restart reloads the index: measure after that
@@ -504,20 +505,31 @@ class Bench:
         seen = len(self.ckpt_lines())
         th.start()
         probe = Client(self.name)
-        lags = []
+        lags, misses = [], []
+        mrng = np.random.default_rng(7)
         marker = 2000000000
         while time.time() < t_end:
             t_loop = time.time()
             marker += 1
-            v = np.full(self.dim, 50.0 + (marker % 1000), dtype="float32")
+            # Far from the data and from each other, in no particular shape
+            # (markers on a line get pruned out of each other's neighbor
+            # lists, and a search then misses them although they are indexed).
+            v = (mrng.standard_normal(self.dim) * 30.0).astype("float32")
             h = self.encode([v])[0]
             probe.query(f"INSERT INTO t VALUES ({marker}, UNHEX('{h}'))")
             t0 = time.time()
-            q = f"SELECT myvector_ann_set('vtest.t.v','id',UNHEX('{h}'),'nn=1')"
-            while time.time() - t0 < 600:
-                if probe.query(q) == [f"[{marker}]"]:
+            q = f"SELECT myvector_ann_set('vtest.t.v','id',UNHEX('{h}'),'nn=10')"
+            got = None
+            while time.time() - t0 < self.args.stall_timeout:
+                got = probe.query(q)
+                if got and str(marker) in re.findall(r"\d+", got[0]):
                     break
                 time.sleep(0.002)
+            else:
+                log(f"{self.storage}: marker {marker} not found after "
+                    f"{self.args.stall_timeout}s; the search returns {got}; "
+                    f"index rows {self.index_rows()}, expected {self.rows}")
+                misses.append(marker)
             lags.append(time.time() - t0)
             self.rows += 1
             time.sleep(max(0, 0.05 - (time.time() - t_loop)))
@@ -526,7 +538,7 @@ class Bench:
         probe.close()
         lags.sort()
         r = {"rate_rows_s": rate, "seconds": self.args.stall_seconds,
-             "samples": len(lags),
+             "samples": len(lags), "not_found": len(misses),
              "lag_ms_p50": round(lags[len(lags) // 2] * 1000, 1),
              "lag_ms_p99": round(lags[min(len(lags) - 1, int(len(lags) * 0.99))] * 1000, 1),
              "lag_ms_max": round(lags[-1] * 1000, 1)}
@@ -611,6 +623,8 @@ def main():
                     help="checkpoint interval in seconds, outside the stall step")
     ap.add_argument("--stall-interval", type=int, default=10)
     ap.add_argument("--stall-seconds", type=int, default=90)
+    ap.add_argument("--stall-timeout", type=int, default=600,
+                    help="give up on one marker row after this many seconds")
     ap.add_argument("--stall-rate", type=int, default=0,
                     help="rows inserted per second in the stall step (default: the "
                          "tier's, chosen below what the index can apply)")

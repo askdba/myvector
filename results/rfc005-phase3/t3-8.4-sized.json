@@ -1,0 +1,241 @@
+{
+ "tier": "t3",
+ "dataset": "synthetic uniform(-1, 1)",
+ "settings": {
+  "threads": 16,
+  "interval": 15,
+  "stall_interval": 10,
+  "stall_seconds": 90,
+  "stall_rate": 0,
+  "vec_chunk": 0,
+  "lnk_chunk": 0,
+  "profile": "sized"
+ },
+ "runs": [
+  {
+   "storage": "file",
+   "server": {
+    "version": "8.4.13",
+    "image": "mysql:8.4",
+    "profile": "sized",
+    "args": [
+     "--innodb-buffer-pool-size=16G",
+     "--innodb-redo-log-capacity=8G"
+    ]
+   },
+   "index": {
+    "rows": 1000000,
+    "dim": 768,
+    "options": "type=hnsw,dim=768,size=1411000,idcol=id,dist=L2,M=16,ef=100,threads=16,online=Y"
+   },
+   "data_load_s": 100.2,
+   "build": {
+    "build_s": 268.3,
+    "stored_bytes": 3217069796,
+    "redo_bytes": 4096,
+    "data_bytes": 2128172032
+   },
+   "load": {
+    "load_s": [
+     2.41,
+     2.03,
+     2.04
+    ],
+    "same_results": true
+   },
+   "search": {
+    "qps_1": 409,
+    "qps_8": 3061,
+    "recall_at_10": 0.09,
+    "recall_queries": 20
+   },
+   "checkpoint": [
+    {
+     "change": "insert",
+     "n": 1000,
+     "apply_s": 2.0,
+     "checkpoints": 3,
+     "ckpt_ms": 4940.7,
+     "redo_bytes": 3278848,
+     "write_bytes_total": 3244539904
+    },
+    {
+     "change": "insert",
+     "n": 10000,
+     "apply_s": 19.2,
+     "checkpoints": 3,
+     "ckpt_ms": 29164.0,
+     "redo_bytes": 32899584,
+     "write_bytes_total": 3512467456
+    },
+    {
+     "change": "insert",
+     "n": 100000,
+     "apply_s": 186.6,
+     "checkpoints": 2,
+     "ckpt_ms": 76839.1,
+     "redo_bytes": 329335296,
+     "write_bytes_total": 6106337280
+    },
+    {
+     "change": "update",
+     "n": 1000,
+     "apply_s": 7.2,
+     "checkpoints": 3,
+     "ckpt_ms": 11860.5,
+     "redo_bytes": 7739904,
+     "write_bytes_total": 3329630208
+    },
+    {
+     "change": "update",
+     "n": 10000,
+     "apply_s": 54.9,
+     "checkpoints": 3,
+     "ckpt_ms": 63549.6,
+     "redo_bytes": 78486528,
+     "write_bytes_total": 4017479680
+    }
+   ],
+   "stall": {
+    "rate_rows_s": 200,
+    "seconds": 90,
+    "samples": 1005,
+    "lag_ms_p50": 1.1,
+    "lag_ms_p99": 40.2,
+    "lag_ms_max": 600000.0
+   },
+   "restart": {
+    "clean_restart_s": 5.6,
+    "behind_changes": 100000,
+    "kill_restart_s": 203.1
+   }
+  },
+  {
+   "storage": "innodb",
+   "server": {
+    "version": "8.4.13",
+    "image": "mysql:8.4",
+    "profile": "sized",
+    "args": [
+     "--innodb-buffer-pool-size=16G",
+     "--innodb-redo-log-capacity=8G"
+    ]
+   },
+   "index": {
+    "rows": 1000000,
+    "dim": 768,
+    "options": "type=hnsw,dim=768,size=1411000,idcol=id,dist=L2,M=16,ef=100,threads=16,online=Y,storage=innodb"
+   },
+   "data_load_s": 100.4,
+   "build": {
+    "build_s": 329.2,
+    "stored_bytes": 3275886592,
+    "redo_bytes": 3424168960,
+    "data_bytes": 8608033280,
+    "save_ms": 85563,
+    "vector_chunks": 735,
+    "link_chunks": 504,
+    "upper_rows": 63002,
+    "save_bytes": 3216565384
+   },
+   "load": {
+    "load_s": [
+     36.83,
+     36.8,
+     36.68
+    ],
+    "same_results": true
+   },
+   "search": {
+    "qps_1": 412,
+    "qps_8": 3103,
+    "recall_at_10": 0.12,
+    "recall_queries": 20
+   },
+   "checkpoint": [
+    {
+     "change": "insert",
+     "n": 1000,
+     "apply_s": 2.0,
+     "checkpoints": 1,
+     "ckpt_ms": 3525,
+     "vector_chunks": 2,
+     "link_chunks": 505,
+     "upper_rows": 978,
+     "ckpt_bytes": 138451300,
+     "redo_bytes": 161859072,
+     "write_bytes_total": 1013858304
+    },
+    {
+     "change": "insert",
+     "n": 10000,
+     "apply_s": 19.2,
+     "checkpoints": 1,
+     "ckpt_ms": 2372,
+     "vector_chunks": 8,
+     "link_chunks": 510,
+     "upper_rows": 6142,
+     "ckpt_bytes": 166782320,
+     "redo_bytes": 228680704,
+     "write_bytes_total": 1129783296
+    },
+    {
+     "change": "insert",
+     "n": 100000,
+     "apply_s": 194.9,
+     "checkpoints": 2,
+     "ckpt_ms": 10500,
+     "vector_chunks": 76,
+     "link_chunks": 1100,
+     "upper_rows": 32217,
+     "ckpt_bytes": 605872000,
+     "redo_bytes": 1021302272,
+     "write_bytes_total": 5237936128
+    },
+    {
+     "change": "update",
+     "n": 1000,
+     "apply_s": 7.7,
+     "checkpoints": 1,
+     "ckpt_ms": 53133,
+     "vector_chunks": 563,
+     "link_chunks": 560,
+     "upper_rows": 1828,
+     "ckpt_bytes": 2506827048,
+     "redo_bytes": 2691042304,
+     "write_bytes_total": 9231732736
+    },
+    {
+     "change": "update",
+     "n": 10000,
+     "apply_s": 83.9,
+     "checkpoints": 2,
+     "ckpt_ms": 117444,
+     "vector_chunks": 1611,
+     "link_chunks": 1120,
+     "upper_rows": 13021,
+     "ckpt_bytes": 7041651652,
+     "redo_bytes": 7614886400,
+     "write_bytes_total": 32128876544
+    }
+   ],
+   "stall": {
+    "rate_rows_s": 200,
+    "seconds": 90,
+    "samples": 10,
+    "lag_ms_p50": 24.2,
+    "lag_ms_p99": 600002.0,
+    "lag_ms_max": 600002.0,
+    "interval_s": 10,
+    "checkpoints": 8,
+    "ckpt_ms_max": 3015,
+    "ckpt_ms_total": 16939
+   },
+   "restart": {
+    "clean_restart_s": 211.2,
+    "behind_changes": 100000,
+    "kill_restart_s": 379.6
+   }
+  }
+ ]
+}
