@@ -1,0 +1,91 @@
+{
+ "tier": "t1",
+ "dataset": "synthetic uniform(-1, 1)",
+ "settings": {
+  "threads": 16,
+  "interval": 15,
+  "stall_interval": 10,
+  "stall_seconds": 90,
+  "stall_rate": 0,
+  "vec_chunk": 0,
+  "lnk_chunk": 0,
+  "profile": "sized"
+ },
+ "runs": [
+  {
+   "storage": "file",
+   "server": {
+    "version": "8.4.13",
+    "image": "mysql:8.4",
+    "profile": "sized",
+    "args": [
+     "--innodb-buffer-pool-size=16G",
+     "--innodb-redo-log-capacity=8G"
+    ]
+   },
+   "index": {
+    "rows": 100000,
+    "dim": 128,
+    "options": "type=hnsw,dim=128,size=511000,idcol=id,dist=L2,M=16,ef=100,threads=16,online=Y"
+   },
+   "data_load_s": 2.7,
+   "build": {
+    "build_s": 6.1,
+    "stored_bytes": 65693692,
+    "redo_bytes": 1536,
+    "data_bytes": 49318912
+   },
+   "stall": {
+    "rate_rows_s": 500,
+    "seconds": 90,
+    "samples": 1788,
+    "not_found": 0,
+    "lag_ms_p50": 4.3,
+    "lag_ms_p99": 30.1,
+    "lag_ms_max": 31.5
+   }
+  },
+  {
+   "storage": "innodb",
+   "server": {
+    "version": "8.4.13",
+    "image": "mysql:8.4",
+    "profile": "sized",
+    "args": [
+     "--innodb-buffer-pool-size=16G",
+     "--innodb-redo-log-capacity=8G"
+    ]
+   },
+   "index": {
+    "rows": 100000,
+    "dim": 128,
+    "options": "type=hnsw,dim=128,size=511000,idcol=id,dist=L2,M=16,ef=100,threads=16,online=Y,storage=innodb"
+   },
+   "data_load_s": 2.7,
+   "build": {
+    "build_s": 7.6,
+    "stored_bytes": 81924096,
+    "redo_bytes": 71119872,
+    "data_bytes": 129629696,
+    "save_ms": 1913,
+    "vector_chunks": 13,
+    "link_chunks": 51,
+    "upper_rows": 6140,
+    "save_bytes": 65644040
+   },
+   "stall": {
+    "rate_rows_s": 500,
+    "seconds": 90,
+    "samples": 1709,
+    "not_found": 0,
+    "lag_ms_p50": 4.2,
+    "lag_ms_p99": 70.2,
+    "lag_ms_max": 597.2,
+    "interval_s": 10,
+    "checkpoints": 10,
+    "ckpt_ms_max": 512,
+    "ckpt_ms_total": 3821
+   }
+  }
+ ]
+}

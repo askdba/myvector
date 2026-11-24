@@ -107,12 +107,23 @@ def comparison(title, files):
             lambda r: ckpt(r, change, n, "write_bytes_total"), mb)
         row(f"Checkpoint after {what}: redo, change included",
             lambda r: ckpt(r, change, n, "redo_bytes"), mb)
-    row("Insert to searchable under load, median",
-        lambda r: get(r, "stall", "lag_ms_p50"), lambda v: f"{v:,.1f} ms")
-    row("Insert to searchable under load, 99th percentile",
-        lambda r: get(r, "stall", "lag_ms_p99"), lambda v: f"{v:,.0f} ms")
-    row("Insert to searchable under load, worst",
-        lambda r: get(r, "stall", "lag_ms_max"), lambda v: f"{v:,.0f} ms")
+    def lag(key):
+        # A run in which a marker row was never returned by the search has no
+        # usable percentiles: the probe waited out its timeout on that row.
+        return lambda r: None if get(r, "stall", "not_found") else get(r, "stall", key)
+
+    rate = get(f_runs[0], "stall", "rate_rows_s")
+    under = f"under {rate:,} inserts/s" if rate else "under load"
+    row(f"Insert to searchable {under}, median", lag("lag_ms_p50"),
+        lambda v: f"{v:,.1f} ms")
+    row(f"Insert to searchable {under}, 99th percentile", lag("lag_ms_p99"),
+        lambda v: f"{v:,.0f} ms")
+    row(f"Insert to searchable {under}, worst", lag("lag_ms_max"),
+        lambda v: f"{v:,.0f} ms")
+    row("Marker rows a search never returned (probe unusable if not 0)",
+        lambda r: get(r, "stall", "not_found"))
+    row("Longest checkpoint during that load (10 s interval)",
+        lambda r: get(r, "stall", "ckpt_ms_max"), secs)
     row("Clean restart until loaded and caught up",
         lambda r: get(r, "restart", "clean_restart_s"), lambda v: f"{v:,.1f} s")
     row("Restart after kill -9, changes not checkpointed",
