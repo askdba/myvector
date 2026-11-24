@@ -54,13 +54,14 @@ idle = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(idle)
 
 TIERS = {
-    "smoke": dict(rows=5000, dim=32, inserts=[500], updates=[200], behind=1000),
+    "smoke": dict(rows=5000, dim=32, inserts=[500], updates=[200], behind=1000,
+                  stall_rate=500),
     "t1": dict(rows=100000, dim=128, inserts=[1000, 10000, 100000],
-               updates=[1000, 10000], behind=100000),
+               updates=[1000, 10000], behind=100000, stall_rate=500),
     "t2": dict(rows=None, dim=None, inserts=[1000, 10000], updates=[1000, 10000],
-               behind=10000),
+               behind=10000, stall_rate=100),
     "t3": dict(rows=1000000, dim=768, inserts=[1000, 10000, 100000],
-               updates=[1000, 10000], behind=100000),
+               updates=[1000, 10000], behind=100000, stall_rate=200),
 }
 PROFILES = {
     "default": [],
@@ -288,13 +289,22 @@ class Bench:
             time.sleep(1)
         raise RuntimeError("the stored index did not catch up")
 
-    def file_checkpoint(self):
+    CKPT_STATUS = re.compile(r"ts=(\d+):(\d+),ckptid=[^,]*,status=(\d+)\|")
+
+    def file_status_lines(self):
+        return len(self.CKPT_STATUS.findall(self.server_log()))
+
+    def file_checkpoint(self, seen=None):
         """Trigger the file backend's checkpoint (a binlog rotation) and wait
-        for it. A rotation makes two: one for the changes, one at the new
-        file's start. Returns their total duration in ms, from the log's own
-        timestamps."""
-        pat = re.compile(r"ts=(\d+):(\d+),ckptid=[^,]*,status=(\d+)\|")
-        seen = len(pat.findall(self.server_log()))
+        for it. Returns (checkpoints, total ms) of every checkpoint since
+        `seen` (a file_status_lines() value; default: now), from the log's own
+        timestamps: the listener also checkpoints when it reconnects, so part
+        of a change may already have been written before the rotation, and a
+        rotation itself makes two (the second, at the new file's start, has
+        nothing left to write)."""
+        pat = self.CKPT_STATUS
+        if seen is None:
+            seen = self.file_status_lines()
         self.sql("FLUSH BINARY LOGS;", db=None)
         t0, last, quiet = time.time(), -1, 0
         while time.time() - t0 < 3600:
@@ -303,15 +313,16 @@ class Bench:
             if done and len(ts) == last:
                 quiet += 1
                 if quiet >= 4:  # nothing new for two seconds
-                    total, begin = 0.0, None
+                    total, begin, count = 0.0, None, 0
                     for sec, usec, st in ts:
                         t = int(sec) * 1e6 + int(usec)
                         if st == "10001":
                             begin = t
                         elif st == "11000" and begin is not None:
                             total += t - begin
+                            count += 1
                             begin = None
-                    return round(total / 1000, 1)
+                    return count, round(total / 1000, 1)
             else:
                 quiet = 0
             last = len(ts)
@@ -413,6 +424,7 @@ class Bench:
         if self.storage == "innodb":
             self.wait_settled()
         seen = len(self.ckpt_lines())
+        file_seen = self.file_status_lines() if self.storage == "file" else 0
         c0 = self.counters()
         w_start = self.proc_write_bytes()
         t0 = time.time()
@@ -434,11 +446,7 @@ class Bench:
                      upper_rows=sum(x[4] for x in lines),
                      ckpt_bytes=sum(x[5] for x in lines))
         else:
-            time.sleep(2)  # let the binlog and redo of the change itself settle
-            w0 = self.proc_write_bytes()
-            r["ckpt_ms"] = self.file_checkpoint()
-            r["ckpt_bytes"] = self.proc_write_bytes() - w0
-            r["checkpoints"] = 1
+            r["checkpoints"], r["ckpt_ms"] = self.file_checkpoint(file_seen)
         c1 = self.counters()
         r["redo_bytes"] = c1["redo"] - c0["redo"]
         # Everything mysqld wrote for the change and its checkpoint together:
@@ -474,11 +482,14 @@ class Bench:
             self.wait_up()  # the restart reloads the index: measure after that
             self.wait_settled()
         stop = threading.Event()
-        rate = self.args.stall_rate
+        rate = self.args.stall_rate or self.tier["stall_rate"]
+        t_end = time.time() + self.args.stall_seconds
 
         def writer():
             c = Client(self.name)
-            while not stop.is_set():
+            # Until the measurement's time is up, not until the last probe
+            # returns: a probe that waits must not let the load pile up.
+            while not stop.is_set() and time.time() < t_end:
                 t0 = time.time()
                 vecs = self.encode(self.vectors(rate // 10))
                 base = self.next_id + 1
@@ -494,7 +505,6 @@ class Bench:
         th.start()
         probe = Client(self.name)
         lags = []
-        t_end = time.time() + self.args.stall_seconds
         marker = 2000000000
         while time.time() < t_end:
             t_loop = time.time()
@@ -601,7 +611,9 @@ def main():
                     help="checkpoint interval in seconds, outside the stall step")
     ap.add_argument("--stall-interval", type=int, default=10)
     ap.add_argument("--stall-seconds", type=int, default=90)
-    ap.add_argument("--stall-rate", type=int, default=500, help="rows inserted per second")
+    ap.add_argument("--stall-rate", type=int, default=0,
+                    help="rows inserted per second in the stall step (default: the "
+                         "tier's, chosen below what the index can apply)")
     ap.add_argument("--vec-chunk", type=int, default=0, help="vector chunk bytes (innodb)")
     ap.add_argument("--lnk-chunk", type=int, default=0, help="link chunk bytes (innodb)")
     ap.add_argument("--workdir", default="/data/bench-p3")
