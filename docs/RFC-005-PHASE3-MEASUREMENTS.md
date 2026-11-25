@@ -37,10 +37,10 @@ At 1,000,000 × 768 (MySQL 8.4.13, 16 GB buffer pool, one run):
    a 1M-row index changed 563 of 735 vector chunks, so the checkpoint rewrote
    2.5 GB and took 53 s. Both backends apply no online updates while they write a
    checkpoint.
-5. **On most of what was measured, every link chunk is rewritten at every
-   checkpoint, whatever its size:** after scattered updates on every tier, and
-   after inserts on the uniform random tiers. The exception is inserts on
-   fashion-mnist (23 and then 6 of 31 link chunks). Where the changed rows'
+5. **On most of what was measured, all or nearly all link chunks are rewritten
+   at a checkpoint, whatever their size:** after scattered updates on every
+   tier, and after inserts on the uniform random tiers. The exception is
+   inserts on fashion-mnist (23 and then 6 of 31). Where the changed rows'
    neighbors are spread over the graph, chunking links by node range does not
    bound what a checkpoint writes (§ Chunk sizes).
 6. **`innodb` needs a sized server.** With MySQL's default 128 MB buffer pool the
@@ -52,7 +52,7 @@ At 1,000,000 × 768 (MySQL 8.4.13, 16 GB buffer pool, one run):
 
 | Decision | Finding | Recommendation |
 |---|---|---|
-| **D2** links layout | The store writes every link chunk that holds a changed node. On the uniform random tiers that was all of them at every checkpoint: 505 after 1,000 inserts at 1M rows with 256 KB chunks (504 at the build; the index had grown), 2,011 of 2,017 with 64 KB, 127 with 1 MB (126 at the build). After scattered updates it was all of them on every tier, fashion-mnist included (36 of 36). After inserts on fashion-mnist it was 23 and then 6 of 31: the inserted rows there are uniform random vectors, unlike the dataset, and mostly become each other's neighbors. So the write set for links follows how far the changed rows' neighbors are spread, and smaller chunks do not help when they are spread everywhere. | Reopen D2, and first measure inserts drawn from the data's own distribution, which neither kind of tier here does. If they behave like the uniform tiers, store level-0 links per node, or in groups small enough that most stay clean. An upper bound for per-node rows after 1,000 inserts is about 33,000 lists (each insert and up to 32 neighbors), 4.4 MB, against the 132 MB written at 1M rows now. That bound is an estimate, not a measurement. |
+| **D2** links layout | The store writes every link chunk that holds a changed node. On the uniform random tiers that was all or nearly all of them. In the single checkpoint after 1,000 inserts at 1M rows: 505 with 256 KB chunks (the build stored 504; the index had grown), 2,011 with 64 KB (2,017 at the build), 127 with 1 MB (126 at the build). Where a change took several checkpoints the counts in the tables are sums over them. After scattered updates it was the same on every tier, fashion-mnist included (36 in one checkpoint, of 31 at the build plus the chunks added since). After inserts on fashion-mnist it was 23 and then 6 of 31: the inserted rows there are uniform random vectors, unlike the dataset, and mostly become each other's neighbors. So the write set for links follows how far the changed rows' neighbors are spread, and smaller chunks do not help when they are spread everywhere. | Reopen D2, and first measure inserts drawn from the data's own distribution, which neither kind of tier here does. If they behave like the uniform tiers, store level-0 links per node, or in groups small enough that most stay clean. An upper bound for per-node rows after 1,000 inserts is about 33,000 lists (each insert and up to 32 neighbors), 4.4 MB, against the 132 MB written at 1M rows now. That bound is an estimate, not a measurement. |
 | **D5** chunk sizes | Link chunk size changes row counts, not bytes written. Vector chunk size matters only for scattered updates at scale: at 1M rows, 1,000 updates wrote 1.1 GB in 19 s with 1 MB vector chunks, 2.5 GB in 53 s with the 4 MB default, 3.5 GB in 79 s with 16 MB. Save and load times barely move (save 65 / 86 / 79 s, load 37 / 37 / 42 s). At 100k rows nothing changes: the updates touched every vector chunk at every size. | Lower the vector chunk default from 4 MB to 1 MB. The evidence is one run per size at 1M rows, with the link size changed alongside, so it is a recommendation, not yet a change. Keep 256 KB for links until D2 is settled. |
 | **D7** checkpoint interval | With a 10 s interval and steady inserts the longest checkpoint was 0.3–0.5 s at 60k–100k rows and 4.2 s at 1M. For scattered updates a checkpoint costs about the same whatever it accumulated (most of the index), so fewer checkpoints write less. | Keep 300 s. |
 | **D12** asynchronous checkpoints | The listener is paused for the whole checkpoint: seconds for inserts at 1M rows, 53–117 s for scattered updates. The file backend pauses too (4.9–77 s at 1M rows). | Still needed for update-heavy large indexes, but after D2: writing less shortens the pause for every workload, and a copy buffer of today's write set would hold up to the whole index. |
@@ -127,8 +127,8 @@ Limits of these numbers:
 `innodb` only; each row is a fresh server and build. Columns are checkpoint time and the chunk bytes it wrote. `17 MB` is 16 MiB.
 
 Both tiers below are uniform random data. Link chunk size did not change the
-bytes written there because every link chunk held a changed node at every
-checkpoint; see D2 above for where that does not hold.
+bytes written there because all or nearly all link chunks held a changed node
+at each checkpoint; see D2 above for where that does not hold.
 
 ### 100,000 × 128, MySQL 8.4 defaults (the 4 MB / 256 KB row is the default)
 
