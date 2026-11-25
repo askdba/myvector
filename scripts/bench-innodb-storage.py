@@ -398,10 +398,17 @@ class Bench:
         for sessions in (1, 8):
             best = 0
             for _ in range(3):
+                # Every session must run all its queries: a failed one would
+                # otherwise be counted as fast.
                 script = (f'M="mysql -uroot -p{idle.PW} -N -B vtest"; s=$(date +%s.%N); '
-                          f'for w in $(seq 1 {sessions}); do ( $M < /tmp/q.sql >/dev/null 2>&1 ) & '
-                          'done; wait; e=$(date +%s.%N); echo "$s $e"')
+                          f'pids=""; for w in $(seq 1 {sessions}); do '
+                          '( $M < /tmp/q.sql 2>/dev/null | wc -l > /tmp/q.$w.n ) & '
+                          'pids="$pids $!"; done; bad=0; for p in $pids; do wait $p || bad=1; '
+                          f'done; e=$(date +%s.%N); for w in $(seq 1 {sessions}); do '
+                          f'[ "$(cat /tmp/q.$w.n)" = "{count}" ] || bad=1; done; echo "$s $e $bad"')
                 o = idle.sh(["docker", "exec", self.name, "bash", "-c", script]).stdout.split()
+                if o[2] != "0":
+                    raise RuntimeError("a search session failed or returned too few rows")
                 best = max(best, sessions * count / (float(o[1]) - float(o[0])))
             r[f"qps_{sessions}"] = round(best)
         got = [set(int(x) for x in re.findall(r"\d+", s)) for s in self.search_all()]

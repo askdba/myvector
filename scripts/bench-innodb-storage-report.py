@@ -68,6 +68,8 @@ def ckpt(run, change, n, key):
 def comparison(title, files):
     files = sorted(files)
     main_files = [f for f in files if not f.endswith("-stall.json")]
+    if not main_files:
+        return  # only a stall companion: nothing to compare
     first = json.load(open(main_files[0]))
     f_runs, i_runs = runs_of(files, "file"), runs_of(files, "innodb")
     if not f_runs or not i_runs:
@@ -162,11 +164,13 @@ def sweep(title, files):
     print("| " + " | ".join(head) + " |")
     print("|" + "---|" * len(head))
     for v, l, r in rows:
-        cells = [mb(v), f"{l // 1024:,} KB", secs(get(r, "build", "save_ms") or 0),
-                 f"{med(get(r, 'load', 'load_s') or [0]):,.2f} s"]
+        save, load = get(r, "build", "save_ms"), med(get(r, "load", "load_s") or [])
+        cells = [mb(v), f"{l // 1024:,} KB",
+                 secs(save) if save is not None else "n/a",
+                 f"{load:,.2f} s" if load is not None else "n/a"]
         for change, n in changes:
-            cells.append(f"{secs(ckpt(r, change, n, 'ckpt_ms') or 0)} / "
-                         f"{mb(ckpt(r, change, n, 'ckpt_bytes') or 0)}")
+            ms, by = ckpt(r, change, n, "ckpt_ms"), ckpt(r, change, n, "ckpt_bytes")
+            cells.append("n/a" if ms is None or by is None else f"{secs(ms)} / {mb(by)}")
         print("| " + " | ".join(cells) + " |")
     print()
 
