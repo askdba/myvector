@@ -2492,10 +2492,16 @@ private:
                  * other content. */
                 before = start_gtids_;
                 MyVectorGtidSet purged;
-                if (fetch_purged_gtids(hnd, &purged))
+                if (fetch_purged_gtids(hnd, &purged)) {
                     before.unionWith(purged);
-                else
+                } else {
+                    /* Without the purged set the saved one proves nothing:
+                     * don't call the start known. If the retries run out,
+                     * the indexes are refused rather than resumed from a
+                     * position nobody verified. */
                     failed = true;
+                    known = false;
+                }
             }
             std::vector<std::string> files;
             have_files = false;
