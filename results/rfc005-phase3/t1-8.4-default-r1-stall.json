@@ -1,0 +1,85 @@
+{
+ "tier": "t1",
+ "dataset": "synthetic uniform(-1, 1)",
+ "settings": {
+  "threads": 16,
+  "interval": 15,
+  "stall_interval": 10,
+  "stall_seconds": 90,
+  "stall_rate": 0,
+  "vec_chunk": 0,
+  "lnk_chunk": 0,
+  "profile": "default"
+ },
+ "runs": [
+  {
+   "storage": "file",
+   "server": {
+    "version": "8.4.13",
+    "image": "mysql:8.4",
+    "profile": "default",
+    "args": []
+   },
+   "index": {
+    "rows": 100000,
+    "dim": 128,
+    "options": "type=hnsw,dim=128,size=511000,idcol=id,dist=L2,M=16,ef=100,threads=16,online=Y"
+   },
+   "data_load_s": 2.8,
+   "build": {
+    "build_s": 6.0,
+    "stored_bytes": 65693692,
+    "redo_bytes": 1024,
+    "data_bytes": 10848256
+   },
+   "stall": {
+    "rate_rows_s": 500,
+    "seconds": 90,
+    "samples": 1712,
+    "not_found": 0,
+    "lag_ms_p50": 4.2,
+    "lag_ms_p99": 29.3,
+    "lag_ms_max": 3814.8
+   }
+  },
+  {
+   "storage": "innodb",
+   "server": {
+    "version": "8.4.13",
+    "image": "mysql:8.4",
+    "profile": "default",
+    "args": []
+   },
+   "index": {
+    "rows": 100000,
+    "dim": 128,
+    "options": "type=hnsw,dim=128,size=511000,idcol=id,dist=L2,M=16,ef=100,threads=16,online=Y,storage=innodb"
+   },
+   "data_load_s": 2.8,
+   "build": {
+    "build_s": 7.7,
+    "stored_bytes": 81924096,
+    "redo_bytes": 71157760,
+    "data_bytes": 151555584,
+    "save_ms": 1971,
+    "vector_chunks": 13,
+    "link_chunks": 51,
+    "upper_rows": 6141,
+    "save_bytes": 65644108
+   },
+   "stall": {
+    "rate_rows_s": 500,
+    "seconds": 90,
+    "samples": 1458,
+    "not_found": 0,
+    "lag_ms_p50": 4.3,
+    "lag_ms_p99": 92.4,
+    "lag_ms_max": 13548.2,
+    "interval_s": 10,
+    "checkpoints": 9,
+    "ckpt_ms_max": 446,
+    "ckpt_ms_total": 3510
+   }
+  }
+ ]
+}

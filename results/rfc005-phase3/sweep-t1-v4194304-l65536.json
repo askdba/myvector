@@ -1,0 +1,117 @@
+{
+ "tier": "t1",
+ "dataset": "synthetic uniform(-1, 1)",
+ "settings": {
+  "threads": 16,
+  "interval": 15,
+  "stall_interval": 10,
+  "stall_seconds": 90,
+  "stall_rate": 500,
+  "vec_chunk": 4194304,
+  "lnk_chunk": 65536,
+  "profile": "default"
+ },
+ "runs": [
+  {
+   "storage": "innodb",
+   "server": {
+    "version": "8.4.13",
+    "image": "mysql:8.4",
+    "profile": "default",
+    "args": []
+   },
+   "index": {
+    "rows": 100000,
+    "dim": 128,
+    "options": "type=hnsw,dim=128,size=511000,idcol=id,dist=L2,M=16,ef=100,threads=16,online=Y,storage=innodb"
+   },
+   "data_load_s": 2.7,
+   "build": {
+    "build_s": 7.8,
+    "stored_bytes": 84021248,
+    "redo_bytes": 70591488,
+    "data_bytes": 151625728,
+    "save_ms": 2092,
+    "vector_chunks": 13,
+    "link_chunks": 202,
+    "upper_rows": 6141,
+    "save_bytes": 65644108
+   },
+   "load": {
+    "load_s": [
+     0.91,
+     0.87,
+     0.85
+    ],
+    "same_results": true
+   },
+   "checkpoint": [
+    {
+     "change": "insert",
+     "n": 1000,
+     "apply_s": 0.8,
+     "checkpoints": 1,
+     "ckpt_ms": 444,
+     "vector_chunks": 1,
+     "link_chunks": 204,
+     "upper_rows": 914,
+     "ckpt_bytes": 15597596,
+     "redo_bytes": 18794496,
+     "write_bytes_total": 129380352
+    },
+    {
+     "change": "insert",
+     "n": 10000,
+     "apply_s": 5.6,
+     "checkpoints": 1,
+     "ckpt_ms": 443,
+     "vector_chunks": 2,
+     "link_chunks": 224,
+     "upper_rows": 4056,
+     "ckpt_bytes": 22348048,
+     "redo_bytes": 32173568,
+     "write_bytes_total": 163086336
+    },
+    {
+     "change": "insert",
+     "n": 100000,
+     "apply_s": 57.6,
+     "checkpoints": 1,
+     "ckpt_ms": 2882,
+     "vector_chunks": 14,
+     "link_chunks": 426,
+     "upper_rows": 11673,
+     "ckpt_bytes": 83904164,
+     "redo_bytes": 153483776,
+     "write_bytes_total": 769146880
+    },
+    {
+     "change": "update",
+     "n": 1000,
+     "apply_s": 6.6,
+     "checkpoints": 1,
+     "ckpt_ms": 10316,
+     "vector_chunks": 27,
+     "link_chunks": 426,
+     "upper_rows": 1633,
+     "ckpt_bytes": 137694876,
+     "redo_bytes": 151932928,
+     "write_bytes_total": 808902656
+    },
+    {
+     "change": "update",
+     "n": 10000,
+     "apply_s": 93.6,
+     "checkpoints": 3,
+     "ckpt_ms": 51682,
+     "vector_chunks": 81,
+     "link_chunks": 1278,
+     "upper_rows": 11161,
+     "ckpt_bytes": 413570080,
+     "redo_bytes": 633262592,
+     "write_bytes_total": 4263194624
+    }
+   ]
+  }
+ ]
+}
