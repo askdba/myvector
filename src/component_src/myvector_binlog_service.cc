@@ -545,8 +545,28 @@ bool fetch_server_uuid(MYSQL* mysql, std::string* server_uuid) {
     return ok;
 }
 
-/* The set of transactions in the binary logs before `file`: the Info of its
- * Previous_gtids event, the second event of every binlog file. Needs
+/* gtid_purged: transactions this server has executed that are in none of its
+ * binary log files. */
+bool fetch_purged_gtids(MYSQL* mysql, MyVectorGtidSet* out) {
+    const char* q = "SELECT @@GLOBAL.gtid_purged";
+    MYSQL_RES* result = nullptr;
+    if (mysql_real_query(mysql, q, strlen(q)) || !(result = mysql_store_result(mysql))) {
+        fprintf(stderr, "MyVector: %s failed: %s\n", q, mysql_error(mysql));
+        return false;
+    }
+    MYSQL_ROW row = mysql_fetch_row(result);
+    bool ok = row != nullptr && out->parse(row[0] ? row[0] : "");
+    mysql_free_result(result);
+    return ok;
+}
+
+/* The set of transactions that precede `file`: the Info of its Previous_gtids
+ * event (the second event of every binlog file), plus gtid_purged. The second
+ * part matters on a server that starts without its source's binary logs (a
+ * clone, a restore): its first binlog file has an empty Previous_gtids, yet
+ * every purged transaction came before it and is in no file here. Without
+ * them, an index whose stored set lacks some of those transactions would be
+ * told it can resume from that file, and would silently miss them. Needs
  * REPLICATION SLAVE, which reading the binlog needs anyway. */
 bool fetch_previous_gtids(MYSQL* mysql, const std::string& file, MyVectorGtidSet* out) {
     std::string esc(file.size() * 2 + 1, '\0');
@@ -573,7 +593,13 @@ bool fetch_previous_gtids(MYSQL* mysql, const std::string& file, MyVectorGtidSet
             ok = out->parse(row[5] ? row[5] : "");
     }
     mysql_free_result(result);
-    return ok;
+    if (!ok)
+        return false;
+    MyVectorGtidSet purged;
+    if (!fetch_purged_gtids(mysql, &purged))
+        return false;
+    out->unionWith(purged);
+    return true;
 }
 
 /* The server's binary log files, oldest first. Needs REPLICATION CLIENT. */
@@ -2457,8 +2483,26 @@ private:
         for (int attempt = 0;; attempt++) {
             failed = false;
             known = start_gtids_valid_;
-            if (known)
+            if (known) {
+                /* A saved position's set is what the listener had read up to
+                 * it. Purged transactions precede any position here too. In
+                 * normal running they are already in that set; after a
+                 * restore, a clone or a reset of the binary logs they are
+                 * not, and the saved file name may even exist again with
+                 * other content. */
                 before = start_gtids_;
+                MyVectorGtidSet purged;
+                if (fetch_purged_gtids(hnd, &purged)) {
+                    before.unionWith(purged);
+                } else {
+                    /* Without the purged set the saved one proves nothing:
+                     * don't call the start known. If the retries run out,
+                     * the indexes are refused rather than resumed from a
+                     * position nobody verified. */
+                    failed = true;
+                    known = false;
+                }
+            }
             std::vector<std::string> files;
             have_files = false;
             auto list_files = [&]() {

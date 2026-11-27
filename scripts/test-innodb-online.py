@@ -49,6 +49,10 @@ Part C, recovery edge cases:
   C5. A compressed transaction is reported, never recorded as included, and
       the listener stops saving a GTID set with its position; a rebuild
       recovers.
+  C6. A server that starts without the binary logs written since the index's
+      last checkpoint, as a clone or a restore does (empty Previous_gtids,
+      the transactions in gtid_purged): the index is refused instead of
+      loaded with those changes missing, and a rebuild recovers.
 Plugin build: nothing to test (storage=innodb needs the component).
 
 Usage:
@@ -733,6 +737,50 @@ def main():
         ok, detail = verify(a)
         record("C5. a rebuild brings the index back in line with the table",
                out.startswith("SUCCESS") and ok, f"{out[:50]} | {detail}")
+
+        # C6: a server that starts without its source's binary logs (a clone, a
+        # restore) while the index is behind its table: the transactions
+        # between the index's last checkpoint and the copy are in no binlog
+        # here. They are in gtid_purged, and the first binlog file's
+        # Previous_gtids is empty. The index must be refused, not loaded with
+        # those changes missing. Simulated on this server: checkpoints are
+        # held back, rows are added, then the binary logs are reset and the
+        # executed set is declared purged, as on a fresh clone.
+        settle(a)
+        holder = subprocess.Popen(
+            ["docker", "exec", "-i", srv.name, "mysql", "-uroot", f"-p{idle.PW}", "-e",
+             "LOCK TABLES myvector.index_meta READ; SELECT SLEEP(300);"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(2)
+        a.insert(300)
+        ok_mem, _ = verify(a)  # applied in memory, not checkpointed
+        stored = meta(a)["gtids"]
+        executed = srv.sql("SELECT @@GLOBAL.gtid_executed;", db=None)[0][0].replace("\\n", "")
+        behind = srv.sql(f"SELECT GTID_SUBSET('{executed}', '{stored}');", db=None)[0][0] == "0"
+        srv.sql(f"RESET BINARY LOGS AND GTIDS; SET GLOBAL gtid_purged = '{executed}';", db=None)
+        idle.sh(["docker", "kill", "-s", "KILL", srv.name])
+        holder.wait(timeout=30)
+        # A clone has no saved listener state. Removed while the server is
+        # down, so the listener can't write it again.
+        idle.sh(["docker", "run", "--rm", "--volumes-from", srv.name, "alpine", "rm", "-f", sf])
+        idle.sh(["docker", "start", srv.name])
+        srv.wait_ready()
+        time.sleep(10)
+        prev = srv.sql("SHOW BINLOG EVENTS LIMIT 2;", db=None)
+        rc, out, err = run(f"SELECT myvector_ann_set('{a.idx}','id',"
+                           f"myvector_construct('{vec_text(1, 0)}'),'nn=1');")
+        refused = rc != 0 and "not loaded" in err
+        record("C6. started without the binary logs since its checkpoint (as a clone): "
+               "the index is refused, not loaded with changes missing",
+               ok_mem and behind and refused and
+               len(prev) == 2 and prev[1][2] == "Previous_gtids" and prev[1][5:] in ([], [""]),
+               f"index behind its table: {behind}; first binlog's Previous_gtids "
+               f"{prev[1][5:] if len(prev) == 2 else prev}; search: {(err or out)[:90]}")
+        out = build(a, small=True)
+        a.insert(50)
+        ok, detail = verify(a)
+        record("C6. a rebuild recovers", out.startswith("SUCCESS") and ok,
+               f"{out[:50]} | {detail}")
     except Exception as e:  # a crashed step: report it and show the log
         record("test run", False, f"{type(e).__name__}: {e}")
 
